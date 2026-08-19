@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jarvis</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- The assistant itself. -->
+  <div id="app-screen" class="screen hidden">
+    <header>
+      <div class="header-row">
+        <button id="menu-toggle" aria-label="Menu" title="Menu">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+            <path d="M3 6h18v2H3V6zm0 5h18v2H3v-2zm0 5h18v2H3v-2z"/>
+          </svg>
+        </button>
+        <h1>Jarvis</h1>
+        <!-- Grouped together, right-aligned as one unit — see .header-actions
+             in style.css (#settings-toggle used to be the sole
+             position:absolute right:0 child; both now share that spot). -->
+        <div class="header-actions">
+          <button id="new-chat-button" aria-label="New chat" title="Start a new chat">
+            <svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor">
+              <path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z"/>
+            </svg>
+          </button>
+          <button id="notifications-toggle" aria-label="Notifications" title="Notifications">
+            <svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor">
+              <path d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22zm7-6.2V11a7 7 0 0 0-5.5-6.84V3.5a1.5 1.5 0 0 0-3 0v.66A7 7 0 0 0 5 11v4.8L3 17.8V19h18v-1.2l-2-2z"/>
+            </svg>
+            <span id="notifications-badge" class="notif-badge hidden">0</span>
+          </button>
+          <button id="settings-toggle" aria-label="Settings" title="Settings">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+              <path d="M19.14 12.94a7.14 7.14 0 0 0 .05-.94 7.14 7.14 0 0 0-.05-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.3 7.3 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54a7.3 7.3 0 0 0-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.66 8.84a.5.5 0 0 0 .12.64l2.03 1.58a7.14 7.14 0 0 0-.05.94 7.14 7.14 0 0 0 .05.94L2.78 14.5a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.4 1.04.71 1.62.94l.36 2.54a.5.5 0 0 0 .5.42h3.84a.5.5 0 0 0 .5-.42l.36-2.54a7.3 7.3 0 0 0 1.62-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.56zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <p id="status-line" class="status">Click the mic, press Space, or type to talk</p>
+      <p id="latency-badge" class="hint hidden"></p>
+    </header>
+
+    <div id="settings-panel" class="settings-panel hidden">
+      <label class="settings-row">
+        <span>Speak replies out loud</span>
+        <input type="checkbox" id="speak-replies-toggle" />
+      </label>
+
+      <label class="settings-row">
+        <span title="Any-model works with Gemini, Claude, or OpenAI (~0.8-1.5s replies). Gemini Live is faster (~0.3-0.6s) and interrupts mid-word, but only works with Gemini.">
+          Voice engine
+        </span>
+        <select id="voice-engine-select">
+          <option value="pipeline">Any-model (flexible)</option>
+          <option value="live">Gemini Live (faster, Gemini only)</option>
+        </select>
+      </label>
+
+      <label class="settings-row">
+        <span>Microphone mode</span>
+        <select id="mic-mode-select">
+          <option value="conversation">Conversation (talk freely)</option>
+          <option value="push">Push-to-talk</option>
+        </select>
+      </label>
+
+      <label class="settings-row" id="voice-output-row">
+        <span>Jarvis's voice</span>
+        <select id="voice-output-select">
+          <option value="gemini">Gemini voice (more natural)</option>
+          <option value="browser">Windows voice (instant, offline)</option>
+        </select>
+      </label>
+
+      <label class="settings-row" id="gemini-voice-row">
+        <span>Which Gemini voice</span>
+        <select id="gemini-voice-select"></select>
+      </label>
+
+      <label class="settings-row">
+        <span title="Double-checks ambiguous pauses with an extra AI call (~200-400ms slower)">
+          Extra-careful pause detection
+        </span>
+        <input type="checkbox" id="ai-turn-check-toggle" />
+      </label>
+
+      <div class="settings-divider"></div>
+
+      <div id="provider-section">
+        <div class="settings-row" id="model-row">
+          <span>AI model</span>
+          <select id="provider-select">
+            <option value="">Auto (recommended)</option>
+          </select>
+        </div>
+        <p class="hint">
+          Jarvis picks the best available model automatically, switches if one breaks, and tells you
+          when it does. <a href="#/models" id="manage-models-link">Manage models →</a>
+        </p>
+        <p id="provider-error" class="error hidden"></p>
+      </div>
+      <p id="live-engine-note" class="hint hidden">Gemini Live always uses Gemini's own voice.</p>
+
+      <p id="voice-support-note" class="hint hidden">
+        Voice input/output needs Chrome or Edge. Typing still works here.
+      </p>
+    </div>
+
+    <main id="app-body">
+      <!-- The centre stage: Jarvis's 3D orb (his face — reacts to
+           idle/listening/thinking/speaking), the voice-control mic
+           (mute/unmute only — see app.js's setMicVisual), and the composer.
+           This is the primary Jarvis space and always stays centred on the
+           interface — the conversation floats over the right edge on top of
+           it, out of layout flow, and never pushes it off-centre or resizes
+           it. See #conversation-rail below. -->
+      <section id="stage">
+        <div id="orb-stage">
+          <canvas id="orb-canvas" aria-hidden="true"></canvas>
+          <div id="orb-fallback" class="orb-fallback hidden" aria-hidden="true"></div>
+        </div>
+
+        <!-- The mic — bottom-anchored, fixed height, sole occupant of
+             #stage's bottom band now that the composer has moved into
+             #conversation-rail (see below). #orb-stage above is a SEPARATE
+             fixed-height box, uninvolved in any of this, so nothing here can
+             ever resize or shift the orb. -->
+        <div id="mic-cluster">
+          <button id="mic-button" aria-label="Unmute the microphone" title="Mute/unmute Jarvis's voice control">
+            <svg id="mic-icon" viewBox="0 0 24 24" width="28" height="28" fill="currentColor">
+              <path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/>
+              <path d="M19 11a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.92V21H9a1 1 0 0 0 0 2h6a1 1 0 0 0 0-2h-2v-3.08A7 7 0 0 0 19 11z"/>
+              <!-- Muted indicator — a clear diagonal slash through the icon,
+                   shown only in the idle/off state (see app.js's setMicVisual). -->
+              <line class="mic-slash" x1="3.5" y1="3.5" x2="20.5" y2="20.5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+            </svg>
+          </button>
+          <p id="mic-hint" class="hint">Space bar also works</p>
+        </div>
+      </section>
+
+      <!-- The conversation floats over the right edge of the interface, out
+           of normal layout flow — it reserves no column and never pushes or
+           resizes the stage. No card/border/header on purpose: it should
+           read as part of the main interface, not a separate boxed widget.
+           #conversation-scroll scrolls internally so the page itself never
+           grows or gets a scrollbar. #composer-dock is anchored below it,
+           as part of this same floating unit — see style.css for how its
+           position is derived from #conversation-scroll's own box, and
+           CLAUDE.md/handoff.md for why it moved here from #stage (it used
+           to compete with the orb for vertical space; now it doesn't touch
+           #stage at all). -->
+      <aside id="conversation-rail">
+        <div id="conversation-scroll">
+          <div id="setup-nudge" class="card hidden">
+            <p>Jarvis isn't connected to an AI model yet. Add one to get started — it's free to start with Gemini.</p>
+            <button type="button" id="setup-nudge-btn">Add a model</button>
+          </div>
+          <div id="transcript" aria-live="polite"></div>
+        </div>
+
+        <!-- Errors/events no longer reserve space here (see the
+             notification system — public/notifications.js) — nothing shows
+             above the composer. -->
+        <div id="composer-dock">
+          <!-- The message composer: file uploads, dictation, and sending all
+               live inside this one shell. The dictation mic here is separate
+               from #mic-button above — it's for speaking instead of typing,
+               not Jarvis's own voice-control session. -->
+          <div id="composer">
+            <!-- Files chosen but not yet sent. Filled in by app.js. -->
+            <div id="attachment-chips" class="attachment-chips hidden"></div>
+
+            <form id="text-form" autocomplete="off">
+              <button type="button" id="attach-button" class="composer-btn" aria-label="Attach a file" title="Attach a file — picture, video, PDF, document, anything">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+                </svg>
+              </button>
+              <!-- No `accept` on purpose: any file type can be shared. -->
+              <input type="file" id="attach-input" class="hidden" multiple />
+
+              <textarea
+                id="text-input"
+                rows="1"
+                placeholder="Message Jarvis…"
+                autocomplete="off"
+              ></textarea>
+
+              <button type="button" id="composer-mic-button" class="composer-btn" aria-label="Dictate a message" title="Speak instead of typing">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                  <path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/>
+                  <path d="M19 11a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.92V21H9a1 1 0 0 0 0 2h6a1 1 0 0 0 0-2h-2v-3.08A7 7 0 0 0 19 11z"/>
+                </svg>
+              </button>
+
+              <button type="submit" id="send-button" class="composer-btn send" aria-label="Send" title="Send">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 19V5M5 12l7-7 7 7"/>
+                </svg>
+              </button>
+            </form>
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <!-- Every section beyond the assistant itself (Model Settings, Scheduled
+       Tasks, Morning Briefing, Profile & Goals, and anything added later)
+       renders into this one shell — see public/router.js and public/nav.js. -->
+  <div id="generic-screen" class="screen hidden generic-screen">
+    <header class="generic-header">
+      <button id="generic-menu-toggle" aria-label="Menu" title="Menu">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+          <path d="M3 6h18v2H3V6zm0 5h18v2H3v-2zm0 5h18v2H3v-2z"/>
+        </svg>
+      </button>
+      <button id="generic-back" aria-label="Back to Jarvis" title="Back to Jarvis">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+          <path d="M15.4 4.6 8 12l7.4 7.4 1.4-1.4L10.8 12l6-6-1.4-1.4z"/>
+        </svg>
+      </button>
+      <h1 id="generic-title"></h1>
+    </header>
+    <main id="generic-screen-content" class="generic-content"></main>
+  </div>
+
+  <!-- Not using .hidden here on purpose: it's display:none, which can't be
+       animated. The drawer/scrim stay in the layout and slide via
+       transform/opacity, toggled by the .open class (see app.js). -->
+  <div id="scrim" class="scrim"></div>
+  <nav id="drawer" class="drawer" aria-label="Main menu"></nav>
+
+  <!-- The in-page twin of the always-on-top desktop overlay
+       (server/control/overlay.ps1) — mirrors the same control_status SSE
+       events so it stays in sync regardless of which screen is open. Lives
+       at body level, outside both .screen containers, since a control
+       session can be running no matter which section the user is looking
+       at. See app.js's control banner wiring. -->
+  <div id="control-banner" class="control-banner hidden" role="status" aria-live="polite">
+    <span id="control-banner-text">Jarvis is controlling your computer…</span>
+    <button type="button" id="control-banner-stop" class="control-banner-stop">Stop</button>
+  </div>
+
+  <!-- Amber "Watching for" indicator — a distinct colour and label from the
+       red control banner above so, if both are ever active at once (a
+       monitor and a control session running together), each is always
+       clearly identifiable at a glance, never mistaken for the other. Same
+       body-level placement and SSE-driven wiring as the control banner —
+       see app.js's monitor banner wiring. -->
+  <div id="monitor-banner" class="monitor-banner hidden" role="status" aria-live="polite">
+    <span id="monitor-banner-text">Watching for something…</span>
+    <button type="button" id="monitor-banner-stop" class="monitor-banner-stop">Stop</button>
+  </div>
+
+  <!-- Small blue "Jarvis can see your screen" badge — the in-page twin of
+       the always-on-top desktop badge (server/control/observation-
+       indicator.ps1), lit for look_at_screen's one-off glance and a
+       screen_looks_like monitor's ongoing visual watch. Deliberately a
+       plain dot, not a bar like the two above: it's a quieter, secondary
+       signal ("Jarvis is only looking"), separate from "controlling" (red)
+       and "watching for a condition" (amber) — see app.js's observation dot
+       wiring. Must come after both banners above so the CSS sibling rules
+       can shift it below whichever of them is also showing. -->
+  <button
+    type="button"
+    id="observation-dot"
+    class="observation-dot hidden"
+    title="Jarvis can see your screen — click to stop"
+    aria-label="Jarvis is currently observing your screen — click to stop"
+  ></button>
+
+  <!-- Toast notifications — fixed, top-right, own stacking context. Never
+       part of any layout flow, so it can never push/resize/reposition the
+       orb, mic, composer, or conversation rail — see public/notifications.js
+       and .toast-host in style.css. -->
+  <div id="toast-host" class="toast-host" aria-live="polite"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

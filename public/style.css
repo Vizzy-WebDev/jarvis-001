@@ -1,0 +1,3048 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f1115;
+  --panel: #171a21;
+  --border: #2a2e38;
+  --text: #e8eaed;
+  --muted: #8b909c;
+  --accent: #4da3ff;
+  --accent-glow: rgba(77, 163, 255, 0.35);
+  --danger: #ff6b6b;
+  --danger-glow: rgba(255, 107, 107, 0.35);
+  --warn: #f2b45c;
+  --warn-bg: rgba(242, 180, 92, 0.1);
+  --user-bubble: #2a2e38;
+  --assistant-bubble: #1c2431;
+
+  /* Spacing/radius scale, additive only (added for the C1/D UI-primitives
+     pass) — confirmed against the values already dominant throughout this
+     file (padding/margin/gap and border-radius literals), not invented.
+     Existing hardcoded literals elsewhere are left as-is; only new CSS
+     added alongside this pass uses these tokens. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+
+  /* Per-region composer caps (see #composer-dock/.attachment-chips/#text-input
+     below) — replace the old single wrapper-level cap that clipped the
+     control row itself. Each bounds ITS OWN region, not the composer as a
+     whole, so the composer's total height is bounded by construction and
+     never needs a scrollbar of its own. Sized for the default 65%-tall rail;
+     the ≤1150px media query below overrides both for the shorter 40vh rail
+     it uses at that width. */
+  --composer-chips-max: clamp(110px, 16vh, 214px); /* 1 tile row .. 2 tile rows */
+  --composer-text-max: clamp(39px, 14vh, 180px);   /* 1 line .. ~8 lines */
+
+  /* Floating conversation rail (see #conversation-rail below). --rail-width
+     was 340px (chosen when the composer was still a separate element
+     floating over #stage), then 640px (the composer's own original width
+     from before it moved under the panel), then 540px — now 500px per the
+     user's explicit request, a plain narrowing of that same value.
+     There used to be a third token here, --rail-reserve (rail-width +
+     gutter), applied as padding on #stage so the orb would "never reach
+     under" the panel. Removed entirely — it made #stage's own size, and
+     therefore the orb's, depend on the panel's width, which is exactly
+     what the panel's own floating-widget design rule forbids (see
+     #stage's own padding comment below) — so this width change has no
+     effect on the orb/#stage at all, by design. */
+  --rail-width: 500px;
+  --rail-gutter: 20px;           /* matches #app-body's own side padding */
+  /* Header is now floated out of flow (see `header` below) so its own
+     content (the latency badge appearing/disappearing, a wrapping status
+     line) can never push #app-body or the orb. This is the header's real
+     height at its tallest (both optional lines showing), measured live and
+     rounded up — #app-body's top padding reserves exactly this much. */
+  --header-reserve: 104px;
+
+  /* #orb-stage's own height reserve — #mic-cluster is now the ONLY other
+     thing in #stage (the composer moved into #conversation-rail, see
+     #composer-dock below), so this only needs to clear the mic's own small
+     resting footprint, not a worst-case composer height any more. mic
+     button (64) + gap (12) + hint (~18) = 94, plus #mic-cluster's own
+     bottom offset (24) and a little headroom — set from live measurement,
+     not this arithmetic (the prior version of this comment's own math was
+     wrong once already — see handoff.md). */
+  --stage-bottom-reserve: 130px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: radial-gradient(circle at 50% 0%, #171c26 0%, var(--bg) 60%);
+  color: var(--text);
+  font-family: -apple-system, "Segoe UI", Roboto, system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+}
+
+.hidden { display: none !important; }
+
+/* ---------- Setup / unsupported screens ---------- */
+
+.screen {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 32px;
+  max-width: 480px;
+  width: 100%;
+}
+
+.card h1 {
+  margin-top: 0;
+  font-size: 1.6rem;
+}
+
+.card p, .card li {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.card a {
+  color: var(--accent);
+}
+
+.card ol {
+  padding-left: 20px;
+}
+
+/* ---------- "Not connected yet" nudge (reuses .card) ---------- */
+
+#setup-nudge {
+  margin-bottom: 16px;
+  text-align: center;
+}
+
+#setup-nudge p {
+  margin-top: 0;
+}
+
+#setup-nudge-btn {
+  padding: 10px 18px;
+  border-radius: 10px;
+  border: none;
+  background: var(--accent);
+  color: #06131f;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.error {
+  color: var(--danger);
+  margin-top: 14px;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* ---------- Main app screen ----------
+   Two columns: a centre "stage" (orb, mic, composer) and a compact
+   conversation panel beside it. Nothing in this chain may grow past the
+   viewport — every link needs min-height:0 or the flex algorithm falls back
+   to each box's content size and the whole document scrolls (the bug this
+   layout replaces). #app-screen also overrides .screen's align-items:center
+   (line ~58 above) explicitly — left inherited, it collapsed every child to
+   fit-content width instead of the full column. */
+
+#app-screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  max-width: none;
+  min-height: 0;
+  overflow: hidden;
+  width: 100%;
+  padding: 0 20px;
+  position: relative; /* containing block for the floating header/settings panel below */
+}
+
+/* Floated out of flow so its own content (the latency badge, a wrapping
+   status line) can never push #app-body or resize the orb — see
+   --header-reserve above, which #app-body's padding reserves in its place.
+   left/right use the same 20px as #app-screen's own padding rather than 0:
+   an absolutely positioned child resolves against the padding box, so 0
+   here would widen the header outward past where it sits today.
+   Scoped to #app-screen specifically (not a bare `header` element rule) —
+   #generic-screen has its own in-flow `<header class="generic-header">`
+   used by every section screen (App Control, Skills, Tasks, ...), and the
+   old unscoped rule silently floated that one too, catching clicks meant
+   for whatever was rendered first underneath it (the "+ Add" button, the
+   "← Back" button). #generic-header positions itself normally — see below. */
+#app-screen > header {
+  position: absolute;
+  top: 0;
+  left: 20px;
+  right: 20px;
+  z-index: 20;
+  padding: 28px 4px 8px;
+  text-align: center;
+}
+
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 1.4rem;
+  letter-spacing: 0.02em;
+}
+
+/* Groups the notification bell + settings gear as one right-aligned unit —
+   #settings-toggle used to be the sole position:absolute right:0 child;
+   the wrapper now takes that spot and the two buttons sit side by side
+   inside it. */
+.header-actions {
+  position: absolute;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+#settings-toggle,
+#notifications-toggle,
+#new-chat-button {
+  position: relative;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 8px;
+  display: flex;
+}
+
+#settings-toggle:hover,
+#notifications-toggle:hover,
+#new-chat-button:hover {
+  color: var(--text);
+  background: var(--panel);
+}
+
+/* Unread count badge on the bell — see public/notifications.js. */
+.notif-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: var(--radius-pill);
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+
+#menu-toggle {
+  position: absolute;
+  left: 0;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 8px;
+  display: flex;
+}
+
+#menu-toggle:hover {
+  color: var(--text);
+  background: var(--panel);
+}
+
+.status {
+  color: var(--muted);
+  margin: 6px 0 0;
+  min-height: 1.2em;
+}
+
+/* Floats over the orb rather than pushing it down — see #app-screen's
+   position:relative above. Same look/position it always had at rest
+   (centred, just under the header); the only change is that opening it no
+   longer shrinks #app-body underneath. z-index 30 fits the documented
+   ladder near .control-banner below: drawer scrim 40, drawer 50, modal 60,
+   popover 65, control banner 70. */
+.settings-panel {
+  position: absolute;
+  top: calc(var(--header-reserve) + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  width: min(420px, calc(100% - 40px));
+  max-height: calc(100vh - var(--header-reserve) - 40px);
+  overflow-y: auto;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.92rem;
+  cursor: pointer;
+}
+
+.settings-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.settings-row + .settings-row {
+  margin-top: 12px;
+}
+
+.settings-row select {
+  background: #0f1218;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 0.9rem;
+  max-width: 55%;
+}
+
+.settings-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 14px 0;
+}
+
+.settings-heading {
+  font-size: 0.92rem;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.key-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.88rem;
+  padding: 6px 0;
+}
+
+.key-row + .key-row {
+  border-top: 1px solid var(--border);
+}
+
+.key-status {
+  color: var(--muted);
+  margin-right: auto;
+  padding-left: 12px;
+  font-size: 0.85rem;
+}
+
+.key-status.saved {
+  color: var(--accent);
+}
+
+.key-row button {
+  padding: 5px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+#key-editor {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #0f1218;
+}
+
+#key-editor-title {
+  margin: 0 0 8px;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+#key-editor-steps {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+#key-editor-steps a {
+  color: var(--accent);
+}
+
+.key-editor-form {
+  display: flex;
+  gap: 8px;
+}
+
+.key-editor-form input {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.88rem;
+}
+
+.key-editor-form button {
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--accent);
+  color: #06131f;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#provider-key-cancel {
+  background: transparent;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.settings-panel .hint {
+  margin: 10px 0 0;
+}
+
+.settings-panel .error {
+  margin-top: 8px;
+  font-size: 0.85rem;
+}
+
+#app-body {
+  flex: 1;
+  min-height: 0; /* the missing link that let #app-screen grow past the viewport */
+  display: flex;
+  position: relative; /* containing block for the floating #conversation-rail */
+  gap: 20px;
+  /* Top padding reserves the space the now-floated header occupies (see
+     --header-reserve above) so the body sits exactly where it did when the
+     header was still in flow. */
+  padding: calc(var(--header-reserve) + 8px) 20px 20px;
+  overflow: hidden;
+}
+
+/* ---------- Centre stage: orb, mic, composer ---------- */
+
+/* #stage's own flex properties (align-items/justify-content/gap) are now
+   moot — its only direct children, #orb-stage and #mic-cluster, are each
+   individually position:absolute, so nothing actually flows here any more.
+   Left in place rather than stripped: harmless, and the narrow-screen media
+   query below still relies on #stage being a real flex container once it
+   flips these children back to position:static. */
+#stage {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding-bottom: 8px;
+  /* This used to be var(--rail-reserve) on both sides — reserving space
+     tied to the panel's OWN width, so the orb would "never slide under"
+     it. That directly broke the panel's actual design rule (stated from
+     the very start — see #conversation-rail's own comment): it's a
+     floating widget that sits ON TOP of the interface and must NEVER
+     affect anything else, in either direction — not push, not shrink, not
+     resize, and that includes never dictating how much room #stage/the
+     orb gets. Restoring the panel to its original 640px width with that
+     coupling in place is what clipped the orb (a real bug, not an
+     acceptable tradeoff). #stage now uses a small fixed gutter completely
+     independent of the panel's width — the orb centres in #stage as if
+     the panel didn't exist, the same way the panel already renders
+     without any awareness of the orb. #conversation-rail comes after
+     #stage in the DOM with no z-index override on either side, so on the
+     rare window size where the (uncapped) panel and the (centred) orb
+     would overlap, the panel simply paints on top — floating over it, per
+     its own design, rather than the orb ever being resized/clipped to
+     avoid it. */
+  padding-left: var(--rail-gutter);
+  padding-right: var(--rail-gutter);
+}
+
+#orb-stage {
+  /* Taken out of flow: its height depends only on the stage, never on the
+     mic's own content, so nothing here can shrink or shift the orb. */
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: calc(100% - var(--stage-bottom-reserve));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none; /* it now overlays the mic's own small growth room —
+                            let clicks pass through to what's underneath */
+}
+
+/* The composer used to live here too (see git history/handoff.md) — it's
+   now anchored under #conversation-rail instead (see #composer-dock
+   below), so #mic-cluster is #stage's sole bottom-anchored occupant. Still
+   fully decoupled from the orb: #orb-stage's own height never reads
+   anything from this element's size. */
+#mic-cluster {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Enlarged from min(46vh,420px) — see orb.js's camera-distance comment.
+   The camera moved back to give the glow halo room to fade out before the
+   canvas edge; this compensates so the sphere itself keeps its original
+   on-screen diameter rather than shrinking. */
+#orb-canvas {
+  width: min(55vh, 500px);
+  height: min(55vh, 500px);
+  max-width: 90%;
+  max-height: 100%;
+}
+
+/* Non-WebGL fallback: a layered gradient orb, driven by the same four state
+   classes the real orb's setState() would apply — see orb.js. */
+.orb-fallback {
+  width: min(46vh, 420px);
+  height: min(46vh, 420px);
+  max-width: 90%;
+  max-height: 100%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #2a3550 0%, #141824 70%);
+  box-shadow: 0 0 60px rgba(77, 163, 255, 0.15);
+  transition: box-shadow 0.6s ease, background 0.6s ease;
+  animation: orb-breathe 4s ease-in-out infinite;
+}
+
+.orb-fallback.listening {
+  background: radial-gradient(circle at 35% 30%, #2f5a7a 0%, #14202c 70%);
+  box-shadow: 0 0 80px var(--accent-glow);
+  animation: orb-breathe 2.2s ease-in-out infinite;
+}
+
+.orb-fallback.thinking {
+  background: radial-gradient(circle at 35% 30%, #4a2f6a 0%, #1c1626 70%);
+  box-shadow: 0 0 80px rgba(160, 100, 255, 0.35);
+  animation: orb-swirl 1.6s linear infinite;
+}
+
+.orb-fallback.speaking {
+  background: radial-gradient(circle at 35% 30%, #1e5a44 0%, #0f2119 70%);
+  box-shadow: 0 0 90px rgba(107, 227, 163, 0.4);
+  animation: orb-breathe 0.9s ease-in-out infinite;
+}
+
+@keyframes orb-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.04); }
+}
+
+@keyframes orb-swirl {
+  0% { filter: hue-rotate(0deg); }
+  100% { filter: hue-rotate(25deg); }
+}
+
+/* ---------- Floating conversation rail ----------
+   Used to have deliberately no background/border/radius ("part of the main
+   interface, not a boxed widget") — reversed by the user once the composer
+   moved to sit directly under it (see #composer-dock below): two adjacent
+   elements, one boxed and one not, read as more disconnected than a single
+   plain one would have, not less. Now the rail IS the card, and #composer
+   below shares its exact background/border colour and continues its shape
+   (rounded top here, rounded bottom there, no border on the seam where they
+   touch) — see #composer-dock's own comment for why that's built as two
+   independently-sized boxes made to LOOK like one, not one merged box.
+   Still absolutely positioned, reserving no layout space of its own —
+   #stage never sees it and never resizes around it (see #stage's own side
+   padding above, which does the reserving). Width is fixed via
+   --rail-width and never grows with content or while typing. */
+
+#conversation-rail {
+  position: absolute;
+  right: var(--rail-gutter);
+  top: 50%;
+  transform: translateY(-50%);
+  width: var(--rail-width);
+  height: 65%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-bottom: none; /* the seam where #composer-dock continues — see its own comment */
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* .composer-focused is toggled by app.js's setupComposer() (focusin/
+   focusout on #composer-dock, which bubbles from the textarea or any of
+   its buttons) — CSS :focus-within can't reach a sibling on its own, and
+   without this, focusing the composer would light up only its own half of
+   the shared card, visibly cutting the "one card" look in half right at
+   the seam. Same accent treatment as #composer-dock:focus-within below, so
+   both halves glow together as one unit. */
+#conversation-rail.composer-focused {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+/* The composer — a REAL flex sibling of #conversation-scroll inside
+   #conversation-rail's own flex column (#conversation-rail already has
+   `display:flex; flex-direction:column; min-height:0`), not an
+   absolutely-positioned element escaping that layout. This is a deliberate
+   correction: an earlier version made this `position:absolute; top:100%`
+   specifically to keep the transcript's own box from ever resizing as this
+   grows — but that meant this element was never actually accounted for by
+   the rail's own layout, so a long message/attachment could grow this
+   past what the rail's fixed box had room for, with nothing to stop it
+   overlapping or rendering behind the panel above it. Flexbox is what
+   fixes that robustly: `flex:0 0 auto` sizes this to its own content (up
+   to its own `max-height` below) while #conversation-scroll's `flex:1 1
+   auto; min-height:0` (unchanged, see its own rule) absorbs whatever's
+   left — together the two ALWAYS exactly fill the rail's fixed-height box,
+   by construction, so the transcript now visibly cedes space as this
+   grows instead of staying a fixed size while this one escapes past it.
+   The narrow-viewport (≤1150px) layout already worked exactly this way
+   (see that media query, which used to need an override here and no
+   longer does) — this brings the desktop rule in line with a mechanism
+   already proven there, rather than inventing a new one.
+   No `left:-1px; right:-1px` compensation needed any more either: that
+   hack corrected a percentage-vs-padding-box quirk specific to absolute
+   positioning (percentages for an absolutely-positioned child resolve
+   against the containing block's PADDING box, landing 1px inside the
+   border). A normal flex child has no such quirk — flex's default
+   `align-items:stretch` fills the parent's content box directly, the same
+   box #conversation-scroll already fills, so the two align exactly with
+   no hack. The "one card" look still comes from #conversation-rail and
+   #composer-dock (not #composer itself — the border/background live HERE,
+   one level out, so a showing #attachment-chips row is inside the same
+   card too, not poking out above it) sharing one background/border colour
+   and coordinated corner-rounding — two independently-sized boxes made to
+   look like one surface, not a single merged box. Composer moved here from
+   #stage — see CLAUDE.md/handoff.md for why (it used to compete with the
+   orb for vertical space there; it no longer touches #stage at all). */
+#composer-dock {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-top: none; /* the seam where #conversation-rail ends — see its own comment */
+  border-radius: 0 0 var(--radius-xl) var(--radius-xl);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  /* This box must NEVER scroll and must NEVER carry a max-height of its own —
+     a real bug, found live and measured, that a previous version of this
+     comment didn't catch: capping the WRAPPER clips whatever is last inside
+     it, which is the control row (paperclip/mic/Send) — so a single grown
+     attachment row was enough to push Send behind an invisible scrollbar.
+     The fix is structural: .attachment-chips and #text-input each carry
+     their OWN max-height + overflow-y:auto, and #text-form's own wrap
+     (see its comment) keeps the control row on a permanent second line
+     below #text-input rather than sharing #text-input's line — so this
+     wrapper's total height is bounded by construction (10px padding +
+     --composer-chips-max + max(--composer-text-max, ~38px) + 6px gap +
+     the control row's own ~38px) without ever needing a cap of its own.
+     flex:0 0 auto above means THIS box always gets exactly what it needs;
+     #conversation-scroll's sibling `flex:1; min-height:0` (unchanged) is
+     what actually yields the matching space — verified live across
+     multiple viewports and content states (empty/1 attachment/6
+     attachments/long message/long message+6 attachments): the composer's
+     bottom edge stays pinned to the rail's bottom edge in every case, the
+     control row is always fully inside the rail's own box, and it never
+     overlaps #text-input's own text no matter how many lines are typed. */
+}
+
+/* Moved from #composer's own :focus-within (that rule is gone now — see
+   #composer below) so the WHOLE card highlights on focus, not just the
+   inner input row — matches the "one surface" look the rest of this file
+   builds toward. */
+#composer-dock:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+#conversation-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  /* #conversation-rail (the parent) now has a real border/background — this
+     keeps bubbles from touching it. Less at the bottom on purpose: the mask
+     fade below already tapers the last 20px, and #composer-dock sits
+     directly beneath with its own 10px padding, so stacking a third inset
+     there would push the composer's contents further from the transcript
+     than from the card's own edges look right for the rest. */
+  padding: 14px 14px 4px;
+  /* Soft fade at the clipped top/bottom edges instead of a hard cut, now
+     that there's no container for the content to visibly end against. */
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 20px,
+    #000 calc(100% - 20px),
+    transparent 100%
+  );
+  /* Was the OS/browser default (~15-17px on Windows Chrome/Edge) — oversized
+     against a 340px panel with no border of its own to justify that much
+     chrome. Scoped to this one panel on purpose, not applied globally —
+     the composer's textarea, attachment chips, and every other scroller in
+     the app keep their existing default. `scrollbar-width` (Firefox, and
+     current Chrome/Edge) plus the `::-webkit-scrollbar` rules below as a
+     fallback for anything that doesn't yet support the standard property. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+#conversation-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+#conversation-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#conversation-scroll::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-pill);
+}
+
+#conversation-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+#transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  /* Without this, a flex item's default sizing floor is content-based, not
+     0 — a long unbroken token (a URL, a long filename) in a .bubble could
+     force this wider than the panel's fixed width instead of being made to
+     wrap into it, which is what produced the panel's horizontal scrollbar. */
+  min-width: 0;
+}
+
+.bubble {
+  max-width: 92%;
+  padding: 12px 16px;
+  border-radius: 16px;
+  line-height: 1.45;
+  font-size: 0.92rem;
+  white-space: pre-wrap;
+  /* Lets a long unbreakable token (URL, long filename/string with no
+     spaces) wrap onto a new line instead of overflowing the bubble — see
+     #transcript's min-width: 0 above for the other half of this fix. */
+  overflow-wrap: break-word;
+  min-width: 0;
+}
+
+.bubble.user {
+  align-self: flex-end;
+  background: var(--user-bubble);
+  border-bottom-right-radius: 4px;
+}
+
+.bubble.assistant {
+  align-self: flex-start;
+  background: var(--assistant-bubble);
+  border-bottom-left-radius: 4px;
+}
+
+.bubble.interim {
+  opacity: 0.55;
+  font-style: italic;
+}
+
+.bubble.system {
+  align-self: center;
+  background: none;
+  color: var(--muted);
+  font-size: 0.8rem;
+  padding: 4px 10px;
+  text-align: center;
+  max-width: 95%;
+}
+
+/* ---------- Composer ----------
+   Holds the attachment chips, the auto-growing textarea, and its buttons
+   (paperclip left; dictation mic + send right). The rounded-shell look now
+   belongs to #composer-dock, one level out (see its own comment) — this is
+   just their layout container. */
+
+/* No box of its own any more — #composer-dock (above) now carries the
+   background/border/radius/padding, one level out, so a showing
+   #attachment-chips row shares the same card instead of poking out above
+   a separately-boxed #composer. This is now just the input row's layout
+   container. */
+#composer {
+  /* Was min(640px, 100%) from when the composer floated centred over #stage
+     at up to 640px wide; now it lives inside the rail (see #composer-dock
+     above) where 100% always equals --rail-width — explicit so it can't
+     silently stop matching the rail's width if --rail-width ever changes. */
+  width: 100%;
+}
+
+/* Two visually distinct bands, one #text-form: the typed message on its own
+   line, the attach/mic/send control row always strictly below it — see
+   #text-input's `order:-1; flex-basis:100%` (forces it alone onto the first
+   wrapped line) and #attach-button's `margin-right:auto` (pushes mic+send to
+   the right on the second line) below. Plain flexbox wrap, not a second
+   container: all four elements stay direct siblings here, so this is not
+   "separate vertical containers for the buttons" — one flex row that wraps
+   in a controlled way. Fixes a real bug: with a single unwrapped row and
+   align-items:flex-end, a grown multi-line textarea put the buttons in the
+   SAME vertical band as its last 1-2 lines of text (confirmed live via
+   screenshot — the paperclip and mic icons sat directly over the typed
+   text), not below the text block at all. */
+#text-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px;
+  width: 100%;
+}
+
+.composer-btn {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.composer-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.composer-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.composer-btn:disabled:hover {
+  background: transparent;
+}
+
+.composer-btn.send {
+  background: var(--accent);
+  color: #06131f;
+}
+
+.composer-btn.send:hover {
+  filter: brightness(1.08);
+  background: var(--accent);
+}
+
+.composer-btn.send:disabled {
+  background: var(--border);
+  color: var(--muted);
+}
+
+/* On the control row's wrapped line (see #text-form's comment), this pushes
+   everything after it — mic, send — to the far right, leaving this button
+   flush left. Deliberately on attach-button rather than `margin-left: auto`
+   on the mic button: the mic button is conditionally `.hidden` when dictation
+   isn't supported, and an auto margin on a non-rendered element doesn't
+   apply — that would have silently un-right-aligned send whenever dictation
+   is unsupported. attach-button is always present, so this has no such
+   failure mode. */
+#attach-button {
+  margin-right: auto;
+}
+
+/* The composer's own dictation mic — separate from #mic-button under the
+   orb. Active while capturing speech into the textarea. */
+.composer-btn.dictating {
+  color: var(--accent);
+  background: var(--accent-glow);
+  animation: pulse 1.4s ease-out infinite;
+}
+
+/* ---------- Attachments ----------
+   Square tiles, not pills — a picture gets a real thumbnail, everything else
+   gets its filename and a small type badge, so a photo and a spreadsheet
+   don't look identical while you're still composing. Wraps up to two rows,
+   then scrolls, so ten files never push the textarea off screen. */
+
+.attachment-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 8px;
+  width: 100%;
+  /* Left/top padding raised from 2px to 6px — required, not cosmetic, now
+     that this row scrolls internally (see max-height below): .chip-remove
+     sits at top:-6px; left:-6px, OUTSIDE its own tile, so a scroll
+     container clips it right off at a small padding edge. Verified live at
+     6px: 0px clipped on both the first and the last tile. */
+  padding: 6px 6px 8px;
+  /* This row's own cap — see --composer-chips-max's comment in :root and
+     #composer-dock's comment for why the cap belongs here (and on
+     #text-input below) rather than on the wrapper. Scrolls internally past
+     ~2 tile rows so an attachment-heavy message still grows the composer by
+     a bounded amount, never past what #composer-dock's own comment assumes. */
+  max-height: var(--composer-chips-max);
+  overflow-y: auto;
+}
+
+.attachment-chip {
+  position: relative;
+  flex: 0 0 auto;
+  width: 96px;
+  height: 96px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.attachment-chip .chip-thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.attachment-chip .chip-title {
+  position: absolute;
+  inset: 0 0 20px 0;
+  padding: 8px;
+  font-size: 0.72rem;
+  line-height: 1.25;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+
+.attachment-chip .chip-badge {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.attachment-chip .chip-remove {
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  z-index: 2;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.attachment-chip .chip-remove:hover { color: var(--danger); border-color: var(--danger); }
+.attachment-chip.uploading { opacity: 0.6; }
+.attachment-chip.failed { border-color: var(--danger); }
+.attachment-chip.failed .chip-badge { color: var(--danger); }
+
+/* A thumbnail of an image the user actually sent, shown inside their own
+   bubble so the transcript reflects what was really shared. */
+.bubble .bubble-image {
+  display: block;
+  max-width: 220px;
+  max-height: 220px;
+  border-radius: 10px;
+  margin-bottom: 8px;
+}
+
+/* Drop-anywhere target: the whole assistant screen highlights while a file
+   is being dragged over it, so there's no small zone to aim at. */
+#app-screen.dragging::after {
+  content: 'Drop the file to share it with Jarvis';
+  position: fixed;
+  inset: 12px;
+  border: 2px dashed var(--accent);
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  color: var(--text);
+  pointer-events: none;
+  z-index: 50;
+}
+
+/* ---------- Documents in the transcript ----------
+   A plan or a fact-check verdict is a document you read, not something
+   spoken. It gets a wider, left-aligned card rather than a chat bubble. */
+
+.doc-card {
+  align-self: stretch;
+  max-width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px 18px;
+  overflow-x: auto;
+}
+
+.doc-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.doc-card-head h3 { font-size: 1rem; margin: 0; }
+
+.doc-card-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.doc-card pre {
+  overflow-x: auto;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 10px;
+  border-radius: 8px;
+}
+
+#text-input {
+  /* flex-basis:100% (not just flex-grow) is what forces this alone onto its
+     own wrapped line in #text-form — it always demands the full row width,
+     so the buttons after it can never fit beside it and wrap to a second
+     line instead. order:-1 puts it first in visual order despite being the
+     SECOND child in the DOM (attach-button is first) — the three buttons
+     (all default order:0) fall in behind it, in their original relative
+     order, on that second line. See #text-form's own comment for why. */
+  order: -1;
+  flex: 1 1 100%;
+  min-width: 0;
+  padding: 9px 8px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.95rem;
+  font-family: inherit;
+  resize: none;
+  /* Own cap restored — see --composer-text-max's comment in :root and
+     #composer-dock's comment for why this belongs here rather than on the
+     wrapper. The two-scrollbars bug this replaced (a max-height here nested
+     inside #composer-dock's own outer scroll) can't recur: #composer-dock no
+     longer scrolls at all, and this textarea is a SIBLING of
+     .attachment-chips, never its ancestor, so two capped regions here
+     produce two independent scrollbars, not one nested inside the other.
+     app.js's autoGrowTextarea() reads this same max-height at runtime so the
+     inline height it writes never exceeds what's actually visible. */
+  max-height: var(--composer-text-max);
+  overflow-y: auto;
+  line-height: 1.4;
+}
+
+#text-input:focus {
+  outline: none;
+}
+
+/* ---------- Mic button (voice-control mute/unmute only) ----------
+   This is NOT the orb and does not reflect thinking/speaking — see
+   app.js's setMicVisual(). It only ever shows whether the mic is live. */
+
+#mic-button {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  background: var(--panel);
+  border: 2px solid var(--border);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+#mic-button:hover {
+  transform: scale(1.04);
+}
+
+#mic-hint {
+  /* #mic-cluster already spaces its children with `gap` — without this the
+     <p>'s default UA margin (1em top+bottom) would stack on top of that
+     gap and inflate the cluster past what --stage-bottom-reserve above was
+     measured against. */
+  margin: 0;
+}
+
+#mic-button:active {
+  transform: scale(0.97);
+}
+
+#mic-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+#mic-button:disabled:hover {
+  transform: none;
+}
+
+/* Muted: a clear slash through the icon, shown only in the true idle/off
+   state (see app.js's setMicVisual) — not during thinking/speaking, where
+   the mic session is still on, just momentarily not capturing. */
+.mic-slash {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+#mic-button.muted {
+  color: var(--muted);
+}
+
+#mic-button.muted .mic-slash {
+  opacity: 1;
+}
+
+/* Listening (mic live): pulsing accent glow. No thinking/speaking states —
+   the orb carries those now. */
+#mic-button.listening {
+  color: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 0 var(--accent-glow);
+  animation: pulse 1.4s ease-out infinite;
+}
+
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 0 var(--accent-glow); }
+  70%  { box-shadow: 0 0 0 18px rgba(77, 163, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(77, 163, 255, 0); }
+}
+
+/* ---------- Navigation drawer ---------- */
+/* First use of position:fixed/z-index in this file. Deliberately not using
+   .hidden here (display:none can't be transitioned) — closed is the
+   default look (off-screen / transparent), .open slides it in. Timing
+   matches #mic-button's existing 0.15s ease. */
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+  z-index: 40;
+}
+
+.scrim.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: min(280px, 82vw);
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  padding: 20px 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  transform: translateX(-100%);
+  transition: transform 0.2s ease;
+  z-index: 50;
+}
+
+.drawer.open {
+  transform: translateX(0);
+}
+
+.drawer-group {
+  padding: 10px 20px 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.drawer-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 0.95rem;
+  padding: 10px 20px;
+  cursor: pointer;
+}
+
+.drawer-item:hover,
+.drawer-item.active {
+  background: var(--bg);
+  color: var(--accent);
+}
+
+/* ---------- Generic sections (Model Settings, Scheduled Tasks, ...) ---------- */
+
+.generic-screen {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  max-width: 860px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 0 20px 32px;
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.generic-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 28px 0 16px;
+}
+
+#generic-back,
+#generic-menu-toggle {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 8px;
+  display: flex;
+  flex-shrink: 0;
+}
+
+#generic-back:hover,
+#generic-menu-toggle:hover {
+  color: var(--text);
+  background: var(--panel);
+}
+
+.generic-header h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.generic-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* Shared list/form building blocks the new screens use — same recipe as
+   .card/.settings-row/.key-row, generalized so they're not settings-panel-specific. */
+
+.section-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.section-card h2 {
+  margin: 0 0 12px;
+  font-size: 1rem;
+}
+
+.list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 0;
+}
+
+.list-row + .list-row {
+  border-top: 1px solid var(--border);
+}
+
+.list-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.list-row-title {
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.list-row-sub {
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.list-row-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* A row of top-level action buttons sitting directly in a generic screen's
+   flex-column body (e.g. Skills' "+ Browse the catalog" / "+ Create your
+   own") — without this, a lone <button> as a direct flex-column child
+   stretches to the full container width (align-items: stretch), which
+   looks right for a single button (see tasks.js's "+ New task") but wrong
+   for two sitting side by side. */
+.button-row {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+/* A scrollable checklist inside a modal — e.g. the "which abilities may it
+   use" picker in the create-your-own-skill form (screens/skills.js), where
+   the list of built-in abilities can be longer than comfortably fits inline. */
+.settings-row-list {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 10px;
+}
+
+.btn {
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #06131f;
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  filter: brightness(1.08);
+  color: #06131f;
+}
+
+.btn-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-danger:hover {
+  background: rgba(255, 107, 107, 0.12);
+  color: var(--danger);
+}
+
+.badge {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.badge.good {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.badge.bad {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* An explicit green, distinct from .badge.good's blue accent — used only for
+   the Connectors list's "Connected" status, per an explicit ask for that one
+   state to read as green specifically (re-theming .badge.good would have
+   changed every other "working" badge in the app too). */
+.badge.status-connected {
+  border-color: #2ecc71;
+  color: #2ecc71;
+}
+
+/* A .list-row that opens something on click (the Connectors list, whole-row
+   clickable rather than needing a dedicated button) — cursor + a subtle
+   hover/focus highlight so it reads as interactive. */
+.list-row-clickable {
+  cursor: pointer;
+  border-radius: 8px;
+  padding-left: 8px;
+  padding-right: 8px;
+  margin: 0 -8px;
+}
+
+.list-row-clickable:hover,
+.list-row-clickable:focus-visible {
+  background: rgba(255, 255, 255, 0.04);
+  outline: none;
+}
+
+.connectors-search {
+  margin-bottom: var(--space-3);
+}
+
+/* The connector detail page (_connector-detail.js) — back button row, then
+   an icon + title row, matching the icon-tile size already used elsewhere. */
+.detail-header {
+  margin-bottom: var(--space-3);
+}
+
+.detail-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.detail-title-row h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+/* Pins Disconnect/Remove to the right end of .detail-title-row, beside the
+   connector name — moved up from the bottom of the page to match the user's
+   Claude Desktop reference screenshot. */
+.detail-action-btn {
+  margin-left: auto;
+}
+
+/* mcp's two-button case (Disconnect + Remove, side by side) — same pinned
+   position as .detail-action-btn above, but on the wrapper so the pair moves
+   as one unit instead of each button needing its own auto margin. */
+.detail-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* A connector row's icon+name pair — overrides .list-row-main's default
+   column stacking (built for a title-over-subtitle row) with a plain
+   horizontal pair, used by both the main per-tab connector list
+   (app-control.js's buildRow()) and the Browse-connectors catalog table
+   (buildCatalogTableRow()). */
+.connector-row {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+
+/* The Browse-connectors modal's "Popular" strip — bordered cards, wrapping
+   onto a second line rather than shrinking below a usable width, matching
+   the user's Claude Desktop reference. */
+.catalog-section-label {
+  margin: 0 0 8px;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+
+.connector-card-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.connector-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  cursor: pointer;
+  min-width: 200px;
+  flex: 1 1 200px;
+}
+
+.connector-card:hover,
+.connector-card:focus-visible {
+  border-color: var(--accent);
+}
+
+.connector-card-label {
+  flex: 1;
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+/* A tool group's own header row: collapse chevron, uppercase label (same
+   look the label had as a standalone heading, margin reset since it's now a
+   flex child instead of a block-level <h3>), a count badge, and a
+   right-aligned bulk permission control — Claude Desktop's own shape for a
+   connector with many tools (the user's reference had 29 on one page),
+   per a user-supplied reference screenshot. */
+.tool-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0 4px;
+}
+
+.tool-group-header:first-child {
+  margin-top: 0;
+}
+
+.tool-group-toggle {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 0.75rem;
+  line-height: 1;
+}
+
+.tool-group-label {
+  margin: 0;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+
+.tool-group-bulk {
+  margin-left: auto;
+}
+
+.tool-group-body.collapsed {
+  display: none;
+}
+
+/* The three-icon Always-allow/Ask/Deny control — built from .segmented's
+   existing pill/active-highlight styling (see permissionSwitch() in
+   _connector-detail.js), just tightened up for icon-only content instead of
+   text labels. */
+.permission-switch {
+  flex-shrink: 0;
+}
+
+.permission-switch .segmented-item {
+  padding: 6px 10px;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+/* A permission save that failed — brief, self-removing, appended under the
+   Available tools card rather than replacing any control's own state. */
+.save-error {
+  color: var(--danger);
+}
+
+/* The app-wide two-state toggle (toggleSwitch() in _ui.js) — replaces the
+   old "Turn on/Turn off" text buttons in Skills/Tasks/Briefing-sources/
+   Models, at the user's explicit request to make every on/off control look
+   the same. Sized to match an ordinary text button's row height. */
+.toggle-switch {
+  flex-shrink: 0;
+  position: relative;
+  width: 40px;
+  height: 22px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  cursor: pointer;
+  padding: 0;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.toggle-switch:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.toggle-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 0.15s ease, background-color 0.15s ease;
+}
+
+.toggle-switch.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.toggle-switch.on .toggle-switch-knob {
+  background: #06131f;
+  transform: translateX(18px);
+}
+
+.guide-steps {
+  margin: 0 0 12px;
+  padding-left: 1.2em;
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.guide-steps li {
+  margin-bottom: 4px;
+}
+
+.redirect-uri-box {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  font-size: 0.85rem;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.field label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.field input,
+.field select,
+.field textarea {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.9rem;
+  font-family: inherit;
+}
+
+.field input:focus,
+.field select:focus,
+.field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.field textarea {
+  resize: vertical;
+  min-height: 60px;
+}
+
+.days-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.day-check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.85rem;
+  color: var(--text);
+  cursor: pointer;
+}
+
+/* ---------- Voice-clarity confirmation chips ---------- */
+
+.confirm-row {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+
+.confirm-row button {
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.confirm-row .confirm-yes {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.confirm-row .confirm-no {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* ---------- Modal dialog (public/screens/_modal.js) ---------- */
+/* z-index ladder: drawer scrim 40, drawer 50, modal 60, popover 65,
+   .control-banner 70 (see below) — each new overlay layer sits above the
+   ones it can be opened from. Same transition timing as the drawer/mic
+   button (0.15s ease) for a consistent feel. */
+
+.modal-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+body.modal-open {
+  overflow: hidden;
+}
+
+.modal-dialog {
+  width: min(560px, 100%);
+  max-height: calc(100vh - 40px);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-dialog.modal-wide {
+  width: min(700px, 100%);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.modal-title {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 8px;
+}
+
+.modal-close:hover {
+  color: var(--text);
+  background: var(--bg);
+}
+
+.modal-body {
+  padding: 16px 18px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.modal-body .error {
+  margin: 0;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* ---------- Unattended-run consent notice ---------- */
+
+.notice {
+  background: var(--warn-bg);
+  border: 1px solid var(--warn);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 0.87rem;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.notice strong {
+  color: var(--warn);
+}
+
+.notice-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+/* ---------- Model-discovery checklist ---------- */
+
+.checklist {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.check-row + .check-row {
+  border-top: 1px solid var(--border);
+}
+
+.check-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.check-row .badge {
+  flex-shrink: 0;
+}
+
+.checklist-filter {
+  width: 100%;
+  margin-bottom: var(--space-2);
+}
+
+.checklist-actions {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.checklist-actions button {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 0.82rem;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* Live "N selected" count, pushed to the row's right edge */
+.checklist-selected-count {
+  margin-left: auto;
+}
+
+/* ---------- Connection-grouped model list ---------- */
+
+.connection-group + .connection-group {
+  margin-top: 16px;
+}
+
+.connection-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.connection-head-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.connection-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.connection-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.connection-sub {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.connection-group .list-row {
+  padding-left: 4px;
+}
+
+/* ---------- Shared toolbar/popover primitives (public/screens/_ui.js) ---------- */
+
+.icon-tile {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  font-size: 1.1rem;
+}
+
+.segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 2px;
+}
+
+.segmented-item {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.85rem;
+  padding: 6px 14px;
+  border-radius: var(--radius-pill);
+  cursor: pointer;
+}
+
+.segmented-item.active {
+  background: var(--accent);
+  color: #06131f;
+  font-weight: 600;
+}
+
+.counter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.counter-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* The in-page twin of the always-on-top desktop overlay
+   (server/control/overlay.ps1) — see app.js's showControlBanner(). Highest
+   in the z-index ladder (70): a running control session's Stop button must
+   stay reachable even with a modal or popover open. */
+.control-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--danger);
+  color: #2a0000;
+  font-weight: 600;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+.control-banner-stop {
+  flex-shrink: 0;
+  padding: 6px 16px;
+  border-radius: 8px;
+  border: none;
+  background: #2a0000;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.control-banner-stop:hover {
+  background: #400;
+}
+
+/* The amber twin of .control-banner, for "Jarvis is watching for something"
+   (server/monitor/engine.js) — a distinct colour AND label from the red
+   control banner so the two states (controlling vs. watching) are always
+   tellable apart at a glance, including when both are active at once. Same
+   z-index (70, top of the ladder) so its own Stop stays reachable no matter
+   what else is open; shifted down via the sibling rule below only when the
+   control banner is ALSO showing, so the two stack instead of overlapping. */
+.monitor-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--warn);
+  color: #3a2400;
+  font-weight: 600;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+.control-banner:not(.hidden) ~ .monitor-banner:not(.hidden) {
+  top: 44px;
+}
+
+.monitor-banner-stop {
+  flex-shrink: 0;
+  padding: 6px 16px;
+  border-radius: 8px;
+  border: none;
+  background: #3a2400;
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.monitor-banner-stop:hover {
+  background: #543400;
+}
+
+/* The in-page twin of the always-on-top desktop badge
+   (server/control/observation-indicator.ps1) — see app.js's
+   showObservationDot(). A small dot, not a bar: a quieter secondary signal
+   ("Jarvis is only looking") than the red/amber bars above it, which is why
+   it sits in a corner instead of spanning the header. Same z-index (70) so
+   it's always clickable; shifted down via the sibling rules below whenever
+   either bar above is also showing, so nothing overlaps. */
+.observation-dot {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 70;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: #2d6ee6;
+  box-shadow: 0 0 0 3px rgba(45, 110, 230, 0.25), 0 2px 6px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+
+.observation-dot:hover {
+  background: #4a84f0;
+}
+
+.control-banner:not(.hidden) ~ .observation-dot:not(.hidden) {
+  top: 56px;
+}
+
+.monitor-banner:not(.hidden) ~ .observation-dot:not(.hidden) {
+  top: 56px;
+}
+
+.control-banner:not(.hidden) ~ .monitor-banner:not(.hidden) ~ .observation-dot:not(.hidden) {
+  top: 100px;
+}
+
+/* ---------- Toast notifications ----------
+   Fixed, top-right, entirely out of layout flow — see public/notifications.js.
+   Deliberately NOT inside #app-body/#stage: nothing here can ever push,
+   resize, or reposition the orb/mic/composer/conversation rail, unlike the
+   old in-layout #banner it replaces. z-index 55: above the drawer (50, so a
+   toast is never hidden behind an open drawer), below modal (60) / popover
+   (65) / the control and monitor bars (70) — those are all higher-priority,
+   already-visible surfaces a toast shouldn't cover. */
+.toast-host {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 55;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(340px, calc(100vw - 32px));
+  pointer-events: none; /* only individual .toast elements are interactive */
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  animation: toast-in 0.2s ease;
+}
+
+.toast.leaving {
+  animation: toast-out 0.18s ease forwards;
+}
+
+.toast.level-success { border-left-color: #4cd97b; }
+.toast.level-warning { border-left-color: var(--warn); }
+.toast.level-error { border-left-color: var(--danger); }
+
+.toast-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.toast-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.toast-text {
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin: 2px 0 0;
+}
+
+.toast-action {
+  margin-top: 8px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.toast-action:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.toast-close {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px;
+  line-height: 1;
+}
+
+.toast-close:hover {
+  color: var(--text);
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(24px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes toast-out {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(24px); }
+}
+
+/* ---------- Notification panel (opened from the bell — see
+   public/notifications.js) — built on the shared .popover, with its own
+   list/row/footer styling. ---------- */
+.notif-panel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 340px;
+  overflow-y: auto;
+  margin: 0 -4px;
+}
+
+.notif-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+  font-family: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.notif-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.notif-row.unread {
+  background: rgba(77, 163, 255, 0.06);
+}
+
+.notif-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 5px;
+  background: var(--accent);
+}
+
+.notif-dot.level-success { background: #4cd97b; }
+.notif-dot.level-warning { background: var(--warn); }
+.notif-dot.level-error { background: var(--danger); }
+
+.notif-row-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.notif-row-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.notif-row-text {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-top: 1px;
+}
+
+.notif-row-time {
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.notif-panel-empty {
+  padding: 20px 8px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.notif-panel-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.notif-panel-footer button {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.notif-panel-footer button:hover {
+  text-decoration: underline;
+}
+
+.popover {
+  position: fixed;
+  z-index: 65; /* above .modal-scrim's 60 — must render on top of an open modal */
+  min-width: 220px;
+  max-width: 320px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+
+.popover-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.popover-list .settings-row {
+  padding: 4px 6px;
+}
+
+.popover-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.popover-option:hover {
+  background: var(--bg);
+}
+
+.popover-group-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 8px 10px 2px;
+}
+
+/* dropdownControl() (_ui.js) — the connector permission group's own button
+   (e.g. "✓ Always allow ⌄"), and its open panel's rows. Reuses .counter-btn
+   for the trigger and .popover-option for each row, so this only adds what's
+   genuinely new: the glyph beside the trigger's own label, and each row's
+   label+checkmark layout. */
+.dropdown-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dropdown-control-glyph {
+  display: inline-flex;
+}
+
+.dropdown-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dropdown-option-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dropdown-option-check {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* ---------- Create-task modal (public/screens/tasks.js) ---------- */
+
+.task-name-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin-bottom: 12px;
+}
+
+.task-name-row .field {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.section-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: 4px 0 6px;
+}
+
+.section-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.instructions-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  margin-bottom: 12px;
+  /* .modal-body is a column flex container, and a flex item with any
+     overflow other than visible gets an automatic min-height of 0 (see the
+     flexbox spec's "automatic minimum size") instead of a content-based
+     one. Without flex-shrink:0, this box was the only field in the modal
+     allowed to shrink when the popup's content exceeded the modal's max
+     height, so the flex algorithm crushed it down to ~2px (its borders)
+     while every sibling field kept its natural size — the textarea and
+     toolbar were still laid out inside at full height, just clipped to a
+     sliver by the overflow:hidden above. flex-shrink:0 makes this box keep
+     its natural height like everything else, so .modal-body's own
+     overflow-y:auto scrolls the whole popup instead of crushing one field. */
+  flex-shrink: 0;
+}
+
+.instructions-box textarea {
+  display: block;
+  width: 100%;
+  min-height: 90px;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.9rem;
+  font-family: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.instructions-box textarea:focus {
+  outline: none;
+}
+
+.instructions-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.instructions-toolbar-left {
+  display: flex;
+  gap: var(--space-2);
+}
+
+/* ---------- Model Settings filter bar (public/screens/models.js) ---------- */
+
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.filter-search {
+  flex: 1 1 200px;
+  min-width: 160px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.85rem;
+  font-family: inherit;
+}
+
+.filter-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.filter-bar-status {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+/* ---------- Billing badges (free/paid/local/unknown) — distinct from the
+   .badge.good/.badge.bad availability modifiers used on the same rows. ---------- */
+
+.badge-free {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.badge-paid {
+  border-color: var(--border);
+  color: var(--muted);
+}
+
+.badge-local {
+  border-color: var(--border);
+  color: var(--muted);
+}
+
+.badge-unknown {
+  border-color: var(--border);
+  color: var(--muted);
+}
+
+/* The inline billing-override control on a model row — same visual size as
+   a .badge, but a real <select> so clicking it lets the user change it. */
+.badge-select {
+  font-size: 0.75rem;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+/* ==========================================================================
+   Planning + Content Analysis
+   ==========================================================================
+   These two screens show something no other screen does: long-form documents
+   written by a model (plans, fact-check verdicts, research answers). Rendered
+   as real DOM by screens/_markdown.js, styled here. Everything below is
+   additive — no existing rule was changed. */
+
+/* A third badge state alongside .good/.bad, for "needs you" and for a
+   verdict that is neither clean nor false ("partly true", "misleading"). */
+.badge.warn {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+/* Used where a caveat has to be read, not skimmed past — specifically "I
+   only read the captions, I didn't see the video", which changes how much a
+   verdict is worth. */
+.warn-text {
+  color: var(--warn);
+}
+
+/* ---------- rendered documents ---------- */
+
+.md {
+  line-height: 1.6;
+}
+
+.md h3,
+.md h4,
+.md h5,
+.md h6 {
+  margin: var(--space-5) 0 var(--space-2);
+  line-height: 1.3;
+}
+
+/* Models write their top-level sections as `##`, which lands here as h4 (the
+   renderer shifts everything down two levels so a document never competes
+   with the screen's own h2). So h4 is the *main* heading in practice and has
+   to be full-contrast — muting it made every section title in a plan look
+   like a caption.
+   h5/h6 used to be muted too ("only genuinely nested headings are muted") —
+   corrected after a real, screenshot-confirmed comparison against Claude's
+   own rendering of the identical file (a skill whose `###` numbered steps,
+   e.g. "1. Frame the council question", land on h5): Claude keeps every
+   heading level full-contrast, only ever shrinking with depth, never
+   graying out. The muted h5/h6 read as "this file has no real structure" at
+   a glance even though the elements were technically all there — size alone
+   already carries the hierarchy; color doesn't need to help it.
+   First attempt at the size side of this only nudged h3 from 1.05rem to
+   1.15rem — barely perceptible next to Claude's own dramatically larger top
+   heading, confirmed by the user against a real live screenshot ("still the
+   same thing") even after the color fix above had visibly landed. Sized
+   again against Claude's actual proportions: its top heading reads roughly
+   1.4-1.5x the surrounding body text, while "Workflow"-level and numbered
+   sub-step headings ("1. Frame the council question") sit close to each
+   other in size, not far apart. */
+.md h3 { font-size: 1.5rem; font-weight: 700; }
+.md h4 { font-size: 1.15rem; }
+.md h5,
+.md h6 { font-size: 1.05rem; }
+
+.md > :first-child {
+  margin-top: 0;
+}
+
+.md p {
+  margin: 0 0 var(--space-3);
+}
+
+.md ul,
+.md ol {
+  margin: 0 0 var(--space-3);
+  padding-left: var(--space-5);
+}
+
+.md li {
+  margin-bottom: var(--space-1);
+}
+
+.md code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.88em;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+}
+
+.md pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  /* Long code and wide tables scroll inside their own box rather than
+     pushing the whole page sideways. */
+  overflow-x: auto;
+  margin: 0 0 var(--space-3);
+}
+
+.md pre code {
+  border: none;
+  background: none;
+  padding: 0;
+}
+
+.md blockquote {
+  margin: 0 0 var(--space-3);
+  padding-left: var(--space-3);
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+
+.md hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: var(--space-5) 0;
+}
+
+.md a {
+  color: var(--accent);
+}
+
+.md-doc {
+  margin-top: var(--space-2);
+}
+
+/* ---------- the copy-this-prompt box ---------- */
+
+.copy-block {
+  position: relative;
+  margin-top: var(--space-2);
+}
+
+.copy-block-text {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  padding-right: 96px; /* room for the button, which floats over the corner */
+  margin: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  /* The prompt is plain text meant to be copied verbatim — wrap it rather
+     than scrolling sideways, so the user can see what they're copying. */
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.copy-block-btn {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  z-index: 1;
+}
+
+/* ---------- drop a file here ---------- */
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-6);
+  border: 2px dashed var(--border);
+  border-radius: var(--radius-md);
+  text-align: center;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.dropzone.dragging {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.dropzone-title {
+  margin: 0;
+  color: var(--muted);
+}
+
+/* ---------- clickable example answers / quick actions ---------- */
+
+.suggestion-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.suggestion-chip {
+  font-size: 0.82rem;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill, 999px);
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.suggestion-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ---------- the clarifying-questions form ---------- */
+
+.question-field {
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--space-4);
+}
+
+.question-field:last-of-type {
+  border-bottom: none;
+}
+
+.question-field .hint {
+  margin: calc(var(--space-1) * -1) 0 var(--space-2);
+}
+
+/* ---------- sources, and the question/answer recap ---------- */
+
+.source-list {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-5);
+  font-size: 0.85rem;
+}
+
+.source-list li {
+  margin-bottom: var(--space-1);
+}
+
+.source-list a {
+  color: var(--accent);
+  word-break: break-word;
+}
+
+.qa-q {
+  margin: var(--space-3) 0 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.qa-a {
+  margin: var(--space-1) 0 0;
+}
+
+/* Below this width, a 640px-wide floating panel would cover most or all of
+   the window, hiding the (independently centred, unaware of the panel) orb
+   underneath it — stack the transcript+composer below the stage instead of
+   floating it over the right edge, so both stay genuinely usable side by
+   side rather than one obscuring the other. */
+@media (max-width: 1150px) {
+  /* The rail is only 40vh tall here (vs. 65% of the full window on desktop —
+     see #conversation-rail's own override below), so the desktop composer
+     caps in :root would leave too little room for the transcript. Same two
+     tokens, scaled down for this shorter rail — nothing else about the
+     per-region-cap mechanism changes at this width. */
+  :root {
+    --composer-chips-max: clamp(110px, 10vh, 140px);
+    --composer-text-max: clamp(39px, 8vh, 100px);
+  }
+
+  #app-body {
+    flex-direction: column;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  #stage {
+    flex: 0 0 auto;
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  #orb-stage {
+    position: static;
+    flex: 0 0 auto;
+    height: auto;
+    pointer-events: auto;
+  }
+
+  /* Reverted to normal flow so the mic sits under the orb the way it
+     always did on a narrow screen, instead of floating pinned to #stage's
+     bottom edge (which assumes the taller desktop layout). */
+  #mic-cluster {
+    position: static;
+    width: 100%;
+  }
+
+  #orb-canvas,
+  .orb-fallback {
+    width: min(32vh, 260px);
+    height: min(32vh, 260px);
+  }
+
+  #conversation-rail {
+    position: static;
+    transform: none;
+    flex: 0 0 auto;
+    width: 100%;
+    height: 40vh;
+  }
+
+  #conversation-scroll {
+    mask-image: none; /* nothing is visually clipped once it's in flow */
+  }
+
+  /* #composer-dock needs no override here any more — it's a normal flex
+     child of #conversation-rail's own flex column at every width now (see
+     #composer-dock's own rule), so narrow mode already gets the same
+     "share the rail's box, never overlap" behaviour for free. This used to
+     need its own position:static/left/right/margin-top override, back when
+     the desktop rule was position:absolute and only narrow mode reverted
+     to a plain flow item; that asymmetry is gone. */
+}
+
+@media (max-width: 480px) {
+  .bubble { max-width: 90%; }
+
+  /* On a narrow screen the floating Copy button would sit on top of the
+     first line of the prompt — put it above the text instead. */
+  .copy-block-text {
+    padding-right: var(--space-4);
+    padding-top: 48px;
+  }
+}
+
+/* ---------- Skills screen (public/screens/skills.js, _skill-detail.js) ----
+   Rebuilt from scratch against a real screenshot of Claude's own Skills
+   interface — see CLAUDE.md's Skills section. ---------- */
+
+/* A plain text-styled button — "See more"/"See less" on a truncated
+   description, matched to Claude's own inline expand link. */
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: inherit;
+  font-family: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* The (i) info button beside a skill's name on its detail page. */
+.icon-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  width: 22px;
+  height: 22px;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.icon-btn:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+/* Content of the (i) popover — Last updated / Trigger side by side, then Description below. */
+.skill-info-row {
+  display: flex;
+  gap: var(--space-4);
+  margin-bottom: var(--space-2);
+}
+
+.skill-info-popover p {
+  margin: 0 0 2px;
+}
+
+.skill-detail-description {
+  color: var(--muted);
+  margin: 0 0 var(--space-3);
+}
+
+.skill-detail-view-toggle {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-2);
+}
+
+.popover-option-danger {
+  color: var(--danger);
+}
+
+.popover-option-danger:hover {
+  background: rgba(255, 107, 107, 0.12);
+}
+
+/* A plain inline label sitting inside a .button-row toolbar next to a
+   control it names (e.g. "Show:" before the All/On/Off filter) — so the
+   control reads unambiguously as what it is. */
+.toolbar-label {
+  align-self: center;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+/* Skills list rows — name / last-updated / owner, matching the three
+   columns visible in Claude's own list. */
+.skill-row-meta {
+  display: flex;
+  gap: var(--space-3);
+  color: var(--muted);
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+/* The Upload dialog's drag-and-drop zone — matched to a real screenshot of
+   Claude's own "Upload skill" dialog (dashed box, centered "+", click or
+   drop). */
+.upload-dropzone {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-5, 32px) var(--space-4);
+  text-align: center;
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.upload-dropzone:hover,
+.upload-dropzone:focus-visible {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.upload-dropzone.dragover {
+  border-color: var(--accent);
+  background: rgba(77, 163, 255, 0.06);
+  color: var(--text);
+}
+
+.upload-dropzone-icon {
+  font-size: 1.4rem;
+  line-height: 1;
+  margin-bottom: 6px;
+}
+
+/* The "File requirements" list under the Upload dialog's dropzone — same
+   wording pattern as the real dialog's own bullet list. */
+.upload-requirements {
+  margin: var(--space-3) 0 0;
+  padding-left: 1.2em;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.upload-requirements li {
+  margin-bottom: 2px;
+}

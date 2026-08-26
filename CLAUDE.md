@@ -96,6 +96,8 @@ server/
   adapters/          One module per wire format (see "Model system")
   models/            Registry, connections, routing, health, execution (see "Model system")
   scheduler/         Tasks, recurrence, briefing (see "Scheduler + briefing")
+  jobs/              Background Task Orchestration ("Jobs") — long-running work backgrounded from live
+                     conversation, distinct from scheduler/ above (see "Background Task Orchestration")
   tools/             Auto-loaded executable capabilities (below) — get_weather, open_app, run_code, ...
   skills/            Folder Skills ONLY — SKILL.md instructions; skills/store/ holds install logic (see "Skills")
   capabilities.js    The composition seam: tools + folder Skills + connectors -> one declaration list,
@@ -129,8 +131,8 @@ public/              Front-end shell + screens + voice engines + the orb — see
   vendor/three/      Vendored three.js — the one deliberate front-end dependency
   settings.js        localStorage-backed UI prefs
 data/                (git-ignored) JSON persistence — models, connections, prefs, tasks, task-runs, briefing —
-                     plus jarvis.db (SQLite): Chat History + Memory (see those sections). profile.json is
-                     gone, migrated into Memory.
+                     plus jarvis.db (SQLite): Chat History + Memory + Jobs (see those sections). profile.json
+                     is gone, migrated into Memory.
 ```
 
 ## Model system (server/adapters/ + server/models/)
@@ -169,7 +171,12 @@ order, replays the same neutral transcript on failure so context survives a mode
 switch, and yields `model_switch`/`restart`/`paused` events the UI turns into "switching
 models" notices or a plain "nothing can handle this" message. `opts.noTools` empties the
 tool list (for a narration-only turn); `opts.autoConfirm` bypasses the interactive
-confirm gate (for unattended/scheduled runs).
+confirm gate (for unattended/scheduled runs). **`opts.allowedTools` (an array) is
+enforced, not just offered** — a call naming anything outside it is refused before
+`invoke()` ever runs, and the same opt pre-unlocks the names it lists regardless of
+`core` status; see "Background Task Orchestration"'s note on this for why (found via a
+Jobs test, but the fix is general — it also closes the same gap for `scheduler.js`'s own
+per-task connector restriction).
 
 **Neutral conversation** (`conversation.js`) — one transcript format every adapter
 translates to/from, so switching models mid-conversation doesn't lose context. A
@@ -359,11 +366,126 @@ must never read this, see the PERMANENT RULE above), `listStepCandidates()` (bui
 tools only, non-meta — the one honest enumeration a pipeline step picker can be built
 on), `hasCapability()`, and `invoke()` (the one dispatcher; owns the confirm-and-
 read-back token gate, moved here verbatim from the old merged `skills/index.js`).
+**A third confirm mode** lives in the same gate, alongside interactive read-back and
+`ctx.autoConfirm`: `ctx.onEscalate` (present only for a background Job's own turn — see
+"Background Task Orchestration") parks the decision instead of minting a token nobody
+will resend. `listCapabilities()`/`listStepCandidates()` also exclude any tool marked
+`internal: true` (`server/tools/CLAUDE.md`) — a different axis from `meta`, for a tool
+that must still reach a `background:true` turn (which strips `meta` tools before
+`allowedTools` is even considered) but has no business appearing in a task/briefing
+picker.
 
 ## Scheduler + briefing (`server/scheduler/*.js`)
 
 See `server/scheduler/CLAUDE.md` (loads automatically when working in that directory)
 for the module-by-module breakdown.
+
+## Background Task Orchestration (Jobs) (`server/jobs/*.js`)
+
+Lets Jarvis work on something long-running in the background while the user keeps
+talking about anything else — a *different* mechanism from the scheduler above: a
+scheduled task runs on a clock Jarvis has no judgment about; a Job is work Jarvis (its
+own judgment) or the user ("keep working on that in the background") chose to
+background right now. See `server/jobs/CLAUDE.md` (loads automatically when working in
+that directory) for the module-by-module breakdown. The decisions that matter beyond
+that file:
+
+- **A layered chain, not one generic task-runner.** The Conversation Manager (the live
+  chat turn) is the only thing the user ever talks to — it decides *whether* to
+  background something and does all the talking, via three tools:
+  `work_in_background` (one admission model call decides a title/`kind`/plan, then
+  creates the job — capacity is checked BEFORE that call is spent, so a full owner
+  doesn't cost a wasted one), `check_on_work` (Tier 3 pull, plus the one way a live
+  conversation resolves a job parked `awaiting_decision`: `respond:'keep_going'` with
+  optional guidance), and `stop_working_on` (cancel, any status). The Orchestrator
+  (`server/jobs/orchestrator.js`) decides *how* the work actually gets done —
+  admission/capacity/resource arbitration, supervision, one automatic retry before
+  escalating. A Worker (`server/jobs/worker.js`) runs on its OWN session
+  (`` `job:${id}` ``) — structurally, not by convention, a worker cannot write into the
+  conversation the owner is looking at: `conversation.js` keys sessions in a `Map` and
+  `runner.js` re-reads a session's messages fresh every step, and a worker session is
+  never `bindSession()`'d, so it never appears in Chat History either.
+- **A write-ahead trace is what makes crash recovery honest instead of declared.** Every
+  effectful action gets an `intent` row (`job_trace`) BEFORE it runs and an `outcome`
+  row after — a crash between the two still leaves the intent's `effect` on record.
+  `classifyRecovery()` (`job-policy.js`) derives `resumable` / `restartable` /
+  `needs_input` / `unrecoverable` from that trace alone: ANY `effect:'external'` row
+  (even a completed one, even a dangling intent) is `unrecoverable`, since restarting
+  risks repeating something that can't be safely repeated — the pessimistic default at
+  every branch, on purpose. A `computer`-kind job is therefore never `resumable` after a
+  real crash (operating the real desktop is always `external`) — a fact the trace
+  surfaces honestly rather than one any code asserts.
+- **Heartbeat silence and a live semantic stall are different failure modes, caught two
+  different ways.** `isHung()` (heartbeat older than `HANG_TIMEOUT_MS`) catches a
+  genuinely dead/hung process. `diagnoseStall()` catches a worker that's alive, still
+  emitting events, going nowhere: exact tool-call repetition, a 2/3-cycle oscillation,
+  repeated failure, or near-duplicate reasoning text with no tool calls at all (the one
+  signal that needs no tool call to fire). Either one spends the job's single automatic
+  retry (a corrective nudge pushed into the SAME live session — nothing about pausing
+  and resuming discards its context) before escalating to a Tier 1 outbox row.
+- **A third confirm mode, alongside interactive read-back and `ctx.autoConfirm`.** A
+  background job is neither interactive (nobody is present for a live read-back) nor
+  pre-consented (unlike a scheduled task, nobody agreed to this specific action up
+  front). `ctx.onEscalate` (`capabilities.js`'s `invoke()`, reached only via
+  `runner.js`'s `opts.onEscalate` passthrough — present only for a Job's own turn) parks
+  the job into `awaiting_decision` and raises a Tier 1 outbox row instead of minting a
+  `confirm_token` nobody will resend — a background job may wait hours, far past
+  `CONFIRM_TTL_MS`. The durable record of consent is the outbox row and the job's own
+  status, not a short-lived token.
+- **`allowedTools` is now ENFORCED at invocation time, not just offered at declaration
+  time — a real fix, not a Jobs-only one.** Before this, `runner.js`'s `toolsForTurn`
+  only decided which tool DECLARATIONS a model saw; `invoke()` had no idea an allowlist
+  existed and would run a call naming anything else. A real model can't call a tool it
+  was never given a schema for, but a hallucinated or malformed call could — confirmed
+  live, not assumed: a `research`-kind job's own test call still reached `get_time` even
+  though it was never in that kind's tool list. `runOnEntry` now refuses (with a plain
+  `{ok:false}` result) any call whose name isn't in `opts.allowedTools` when that opt is
+  an array — this also closes the same latent gap for `scheduler.js`'s own per-task
+  connector restriction, which relied on the exact same, previously-unenforced opt.
+  Relatedly, `opts.allowedTools` now also PRE-UNLOCKS the names it lists (seeds
+  `runOnEntry`'s own `unlocked` Set) — an explicit allowlist naming a non-core tool used
+  to have no effect at all, since visibility still fell back to core-only.
+- **Interruption tiers are structural, not timer-based, by construction.** Tier 1/2
+  decisions are delivered via `prompt.js`'s `jobsSection()` — injected into the system
+  prompt of a turn the user ALREADY started (never proactively pushed), and gated on
+  `!opts.background` so it never leaks into a scheduled task's or a Job's OWN turn (both
+  set `background:true` for exactly this reason — `systemInstructionFor()` needed that
+  opt threaded one hop further, into the object `runner.js` hands `adapter.stream()`,
+  which it previously wasn't). Not marked "delivered" the moment it's shown — only the
+  action that actually resolves the decision (`resumeStuckJob`/`cancelJob`/
+  `resumeOrphan`/`restartOrphan`) marks its outbox row delivered, so a turn that fails
+  before the model ever replies loses nothing. Tier 3 is pull-only
+  (`check_on_work`) plus the existing ambient notification channel — never surfaced
+  proactively at all.
+- **Splitting is capped at depth 2, structurally.** A Worker's `request_job_split` call
+  is judged by the Orchestrator (one model call, denying on any real uncertainty), never
+  approved automatically. Every approved piece's `parent_id` is the ROOT ancestor,
+  resolved in one hop (`job.parentId || job.id`) — so a level-2 piece requesting a
+  FURTHER split creates a PEER under the same root, never a child of itself. Confirmed
+  live: a directly-planted level-2 job's own split request produced grandchildren whose
+  `parent_id` was the true root, not the requesting job.
+- **`kind` is a tool-list restriction, nothing more — worth being explicit about, since
+  the name invites a stronger reading than the code delivers.** `generic` isn't "no
+  expertise" — it's the literal opposite, the FULL unrestricted tool catalog with no
+  fence at all. `research`/`files` are small hardcoded tool-name arrays chosen once, at
+  build time. There is no per-kind system prompt, no role or expertise framing, and —
+  discovered while explaining this to the user, not designed this way on purpose — the
+  admission call's own `plan.summary`/`plan.steps` are computed, shown in the UI, and
+  never actually fed to the worker's own prompt at all. A split's pieces are always
+  created `kind:'generic'` (skipping a second admission call per piece to keep a split's
+  cost at one judgment call total), so two pieces needing genuinely different expertise
+  get the identical unrestricted toolkit and the identical generic instructions today.
+  **Whether to build a genuinely adaptable worker — the Orchestrator selecting tools AND
+  framing per task, not a fixed kind enum — is an open, undecided design question**, not
+  something the current `generic` kind already does under a different name.
+- **`kind:'computer'` never starts unattended.** Autonomously operating the real desktop
+  is exactly the kind of outward-facing, hard-to-undo action the build spec says must
+  come to the owner — so a fresh `computer` job is parked straight into
+  `awaiting_decision` with a Tier 1 "OK to start?" row rather than `queued`, and
+  `resumeStuckJob` (the SAME "keep going" mechanism every other parked decision uses,
+  no separate confirm-token machinery) is the only thing that ever actually starts it.
+  Confirmed live: a `computer`-kind job sat inert with `startedAt: null` across multiple
+  supervisor ticks until explicitly resumed — it was never once allowed to auto-start.
 
 ## Computer control (`server/control/*.js`)
 

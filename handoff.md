@@ -6,105 +6,54 @@ it end to end. See "The pruning rule" at the bottom before adding to it.
 
 ## Right now
 
-The most recent work is the tail end of a large **voice/conversation rebuild arc**
-(spanning 2026-08-23→08-24, its own multi-round track run alongside the Pipeline Skills
-work below): full-duplex voice (Deepgram + a generic, provider-swappable TTS seam), a
-20-issue state-machine audit, and four follow-up rounds chasing real reported bugs
-(ElevenLabs cutting off mid-reply, Deepgram typo-matching on a saved key, a one-key-
-per-service collision, and — the very latest — "stuck on speaking" with Windows voice
-plus confirming the ElevenLabs-cutoff fix had one real remaining gap). Full narrative +
-pointer to the still-being-added-to plan file: `handoff-archive.md` §
-"Voice/conversation rebuild: duplex engine, generic TTS, state-machine audit, four
-follow-up rounds". **Nothing in this arc has been committed; the user's live server was
-never restarted to pick any of it up — none of it is live yet.** The two most recent
-fixes (an unconditional watchdog re-arm on `'restart'` missed by an earlier sweep; a new
-engine-level "speaking" safety-net watchdog closing a real structural gap the Round 2
-audit had flagged but never actually closed) could only be verified via standalone timer
-tests, not real audio — needs the user's own restart + retest, specifically: does
-Windows voice's state reliably return to normal after a reply (including a long,
-multi-sentence one), and do ElevenLabs replies still ever cut off mid-sentence.
+**Everything on disk was committed for the first time this session** (2026-08-26) — the
+voice/conversation rebuild, Pipeline Skills + the tools/skills split, Chat Persistence +
+Memory, connector fixes, and this session's own new work (below), all of it previously
+sitting uncommitted since the initial commit. Two commits on branch
+`jobs-subsystem-and-backlog` off `main` (not merged, not pushed): one bundling
+everything that predates this session, one for this session's own new files — see that
+second commit's message, or `handoff-archive.md` § "Background Task Orchestration
+("Jobs") built, 5 phases, then committed", for why it's split that way and not further.
+**The user's live server has still never been restarted to pick up ANY of it — none of
+it is live yet**, same caution as always about not restarting their instance without
+being asked. The two most-recently-reported voice bugs (an unconditional watchdog
+re-arm on `'restart'`; a new engine-level "speaking" safety-net watchdog) were only ever
+verified via standalone timer tests, not real audio — still needs the user's own
+restart + retest once the branch is live.
 
-Before that, the most recent work was **Pipeline Skills (`skill.toml`) plus a
-tools/skills architectural split**, requested after the user asked directly whether
-building real executable capabilities as "skills" had been a mistake given other
-systems (OpenJarvis) treat Tools and Skills as genuinely separate. Answered honestly
-rather than defending the existing design: the leak-prevention machinery was real (a
-`kind` discriminator already existed, the Skills UI already read a source that couldn't
-return a built-in), but the *vocabulary* ("skill" meaning both the union and one member
-of it — `runSkill`, `hasSkill`, built-ins living in `server/skills/`) was what kept
-regenerating the native-ability-as-Skill confusion across three prior fixes. Found two
-real, previously undocumented issues while assessing: `GET /api/skills` (the mixed
-builtin+skill+connector list) had zero front-end consumers — dead code — and the
-task-action picker's `type:'skill'` was a working server capability with no UI path to
-it (the briefing picker that would have exposed it was deleted outright in an earlier
-session, for the same native-ability-leak reason). User chose, via explicit fork
-questions, the full `server/tools/` split (not just a seam) done first and verified
-before any pipeline code, templated step-to-step data flow, and a per-skill
-upload-approval gate for uploaded pipelines. Plan written, approved, executed in 5
-verified phases:
-
-**Phase 1** — moved all 37 built-in capability files `server/skills/` →
-`server/tools/`; new `server/tools/index.js` (loader only, no confirm gate); new
-`server/capabilities.js` (the composition seam — `getToolDeclarations`/
-`listCapabilities`/`listStepCandidates`/`invoke`, the confirm-token gate moved
-verbatim); `server/skills/index.js` shrunk to folder-Skills-only. Caught a real bug the
-move itself would have introduced (`control/session.js`'s `open_app.js` import) before
-it shipped. Verified via direct `invoke()` calls (built-in, folder Skill, confirm-token
-round-trip incl. the mismatched-resent-args edge case, `autoConfirm` bypass) plus a live
-`agent-browser` check showing zero built-ins on the Skills screen.
-**Phase 2** — hand-rolled `skill.toml` TOML subset (`[[inputs]]`/`[[steps]]`/
-`[steps.args]` only; everything else — inline tables, dotted keys, dates, hex — a named
-parse error) plus `{{inputs.x}}`/`{{steps.id.path}}` template resolution, built together
-since validation needs the same reference-parsing the resolver does. 46 pure-logic
-tests. **Phase 4** — `pipeline.js`'s `runPipeline()` (sequential, `continue_on_error`,
-per-step timeout, 20-step cap, a defense-in-depth re-check of every step's tool target
-independent of author-time validation); a real gate hole found and fixed before it
-shipped (`Replace` wasn't resetting `pipelineApproved`, which would have let uploaded
-content inherit an existing folder's trust — now always forces re-approval, verified
-directly for both `replaceSkillContents` and `replaceSkillMarkdown`); a confirm-under-
-`autoConfirm` refusal I'd initially missed entirely, caught by my own integration test
-failing honestly rather than by review. 20 stub-based + 29 real end-to-end tests, all
-passing. **Phase 5** — closed the Phase-4-flagged gap for real (`readSkillMd()` no
-longer throws for a toml-only Skill); detail-page Pipeline card (status/inputs/steps,
-deliberately no approve button — matches the existing `scriptsApproved` precedent of
-real consent living in conversation, not a checkbox); a `Pipeline` list-row badge.
-Verified live across all 4 pipeline states plus a plain-SKILL.md control. Full
-phase-by-phase record: `C:\Users\HP\.claude\plans\can-you-give-me-async-crayon.md`.
-**Nothing committed; the user's live server was never touched or restarted — none of
-this is live yet.**
-
-**Worth flagging for whoever picks this up next**: `server/capabilities.js`,
-`server/live.js`, and `server/models/runner.js` changed on disk mid-session — a
-concurrent session (see the project's own "second Claude session" gotcha) added a
-`core`/`unlocked` tool-declaration-slimming layer (`find_capability.js`,
-`searchCapabilities()`, cutting per-turn declarations from ~81/~40k tokens) directly on
-top of this session's `capabilities.js`. It was built compatibly — `listStepCandidates`,
-the `ctx.invoke` self-injection, and the confirm gate are all intact — but it has one
-real, untested interaction: folder Skills (Pipeline Skills included) are never tagged
-`core: true`, so under the new system a live model wouldn't see a Pipeline Skill in its
-default tool list at all; it would need `find_capability` to discover it first. Not
-broken, just never exercised together — worth a joint look before assuming live chat
-can already reach a Pipeline Skill by name.
-
-Before that, the most recent work was a **connector credential-prompt regression fix**,
-ending in a final "no Client ID/Secret UI anywhere" decision, a live Gmail connection
-through Composio, and two risk-classifier/confirm-loop bugs. Full text: Session log
-below.
+This session's own work: **Background Task Orchestration ("Jobs")** — lets Jarvis work
+on a long task in the background while the user keeps talking about anything else,
+built in 5 verified phases against the user's own spec, held for a full session before
+implementation began per its own explicit instruction. See root `CLAUDE.md`'s
+"Background Task Orchestration (Jobs)" section and `server/jobs/CLAUDE.md` for the
+architecture; `handoff-archive.md`'s entry above for the phase-by-phase build narrative
+and every real bug found live. **One open design question the user is actively
+probing, not yet decided**: `kind` today is only ever a fixed tool-list restriction
+(`generic` = the full unrestricted tool catalog, `research`/`files` = small hardcoded
+arrays chosen once at build time) — there is no per-task role or expertise framing at
+all, and a split's pieces are always `kind:'generic'`. Whether to build a genuinely
+adaptable worker instead — the Orchestrator selecting tools AND framing per task, not a
+fixed enum — is open; see CLAUDE.md's Jobs section, "kind is a tool-list restriction,
+nothing more" for the full explanation already given to the user.
 
 ## Next steps
 
-1. **Pipeline Skills is built, verified, and uncommitted.** Nothing blocks committing
-   it; the only reason it hasn't been is that no session has been asked to. Once
-   committed, the user's live server needs an ordinary restart to pick up ANY of
-   `server/tools/`, `server/capabilities.js`, or the pipeline machinery — none of it is
-   live yet (same "don't restart their instance yourself" caution as always).
-2. **Live-chat discoverability of a Pipeline Skill through the concurrent session's new
-   `core`/`unlocked` tool-slimming layer has never been exercised** — see "Right now"
-   above. Folder Skills (including Pipeline Skills) aren't tagged `core: true`, so a
-   live model turn may need `find_capability` to surface one before it can be called at
-   all. Worth a real conversational test once both changes are live together, not
-   assumed either way from reading the code.
-3. **Action the remaining CLAUDE.md staleness findings** — full list in
+1. **`jobs-subsystem-and-backlog` is committed but not merged to `main` and not
+   pushed.** Nothing blocks either; the only reason it hasn't happened is that the user
+   hasn't asked — merging/pushing weren't part of what was asked this session, and
+   both are worth confirming explicitly rather than assumed. Either way, the user's
+   live server needs an ordinary restart to pick up ANY of this — none of it is live
+   yet (same "don't restart their instance yourself" caution as always).
+2. **Whether to build an adaptable `generic` worker is still an open design
+   question**, raised by the user right after Jobs shipped — see "Right now" above and
+   CLAUDE.md's Jobs section. Not a bug, not blocking anything; worth surfacing early to
+   whoever picks this up next since the user was actively mid-thought on it.
+3. **Live-chat discoverability of a Pipeline Skill through the `core`/`unlocked`
+   tool-slimming layer has never been exercised.** Folder Skills (including Pipeline
+   Skills) aren't tagged `core: true`, so a live model turn may need `find_capability`
+   to surface one before it can be called at all. Worth a real conversational test once
+   the branch is live, not assumed either way from reading the code.
+4. **Action the remaining CLAUDE.md staleness findings** — full list in
    `plans/audit-handoff-md-in-this-graceful-thompson.md`. Two of the highest-value
    items (the connector Client ID/Secret UI design, and `client-identity.js`/CIMD) are
    now resolved as part of this session's docs pass — `server/connectors/CLAUDE.md`
@@ -112,37 +61,40 @@ below.
    full. Still open: `friendly-message.js` and the icon system are undocumented; the
    connector permission model is documented as 2-state but is 4; `CONTROL_TOOLS` is
    documented as flat tools but is 3 tools plus a batched `actions[]` array.
-4. **The WSL sandbox backend has still never run against a real WSL distro**
+5. **The WSL sandbox backend has still never run against a real WSL distro**
    — none is installed on this dev machine. `server/sandbox/wsl-backend.js`
    is reasoned through carefully but unverified; test for real the first time
    WSL exists here or on another dev machine.
-5. **Task A is still not started**: a dedicated verification subagent proving
+6. **Task A is still not started**: a dedicated verification subagent proving
    Jarvis actually *invokes* a skill in real conversation (not just that
    upload succeeds) — single-skill trigger, correct pick among several, an
    ambiguous case, a no-match negative case, each backed by logs/traces, not
    Jarvis's own claim. User confirmed real API quota use is fine for this.
-6. **No AI-driven control session has ever reached `report_done` unbroken**
+7. **No AI-driven control session has ever reached `report_done` unbroken**
    end to end (open → act → save → verify → done) — every primitive is
    verified individually; the full happy path with the newer close/restore/
    arrange actions and scratch-window auto-cleanup has not been watched to
    completion.
-7. **Root `CLAUDE.md`'s Model system section is now out of date** — it
-   doesn't yet mention `server/models/task-types.js` (task-aware routing),
-   the `model_health` SSE event, or the `addModel()`/`discoverModels()`
-   `(connectionId, model)` duplicate-prevention rule, all landed this
-   session. A small, bounded double-render around "Check all models"
-   (SSE-triggered re-render racing the button's own) was also flagged as a
-   known, low-priority cosmetic item, deliberately left unfixed.
+8. **Root `CLAUDE.md`'s Model system section still doesn't mention**
+   `server/models/task-types.js` (task-aware routing), the `model_health` SSE
+   event, or the `addModel()`/`discoverModels()` `(connectionId, model)`
+   duplicate-prevention rule — unrelated to this session's own Model system
+   addition (the `allowedTools` enforcement note). A small, bounded
+   double-render around "Check all models" (SSE-triggered re-render racing
+   the button's own) was also flagged as a known, low-priority cosmetic item,
+   deliberately left unfixed.
 
 ## Waiting on the user
 
-- **An ordinary restart of the user's own live Jarvis** — needed to pick up BOTH Chat
-  Persistence + Memory (confirmed read-only that the currently-running instance
-  predates Stage 2) AND this session's connector/risk-classifier/confirm-loop fixes
-  (none of which are live yet either). Not restarted automatically either time since
-  the user was actively using the instance. Once restarted, the specific test steps
-  already given in-chat for Chat Persistence/Memory are what to run through for that
-  part.
+- **A merge/push decision for `jobs-subsystem-and-backlog`, then an ordinary restart of
+  the user's own live Jarvis** — the branch holds EVERYTHING (Chat Persistence + Memory,
+  the tools/skills split, Pipeline Skills, the duplex voice rebuild, connector fixes,
+  and Background Task Orchestration), none of which is live on the currently-running
+  instance, which predates all of it. Not merged, pushed, or restarted automatically —
+  the user was actively using the instance and none of those are decisions to make
+  without asking. Once merged and restarted, the specific test steps already given
+  in-chat for Chat Persistence/Memory (and this session's Jobs testing steps) are what
+  to run through.
 - **A real interactive OAuth login click-through** — now genuinely done for Notion,
   Composio, and (this session) Gmail-through-Composio, all real accounts, all
   confirmed Active. Still outstanding, and — new fact worth recording — can no longer
@@ -164,6 +116,24 @@ below.
 are now in the session log below, marked as reconstructed.)*
 
 ## Session log (newest first)
+
+### 2026-08-26 — Background Task Orchestration ("Jobs") built, 5 phases, then committed
+See `handoff-archive.md` § "Background Task Orchestration ("Jobs") built, 5 phases, then
+committed" for the full build narrative and every real bug found live; root
+`CLAUDE.md`'s "Background Task Orchestration (Jobs)" section and
+`server/jobs/CLAUDE.md` for the architecture.
+
+Built the user's own background-task-orchestration spec in 5 verified phases (store +
+policy, worker + supervisor, conversational tools + escalation, worker kinds + UI,
+splitting), each caught at least one real bug only live testing surfaced — a capacity
+gap, a circular-import mistake, a silently-inert flag, an unenforced tool allowlist, a
+duplicate-escalation bug. Confirmed live, not assumed: crash-recovery classification
+from the write-ahead trace, resume-with-real-context across a real `SIGKILL`, the split
+depth ceiling holding under a directly-planted nested case, and a `computer`-kind job
+never once auto-starting. Then committed everything on disk — this session's work and
+every previously-uncommitted prior session's — for the first time, on a new branch. Left
+open, at the user's own prompting: whether `kind` should stay a fixed tool-list-only
+enum or become a genuinely adaptable, Orchestrator-configured worker.
 
 ### 2026-08-23 → 2026-08-24 — Voice/conversation rebuild: duplex engine, generic TTS, state-machine audit, four follow-up rounds
 See `handoff-archive.md` § "Voice/conversation rebuild: duplex engine, generic TTS,

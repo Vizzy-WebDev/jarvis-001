@@ -18,6 +18,87 @@ in this file by name for incident history: root `CLAUDE.md` and
 
 ---
 
+### 2026-08-26 — Background Task Orchestration ("Jobs") built, 5 phases, then committed
+
+**Plan + locked decisions**: `C:\Users\HP\.claude\plans\build-prompt-for-linear-hollerith.md`
+— the full user-supplied spec, the pre-implementation exploration findings, and every
+locked design decision (vocabulary, store shape, the Orchestrator's reasoning boundary,
+split depth, worker kinds) are written up there in full.
+
+The user's own build prompt, held for a full session before implementation began per its
+own instruction ("do not begin implementation until I explicitly tell you to"). Read back
+in the user's own words first; a CEO-vs-foreman disagreement over what the Orchestrator
+should actually be surfaced early and was resolved as "reasoning at admission and
+exception boundaries, deterministic code in the steady state" — real reasoning, but
+spent per-job (~+1 model call), never per supervision tick. Built and verified in five
+phases, each against a scratch `node:http` stub model (real quota exhausted, as always)
+plus real `SIGKILL` crash tests and `agent-browser` for the UI — never the user's real
+`data/`, `.env`, or port 3000.
+
+**Phase 1** — the store (`server/jobs/job-store.js`: `jobs`/`job_trace`/`job_outbox`
+tables, migration 4) and pure policy functions (`job-policy.js`), 31 truth-table cases
+plus 36 live-SQLite integration cases, all passing.
+
+**Phase 2** — `worker.js`'s outer loop and `orchestrator.js`'s 5-second tick. The write-
+ahead trace (`intent` before an effect, `outcome` after) is what makes crash
+classification honest — verified live with a real process kill mid-delayed-response,
+confirming `resumable`/`restartable`/`unrecoverable` each classify correctly from the
+real trace, and that a resumed job's rehydrated session genuinely continues (exactly one
+`get_time` call recorded across a crash-and-resume, not two). A real gap found live, not
+by design review: an `awaiting_decision` job was counted as "active" for capacity
+purposes, meaning two stalled jobs could permanently block all new work — split
+`RUNNING_STATUSES` from `RESOURCE_HOLDING_STATUSES` to fix it, reverified live.
+
+**Phase 3** — the three conversational tools (`work_in_background`/`check_on_work`/
+`stop_working_on`), `prompt.js`'s `jobsSection()` (Tier 1/2 delivery on a turn the user
+already started, never pushed), and the third confirm mode (`ctx.onEscalate`). A real
+circular-import mistake caught before it shipped: the tools were first wired straight to
+`orchestrator.js`, which transitively reaches `capabilities.js` → `tools/index.js` —
+exactly the deadlock the project's own invariant exists to prevent. Fixed by splitting
+tool-safe actions into a new leaf module, `job-actions.js`. A second real bug, also
+caught only by the live test itself: `jobsSection()` would have leaked into a job's own
+worker turn and a scheduled task's own turn (neither is meaningfully different from live
+chat at the point the system prompt is built) — gated on the existing `background` flag,
+which then surfaced a THIRD bug (`runner.js` never actually forwarded `background` to
+the adapter at all, so the gate would have been silently inert).
+
+**Phase 4** — the `research`/`files`/`computer` worker kinds and the Jobs screen
+(`public/screens/jobs.js`). Two more real bugs from live testing: `allowedTools`
+restricted what a model was OFFERED but `invoke()` would still run a call naming
+anything else (confirmed live — a research-kind job's own test call still reached
+`get_time`); fixed by enforcing the allowlist at invocation time in `runner.js`, not just
+at declaration time — a fix that also closes the same latent gap for `scheduler.js`'s own
+per-task connector restriction. A confirm-gated tool retried within one `runTurn` call
+produced 11 duplicate outbox rows for the same decision before `onEscalate` learned to
+no-op once already parked. A `computer`-kind job was confirmed, live, to sit inert
+(`startedAt: null`) across multiple supervisor ticks — it was never once allowed to
+actually take control of the real desktop during this session's testing, deliberately.
+
+**Phase 5** — `request_job_split.js`, a self-contained tool doing its own judge-then-
+create flow (cheap checks, then one Orchestrator model call). The depth ceiling
+(`job.parentId || job.id` always resolves to the root in one hop) was verified live by
+directly planting a level-2 job and confirming its OWN split request produced
+grandchildren parented to the true root, not to itself.
+
+**After all five phases**, the user asked a clarifying question about what `generic`
+actually means — comparing a fixed kind-enum design (what was built) against an
+Orchestrator that dynamically equips one adaptable worker with per-task tools and
+framing. Investigated honestly rather than assumed equivalent: confirmed `kind` really
+is only ever a tool-list restriction (no role/expertise framing exists at all for any
+kind), and — found only while answering, not designed this way on purpose — the
+admission call's own `plan.summary`/`plan.steps` are computed and shown in the UI but
+never actually fed to the worker's own prompt. Recorded as an open, undecided design
+question in root `CLAUDE.md`'s Jobs section, not resolved this session.
+
+**Commits**: everything on disk (this session's Jobs work AND every previously-
+uncommitted session's work — the tools/skills split, Pipeline Skills, the duplex voice
+rebuild, Chat Persistence + Memory, connector fixes) was committed for the first time
+this session, on branch `jobs-subsystem-and-backlog` off `main` — two commits, since
+per-hunk staging (`git add -p`) isn't available in this environment and couldn't cleanly
+separate this session's small edits to already-dirty shared files (`db.js`,
+`capabilities.js`, `runner.js`, ...) from what was already sitting there. **Not merged to
+main, not pushed, and the user's live server was never restarted** — none of it is live.
+
 ### 2026-08-23 → 2026-08-24 — Voice/conversation rebuild: duplex engine, generic TTS, state-machine audit, four follow-up rounds
 
 **Full detail in the plan file**: `C:\Users\HP\.claude\plans\i-would-like-you-snoopy-bengio.md`

@@ -15,6 +15,8 @@ Auto-loaded by `tools/index.js`. Each file default-exports:
   name, description, parameters: <JSON Schema>,
   confirm: 'always' | 'ifUnclear',    // optional — see "Voice-clarity confirmation" below
   meta: true,                          // optional — excludes it from the task/briefing skill picker
+  internal: true,                      // optional — excludes it from listCapabilities()/listStepCandidates() WITHOUT
+                                        // stripping it from a background:true turn's declarations the way meta does
   summarize(args) { return '...' },    // optional — read-back text when confirm is set
   async run(args, ctx) { return {...} },
 }
@@ -22,10 +24,23 @@ Auto-loaded by `tools/index.js`. Each file default-exports:
 
 `parameters` is passed straight through as the tool schema for every adapter, no
 per-provider translation. `run()` returns plain data; the model phrases the spoken
-reply. `ctx` carries `{sessionId, modelId, lowConfidence, autoConfirm}`. To add a tool:
-new file in `server/tools/`, nothing else to touch — `capabilities.js`'s
-`getToolDeclarations()` already strips `confirm`/`meta`/`summarize` before anything
-reaches a model.
+reply. `ctx` carries `{sessionId, modelId, lowConfidence, autoConfirm, background,
+onEscalate}` (`onEscalate`, see "The third confirm mode" below, is present only for a
+background Job's own turn — undefined for every other caller). To add a tool: new file
+in `server/tools/`, nothing else to touch — `capabilities.js`'s `getToolDeclarations()`
+already strips `confirm`/`meta`/`internal`/`summarize` before anything reaches a model.
+
+**`internal` is a different axis from `meta`, not a stronger version of it** — see
+`report_job_done.js`/`report_job_stuck.js`/`request_job_split.js` (root `CLAUDE.md`'s
+"Background Task Orchestration" section) for why both exist. `meta:true` is stripped by
+`getToolDeclarations({includeMeta: !opts.background})` — i.e. a `background:true` turn
+(every background Job's own turn included) never sees a meta tool at all, which is
+exactly wrong for a tool a Job's OWN turn needs to call. `internal:true` instead stays
+fully visible to `getToolDeclarations()` and is only ever excluded from the two
+enumerations a human-facing picker is built on (`listCapabilities()`,
+`listStepCandidates()`). An internal tool only actually reaches a model when its name
+is explicitly named in that turn's `opts.allowedTools` — see the Model system section's
+note on `allowedTools` now being *enforced*, not just offered.
 
 **`tools/index.js` itself only loads and enumerates — it owns no confirm gate.**
 `server/capabilities.js` is the seam that merges tools with folder Skills and connector

@@ -1,10 +1,11 @@
 // Morning Briefing screen — which sections are included, a custom note, and
 // a live preview button. Calendar/email are shown as reserved, disabled
-// slots — see server/scheduler/briefing.js's header comment for why those
-// aren't built yet.
+// slots — they need their own Google sign-in, a separate, bigger step that
+// hasn't been built. See server/scheduler/briefing-config.js's DEFAULT_CONFIG
+// comment for why those slots exist in the saved config already.
 //
 // Weather and headlines have NO controls here at all, on purpose — they're
-// fixed, always-available native abilities (server/skills/get_weather.js,
+// fixed, always-available native abilities (server/tools/get_weather.js,
 // get_headlines.js), not something the user "adds." This screen used to
 // have a "Live info sources" card — an "Add a source" picker that listed
 // weather/headlines as if they were Skills to attach — which was a real
@@ -17,6 +18,9 @@
 // settings screen" precedent for a built-in ability with no UI.
 
 import { sectionCard, fieldTextarea, postJson } from './_helpers.js';
+import { toggleSwitch } from './_ui.js';
+import { markdownBlock } from './_markdown.js';
+import { navigate } from '../router.js';
 
 const SECTION_LABELS = [
   ['greeting', 'Greeting'],
@@ -39,6 +43,18 @@ function buildSectionsCard(config, onSave) {
     cb.addEventListener('change', () => onSave({ sections: { [key]: cb.checked } }));
     row.appendChild(cb);
     card.appendChild(row);
+
+    // "Your goals and notes" pulls straight from Profile & Goals — link
+    // through so it's obvious what this checkbox will actually include,
+    // rather than leaving it a mystery until the next preview.
+    if (key === 'goals') {
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'btn';
+      link.textContent = 'View your notes →';
+      link.addEventListener('click', () => navigate('profile'));
+      card.appendChild(link);
+    }
   }
   return card;
 }
@@ -58,7 +74,14 @@ function buildCustomCard(config, onSave) {
   return card;
 }
 
-function buildComingSoonCard() {
+/**
+ * Was a plain static badge with no state at all — now a real (disabled)
+ * toggleSwitch reflecting the config slot that's already saved
+ * (briefing-config.js's `calendar.enabled`/`email.enabled`), so the only
+ * change needed once the connector is actually built is dropping `disabled`.
+ * Not faking the feature — clicking has no effect and says so.
+ */
+function buildComingSoonCard(config, onSave) {
   const card = sectionCard('Coming later');
   card.appendChild(
     Object.assign(document.createElement('p'), {
@@ -68,13 +91,23 @@ function buildComingSoonCard() {
         'sign-in, which is a separate, bigger step than this upgrade.',
     })
   );
-  for (const label of ['Calendar events', 'Unread email summary']) {
+  for (const [key, label] of [
+    ['calendar', 'Calendar events'],
+    ['email', 'Unread email summary'],
+  ]) {
     const row = document.createElement('div');
     row.className = 'settings-row';
     row.appendChild(Object.assign(document.createElement('span'), { textContent: label }));
-    row.appendChild(Object.assign(document.createElement('span'), { className: 'badge', textContent: 'not yet connected' }));
+    const toggle = toggleSwitch({ value: Boolean(config[key]?.enabled), disabled: true });
+    row.appendChild(toggle.wrapper);
     card.appendChild(row);
   }
+  const setupBtn = document.createElement('button');
+  setupBtn.type = 'button';
+  setupBtn.className = 'btn';
+  setupBtn.textContent = 'Set this up in App Control';
+  setupBtn.addEventListener('click', () => navigate('app-control'));
+  card.appendChild(setupBtn);
   return card;
 }
 
@@ -84,28 +117,33 @@ function buildPreviewCard() {
   btn.type = 'button';
   btn.className = 'btn btn-primary';
   btn.textContent = 'Preview my briefing now';
-  const resultEl = document.createElement('p');
-  resultEl.className = 'hint';
+  const resultWrap = document.createElement('div');
 
   btn.addEventListener('click', async () => {
     btn.disabled = true;
     btn.textContent = 'Putting it together…';
-    resultEl.textContent = '';
+    resultWrap.innerHTML = '';
     try {
       const res = await fetch('/api/briefing/preview', { method: 'POST' });
       const data = await res.json();
-      resultEl.textContent = data.text || 'Could not generate a preview.';
-      resultEl.className = data.ok === false ? 'error' : 'hint';
+      if (data.text) {
+        resultWrap.appendChild(markdownBlock(data.text));
+      } else {
+        resultWrap.appendChild(
+          Object.assign(document.createElement('p'), { className: 'error', textContent: 'Could not generate a preview.' })
+        );
+      }
     } catch {
-      resultEl.textContent = 'Could not reach the Jarvis server.';
-      resultEl.className = 'error';
+      resultWrap.appendChild(
+        Object.assign(document.createElement('p'), { className: 'error', textContent: 'Could not reach the Jarvis server.' })
+      );
     } finally {
       btn.disabled = false;
       btn.textContent = 'Preview my briefing now';
     }
   });
 
-  card.append(btn, resultEl);
+  card.append(btn, resultWrap);
   return card;
 }
 
@@ -118,6 +156,6 @@ export async function render(container) {
 
   container.appendChild(buildSectionsCard(config, onSave));
   container.appendChild(buildCustomCard(config, onSave));
-  container.appendChild(buildComingSoonCard());
+  container.appendChild(buildComingSoonCard(config, onSave));
   container.appendChild(buildPreviewCard());
 }

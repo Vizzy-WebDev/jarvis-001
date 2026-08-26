@@ -8,7 +8,7 @@
 // needs a confirm), 'notable' (click/type/open — visible, but reversible;
 // shown live, not gated), 'risky' (delete/send/publish/pay/install, or
 // anything that can't be undone — always routed through the existing
-// confirm-and-read-back gate in skills/index.js before it's allowed to run).
+// confirm-and-read-back gate in capabilities.js before it's allowed to run).
 
 // Exact action kinds Stage 2's PowerShell bridge (control/agent.ps1) can
 // issue, mapped to a tier. Anything not listed here falls through to the

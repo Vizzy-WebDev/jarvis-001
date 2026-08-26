@@ -15,7 +15,7 @@
 // only for the manual "Add a note" flow on the Profile & Goals screen —
 // see remember_about_me.js's own header comment.
 
-import { listMemories, createMemory, deleteMemory } from './memory/memory-store.js';
+import { listMemories, createMemory, deleteMemory, updateMemory, getVersionHistory } from './memory/memory-store.js';
 
 const CATEGORY = 'About You';
 
@@ -43,4 +43,17 @@ export function addEntry(text) {
 
 export function deleteEntry(id) {
   deleteMemory(id);
+}
+
+// Entries here are memory-store.js rows in the 'About You' category (see
+// this file's header comment), so editing and version history are just
+// updateMemory()/getVersionHistory() under this file's own toEntry() shape —
+// nothing new to build, only to expose. Added when the Profile & Goals
+// screen grew a detail/edit view; until then nothing called either of these.
+export function updateEntry(id, text) {
+  return toEntry(updateMemory(id, { text }, 'Edited from Profile & Goals.'));
+}
+
+export function listVersions(id) {
+  return getVersionHistory(id).map((v) => ({ text: v.text, changedAt: v.changedAt, reason: v.reason }));
 }

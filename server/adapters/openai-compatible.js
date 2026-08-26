@@ -8,6 +8,7 @@
 import OpenAI from 'openai';
 import { getSecret } from '../config.js';
 import { systemInstructionFor } from '../prompt.js';
+import { assistantTextOf } from '../conversation.js';
 
 // Local/self-hosted servers (Ollama, LM Studio, ...) generally don't need a
 // real API key, but the SDK requires a non-empty string. Hosts we know
@@ -83,18 +84,23 @@ function toMessages(messages, opts) {
     } else if (m.role === 'user' && m.text) {
       out.push({ role: 'user', content: m.text });
     } else if (m.role === 'assistant') {
+      // assistantTextOf(), not m.text directly — if this turn was
+      // interrupted by a barge-in (see conversation.js), the model should
+      // believe it only said what was actually heard, not everything it
+      // happened to finish generating after being cut off.
+      const spoken = assistantTextOf(m);
       if (m.toolCalls?.length) {
         out.push({
           role: 'assistant',
-          content: m.text || null,
+          content: spoken || null,
           tool_calls: m.toolCalls.map((c) => ({
             id: c.id,
             type: 'function',
             function: { name: c.name, arguments: JSON.stringify(c.args || {}) },
           })),
         });
-      } else if (m.text) {
-        out.push({ role: 'assistant', content: m.text });
+      } else if (spoken) {
+        out.push({ role: 'assistant', content: spoken });
       }
     } else if (m.role === 'tool' && m.toolResults?.length) {
       for (const r of m.toolResults) {

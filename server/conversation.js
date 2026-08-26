@@ -53,7 +53,14 @@ function trim(sessionId) {
 
 function push(sessionId, message) {
   const list = sessions.get(sessionId) || [];
-  const full = { id: newId(), ...message };
+  // createdAt (real wall-clock time, not the model's business) is what lets
+  // prompt.js's situationSection() tell the model how long it's actually
+  // been since the previous turn — see runner.js's runTurn(), which reads
+  // the PREVIOUS last message's createdAt before this push() call ever
+  // fires. Added here (not left to chat-store.js's own created_at) so it's
+  // available on every session, bound or not — a scheduled task's ephemeral
+  // session has no chat-store row at all.
+  const full = { id: newId(), createdAt: new Date().toISOString(), ...message };
   list.push(full);
   sessions.set(sessionId, list);
   trim(sessionId);
@@ -61,7 +68,11 @@ function push(sessionId, message) {
     // Persist the neutral message as-is (minus the in-memory-only id, which
     // chat-store.js assigns its own row-based version of on read — nothing
     // downstream keys off this id across a restart, see chat-store.js).
-    const { id, ...rest } = full;
+    // createdAt is also excluded from the persisted payload — chat-store.js
+    // already stamps its own created_at column on every row; rowToMessage()
+    // reads it back from there on hydrate() rather than double-storing the
+    // same timestamp in both the column and the JSON payload.
+    const { id, createdAt, ...rest } = full;
     chatStore.appendMessage(sessionId, rest);
   }
   return full;
@@ -95,6 +106,33 @@ export function getMessages(sessionId = 'main') {
   return sessions.get(sessionId) || [];
 }
 
+/**
+ * Restores a session's message list wholesale from a plain snapshot (e.g.
+ * server/jobs/job-store.js's `jobs.transcript` column) — fresh ids assigned,
+ * original `createdAt`/everything else preserved verbatim. Deliberately
+ * NOT hydrate(): never binds to chat-store.js, so a rehydrated job session
+ * still never appears in Chat History. Used by jobs/worker.js to continue a
+ * job with its real prior context after a crash-restart or a live hang,
+ * instead of restarting from just the job's goal text.
+ */
+export function loadSnapshot(sessionId, messages = []) {
+  sessions.set(sessionId, messages.map((m) => ({ ...m, id: newId() })));
+  trim(sessionId);
+}
+
+/**
+ * The text an assistant message should be treated as having actually said —
+ * `spokenText` if it was interrupted (see markLastAssistantInterrupted()
+ * below), its full `text` otherwise. Every adapter's message-mapping
+ * (toMessages()/toContents()) uses this instead of reading `.text` directly
+ * for an assistant turn, so a barge-in never leaves the model believing,
+ * on the NEXT turn, that it finished saying something it was actually cut
+ * off partway through.
+ */
+export function assistantTextOf(message) {
+  return message.interrupted ? message.spokenText || '' : message.text || '';
+}
+
 export function pushUserText(sessionId, text, { media } = {}) {
   return push(sessionId, { role: 'user', text, media });
 }
@@ -109,6 +147,50 @@ export function pushAssistantToolCalls(sessionId, toolCalls, { modelId, raw, tex
 
 export function pushToolResults(sessionId, toolResults) {
   return push(sessionId, { role: 'tool', toolResults });
+}
+
+/**
+ * Marks the most recent assistant message in a session as interrupted —
+ * called when the duplex voice engine's barge-in cuts Jarvis off mid-reply.
+ * `spokenText` is what the user actually heard (see public/voice/playback.js's
+ * getSpokenText()), reconstructed from chunks that truly started playing —
+ * NOT a slice of the full text by character count, which would need exact
+ * whitespace agreement between the client's chunking and the model's own
+ * spacing that isn't guaranteed to hold.
+ *
+ * The full generated `text` field is left untouched (nothing is deleted —
+ * chat history can still show what the model would have finished saying);
+ * only `interrupted`/`spokenText` are added. Every adapter's own message
+ * mapping (toMessages()/toContents()) checks `interrupted` and sends
+ * `spokenText` instead of the full `text` for that turn when building the
+ * next request — the model should believe it said only what was truly
+ * heard, not everything it happened to finish generating after being cut
+ * off, or a follow-up like "why did you stop?" makes no sense to it.
+ *
+ * Returns false (a no-op) if there's no assistant message to mark yet — a
+ * genuine race is possible (the interrupt arrives before pushAssistantText
+ * has run, if the model was still mid-generation server-side when the user
+ * barged in) — see runner.js's runOnEntry, which finishes generating and
+ * pushes regardless of whether anyone is still listening client-side. That
+ * race is a known, disclosed gap: rare (barge-in after the model has
+ * already finished but before the client processed 'done' is a narrow
+ * window), and the failure mode is only "the interruption wasn't recorded",
+ * never wrong/corrupted data.
+ */
+export function markLastAssistantInterrupted(sessionId, spokenText) {
+  const list = sessions.get(sessionId);
+  if (!list) return false;
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (list[i].role === 'assistant' && list[i].text) {
+      list[i].interrupted = true;
+      list[i].spokenText = spokenText;
+      if (boundSessions.has(sessionId)) {
+        chatStore.updateLastAssistantMessage(sessionId, { interrupted: true, spokenText });
+      }
+      return true;
+    }
+  }
+  return false;
 }
 
 export function resetSession(sessionId = 'main') {

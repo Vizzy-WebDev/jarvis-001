@@ -25,8 +25,8 @@
 // there.
 //
 // A leaf module. Imports media/uploads/ai and content/investigator.js;
-// never skills/index.js, models/runner.js or anything that reaches them
-// (see CLAUDE.md's circular-import invariant).
+// never tools/index.js, capabilities.js, models/runner.js or anything that
+// reaches them (see CLAUDE.md's circular-import invariant).
 
 import fs from 'node:fs';
 import { getUpload } from './uploads.js';

@@ -8,7 +8,7 @@
 // and a ⋮ action menu on the header row, a truncated description with "See
 // more", then a preview/raw-source toggle over the instructions body.
 
-import { fieldTextarea, postJson } from './_helpers.js';
+import { fieldTextarea, postJson, sectionCard, patchJsonStrict, flashSaveError } from './_helpers.js';
 import { openModal } from './_modal.js';
 import { popover, segmented, toggleSwitch } from './_ui.js';
 import { markdownBlock, copyableBlock } from './_markdown.js';
@@ -181,6 +181,79 @@ async function confirmUninstall(skill, onBack) {
   if (result) onBack();
 }
 
+function pipelineStepLabel(step) {
+  return step.tool ? `Tool: ${step.tool}` : 'Prompt step';
+}
+
+/**
+ * The Pipeline card — shown whenever this Skill has a skill.toml, whether
+ * or not it's currently runnable. Status only, no action button: approving
+ * an uploaded pipeline is deliberately a live-conversation consent (see
+ * server/tools/approve_skill_pipeline.js), same reasoning as
+ * scriptsApproved having no settings-screen toggle either — a checkbox
+ * nobody reads isn't real consent for something that runs automatically.
+ */
+function buildPipelineCard(pipeline) {
+  const card = sectionCard('Pipeline');
+
+  if (!pipeline.valid) {
+    card.appendChild(
+      Object.assign(document.createElement('p'), {
+        className: 'error',
+        textContent: "This skill's pipeline couldn't be loaded, so it runs as instructions-only for now:",
+      })
+    );
+    const list = document.createElement('ul');
+    list.className = 'pipeline-errors';
+    for (const msg of pipeline.errors) {
+      list.appendChild(Object.assign(document.createElement('li'), { className: 'error', textContent: msg }));
+    }
+    card.appendChild(list);
+    return card;
+  }
+
+  const status = document.createElement('p');
+  status.className = pipeline.approved ? 'hint' : 'error';
+  status.textContent = pipeline.approved
+    ? 'Approved — runs automatically when this skill is used.'
+    : "Needs one-time approval before it can run — ask Jarvis to enable it, and it'll confirm with you.";
+  card.appendChild(status);
+
+  if (pipeline.inputs?.length) {
+    card.appendChild(Object.assign(document.createElement('p'), { className: 'hint', textContent: 'Inputs' }));
+    const inputsList = document.createElement('ul');
+    inputsList.className = 'pipeline-inputs';
+    for (const input of pipeline.inputs) {
+      const parts = [`${input.name} (${input.type || 'string'})`];
+      if (input.required) parts.push('required');
+      const li = document.createElement('li');
+      li.textContent = parts.join(', ') + (input.description ? ` — ${input.description}` : '');
+      inputsList.appendChild(li);
+    }
+    card.appendChild(inputsList);
+  }
+
+  card.appendChild(Object.assign(document.createElement('p'), { className: 'hint', textContent: 'Steps' }));
+  const stepsList = document.createElement('ol');
+  stepsList.className = 'pipeline-steps';
+  for (const step of pipeline.steps || []) {
+    const li = document.createElement('li');
+    li.className = 'pipeline-step';
+    li.appendChild(Object.assign(document.createElement('span'), { className: 'pipeline-step-id', textContent: step.id || '(no id)' }));
+    li.appendChild(Object.assign(document.createElement('span'), { className: 'badge', textContent: pipelineStepLabel(step) }));
+    if (step.needsConfirm) {
+      li.appendChild(Object.assign(document.createElement('span'), { className: 'badge bad', textContent: 'Needs confirmation' }));
+    }
+    if (step.continue_on_error) {
+      li.appendChild(Object.assign(document.createElement('span'), { className: 'badge', textContent: 'Continues on error' }));
+    }
+    stepsList.appendChild(li);
+  }
+  card.appendChild(stepsList);
+
+  return card;
+}
+
 function openActionsMenu(anchor, skill, { onChange, onBack }) {
   const pop = popover({
     anchor,
@@ -245,7 +318,16 @@ export async function render(container, { name, onBack }) {
   const toggle = toggleSwitch({
     value: skill.enabled,
     onChange: async (next) => {
-      await postJson(`/api/skills/${encodeURIComponent(skill.name)}`, { enabled: next }, 'PATCH');
+      // Used to fire-and-forget with no failure handling at all — a failed
+      // PATCH left the switch showing a state that never actually saved,
+      // with nothing telling the user. Same revert-on-failure pattern as
+      // _connector-detail.js's permission switches.
+      try {
+        await patchJsonStrict(`/api/skills/${encodeURIComponent(skill.name)}`, { enabled: next });
+      } catch {
+        toggle.setValue(!next);
+        flashSaveError(titleRow, "Couldn't save that — check your connection and try again.");
+      }
     },
   });
   toggle.wrapper.classList.add('detail-action-btn');
@@ -261,34 +343,47 @@ export async function render(container, { name, onBack }) {
 
   container.appendChild(Object.assign(document.createElement('p'), { className: 'hint', textContent: 'by You' }));
 
-  container.appendChild(buildDescriptionBlock(skill.description || ''));
+  // A pipeline-only Skill (skill.toml with no SKILL.md) has no description
+  // from SKILL.md's frontmatter — falls back to skill.toml's own top-level
+  // `description`, matching server/skills/index.js's own fallback for what
+  // the model actually sees.
+  container.appendChild(buildDescriptionBlock(skill.description || data.pipeline?.description || ''));
 
   // Preview / raw-source toggle over the instructions body — mirrors the
-  // eye / </> icons in Claude's own detail page.
-  const bodyWrap = document.createElement('div');
-  bodyWrap.className = 'section-card';
+  // eye / </> icons in Claude's own detail page. Skipped entirely when
+  // there's genuinely nothing here (a pipeline-only Skill with no SKILL.md)
+  // — an empty preview/raw toggle over blank content would just look
+  // broken; the Pipeline card below is this Skill's real content instead.
+  if (data.instructions?.trim() || !data.pipeline?.present) {
+    const bodyWrap = document.createElement('div');
+    bodyWrap.className = 'section-card';
 
-  const toggleRow = document.createElement('div');
-  toggleRow.className = 'skill-detail-view-toggle';
-  const viewToggle = segmented(
-    [
-      ['preview', '👁'],
-      ['code', '</>'],
-    ],
-    {
-      value: 'preview',
-      onChange: (v) => {
-        contentWrap.innerHTML = '';
-        contentWrap.appendChild(v === 'preview' ? markdownBlock(data.instructions) : copyableBlock(data.raw || data.instructions));
-      },
-    }
-  );
-  toggleRow.appendChild(viewToggle.wrapper);
-  bodyWrap.appendChild(toggleRow);
+    const toggleRow = document.createElement('div');
+    toggleRow.className = 'skill-detail-view-toggle';
+    const viewToggle = segmented(
+      [
+        ['preview', '👁'],
+        ['code', '</>'],
+      ],
+      {
+        value: 'preview',
+        onChange: (v) => {
+          contentWrap.innerHTML = '';
+          contentWrap.appendChild(v === 'preview' ? markdownBlock(data.instructions) : copyableBlock(data.raw || data.instructions));
+        },
+      }
+    );
+    toggleRow.appendChild(viewToggle.wrapper);
+    bodyWrap.appendChild(toggleRow);
 
-  const contentWrap = document.createElement('div');
-  contentWrap.appendChild(markdownBlock(data.instructions));
-  bodyWrap.appendChild(contentWrap);
+    const contentWrap = document.createElement('div');
+    contentWrap.appendChild(markdownBlock(data.instructions));
+    bodyWrap.appendChild(contentWrap);
 
-  container.appendChild(bodyWrap);
+    container.appendChild(bodyWrap);
+  }
+
+  if (data.pipeline?.present) {
+    container.appendChild(buildPipelineCard(data.pipeline));
+  }
 }

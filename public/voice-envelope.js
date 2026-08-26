@@ -1,5 +1,6 @@
 // Builds a silent, offline amplitude envelope for a TTS audio clip so the
-// orb can react to Jarvis's own (Gemini) voice — without touching the real
+// orb can react to Jarvis's own voice (any configured server-side TTS
+// provider — server/tts/index.js's registry) — without touching the real
 // playback path at all. audio-player.js's header comment explains why that
 // matters: an earlier version tapped a Web Audio AnalyserNode directly onto
 // every TTS <audio> element for this same purpose, and it was reverted

@@ -38,6 +38,13 @@ function buildSkillRow(skill, onOpen) {
   if (!skill.enabled) {
     main.appendChild(Object.assign(document.createElement('span'), { className: 'badge', textContent: 'Off' }));
   }
+  if (skill.hasToml) {
+    // Whether it's actually RUNNING (valid + approved) is a detail-page
+    // concern, not a list-row one — this badge only says "this Skill has a
+    // pipeline", same restraint as the Off badge only saying on/off, never
+    // why.
+    main.appendChild(Object.assign(document.createElement('span'), { className: 'badge', textContent: 'Pipeline' }));
+  }
   row.appendChild(main);
 
   const meta = document.createElement('div');

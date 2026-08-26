@@ -14,6 +14,7 @@
 
 import { navigate } from './router.js';
 import { popover } from './screens/_ui.js';
+import { openOnNextRender } from './screens/notifications.js';
 
 const TOAST_MS = { info: 6000, success: 6000, warning: 7000, error: 9000 };
 const MAX_TOASTS = 3;
@@ -44,9 +45,21 @@ function updateBadge() {
   badgeEl.classList.toggle('hidden', count === 0);
 }
 
-/** Runs a notification's `action` (a nav.js section id — see notifications.js's server side), if it has one. */
+/**
+ * Runs a notification's `action` (a nav.js section id — see notifications.js's
+ * server side) if it has one; otherwise opens its full detail view
+ * (screens/_notification-detail.js) via the full history screen, since the
+ * popover has no detail view of its own. Used to be a silent no-op for any
+ * notification without `action.section` — most of them (voice/system ones)
+ * — which read as a dead click.
+ */
 function runAction(n) {
-  if (n.action?.section) navigate(n.action.section);
+  if (n.action?.section) {
+    navigate(n.action.section);
+  } else {
+    openOnNextRender(n.id);
+    navigate('notifications');
+  }
 }
 
 async function markReadRemote(ids) {
@@ -181,7 +194,9 @@ function buildPanel(body, close) {
         // Navigating away doesn't itself count as an "outside click" of a
         // popover whose own content triggered it — close explicitly so it
         // doesn't stay floating over whatever screen navigate() lands on.
-        if (n.action?.section) close();
+        // runAction() now always navigates somewhere (either the notification's
+        // own action.section, or the full history screen's detail view).
+        close();
         runAction(n);
       });
       list.appendChild(row);

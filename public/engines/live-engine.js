@@ -36,6 +36,16 @@ export class LiveEngine extends VoiceEngine {
     this._inputBuffer = ''; // accumulated inputTranscription text for the turn in progress
     this._micLevel = 0; // for the orb — RMS of the last processed mic frame
     this._outputTimeline = []; // for the orb — {playAt, endAt, rms} per scheduled chunk, see getOutputLevel()
+
+    // Generation token for scheduled playback sources — found during the
+    // state-machine audit: _stopPlayback() zeroed scheduledCount without
+    // detaching each source's onended, so a late one (closing an
+    // AudioContext doesn't guarantee already-scheduled sources never fire
+    // it) could drive scheduledCount NEGATIVE, which still passes
+    // _maybeFinishTurn()'s `<= 0` check — a stale completion firing on a
+    // turn that's since moved on. Bumped in _stopPlayback(); each
+    // source's onended checks it before ever touching scheduledCount.
+    this._playbackGen = 0;
   }
 
   /** Opens the WebSocket if needed and waits for it to be ready. Safe to call more than once. */
@@ -102,6 +112,7 @@ export class LiveEngine extends VoiceEngine {
   stop() {
     this.active = false;
     this.muted = false; // a freshly started/restarted session always begins unmuted
+    this._disarmStuckWatchdog();
     if (this.processorNode) {
       this.processorNode.disconnect();
       this.processorNode = null;
@@ -175,6 +186,13 @@ export class LiveEngine extends VoiceEngine {
     }
     this.ws.send(JSON.stringify({ type: 'text', text }));
     this._setState('thinking');
+    // Backstop against the server going silent after this — no chunk, no
+    // audio, no error, no close — found during the state-machine audit.
+    // Re-armed on transcript_out/tool_start/tool_result (forward progress);
+    // disarmed once audio actually starts (its own tracking takes over —
+    // see the constructor's _playbackGen comment) or the turn ends any
+    // other way.
+    this._armStuckWatchdog(() => this._recoverFromStuckState());
   }
 
   // Gemini Live always speaks with its own voice and has no separate model
@@ -187,7 +205,26 @@ export class LiveEngine extends VoiceEngine {
 
   /** Barge-in: clear playback immediately for responsiveness (Gemini's own VAD also detects this server-side). */
   interrupt() {
+    this._disarmStuckWatchdog();
     this._stopPlayback();
+    this._setState(this.active ? 'listening' : 'idle');
+  }
+
+  /**
+   * The 'thinking' hang watchdog's recovery action (see _armStuckWatchdog()
+   * in voice-engine.js, armed in sendText() and re-armed on forward
+   * progress). Unlike the other two engines this doesn't reuse
+   * interrupt() — a genuinely stuck turn may have partial
+   * _currentReplyText/_inputBuffer accumulated, which interrupt() alone
+   * doesn't clear and stop() (which does) would tear down the whole
+   * session, not just this turn.
+   */
+  _recoverFromStuckState() {
+    this._emit('error', { message: 'Jarvis seems to have gotten stuck — resetting.' });
+    this._stopPlayback();
+    this.turnDone = false;
+    this._currentReplyText = '';
+    this._inputBuffer = '';
     this._setState(this.active ? 'listening' : 'idle');
   }
 
@@ -195,10 +232,28 @@ export class LiveEngine extends VoiceEngine {
 
   _handleServerMessage(msg) {
     if (msg.type === 'error') {
+      // Found during the state-machine audit: this was the only one of the
+      // three engines whose server-error path reset nothing — a mid-turn
+      // error left state (and any already-scheduled playback) exactly as
+      // it was, matching neither pipeline-engine.js's nor duplex-engine.js's
+      // own error handling.
+      this._disarmStuckWatchdog();
+      this._stopPlayback();
+      this._setState(this.active ? 'listening' : 'idle');
       this._emit('error', { message: msg.error, code: msg.code });
     } else if (msg.type === 'tool_start') {
+      // The 'thinking' hang watchdog has no job once genuinely speaking —
+      // a REAL, confirmed bug (reproduced with a standalone timer test,
+      // not something needing real audio hardware): Gemini can stream a
+      // tool call or later reply text while earlier audio is still
+      // playing, and re-arming this 45s timer unconditionally in that
+      // window left it live with nothing to disarm it again until
+      // 'turn_complete' — if that gap ever exceeded 45s, it fired and
+      // force-interrupted audio that was playing completely normally.
+      if (this.state !== 'speaking') this._armStuckWatchdog(() => this._recoverFromStuckState());
       this._emit('tool', { name: msg.name });
     } else if (msg.type === 'tool_result') {
+      if (this.state !== 'speaking') this._armStuckWatchdog(() => this._recoverFromStuckState()); // forward progress, same reasoning as transcript_out below
       this._emit('tool_result', msg);
     } else if (msg.type === 'transcript_in') {
       // Gemini doesn't mark a distinct "final" point for input transcription
@@ -207,10 +262,26 @@ export class LiveEngine extends VoiceEngine {
       this._inputBuffer += msg.text;
       this._emit('transcript', { text: this._inputBuffer, final: false });
     } else if (msg.type === 'transcript_out') {
+      if (this.state !== 'speaking') this._armStuckWatchdog(() => this._recoverFromStuckState()); // forward progress — re-arm, not a fresh problem
       this._finalizeInputTranscript();
       this._currentReplyText += msg.text;
       this._emit('chunk', { text: msg.text });
     } else if (msg.type === 'audio') {
+      // The 'thinking' hang backstop (see sendText()) hands off to
+      // scheduled-playback's own completion tracking now (_maybeFinishTurn
+      // via each source's onended) — see the generation-token comment in
+      // the constructor for the guarantee that tracking is correct.
+      this._disarmStuckWatchdog();
+      // A SECOND, engine-level backstop layered on top of that tracking —
+      // added while re-investigating a reported "stuck on 'speaking'" bug
+      // on the other two engines, and extended here for the same reason:
+      // _maybeFinishTurn() only ever fires from 'turn_complete' arriving OR
+      // a scheduled source's onended — if the server goes silent after the
+      // last audio chunk with no 'turn_complete'/'error'/close ever
+      // arriving, nothing would otherwise ever recover. Re-armed on every
+      // 'audio' chunk (forward progress), same reasoning as the other two
+      // engines' identical fix.
+      this._armStuckWatchdog(() => this._recoverFromStuckState(), 60000);
       this._finalizeInputTranscript();
       this._playChunk(msg.data);
       this._setState('speaking');
@@ -230,6 +301,11 @@ export class LiveEngine extends VoiceEngine {
       // interrupted; nothing client-side can distinguish a real interruption
       // from Gemini's VAD over-triggering on its own echo.
       console.info('[LiveEngine] Gemini reported an interruption — stopping playback.');
+      // Disarms the engine-level 'speaking' backstop armed on 'audio' above
+      // — a real, legitimate end to this turn (a gap that would otherwise
+      // have let a later false "stuck" recovery fire on a turn that
+      // already correctly ended here).
+      this._disarmStuckWatchdog();
       this._stopPlayback();
       this._setState(this.active ? 'listening' : 'idle');
     } else if (msg.type === 'turn_complete') {
@@ -247,6 +323,7 @@ export class LiveEngine extends VoiceEngine {
 
   _maybeFinishTurn() {
     if (this.turnDone && this.scheduledCount <= 0) {
+      this._disarmStuckWatchdog(); // covers a turn that finished WITHOUT ever producing audio (e.g. tool-only) — 'audio' isn't guaranteed to be the thing that disarms it
       this._emit('done', { text: this._currentReplyText });
       this._currentReplyText = '';
       this._inputBuffer = '';
@@ -296,6 +373,22 @@ export class LiveEngine extends VoiceEngine {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     this.playbackContext = new AudioContextClass({ sampleRate: OUTPUT_SAMPLE_RATE });
     this.nextPlayTime = this.playbackContext.currentTime;
+    // Chrome's autoplay policy can hand back a SUSPENDED context — this one
+    // is created inside a WebSocket message handler, not a user-gesture
+    // callback, so that's real exposure here (audio-player.js's plain
+    // `new Audio()` elements don't need an AudioContext at all, so they
+    // never had this specific risk). A source scheduled on a suspended
+    // context never actually plays and never fires onended, so
+    // scheduledCount never drains and _maybeFinishTurn() can never pass —
+    // 'speaking' stuck forever with literally no sound. Found during the
+    // state-machine audit; this engine is documented at the top of this
+    // file as never having been live-verified end-to-end, so this was
+    // genuinely untested territory, not a regression.
+    if (this.playbackContext.state === 'suspended') {
+      this.playbackContext.resume().catch((err) => {
+        console.warn('[LiveEngine] could not resume the playback AudioContext:', err);
+      });
+    }
   }
 
   _playChunk(base64) {
@@ -327,13 +420,20 @@ export class LiveEngine extends VoiceEngine {
     this._outputTimeline = this._outputTimeline.filter((c) => c.endAt >= cutoff);
 
     this.scheduledCount++;
+    const gen = this._playbackGen;
     source.onended = () => {
+      // See the constructor's _playbackGen comment — a source scheduled
+      // before a _stopPlayback() call can still fire onended after it
+      // (closing an AudioContext doesn't guarantee that), and must not
+      // touch the NEW generation's scheduledCount if so.
+      if (gen !== this._playbackGen) return;
       this.scheduledCount--;
       this._maybeFinishTurn();
     };
   }
 
   _stopPlayback() {
+    this._playbackGen++; // invalidate any in-flight onended from sources scheduled before this call — see the constructor's comment
     if (this.playbackContext) {
       this.playbackContext.close().catch(() => {});
       this.playbackContext = null;

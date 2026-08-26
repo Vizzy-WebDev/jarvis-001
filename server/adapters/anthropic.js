@@ -5,6 +5,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getSecret } from '../config.js';
 import { systemInstructionFor } from '../prompt.js';
+import { assistantTextOf } from '../conversation.js';
 
 const MAX_TOKENS = 1024;
 
@@ -67,18 +68,28 @@ function toMessages(messages) {
     } else if (m.role === 'user' && m.text) {
       out.push({ role: 'user', content: m.text });
     } else if (m.role === 'assistant') {
-      if (m.raw?.adapter === 'anthropic' && m.raw.content) {
+      // assistantTextOf(), not m.text directly — see openai-compatible.js's
+      // identical comment. The raw-content shortcut below is deliberately
+      // skipped when interrupted: `raw` is exactly the FULL content
+      // Anthropic generated, which is precisely what must NOT be replayed
+      // once a barge-in cut it short — falling through to the plain
+      // spoken-text branch instead loses the raw round-trip fidelity for
+      // that one turn, which is the correct trade: an interrupted turn is
+      // already an edited turn, that fidelity only mattered for the
+      // untruncated version.
+      const spoken = assistantTextOf(m);
+      if (!m.interrupted && m.raw?.adapter === 'anthropic' && m.raw.content) {
         out.push({ role: 'assistant', content: m.raw.content });
       } else if (m.toolCalls?.length) {
         out.push({
           role: 'assistant',
           content: [
-            ...(m.text ? [{ type: 'text', text: m.text }] : []),
+            ...(spoken ? [{ type: 'text', text: spoken }] : []),
             ...m.toolCalls.map((c) => ({ type: 'tool_use', id: c.id, name: c.name, input: c.args })),
           ],
         });
-      } else if (m.text) {
-        out.push({ role: 'assistant', content: m.text });
+      } else if (spoken) {
+        out.push({ role: 'assistant', content: spoken });
       }
     } else if (m.role === 'tool' && m.toolResults?.length) {
       out.push({

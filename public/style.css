@@ -356,6 +356,12 @@ header h1 {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* Lets the row's content (.key-editor-form, which itself wraps — see
+     below) drop to its own line under the label instead of forcing the
+     whole row wider than the settings panel. Without this, a row with
+     several inputs/buttons overflowed the panel and forced horizontal
+     scrolling to reach Save/Test/Add/Delete — a real, reported bug. */
+  flex-wrap: wrap;
   gap: 10px;
   font-size: 0.88rem;
   padding: 6px 0;
@@ -414,11 +420,19 @@ header h1 {
 
 .key-editor-form {
   display: flex;
+  /* Root cause of the overflow bug: a flex item's default min-width is
+     `auto`, which refuses to shrink below its own content-based width —
+     with 2-5 unconstrained inputs/buttons in one row and no wrap, that
+     reliably exceeded the settings panel's ~420px width. Wrapping plus
+     each input's own min-width:0 below (not just flex:1, which alone
+     doesn't override that shrink floor) is the actual fix. */
+  flex-wrap: wrap;
   gap: 8px;
 }
 
 .key-editor-form input {
-  flex: 1;
+  flex: 1 1 120px;
+  min-width: 0;
   padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid var(--border);
@@ -428,6 +442,7 @@ header h1 {
 }
 
 .key-editor-form button {
+  flex: 0 0 auto;
   padding: 8px 14px;
   border-radius: 8px;
   border: 1px solid var(--border);
@@ -435,6 +450,16 @@ header h1 {
   color: #06131f;
   font-weight: 600;
   cursor: pointer;
+}
+
+/* The "needs an extra field" checkbox row (external-services' add-service
+   form) — always claims its own full line rather than awkwardly sharing
+   space with 120px-wide inputs next to it. */
+.key-editor-form label {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 #provider-key-cancel {
@@ -1357,6 +1382,27 @@ header h1 {
   flex-shrink: 0;
 }
 
+/* Memory review rows carry a full sentence AND wide action buttons — on a
+   narrow rail there isn't room for both side by side (.list-row-actions is
+   flex-shrink:0, .list-row-main is min-width:0, so main collapses and a
+   normal sentence wraps one word per line — confirmed: on the docked
+   500px conversation rail, the conflict card's three buttons ("Update the
+   old one" / "Keep both" / "Discard new") leave .list-row-main only ~87px,
+   room for roughly one word per line no matter the screen size). Stack
+   instead of squeezing — used by app.js's buildCandidateRow(), not the
+   bare .list-row rules above, which stay untouched for every other list
+   (Connectors, models, connections) that doesn't have this problem. */
+.list-row-stacked {
+  flex-direction: column;
+  align-items: stretch;
+}
+.list-row-stacked .list-row-actions {
+  flex-wrap: wrap;
+}
+.list-row-stacked .list-row-title {
+  overflow-wrap: break-word;
+}
+
 /* A row of top-level action buttons sitting directly in a generic screen's
    flex-column body (e.g. Skills' "+ Browse the catalog" / "+ Create your
    own") — without this, a lone <button> as a direct flex-column child
@@ -1515,6 +1561,27 @@ header h1 {
   gap: 12px;
 }
 
+/* Name + account hint (app-control.js's buildRow(), _connector-detail.js's
+   title row) — a small vertical stack so the hint reads as a subtitle of
+   the name beside it, not a sibling row element. */
+.connector-row-name-stack,
+.detail-title-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0; /* lets a long hint truncate instead of forcing row overflow */
+}
+
+.connector-row-hint,
+.detail-account-hint {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* The Browse-connectors modal's "Popular" strip — bordered cards, wrapping
    onto a second line rather than shrinking below a usable width, matching
    the user's Claude Desktop reference. */
@@ -1597,6 +1664,30 @@ header h1 {
 }
 
 .tool-group-body.collapsed {
+  display: none;
+}
+
+/* The MCP Connect card's collapsed "Advanced settings" toggle
+   (_connector-detail.js's buildMcpConnectSection()) — same visual language
+   as .tool-group-toggle above, just its own class since it's a different
+   feature (an optional OAuth Client ID/Secret fallback, not a tool-list
+   affordance). Collapsed by default on every connector's Connect screen. */
+.advanced-settings-toggle {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 0.8rem;
+  line-height: 1;
+  margin: 12px 0 4px;
+}
+
+.advanced-settings-body {
+  padding-top: 4px;
+}
+
+.advanced-settings-body.collapsed {
   display: none;
 }
 
@@ -3002,6 +3093,38 @@ body.modal-open {
   color: var(--muted);
   font-size: 0.82rem;
   white-space: nowrap;
+}
+
+/* The Pipeline card's step list (_skill-detail.js's buildPipelineCard()). */
+.pipeline-steps {
+  list-style: decimal;
+  margin: 0 0 var(--space-3);
+  padding-left: 1.4em;
+}
+
+.pipeline-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.pipeline-step-id {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: var(--text);
+}
+
+.pipeline-inputs {
+  margin: 0 0 var(--space-3);
+  padding-left: 1.2em;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.pipeline-errors {
+  margin: var(--space-2) 0 0;
+  padding-left: 1.2em;
 }
 
 /* The Upload dialog's drag-and-drop zone — matched to a real screenshot of

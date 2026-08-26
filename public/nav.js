@@ -24,8 +24,19 @@ export const SECTIONS = [
   // engines live under server/projects/ and server/content/; there is still
   // no screen for either — what went away is the doors, not the abilities.
   { id: 'tasks', label: 'Scheduled Tasks', group: 'Automation', module: './screens/tasks.js' },
+  // Background Jobs (server/jobs/) — a different thing from Scheduled Tasks
+  // above: a task runs on a schedule Jarvis has no judgment about; a Job is
+  // long-running work Jarvis (or the user) chose to background right now.
+  // See root CLAUDE.md's Jobs section.
+  { id: 'jobs', label: 'Background Jobs', group: 'Automation', module: './screens/jobs.js' },
   { id: 'briefing', label: 'Morning Briefing', group: 'Automation', module: './screens/briefing.js' },
   { id: 'profile', label: 'Profile & Goals', group: 'About You', module: './screens/profile.js' },
+  // Every memory Jarvis has saved — approved by hand or saved automatically
+  // (see server/memory/memory-policy.js's trust dial, server/memory/CLAUDE.md)
+  // — browsable, searchable, editable, and undoable. The backend
+  // (server/memory/memory-store.js) has existed since Memory shipped; this
+  // is its first screen.
+  { id: 'memory', label: 'Memory', group: 'About You', module: './screens/memory.js' },
 ];
 
 export function findSection(id) {

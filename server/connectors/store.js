@@ -3,7 +3,7 @@
 // integration reached over one of the three supported mechanisms. Dependency-
 // free leaf module (same reasoning as skill-store.js/task-store.js — see
 // CLAUDE.md's circular-import invariant): this file must never import
-// skills/index.js, and nothing here does.
+// tools/index.js or capabilities.js, and nothing here does.
 //
 // `browser` and `files` are singletons — there's one "your browser control
 // settings" and one "your folder allowlist", not a list of them the user

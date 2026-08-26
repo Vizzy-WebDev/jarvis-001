@@ -1,12 +1,12 @@
 // Aggregates every enabled connector's tools into one flat list, and
 // dispatches a call by name to whichever connector/client actually handles
-// it. This is the third source `skills/index.js` merges in (built-in code
-// skills, playbook skills, now connector tools) — a connector tool is
-// indistinguishable from any other skill to the model.
+// it. This is the third source `capabilities.js` merges in (built-in tools,
+// folder Skills, now connector tools) — a connector tool is indistinguishable
+// from any other capability to the model.
 //
-// Imports no skill loader (`skills/index.js`) — see CLAUDE.md's circular-
-// import invariant; this file is imported BY `skills/index.js`, never the
-// other way around.
+// Imports no tool loader (`tools/index.js`) or `capabilities.js` — see
+// CLAUDE.md's circular-import invariant; this file is imported BY
+// `capabilities.js`, never the other way around.
 //
 // Five connector types: `files`, `browser` (singletons, Jarvis's own
 // built-in abilities — no App Control card, no per-tool permissions, see
@@ -196,7 +196,7 @@ export function getToolDeclarations() {
 
 let declarationIndex = new Map();
 
-/** Runs a connector tool by its (prefixed, for mcp/api/cli) or plain (for files/browser) name. Throws on failure — callers (skills/index.js's runSkill) already catch and wrap. */
+/** Runs a connector tool by its (prefixed, for mcp/api/cli) or plain (for files/browser) name. Throws on failure — callers (capabilities.js's invoke()) already catch and wrap. */
 export async function runConnectorTool(name, args) {
   const decl = declarationIndex.get(name);
   if (!decl) throw new Error(`Unknown connector tool: ${name}`);

@@ -33,7 +33,7 @@ export class BrowserSpeaker {
   /**
    * For the orb: Jarvis's own voice output energy while speaking, 0..1.
    * speechSynthesis exposes no analysable audio on this path at all (unlike
-   * AudioPlayer's Gemini-voice path — see its getOutputLevel()), so this is
+   * AudioPlayer's server-TTS path — see its getOutputLevel()), so this is
    * timing-derived rather than amplitude-derived: each word boundary
    * re-triggers a short decaying pulse, giving the orb a real per-word
    * rhythm instead of the flat procedural motion it fell back to before.
@@ -118,7 +118,27 @@ export class BrowserSpeaker {
     this._lastBoundaryAt = 0;
   }
 
+  /**
+   * Prepares this speaker for a fresh reply after a model-switch 'restart'
+   * — found during the state-machine audit while fixing the identical bug
+   * in audio-player.js/voice/playback.js (whose reset() only touched flags,
+   * never the actually-playing audio): this had the same gap. Chrome's
+   * speechSynthesis keeps its own internal utterance queue independent of
+   * `pending`/`_buffer` — without cancel() here, a failed model's
+   * already-queued utterances kept speaking underneath the replacement's.
+   * Known, accepted residual edge case (unlike audio-player.js's fix, this
+   * one can't fully close): cancel() asynchronously fires onerror for each
+   * cancelled utterance, which still decrements `pending` on arrival — if
+   * one lands after this reset already zeroed it, `pending` can end up
+   * transiently negative for the NEW reply, which could in principle fire
+   * onIdle a beat early. Narrow (restart + browser voice + timing) and low
+   * severity (an early "done" on the browser-voice path, not a hang) next
+   * to what this whole audit targets — not worth the added complexity of
+   * per-utterance generation tracking inside this class for.
+   */
   reset() {
+    window.speechSynthesis.cancel();
+    this.pending = 0;
     this.stopped = false;
     this.streamEnded = false;
     this._buffer = '';

@@ -29,7 +29,9 @@ care which engine it's talking to.
 **All three voice-output paths now expose a real `getOutputLevel()` (0..1) for
 `orb.js`'s audio-reactivity** — none of them are a hardcoded 0 any more:
 - `LiveEngine` computes RMS inline from each scheduled PCM chunk as it plays.
-- `audio-player.js` (Gemini TTS, the default `PipelineEngine` voice) reads an
+- `audio-player.js` (server-side TTS — `server/tts/index.js`'s provider
+  registry, e.g. ElevenLabs; the free `browser` voice is `PipelineEngine`'s
+  actual default, not this) reads an
   **offline-decoded amplitude envelope** (`voice-envelope.js`'s
   `buildEnvelope()`/`sampleEnvelope()`) built from a SEPARATE copy of the same
   audio bytes via `OfflineAudioContext`, sampled against the real `<audio>`

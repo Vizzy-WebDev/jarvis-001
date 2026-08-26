@@ -38,8 +38,14 @@ const BARGE_FLOOR = 0.05;
 export class PipelineEngine extends VoiceEngine {
   constructor(opts = {}) {
     super();
-    this.voiceOutput = opts.voiceOutput || 'browser'; // 'browser' | 'gemini'
-    this.geminiVoice = opts.geminiVoice;
+    // 'browser' (the free, offline speechSynthesis voice) or a configured
+    // TTS provider's ref (e.g. 'elevenlabs', server/tts/index.js's registry)
+    // — the ref IS the provider id, passed straight through to AudioPlayer;
+    // there is no longer a separate "which voice" concept on the client at
+    // all (a provider resolves its own voice server-side, e.g. from
+    // external-services.js's optional extra field) now that Gemini (whose
+    // voice names this used to thread through as `geminiVoice`) is gone.
+    this.voiceOutput = opts.voiceOutput || 'browser';
     this.useAiTurnCheck = Boolean(opts.useAiTurnCheck);
 
     this.recognition = null;
@@ -56,11 +62,18 @@ export class PipelineEngine extends VoiceEngine {
     this._recSuspended = false; // true only while Jarvis's audio is actually playing + its echo tail
     this._echoTailTimer = null;
     this._bargeTimer = null; // fixed-rate mic-energy sampler while speaking
+
+    // Generation token for the current speaker (AudioPlayer/BrowserSpeaker)
+    // — found necessary during a full state-machine audit: neither
+    // speaker's onStart/onIdle callback used to check "am I still the
+    // current one?", so a callback from an already-discarded speaker could
+    // still mutate LIVE engine state. Bumped in _send() (new speaker) AND
+    // interrupt() (old one discarded, even before any new one exists).
+    this._speakerGen = 0;
   }
 
   updateOptions(opts = {}) {
     if (opts.voiceOutput) this.voiceOutput = opts.voiceOutput;
-    if ('geminiVoice' in opts) this.geminiVoice = opts.geminiVoice;
     if ('useAiTurnCheck' in opts) this.useAiTurnCheck = Boolean(opts.useAiTurnCheck);
   }
 
@@ -205,6 +218,15 @@ export class PipelineEngine extends VoiceEngine {
    * is immediately followed by re-suspending for the new turn anyway.
    */
   interrupt({ keepListening = false, resumeRecognition = true } = {}) {
+    // Invalidates any in-flight onStart/onIdle from the speaker about to be
+    // discarded below, even before a NEW one exists — see _speakerGen's
+    // constructor comment. Also a backstop disarm of the 'thinking' hang
+    // watchdog (its primary disarm points are _onSpeechStart() and _send()'s
+    // own terminal branches; every call to interrupt() — a real barge-in,
+    // _send()'s defensive pre-turn clear, or stop() — should leave nothing
+    // stale armed regardless of which path got here).
+    this._speakerGen++;
+    this._disarmStuckWatchdog();
     if (this.speaker) {
       this.speaker.stop();
       this.speaker = null;
@@ -411,6 +433,15 @@ export class PipelineEngine extends VoiceEngine {
     if (!text && !attachments.length) return;
     this.interrupt({ keepListening: true }); // clear anything left over from a previous turn
     this._setState('thinking');
+    // Backstop against a hung-but-open EventSource (no chunk, no error, no
+    // close — just silence) leaving the engine stuck in 'thinking' forever
+    // — found during the state-machine audit. Re-armed on every
+    // chunk/tool_start/tool_result/restart below so a genuinely slow but
+    // actively-responding model never trips it; disarmed the moment a reply
+    // actually starts being spoken (its own, better-scoped per-sentence
+    // watchdog takes over — see audio-player.js/browser-speaker.js) or the
+    // turn ends any other way.
+    this._armStuckWatchdog(() => this._recoverFromStuckState());
     // Recognition deliberately stays LIVE through "thinking" — nothing is
     // playing yet, so there's no echo risk, and this is what lets you keep
     // talking or change your mind before Jarvis has said a word (the
@@ -419,10 +450,24 @@ export class PipelineEngine extends VoiceEngine {
     // still fixes the self-listening bug.
 
     let fullText = '';
+    // See _speakerGen's own constructor comment — onStart/onIdle only act
+    // if this is still the CURRENT speaker generation by the time they
+    // fire, so a stale callback from a discarded speaker is a safe no-op.
+    const gen = ++this._speakerGen;
+    const onStart = () => {
+      if (gen === this._speakerGen) this._onSpeechStart();
+    };
+    const onIdle = () => {
+      if (gen === this._speakerGen) this._onSpeechIdle();
+    };
+    // 'browser' is the one special value (the free, offline speechSynthesis
+    // voice) — anything else is a configured TTS provider's ref, passed
+    // straight through to AudioPlayer, which resolves its own voice
+    // server-side. Same convention duplex-engine.js's _makeSpeaker() uses.
     this.speaker =
-      this.voiceOutput === 'gemini'
-        ? new AudioPlayer({ onStart: () => this._onSpeechStart(), onIdle: () => this._onSpeechIdle(), voice: this.geminiVoice })
-        : new BrowserSpeaker({ onStart: () => this._onSpeechStart(), onIdle: () => this._onSpeechIdle() });
+      this.voiceOutput === 'browser'
+        ? new BrowserSpeaker({ onStart, onIdle })
+        : new AudioPlayer({ onStart, onIdle, provider: this.voiceOutput });
 
     const params = new URLSearchParams({ message: text, source: opts.source || 'voice' });
     if (typeof opts.confidence === 'number') params.set('confidence', String(opts.confidence));
@@ -442,17 +487,40 @@ export class PipelineEngine extends VoiceEngine {
       }
 
       if (data.type === 'chunk') {
+        // The thinking hang watchdog has no job once genuinely speaking —
+        // a REAL, confirmed bug (reproduced with a standalone timer test,
+        // not something needing real audio hardware to verify): a chunk
+        // for a LATER sentence arriving while an EARLIER one is still
+        // playing used to re-arm this 45s timer unconditionally, with
+        // nothing left to disarm it again until 'done' — if that gap ever
+        // exceeded 45s, it fired and force-interrupted audio that was
+        // playing completely normally. This was the actual root cause of
+        // a reported "replies cut off mid-sentence, not from me
+        // interrupting" bug.
+        if (this.state !== 'speaking') this._armStuckWatchdog(() => this._recoverFromStuckState());
         fullText += data.text;
         this._speakingBuffer += data.text;
         this._emit('chunk', { text: data.text });
         this.speaker?.pushText(data.text);
       } else if (data.type === 'tool_start') {
+        if (this.state !== 'speaking') this._armStuckWatchdog(() => this._recoverFromStuckState());
         this._emit('tool', { name: data.name });
       } else if (data.type === 'tool_result') {
+        if (this.state !== 'speaking') this._armStuckWatchdog(() => this._recoverFromStuckState()); // forward progress, same reasoning as 'chunk'
         this._emit('tool_result', data);
       } else if (data.type === 'model_switch') {
         this._emit('model_switch', data);
       } else if (data.type === 'restart') {
+        // Same gating as 'chunk'/'tool_start'/'tool_result' above, and the
+        // exact same real bug: a model-switch mid-turn can land here while
+        // an EARLIER sentence is still genuinely playing (audio for
+        // sentence 1 succeeded and started; generating sentence 2 failed
+        // and triggered this restart) — this branch was the one place that
+        // still re-armed unconditionally, missed in the original fix.
+        // Found by re-reading this file specifically to check whether that
+        // fix was complete, per a follow-up report of ElevenLabs replies
+        // still occasionally cutting off after it shipped.
+        if (this.state !== 'speaking') this._armStuckWatchdog(() => this._recoverFromStuckState()); // a fresh attempt starting is renewed progress, not a stall
         // The model that was mid-reply failed — clear what's shown/spoken
         // so far; a fresh reply from the next model follows on the same
         // stream. See server/models/runner.js's header comment for why a
@@ -462,6 +530,7 @@ export class PipelineEngine extends VoiceEngine {
         this.speaker?.reset();
         this._emit('restart', {});
       } else if (data.type === 'paused') {
+        this._disarmStuckWatchdog(); // a real, legitimate end to this turn — not a hang
         this.speaker?.end();
         es.close();
         if (this.currentEventSource === es) this.currentEventSource = null;
@@ -473,6 +542,7 @@ export class PipelineEngine extends VoiceEngine {
         this._emit('paused', { reason: data.reason });
         this._setState(this.active ? 'listening' : 'idle');
       } else if (data.type === 'done') {
+        this._disarmStuckWatchdog();
         this.speaker?.end();
         es.close();
         if (this.currentEventSource === es) this.currentEventSource = null;
@@ -482,6 +552,7 @@ export class PipelineEngine extends VoiceEngine {
         // Jarvis is speaking used to strand playback (no more sentences
         // ever flush, and _isSpeaking/_recSuspended never clear) because
         // only 'paused'/'done' called this.
+        this._disarmStuckWatchdog();
         this.speaker?.end();
         es.close();
         if (this.currentEventSource === es) this.currentEventSource = null;
@@ -493,6 +564,7 @@ export class PipelineEngine extends VoiceEngine {
 
     es.onerror = () => {
       if (this.currentEventSource === es) {
+        this._disarmStuckWatchdog();
         this.speaker?.end(); // same reasoning as the 'error' branch above
         es.close();
         this.currentEventSource = null;
@@ -504,6 +576,25 @@ export class PipelineEngine extends VoiceEngine {
   }
 
   _onSpeechStart() {
+    // The 'thinking' hang backstop (see _send()) hands off to 'speaking's
+    // own, better-scoped per-sentence watchdog now — see
+    // audio-player.js/browser-speaker.js.
+    this._disarmStuckWatchdog();
+    // A SECOND, engine-level backstop, layered on top of the per-sentence
+    // one inside the speaker classes — found necessary while re-investigating
+    // a reported "stuck on 'speaking'" bug: the per-sentence watchdog only
+    // guarantees any ONE utterance eventually settles; it does nothing if
+    // `speaker.end()` itself is never called (the SSE stream goes silent
+    // after the last chunk with no 'done'/'paused'/'error'/close ever
+    // arriving — EventSource gives no guaranteed signal for that) or if a
+    // stray late speechSynthesis event re-enters 'speaking' with nothing
+    // real behind it. onStart fires once PER SENTENCE (both speaker classes
+    // chunk that way), so re-arming here on every sentence is still only a
+    // "no real progress for this long" check, never a whole-reply cap — a
+    // legitimately long reply keeps refreshing this on its own. 60s is a
+    // reasoned default (comfortably past the speaker's own 30s-max
+    // per-utterance cap), not empirically tuned against real hardware.
+    this._armStuckWatchdog(() => this._recoverFromStuckState(), 60000);
     this._isSpeaking = true;
     this._setState('speaking');
     // Off only now that audio is actually playing — an echo can then never
@@ -514,6 +605,7 @@ export class PipelineEngine extends VoiceEngine {
   }
 
   _onSpeechIdle() {
+    this._disarmStuckWatchdog(); // the engine-level 'speaking' backstop armed in _onSpeechStart() — a real, legitimate end to this turn
     this._isSpeaking = false;
     this._speakingBuffer = '';
     clearInterval(this._bargeTimer);
@@ -530,6 +622,20 @@ export class PipelineEngine extends VoiceEngine {
       this.pendingConfidence = null;
       this._resumeRecognition();
     }, ECHO_TAIL_MS);
+  }
+
+  /**
+   * The 'thinking' hang watchdog's recovery action (see _armStuckWatchdog()
+   * in voice-engine.js, armed in _send() and re-armed on forward progress).
+   * Reuses interrupt()'s own, already-safe cleanup rather than duplicating
+   * it. `_isSpeaking` is always false here (this watchdog is only ever
+   * armed before speaking has started), so nothing about barge-in/echo
+   * handling is disturbed — this is equivalent to the user never having
+   * spoken at all for this (hung) turn.
+   */
+  _recoverFromStuckState() {
+    this._emit('error', { message: 'Jarvis seems to have gotten stuck — resetting.' });
+    this.interrupt();
   }
 
   /**

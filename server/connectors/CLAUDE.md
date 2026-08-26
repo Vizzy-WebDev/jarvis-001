@@ -23,11 +23,11 @@ module through the same interface, and every tool — regardless of
 mechanism — goes through the exact same standing-permission filter and
 `classifyToolRisk()` risk check before it ever reaches a model.
 
-Every enabled connector's tools merge into `skills/index.js`'s existing
-`getToolDeclarations()`/`listSkills()`/`runSkill()` as a **third** source alongside
-built-in code skills and playbooks (`connectors/index.js`'s `getToolDeclarations()`,
-wrapped by `skills/index.js`'s `connectorSkills()`) — a connector tool is
-indistinguishable from any other skill to the model.
+Every enabled connector's tools merge into `capabilities.js`'s existing
+`getToolDeclarations()`/`listCapabilities()`/`invoke()` as a **third** source alongside
+built-in tools and folder Skills (`connectors/index.js`'s `getToolDeclarations()`,
+wrapped by `capabilities.js`'s `connectorCapabilities()`) — a connector tool is
+indistinguishable from any other capability to the model.
 
 - **`files.js`** — read/write/list/move, every path resolved to absolute and checked
   against the allowlist BEFORE any `fs` call (never trust a relative path or a `..`
@@ -89,11 +89,10 @@ indistinguishable from any other skill to the model.
   user); **4.** none of the above worked — returns `{needsManualClient: true, reason,
   message}` (`manualClientHint()`) rather than throwing, so a real, per-connector,
   service-worded explanation is persisted on `connectFlow.manualClient` and the connector
-  is never left stuck. **As of the user's own final decision, nothing in the front-end
-  ever shows a Client ID/Secret entry point at all — `manualClient`'s message is shown
-  as plain status text only.** See "No Client ID/Secret UI anywhere" below for the full
-  account (this regressed toward showing some form of it unconditionally three separate
-  times before landing here). The redirect lands on Jarvis's OWN
+  is never left stuck. `manualClient`'s message is shown as plain status text on the
+  connector detail page, above a collapsed, optional Client ID/Secret entry point — see
+  "Client ID/Secret UI, round 5" below for the current shape and the four rounds that
+  preceded it. The redirect lands on Jarvis's OWN
   already-running server (`GET /api/connectors/oauth/callback`) — no separate temporary
   listener needed. Token sets are one `JSON.stringify`'d value under the connector's
   `config.secretRef`, through the existing `config.js` `saveSecret()`/`getSecret()` — no
@@ -108,9 +107,10 @@ indistinguishable from any other skill to the model.
   `127.0.0.1` only, so a remote authorization server can never fetch a document Jarvis
   serves locally without a real, publicly-reachable address in front of it.
 - **`catalog-credentials.js`** — one Client ID/Secret **per catalog entry**, and
-  shared by every connector that catalog entry ever creates for this install. **No UI
-  calls this any more** (see "No Client ID/Secret UI anywhere" below) — the two modals
-  that originally posted to its `register-client` route were deleted outright. The
+  shared by every connector that catalog entry ever creates for this install. No UI
+  calls its `register-client` route (see "Client ID/Secret UI, round 5" below) — the
+  per-connector Advanced Settings section talks to `POST /:id/connect` directly instead,
+  a separate mechanism for a separate purpose (one-off override vs. set-once-globally). The
   route stays reachable server-side, meant to be called directly (e.g. by Claude,
   given real credentials outside the app) if the user ever wants Gmail/Drive/GitHub/
   Slack actually connected. This exists specifically because Google/GitHub/Slack's
@@ -211,9 +211,9 @@ cards:
   is gone). The user's explicit choice: these are "sensible hardcoded defaults," not
   something worth a settings UI.
 - **The Files folder allowlist** has no form either — it starts empty and grows only
-  through conversation. `server/skills/allow_folder.js` is the only way it changes:
+  through conversation. `server/tools/allow_folder.js` is the only way it changes:
   `confirm: 'always'` (reusing the existing read-back-and-confirm gate in
-  `skills/index.js`, the same mechanism `remember_about_me` uses, rather than trusting
+  `capabilities.js`, the same mechanism `remember_about_me` uses, rather than trusting
   the model's own judgment about what counts as a real "yes"), with its own small
   hardcoded denylist (`C:\Windows`, `C:\Program Files`, `C:\Program Files (x86)`) that
   can never be granted regardless of what's asked — the same "sensible hardcoded floor"
@@ -298,8 +298,9 @@ list, a redirect-URI box (computed client-side as `window.location.origin +
 '/api/connectors/oauth/callback'`, with a Copy button — the most common failure
 mode in a manual flow like this is a mistyped redirect URI) with a copy button,
 then Client ID/Secret fields and Connect — **historical, kept for accuracy about
-what `guide.steps`/`guide.note` are for; this is no longer what actually renders**,
-see "No Client ID/Secret UI anywhere" just below for the current, final state.
+what `guide.steps`/`guide.note` are for; this numbered-steps modal specifically is
+still not what renders** (round 5, below, is a plain collapsed two-field section
+with no step-by-step walkthrough) — see "Client ID/Secret UI, round 5" just below.
 Server-side, three small routes replace what was one merged "official connect"
 route: `POST /api/connectors/catalog/:catalogId/ensure` (find-or-create the
 connector record — no OAuth attempt), `POST /api/connectors/custom` (create-only,
@@ -310,41 +311,62 @@ UI any more) — separating "create the record" from "start connecting" is what
 lets the SAME detail page own the whole connect experience regardless of how the
 user got there.
 
-**No Client ID/Secret UI anywhere — the user's own final, explicit decision, and
-the end state of a rule that regressed three times before landing here. Do not
-re-add ANY form of it without being asked again.** The history, because it's the
-reason the current shape is what it is:
+**Client ID/Secret UI, round 5 — reversed back in, 2026-08-25, by explicit direct
+user request. The "do not re-add without being asked again" rule from rounds 1-4
+below was honored — the user did ask again — so this is not a regression, it's
+the next round of the same history.** The history, kept in full since the shape
+of round 5 only makes sense in light of it:
 1. Inline, unconditional Client ID/Secret fields on every connector's detail page.
 2. Inline, but only shown once a failure or `guide` justified it.
 3. Removed from the page; a "Have a Client ID for this service?" link + a
    guided-setup modal, both gated correctly on a real, per-connector recorded
    failure (`connectFlow.manualClient`) — genuinely correct, live-verified, no
    longer "unconditional" in any sense.
-4. **The user, shown (3) working exactly as designed against their own real Google
+4. The user, shown (3) working exactly as designed against their own real Google
    Drive connector, said they didn't want to see any of it, ever, even
    correctly-gated — "I did not ask you to remove any connector but I want you to
-   remove that advance setting that is there."** This is the current state: no
-   Client ID/Secret field, link, or modal exists anywhere in `public/` any more —
-   not on the connector detail page, not on the Add-custom-connector form (its own
-   "▸ Advanced settings" toggle, modeled directly on Claude's real UI, is gone
-   too), not in Browse Connectors. `buildGuidedSetupModal()`/`buildManualClientModal()`
-   were deleted outright, not just unlinked — dead UI code for a form the user
-   explicitly doesn't want is still a way for it to reappear by accident.
+   remove that advance setting that is there." Every Client ID/Secret field,
+   link, and modal was deleted outright (not just unlinked) from `public/`.
+5. **Current state.** After a separate investigation session (see
+   handoff-archive.md's entry on the "MCP Client ID regression" — spoiler: there
+   wasn't one; the user's belief that a mandatory field had appeared came from
+   an incorrect explanation in-app Jarvis itself gave in an earlier chat, not
+   from any real UI or code change) confirmed the automatic chain was never
+   broken, the user asked for this exact, narrower shape: a genuinely optional
+   Client ID/Secret pair, inside a **collapsed-by-default "Advanced settings"**
+   toggle on `_connector-detail.js`'s `buildMcpConnectSection()` (the MCP
+   Connect/Reconnect card) — present on every connector's Connect screen, never
+   auto-expanded (not even when `connectFlow.manualClient` is populated from a
+   past failure — the failure text above it already explains what's wrong; the
+   toggle doesn't editorialize on top of that), and reusing the existing
+   `.tool-group-toggle`-style collapse pattern rather than inventing a new one.
+   The two fields are read and sent as `{clientId, clientSecret}` on every
+   Connect click, exactly the shape `POST /:id/connect` already accepted before
+   this round (see "Connector detail pages" above) — left blank, the request is
+   byte-for-byte what it always was (`JSON.stringify` drops `undefined` keys),
+   confirmed live via a captured network request. `oauth.js`'s CIMD→DCR chain is
+   completely unchanged and still runs first, unconditionally, on every attempt;
+   the two fields only ever reach `obtainClientCredentials()` as its existing
+   `manualClientId`/`manualClientSecret` fallback parameters. **Not added:** the
+   Add-custom-connector form's own fields, a Name/URL edit surface on this card,
+   any per-service branching, or auto-expanding the section on failure — none of
+   that was asked for. If a sixth round ever changes this again, keep entries 1-5
+   rather than deleting them — the shape of each round only makes sense next to
+   what it replaced.
 
-**What this trades away, stated plainly so it isn't rediscovered by surprise
-later:** Gmail/Google Drive/GitHub/Slack stay in the catalog and stay clickable —
-removing the connectors themselves was explicitly ruled out. But their real OAuth
-servers don't support automatic registration (verified live, repeatedly — no
-`registration_endpoint`), so with no UI able to ever collect a Client ID, these
-four simply cannot be connected through the app by the user alone. Clicking
-Connect tries the automatic chain, it fails exactly as it always has, and the
-real reason (`manualClientHint()`'s message) shows as plain, non-interactive
-status text — informative, not actionable. **The only way any of the four ever
-gets connected is `catalog-credentials.js`'s `register-client` route, called
-directly (e.g. by Claude, given real credentials outside the app's own UI) —
-that route was deliberately NOT removed, only unlinked from every screen.** If a
-future session is asked to make Gmail "just work," the fix is calling that route
-with a real Client ID/Secret, never adding a form back.
+**What round 5 actually fixes, concretely:** Gmail/Google Drive/GitHub/Slack stay
+in the catalog, automatic registration still fails for them exactly as it always
+has (verified live, repeatedly — no `registration_endpoint` on any of the four's
+real authorization servers), but a user who has (or registers) their own OAuth
+app for one of these can now paste its Client ID/Secret into the collapsed
+section and click Connect again to retry — live-verified end to end: a manual
+Client ID on the GitHub connector correctly skipped DCR and produced a real,
+working `github.com/login/oauth/authorize` URL. `catalog-credentials.js`'s
+`register-client` route (a one-time, per-catalog-entry credential, called
+directly rather than through any screen) is untouched and still the only way to
+make a connector "just work" with zero user input at all, the same as Composio's
+one-click experience — the two mechanisms coexist: register-client for a
+zero-friction default, Advanced Settings for a one-off/per-connector override.
 
 **Known-service shortcuts — verified live, not from docs/blog posts alone.** Every
 catalog entry's real endpoint AND its Dynamic Client Registration support were

@@ -1,6 +1,6 @@
 // Decides whether a turn's transcription confidence is low enough to
 // trigger the voice-clarity guard for "ifUnclear"-confirmed skills (see
-// skills/index.js). Typed text is never gated here — it can't be misheard,
+// capabilities.js). Typed text is never gated here — it can't be misheard,
 // so quick actions from the text box always run immediately; only the
 // "always"-confirmed skills (schedules, briefing changes, ...) apply to
 // typed input too, and those aren't affected by this file at all.

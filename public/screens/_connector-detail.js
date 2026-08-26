@@ -16,7 +16,7 @@
 // GETS configured in the first place (buildMcpConnectSection /
 // buildApiSetupSection / buildCliSetupSection below).
 
-import { fieldInput, fieldSelect, sectionCard, armedButton, postJson } from './_helpers.js';
+import { fieldInput, fieldSelect, sectionCard, armedButton, postJson, patchJsonStrict, flashSaveError } from './_helpers.js';
 import { iconTile, segmented, dropdownControl } from './_ui.js';
 import { iconForConnector } from './_connector-icons.js';
 
@@ -122,22 +122,6 @@ function permissionSwitch(value, onChange) {
     btn.setAttribute('aria-label', title);
   });
   return picker;
-}
-
-/** A brief red line appended under `card`, auto-removed after a few seconds — used when a permission save fails so the user isn't left staring at a control that silently didn't take. */
-function flashSaveError(card, message) {
-  const el = document.createElement('p');
-  el.className = 'hint save-error';
-  el.textContent = message;
-  card.appendChild(el);
-  setTimeout(() => el.remove(), 4000);
-}
-
-/** Same shape as _helpers.js's postJson, but rejects on a non-2xx response instead of silently resolving with whatever error JSON the server sent — the permission control needs to know a save actually failed so it can tell the user, not just log it. */
-async function patchJsonStrict(url, body) {
-  const res = await fetch(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!res.ok) throw new Error(`Save failed (${res.status})`);
-  return res.json();
 }
 
 // ---------- MCP mechanism — rewritten fresh as part of the MCP-mechanism
@@ -418,7 +402,10 @@ function buildApiSetupSection(connector, onRefresh) {
       Object.assign(document.createElement('p'), { className: 'hint', textContent: `Found ${data.operations.length} endpoints — pick which ones Jarvis can use.` })
     );
     resultWrap.appendChild(
-      buildProposedChecklist(data.operations, `Save ${data.operations.length ? '' : ''}selected endpoints`, async (ticked) => {
+      // Was `` `Save ${data.operations.length ? '' : ''}selected endpoints` `` —
+      // a leftover ternary that resolved to '' in both branches (dead code,
+      // not a functional bug: the label was always "Save selected endpoints").
+      buildProposedChecklist(data.operations, 'Save selected endpoints', async (ticked) => {
         await postJson(`/api/connectors/${connector.id}`, { config: { operations: ticked, baseUrl: data.baseUrl, specUrl } }, 'PATCH');
         await fetch(`/api/connectors/${connector.id}/test`, { method: 'POST' });
         await onRefresh();
@@ -533,23 +520,22 @@ function pollUntilConnected(connectorId, { onConnected, onError }) {
 }
 
 /**
- * MCP mechanism — the OAuth connect flow. A plain status line and one
- * Connect/Reconnect button. **No Client ID/Secret field, link, or modal
- * anywhere on this page, ever, for any connector — the user's own explicit,
- * final decision**, made after three successive corrections to this exact
- * area (unconditional inline fields → conditional inline fields → a
- * correctly-gated "Have a Client ID?" link) still left a credential surface
- * showing up somewhere. See CLAUDE.md's "No Client ID/Secret UI anywhere"
- * for the full account.
+ * MCP mechanism — the OAuth connect flow. A status line, a collapsed
+ * "Advanced settings" section (OAuth Client ID/Secret, both optional), and
+ * one Connect/Reconnect button.
  *
- * When the automatic chain (CIMD/DCR) can't complete — Google/GitHub/Slack's
- * real OAuth servers never support it, verified live — the real,
- * service-specific reason (`oauth.js`'s `manualClientHint()`, persisted on
- * `connectFlow.manualClient`) is shown as plain status text, same as any
- * other failure. There is nothing to click on it. A credential can still be
- * registered for a catalog entry, invisibly, via
- * `POST /api/connectors/catalog/:catalogId/register-client` — that route
- * still exists; it's just not wired to any button or field a user can see.
+ * **This reverses the prior "no Client ID/Secret UI anywhere" rule — by
+ * explicit, direct user request, not a relapse of the thing CLAUDE.md warned
+ * against.** The automatic chain (CIMD, then DCR — unchanged, see oauth.js)
+ * still always runs first on every Connect click, for every connector,
+ * regardless of what's sitting in these two fields; nothing here skips or
+ * shortcuts that. The two fields are collapsed by default and never implied
+ * as required — they exist only so a connector whose server has genuinely,
+ * actively told Jarvis (via a real DCR/CIMD response — `needsManualClient`,
+ * see oauth.js's `manualClientHint()`) that no automatic registration is
+ * possible has an actual way to proceed, instead of the previous dead end.
+ * `connectFlow.manualClient` still supplies the specific reason text shown
+ * above the fields, same as before.
  */
 async function buildMcpConnectSection(connector, catalogEntry, label, onRefresh, setPollTimer) {
   const wasErrored = connector?.status?.state === 'error';
@@ -570,6 +556,32 @@ async function buildMcpConnectSection(connector, catalogEntry, label, onRefresh,
       ? connector?.status?.detail || 'Could not connect.'
       : `You are not connected to ${label} yet.`;
   card.appendChild(statusEl);
+
+  // Collapsed on EVERY connector, EVERY time — never auto-opened, not even
+  // when this connector has a recorded `manualClient` reason from a past
+  // failed attempt. Auto-opening on failure would re-create the exact "this
+  // field is required" impression this section is deliberately shaped to
+  // avoid; the failure message above already says what's wrong, and the
+  // toggle is right there for anyone who has a Client ID to supply.
+  const advToggle = document.createElement('button');
+  advToggle.type = 'button';
+  advToggle.className = 'advanced-settings-toggle';
+  advToggle.setAttribute('aria-expanded', 'false');
+  advToggle.textContent = '▸ Advanced settings';
+
+  const advBody = document.createElement('div');
+  advBody.className = 'advanced-settings-body collapsed';
+  const clientIdField = fieldInput('OAuth Client ID (optional)', 'text');
+  const clientSecretField = fieldInput('OAuth Client Secret (optional)', 'password');
+  advBody.append(clientIdField.wrapper, clientSecretField.wrapper);
+
+  advToggle.addEventListener('click', () => {
+    const collapsed = advBody.classList.toggle('collapsed');
+    advToggle.textContent = `${collapsed ? '▸' : '▾'} Advanced settings`;
+    advToggle.setAttribute('aria-expanded', String(!collapsed));
+  });
+
+  card.append(advToggle, advBody);
 
   const connectBtn = document.createElement('button');
   connectBtn.type = 'button';
@@ -593,12 +605,16 @@ async function buildMcpConnectSection(connector, catalogEntry, label, onRefresh,
     connectBtn.disabled = true;
     try {
       const connectorId = await ensureConnectorRecord();
-      // Never sends credentials from here — this button only ever attempts
-      // the automatic chain (CIMD, then DCR), or succeeds immediately if a
-      // catalog-level credential was already registered server-side (see
-      // catalog-credentials.js) — there is no UI path that ever sends one
-      // from this click.
-      const result = await postJson(`/api/connectors/${connectorId}/connect`, {});
+      // startConnect() (oauth.js) always attempts the automatic chain first
+      // — CIMD, then DCR — regardless of what's in these two fields; they're
+      // only ever used as `manualClientId`/`manualClientSecret` fallback
+      // input to obtainClientCredentials() if that chain doesn't already
+      // succeed on its own (e.g. via a catalog-level credential registered
+      // server-side — see catalog-credentials.js). Left blank (the default,
+      // collapsed state), this call is byte-for-byte what it always sent.
+      const clientId = clientIdField.input.value.trim() || undefined;
+      const clientSecret = clientSecretField.input.value.trim() || undefined;
+      const result = await postJson(`/api/connectors/${connectorId}/connect`, { clientId, clientSecret });
       if (!result.ok) throw new Error(result.error || 'Could not start connecting that service.');
 
       if (result.needsManualClient) {
@@ -698,7 +714,24 @@ export async function render(container, { catalogEntry, connectorId, type, onBac
   const titleRow = document.createElement('div');
   titleRow.className = 'detail-title-row';
   titleRow.appendChild(iconTile(iconForConnector({ catalogIcon: iconKey, iconDataUri: connector?.iconDataUri })));
-  titleRow.appendChild(Object.assign(document.createElement('h2'), { textContent: label }));
+  // Name + account hint stack together so the hint reads as a subtitle of
+  // THIS connector, not a sibling of the icon/actions in the row.
+  const nameStack = document.createElement('div');
+  nameStack.className = 'detail-title-stack';
+  nameStack.appendChild(Object.assign(document.createElement('h2'), { textContent: label }));
+  // A plain-language account hint (oauth.js's accountHintFrom(), from a
+  // standard OIDC id_token when the provider happens to return one) — the
+  // one thing that makes two connectors to the same service visually
+  // distinguishable (e.g. "Notion — jane@example.com" vs "Notion —
+  // team@other.com") instead of two identical-looking rows. Absent for any
+  // connector whose provider doesn't return one — renders nothing, not an
+  // empty line.
+  if (connector?.accountHint) {
+    nameStack.appendChild(
+      Object.assign(document.createElement('p'), { className: 'hint detail-account-hint', textContent: connector.accountHint })
+    );
+  }
+  titleRow.appendChild(nameStack);
   container.appendChild(titleRow);
 
   const description = catalogEntry?.description || connector?.description || `A custom ${connectorType.toUpperCase()} connector.`;

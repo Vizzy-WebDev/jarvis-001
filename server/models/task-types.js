@@ -11,10 +11,11 @@
 //
 // Zero imports on purpose — pure data + pure functions, same posture as
 // router.js's own "no I/O" purity. That makes this file automatically safe
-// for server/skills/* to depend on (transitively, via ai.js) with no risk to
+// for server/tools/* to depend on (transitively, via ai.js) with no risk to
 // the circular-import invariant (see CLAUDE.md): there is nothing here that
-// could ever lead back to skills/index.js, models/runner.js, or any of the
-// other forbidden targets, because it doesn't import anything at all.
+// could ever lead back to tools/index.js, capabilities.js, models/runner.js,
+// or any of the other forbidden targets, because it doesn't import anything
+// at all.
 //
 // This does NOT replace router.js's REASONING_HINTS regex or ai.js's
 // need{video,audio,vision,webSearch} bag — it relates them. A caller can

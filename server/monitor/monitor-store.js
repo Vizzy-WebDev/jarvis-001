@@ -1,8 +1,8 @@
 // CRUD over active/recent monitors (data/monitors.json) — leaf module, same
 // dependency-free reasoning as scheduler/task-store.js (see CLAUDE.md's
-// circular-import invariant): this file must never import skills/index.js,
-// models/runner.js, or engine.js, and nothing here does. engine.js and the
-// watch_for skill both depend on this; it depends on neither.
+// circular-import invariant): this file must never import tools/index.js,
+// capabilities.js, models/runner.js, or engine.js, and nothing here does.
+// engine.js and the watch_for tool both depend on this; it depends on neither.
 //
 // A monitor is one "watch for X, then do Y" request: `check` describes the
 // condition (one of the cheapest-first kinds engine.js knows how to

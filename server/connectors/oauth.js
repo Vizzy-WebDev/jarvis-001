@@ -725,6 +725,34 @@ async function exchangeCodeForTokens(flow, code) {
   return res.json();
 }
 
+/**
+ * A plain-language account hint from a standard OIDC `id_token`, when the
+ * token response happens to include one — not every provider does (Notion
+ * and GitHub's real token responses may not), so this is honestly
+ * best-effort; a `null` result just means nothing new to show, same as
+ * before this existed. Decoded only, NEVER signature-verified — this is
+ * used exclusively as a display label (telling two connectors to the same
+ * service apart, e.g. "Notion — jane@example.com" vs "Notion —
+ * team@other.com"), never for any authorization decision, so an unverified
+ * claim here could at most mislabel a connector, never grant it access to
+ * anything; the token endpoint that issued it was already reached over TLS.
+ * Generic by construction — `id_token` is a standard, optional part of an
+ * OAuth/OIDC token response for ANY provider, so this has no provider name
+ * or domain hardcoded anywhere.
+ */
+function accountHintFrom(tokens) {
+  const idToken = tokens?.id_token;
+  if (typeof idToken !== 'string') return null;
+  const parts = idToken.split('.');
+  if (parts.length < 2) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    return payload.email || payload.preferred_username || payload.name || payload.sub || null;
+  } catch {
+    return null;
+  }
+}
+
 function tokenSetFrom(tokens, flow) {
   return {
     accessToken: tokens.access_token,
@@ -784,6 +812,12 @@ export async function handleCallback(query) {
     updateConnector(flow.connectorId, {
       config: { secretRef },
       status: { state: 'working', checkedAt: new Date().toISOString(), detail: null },
+      // Plain, non-secret display metadata — never stored inside the secret
+      // blob above. Set from THIS response every time (not merged with a
+      // prior value) so it always reflects who's actually signed in right
+      // now; see accountHintFrom()'s own doc comment for what this is and
+      // isn't used for.
+      accountHint: accountHintFrom(tokens),
     });
   } catch (err) {
     return { ok: false, error: `Connected, but could not save it: ${err.message}`, connectorId: flow.connectorId };

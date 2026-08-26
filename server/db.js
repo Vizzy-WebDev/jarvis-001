@@ -176,6 +176,105 @@ const MIGRATIONS = [
       }
     }
   },
+
+  // 3: Tiered memory approval — a candidate now carries the extraction
+  // model's own confidence score, and a memory records HOW consent was
+  // given (`origin`), separately from `source_kind`'s WHERE-it-came-from.
+  // Additive only: every column here is nullable or has a default that
+  // reproduces today's meaning for every row that already exists — no
+  // existing row is rewritten beyond the one UPDATE below, which just labels
+  // rows that were already, in fact, migrated from the legacy store.
+  (conn) => {
+    conn.exec(`
+      ALTER TABLE memory_candidates ADD COLUMN confidence REAL;
+      ALTER TABLE memories ADD COLUMN confidence REAL;
+      ALTER TABLE memories ADD COLUMN origin TEXT NOT NULL DEFAULT 'approved';
+    `);
+    conn.exec(`UPDATE memories SET origin = 'legacy' WHERE source_kind = 'legacy'`);
+  },
+
+  // 4: Background Task Orchestration ("Jobs") — its own tables, independent
+  // of conversations/memories by the same discipline migration 2 set: a
+  // running job must survive the conversation that spawned it being
+  // deleted, so `jobs.conversation_id` carries NO foreign key at all (the
+  // opposite of memory_candidates' cascade — a job is closer in kind to an
+  // approved memory than to a draft candidate).
+  //
+  // `job_trace` is a write-AHEAD log — a caller writes an 'intent' row
+  // BEFORE an effectful action runs and an 'outcome' row after, specifically
+  // so a crash between the two still leaves the intent's `effect` on record.
+  // That single fact is what lets classifyRecovery() (server/jobs/job-policy.js)
+  // derive an honest resumability verdict instead of the job just declaring
+  // one about itself — see root CLAUDE.md's Jobs section.
+  //
+  // `job_outbox` is the Tier 1/2/3 interruption queue `prompt.js` drains on
+  // a turn the user already started (never on a timer) — `reason` tells
+  // apart a parked confirm-gate decision from a stall that survived its one
+  // recovery retry; both resolve through the same delivery/resume path.
+  (conn) => {
+    conn.exec(`
+      CREATE TABLE jobs (
+        id              TEXT PRIMARY KEY,
+        parent_id       TEXT REFERENCES jobs(id) ON DELETE CASCADE,
+        conversation_id TEXT,
+        title           TEXT NOT NULL,
+        goal            TEXT NOT NULL,
+        kind            TEXT NOT NULL,
+        status          TEXT NOT NULL,
+        plan            TEXT,
+        resource        TEXT,
+        recovery        TEXT,
+        result          TEXT,
+        error           TEXT,
+        retries         INTEGER NOT NULL DEFAULT 0,
+        transcript      TEXT,
+        created_at      TEXT NOT NULL,
+        started_at      TEXT,
+        heartbeat_at    TEXT,
+        finished_at     TEXT
+      );
+      CREATE INDEX idx_jobs_status ON jobs(status);
+      CREATE INDEX idx_jobs_parent ON jobs(parent_id);
+
+      CREATE TABLE job_trace (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id     TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        seq        INTEGER NOT NULL,
+        phase      TEXT NOT NULL,
+        effect     TEXT NOT NULL,
+        kind       TEXT NOT NULL,
+        summary    TEXT NOT NULL,
+        detail     TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_job_trace_job ON job_trace(job_id, seq);
+
+      CREATE TABLE job_outbox (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id          TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        tier            INTEGER NOT NULL,
+        reason          TEXT NOT NULL DEFAULT 'permission',
+        summary         TEXT NOT NULL,
+        detail          TEXT,
+        confirm_payload TEXT,
+        created_at      TEXT NOT NULL,
+        delivered_at    TEXT
+      );
+      CREATE INDEX idx_job_outbox_pending ON job_outbox(delivered_at, tier);
+    `);
+  },
+
+  // 5: additive-only, same discipline as migration 3 — `resume_note` is how
+  // a leaf-safe tool-call (server/tools/check_on_work.js's 'keep_going'
+  // response, via server/jobs/job-actions.js's resumeStuckJob()) hands the
+  // owner's own guidance text across to the orchestrator's tick, which is
+  // the only thing allowed to actually start a worker (see
+  // job-actions.js's header comment on the circular-import invariant this
+  // whole split exists to satisfy). Set alongside `status: 'queued'`,
+  // cleared the moment the tick actually picks the job back up.
+  (conn) => {
+    conn.exec(`ALTER TABLE jobs ADD COLUMN resume_note TEXT;`);
+  },
 ];
 
 function migrate(conn) {

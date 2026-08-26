@@ -8,6 +8,38 @@ import { listModels, isReady } from './registry.js';
 import { isHealthy } from './health.js';
 import { classifyTaskType, scoringLeanForType } from './task-types.js';
 
+// Mirrors health.js's COOLDOWNS_MS tiers, but keyed on the STATE persisted to
+// disk (registry.js's `availability.state`, written by runner.js) rather
+// than the transient error `kind` health.js tracks in memory. The two exist
+// for different lifetimes: health.js's breaker is what skips a model within
+// the current process and resets on every restart; this is what stops a
+// FRESH restart from re-discovering the same 20 dead models the slow way —
+// by failing against each one for a full round-trip — when yesterday's
+// failure is still sitting right there on disk. 'unreachable' covers both
+// health.js's 'network' and 'other' kinds (that distinction isn't preserved
+// once collapsed into availability.state — see error-kind.js's
+// AVAILABILITY_STATE_FOR_KIND) — the longer of the two cooldowns is used
+// here, since a stale 'unreachable' model is usually stale by hours or days
+// anyway, not seconds, so which exact value is picked rarely matters in
+// practice.
+const AVAILABILITY_COOLDOWNS_MS = {
+  quota: 30 * 60 * 1000,
+  auth: 6 * 60 * 60 * 1000,
+  no_access: 6 * 60 * 60 * 1000,
+  unreachable: 5 * 60 * 1000,
+};
+
+/** False only for a model whose PERSISTED availability is a known-bad state and still inside its cooldown. A model never checked, or last seen 'working', always passes — this only ever narrows the field, never requires a state to be present. */
+function passesAvailabilityCooldown(entry) {
+  const av = entry.availability;
+  if (!av || av.state === 'working') return true;
+  const cooldown = AVAILABILITY_COOLDOWNS_MS[av.state];
+  if (!cooldown) return true; // unknown state — don't invent a filter for it
+  const checkedAt = av.checkedAt ? Date.parse(av.checkedAt) : 0;
+  if (!Number.isFinite(checkedAt)) return true; // can't tell how stale — don't block on unparseable data
+  return Date.now() - checkedAt >= cooldown;
+}
+
 // A loose signal for "this needs real thinking", not a precise classifier —
 // good enough to nudge the balance, not meant to gate anything on its own.
 const REASONING_HINTS =
@@ -55,6 +87,7 @@ function hardFilter(entries, task) {
     if (!e.enabled) return false;
     if (!isReady(e)) return false;
     if (!isHealthy(e.id)) return false;
+    if (!passesAvailabilityCooldown(e)) return false;
     if (task.needsTools && !e.caps?.tools) return false;
     if (task.estimatedTokens && e.caps?.contextTokens && task.estimatedTokens > e.caps.contextTokens) return false;
     return true;
@@ -88,8 +121,26 @@ function scoreFor(entry, task, balance) {
   return speed * 2 - cost;
 }
 
-/** Ranks enabled, healthy, capable models best-first for this task. Empty array means nothing qualifies. */
+/**
+ * Ranks enabled, healthy, capable models best-first for this task. Empty
+ * array means nothing qualifies.
+ *
+ * `scoreFor` alone leaves wide ties — e.g. every `speed:5, cost:1` model
+ * scores identically regardless of quality, and Array.sort is stable, so the
+ * winner used to be whichever entry happened to appear first in
+ * data/models.json (found live: a free code-completion model was winning
+ * every voice turn purely on file order, ahead of two dozen tied Gemini
+ * chat models). Ties now break on quality (higher wins), then id
+ * (alphabetical) as the final, fully deterministic tiebreaker — never file
+ * order.
+ */
 export function rankCandidates(task, { balance = 'balanced' } = {}) {
   const entries = hardFilter(listModels(), task);
-  return entries.sort((a, b) => scoreFor(b, task, balance) - scoreFor(a, task, balance));
+  return entries.sort((a, b) => {
+    const scoreDiff = scoreFor(b, task, balance) - scoreFor(a, task, balance);
+    if (scoreDiff !== 0) return scoreDiff;
+    const qualityDiff = (b.tier?.quality ?? 3) - (a.tier?.quality ?? 3);
+    if (qualityDiff !== 0) return qualityDiff;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
 }

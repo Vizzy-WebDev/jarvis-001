@@ -51,14 +51,26 @@
       </label>
 
       <label class="settings-row">
-        <span title="Any-model works with Gemini, Claude, or OpenAI (~0.8-1.5s replies). Gemini Live is faster (~0.3-0.6s) and interrupts mid-word, but only works with Gemini.">
+        <span title="Any-model works with Gemini, Claude, or OpenAI (~0.8-1.5s replies). Full-duplex works with any model too, but hears you continuously (real interrupt mid-word) and uses Deepgram for speech recognition if a key is set, or your browser's own recognition if not. Gemini Live is fastest (~0.3-0.6s) and interrupts mid-word, but only works with Gemini.">
           Voice engine
         </span>
         <select id="voice-engine-select">
           <option value="pipeline">Any-model (flexible)</option>
-          <option value="live">Gemini Live (faster, Gemini only)</option>
+          <option value="duplex">Full-duplex (real interrupts, any model)</option>
+          <option value="live">Gemini Live (fastest, Gemini only)</option>
         </select>
       </label>
+
+      <div id="external-services-section">
+        <label class="settings-row">
+          <span title="Standalone service keys the voice layer can use — e.g. Deepgram for Full-duplex speech recognition. AI model provider keys are managed on the Models screen instead.">
+            External services
+          </span>
+        </label>
+        <div id="external-services-list"></div>
+        <button type="button" id="add-external-service-btn" class="btn">+ Add a service</button>
+        <div id="add-external-service-form" class="hidden"></div>
+      </div>
 
       <label class="settings-row">
         <span>Microphone mode</span>
@@ -70,15 +82,16 @@
 
       <label class="settings-row" id="voice-output-row">
         <span>Jarvis's voice</span>
+        <!-- 'browser' is the one static option — anything else is populated
+             dynamically from /api/tts/providers (app.js's
+             populateVoiceOutputOptions()), one per configured TTS provider
+             with a real adapter (see server/tts/index.js). Which specific
+             voice a provider uses is configured on its External Services
+             row (the optional second field), not here — there is no
+             separate per-provider voice picker. -->
         <select id="voice-output-select">
-          <option value="gemini">Gemini voice (more natural)</option>
           <option value="browser">Windows voice (instant, offline)</option>
         </select>
-      </label>
-
-      <label class="settings-row" id="gemini-voice-row">
-        <span>Which Gemini voice</span>
-        <select id="gemini-voice-select"></select>
       </label>
 
       <label class="settings-row">

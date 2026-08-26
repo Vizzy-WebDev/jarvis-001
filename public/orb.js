@@ -7,11 +7,22 @@
 // (driven by the same state classes) if WebGL isn't available or three
 // fails to initialize — see .orb-fallback in style.css.
 //
-// setState('idle'|'listening'|'thinking'|'speaking') crossfades between four
-// small parameter presets over ~600ms so transitions never snap. getLevel()
-// is polled once per frame (0..1, smoothed here) — the caller decides what it
-// means (mic energy while listening/dictating, Jarvis's own voice while
-// speaking) via app.js's getLevel callback.
+// setState(state) crossfades between small parameter presets over ~600ms so
+// transitions never snap — falls back to the 'idle' preset for any state
+// name with no entry below (see setState()'s own `|| STATE_PRESETS.idle`),
+// so an engine emitting a state not listed here degrades safely rather than
+// breaking. getLevel() is polled once per frame (0..1, smoothed here) — the
+// caller decides what it means (mic energy while listening/dictating,
+// Jarvis's own voice while speaking) via app.js's getLevel callback.
+//
+// The original four states (idle/listening/thinking/speaking) are emitted
+// by every engine. 'hearing_speech' (the user is actively talking right
+// now, not just mic-open-and-quiet), 'tool_running' (a tool call is in
+// flight), and 'interrupted' (a barge-in just happened — a brief flash
+// before settling back to listening) are additional, richer states —
+// currently only engines/duplex-engine.js has the real signals to
+// distinguish them; Pipeline/Live simply never emit them, which is a safe
+// no-op given the fallback above.
 
 import * as THREE from './vendor/three/three.module.min.js';
 
@@ -35,14 +46,43 @@ const STATE_PRESETS = {
     colorA: [0.06, 0.16, 0.24], colorB: [0.30, 0.64, 1.0], emissive: 0.35,
   },
   thinking: {
-    noiseAmp: 0.16, noiseSpeed: 0.35, swirl: 2.2,
-    rippleAmp: 0.02, rippleSpeed: 1.0, breathe: 0.6,
+    // swirl was 2.2 (vs 0.6-0.9 everywhere else) and rippleAmp was a
+    // near-zero 0.02 — it spun because the state was 'thinking', not
+    // because of anything actually happening. swirl brought in line with
+    // the other states; rippleAmp raised enough to genuinely respond to
+    // getLevel() (ambient mic level during this state, via app.js's
+    // getLevel callback) instead of being technically present but invisible.
+    noiseAmp: 0.16, noiseSpeed: 0.35, swirl: 1.0,
+    rippleAmp: 0.10, rippleSpeed: 1.0, breathe: 0.6,
     colorA: [0.16, 0.09, 0.22], colorB: [0.62, 0.42, 1.0], emissive: 0.45,
   },
   speaking: {
     noiseAmp: 0.08, noiseSpeed: 0.10, swirl: 0.7,
     rippleAmp: 0.24, rippleSpeed: 6.0, breathe: 1.0,
     colorA: [0.05, 0.16, 0.12], colorB: [0.42, 0.89, 0.64], emissive: 0.5,
+  },
+  // Heightened attentiveness vs. plain 'listening' — the user is actively
+  // talking right now, not just "mic open and quiet". Brighter, faster
+  // breathe, more responsive ripple to real mic amplitude.
+  hearing_speech: {
+    noiseAmp: 0.13, noiseSpeed: 0.16, swirl: 0.9,
+    rippleAmp: 0.20, rippleSpeed: 3.0, breathe: 1.6,
+    colorA: [0.05, 0.18, 0.28], colorB: [0.25, 0.75, 1.0], emissive: 0.45,
+  },
+  // A tool call is in flight — deliberately distinct from passive
+  // 'thinking': warmer color family, a steady pulse independent of
+  // amplitude (there's no natural audio signal to react to mid-tool-call).
+  tool_running: {
+    noiseAmp: 0.14, noiseSpeed: 0.28, swirl: 1.4,
+    rippleAmp: 0.18, rippleSpeed: 3.5, breathe: 0.8,
+    colorA: [0.18, 0.12, 0.04], colorB: [0.95, 0.60, 0.15], emissive: 0.5,
+  },
+  // A barge-in just happened — a brief, sharp acknowledgment (app.js holds
+  // this state for a few hundred ms before settling back to 'listening').
+  interrupted: {
+    noiseAmp: 0.05, noiseSpeed: 0.05, swirl: 0.5,
+    rippleAmp: 0.35, rippleSpeed: 8.0, breathe: 1.0,
+    colorA: [0.20, 0.05, 0.05], colorB: [1.0, 0.35, 0.30], emissive: 0.7,
   },
 };
 
@@ -344,7 +384,14 @@ export function createOrb(canvas, { fallbackEl, getLevel } = {}) {
     currentState = state;
 
     if (usingFallback && fallbackEl) {
-      fallbackEl.classList.remove('idle', 'listening', 'thinking', 'speaking');
+      // Derived from STATE_PRESETS' own keys, not a separately hand-written
+      // list — found during the state-machine audit that the old hardcoded
+      // list ('idle'/'listening'/'thinking'/'speaking') never included
+      // duplex-engine.js's three newer states ('hearing_speech',
+      // 'tool_running', 'interrupted'), so they accumulated on this element
+      // instead of being removed, on the WebGL-failure fallback path only —
+      // the main render path (STATE_PRESETS[state] below) was unaffected.
+      fallbackEl.classList.remove(...Object.keys(STATE_PRESETS));
       fallbackEl.classList.add(state);
     }
   }

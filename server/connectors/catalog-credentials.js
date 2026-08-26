@@ -11,8 +11,8 @@
 // once per connector.
 //
 // Same minimal leaf-module pattern as client-identity.js: readJson/writeJson
-// from store.js, dependency-free, nothing here imports skills/index.js or
-// any of the forbidden circular-import targets (see root CLAUDE.md's
+// from store.js, dependency-free, nothing here imports tools/index.js,
+// capabilities.js, or any of the forbidden circular-import targets (see root CLAUDE.md's
 // Gotchas). The Client ID (not secret) lives in data/catalog-credentials.json
 // — git-ignored, same as everything else under data/ — never in the bundled,
 // hand-verified catalog.json. The Client SECRET never touches this file at

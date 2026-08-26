@@ -9,6 +9,7 @@
 import { sectionCard, fieldInput, armedButton } from './_helpers.js';
 import { toggleSwitch } from './_ui.js';
 import { openModal } from './_modal.js';
+import { notify } from '../notifications.js';
 
 function formatDate(iso) {
   return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -70,10 +71,10 @@ function buildRow(conv, onChange) {
     try {
       await openConversation(conv.id);
     } catch (err) {
-      // A best-effort toast would need notifications.js — a plain inline
-      // error is enough here since this is a rare failure (the conversation
-      // was deleted from another tab/session between list and click).
-      alert(err.message || 'Could not open that conversation.');
+      // Was a blocking native alert() — replaced with the app's own toast,
+      // consistent with every other failure surface in the app (and alert()
+      // freezes the whole tab, including any voice engine mid-turn).
+      notify({ level: 'error', title: 'Could not open that conversation', body: err.message || undefined });
       await onChange();
     }
   };

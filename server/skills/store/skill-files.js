@@ -6,7 +6,7 @@
 // SKILL.md spec (docs.claude.com), which the old build only approximated.
 //
 // A dependency-free leaf module, same reasoning as task-store.js/
-// briefing-config.js: skills/index.js's dynamic import() loop must never
+// briefing-config.js: tools/index.js's dynamic import() loop must never
 // have a path back here — see CLAUDE.md's circular-import invariant. Only
 // store.js's dataDir() is imported from server/.
 //
@@ -272,10 +272,19 @@ function removeStateFor(name) {
 
 // ---------- reading ----------
 
+// A Skill folder needs SKILL.md, skill.toml, or both — a pipeline-only
+// Skill (skill.toml with no free-form instructions at all) is a legitimate
+// shape, matching the user's own stated intent ("a skill folder can have
+// either or both"). Checked by simple existence here; a broken/unparseable
+// skill.toml is still a recognized Skill folder (it shows up, disabled from
+// actually running, with its parse error visible) — only total absence of
+// both files means "not a Skill folder".
 function isSkillFolder(folderName) {
   if (!NAME_RE.test(folderName)) return false;
-  const md = path.join(skillsDir(), folderName, 'SKILL.md');
-  return fs.existsSync(md) && fs.statSync(md).isFile();
+  const dir = path.join(skillsDir(), folderName);
+  const md = path.join(dir, 'SKILL.md');
+  const toml = path.join(dir, 'skill.toml');
+  return (fs.existsSync(md) && fs.statSync(md).isFile()) || (fs.existsSync(toml) && fs.statSync(toml).isFile());
 }
 
 /** Every file in a skill's folder other than SKILL.md itself, as paths
@@ -326,9 +335,11 @@ export function listUserSkills() {
   }
 
   return names.map((folderName) => {
-    const mdPath = path.join(skillsDir(), folderName, 'SKILL.md');
-    const raw = fs.readFileSync(mdPath, 'utf8');
-    const { frontmatter } = parseSkillMd(raw);
+    const dir = path.join(skillsDir(), folderName);
+    const mdPath = path.join(dir, 'SKILL.md');
+    const hasSkillMd = fs.existsSync(mdPath);
+    const frontmatter = hasSkillMd ? parseSkillMd(fs.readFileSync(mdPath, 'utf8')).frontmatter : {};
+    const hasToml = fs.existsSync(path.join(dir, 'skill.toml'));
     const state = stateFor(folderName) || {};
     return {
       // `name` is what a model calls as a tool AND what the UI displays —
@@ -337,7 +348,15 @@ export function listUserSkills() {
       // field disagrees.
       name: folderName,
       declaredName: frontmatter.name || folderName,
+      // From SKILL.md's frontmatter when present. A pipeline-only Skill
+      // (no SKILL.md) has no description here — server/skills/index.js's
+      // folderSkillToTool() falls back to skill.toml's own top-level
+      // `description` for that case (this store layer stays toml-grammar-
+      // agnostic on purpose; only skill-toml.js's parser knows how to read
+      // that field).
       description: frontmatter.description || '',
+      hasSkillMd,
+      hasToml,
       allowedTools: Array.isArray(frontmatter['allowed-tools'])
         ? frontmatter['allowed-tools']
         : (typeof frontmatter['allowed-tools'] === 'string' ? [frontmatter['allowed-tools']] : []),
@@ -348,20 +367,39 @@ export function listUserSkills() {
       // Whether the user has already agreed to let THIS skill's own helper
       // scripts run through the sandbox (server/skills/run_skill_script.js).
       scriptsApproved: state.scriptsApproved === true,
+      // Whether a skill.toml pipeline in this folder is allowed to actually
+      // RUN its steps automatically — set true at creation for an in-app-
+      // authored Skill (you wrote/reviewed it, see createSkill()), false for
+      // anything that arrived via Upload or Replace (untrusted until
+      // explicitly approved — server/tools/approve_skill_pipeline.js is the
+      // only way this flips to true for those). Distinct from
+      // scriptsApproved: that gates a Skill's own helper SCRIPTS running
+      // through the sandbox; this gates its skill.toml PIPELINE running at
+      // all — unrelated mechanisms, unrelated defaults.
+      pipelineApproved: state.pipelineApproved === true,
     };
   });
 }
 
-/** The full instructions body — read only when a skill is actually invoked or opened, never as part of the per-turn tool-declaration list. */
+/** The full instructions body — read only when a skill is actually invoked or opened, never as part of the per-turn tool-declaration list. Returns '' (not a throw) when this Skill has no SKILL.md at all — a valid, pipeline-only shape now that skill.toml can stand alone. */
 export function readSkillBody(name) {
   const mdPath = path.join(skillRoot(name), 'SKILL.md');
+  if (!fs.existsSync(mdPath)) return '';
   const raw = fs.readFileSync(mdPath, 'utf8');
   return parseSkillMd(raw).body;
 }
 
-/** Raw SKILL.md text + parsed pieces, for the detail page's code view and the edit form. */
+/** Raw skill.toml text for a Skill folder, or null if it has none. Parsing (server/skills/store/skill-toml.js's parseToml()) is a deliberately separate, pure step — this function's only job is the fs read, so validation/execution logic never needs fs access at all. */
+export function readSkillToml(name) {
+  const p = path.join(skillRoot(name), 'skill.toml');
+  if (!fs.existsSync(p)) return null;
+  return fs.readFileSync(p, 'utf8');
+}
+
+/** Raw SKILL.md text + parsed pieces, for the detail page's code view and the edit form. Returns `{raw: '', frontmatter: {}, body: ''}` (not a throw) when this Skill has no SKILL.md at all — a valid, pipeline-only shape now that skill.toml can stand alone; the detail route (server.js) reads skill.toml separately for that case. */
 export function readSkillMd(name) {
   const mdPath = path.join(skillRoot(name), 'SKILL.md');
+  if (!fs.existsSync(mdPath)) return { raw: '', frontmatter: {}, body: '' };
   const raw = fs.readFileSync(mdPath, 'utf8');
   const { frontmatter, body } = parseSkillMd(raw);
   return { raw, frontmatter, body };
@@ -387,10 +425,10 @@ export function getSkill(name) {
 
 /**
  * `reservedNames` (a Set, optional) lets a caller rule out any name already
- * used by a built-in code skill or an active connector tool — this module
- * never imports skills/index.js (see this file's header comment), so it
- * can't know that list on its own; skills/index.js's reservedSkillNames()
- * is what a caller passes in.
+ * used by a built-in tool or an active connector tool — this module
+ * never imports tools/index.js or capabilities.js (see this file's header
+ * comment), so it can't know that list on its own; capabilities.js's
+ * reservedSkillNames() is what a caller passes in.
  */
 function uniqueName(base, reservedNames = new Set()) {
   let name = slugify(base);
@@ -432,7 +470,12 @@ export function createSkill({ name, description, instructions }, reservedNames =
   fs.writeFileSync(path.join(root, 'SKILL.md'), md, 'utf8');
 
   const now = new Date().toISOString();
-  setStateFor(slug, { enabled: true, source: { type: 'user' }, installedAt: now, updatedAt: now });
+  // pipelineApproved: true — an in-app-authored Skill is trusted at
+  // creation (the user wrote or reviewed it, that IS the consent). This
+  // form has no skill.toml field, so the flag has nothing to gate yet, but
+  // stays correct if a skill.toml is later hand-added to this same,
+  // already-trusted folder directly on disk.
+  setStateFor(slug, { enabled: true, source: { type: 'user' }, installedAt: now, updatedAt: now, pipelineApproved: true });
   return getSkill(slug);
 }
 
@@ -456,9 +499,14 @@ export function updateSkillState(name, patch = {}) {
   if (!getSkill(name)) throw new Error(`Unknown skill: ${name}`);
   const allowed = {};
   if ('enabled' in patch) allowed.enabled = Boolean(patch.enabled);
-  // Set only by server/skills/approve_skill_scripts.js, after the user has
+  // Set only by server/tools/approve_skill_scripts.js, after the user has
   // explicitly agreed — never silently reset by anything in this module.
   if ('scriptsApproved' in patch) allowed.scriptsApproved = Boolean(patch.scriptsApproved);
+  // Set only by server/tools/approve_skill_pipeline.js, same one-time
+  // consent shape as scriptsApproved above — a DIFFERENT gate (this one
+  // controls a skill.toml pipeline running its steps at all; scriptsApproved
+  // controls a Skill's own helper scripts running through the sandbox).
+  if ('pipelineApproved' in patch) allowed.pipelineApproved = Boolean(patch.pipelineApproved);
   setStateFor(name, { ...allowed, updatedAt: new Date().toISOString() });
   return getSkill(name);
 }
@@ -469,15 +517,21 @@ export function deleteSkill(name) {
   removeStateFor(name);
 }
 
-/** Replaces an existing skill's entire folder content in place (the detail page's "Replace" action) — same identity (folder name / state) as before, content swapped for what's in `resolvedDir`. Requires a SKILL.md directly inside `resolvedDir`. The caller (skill-zip.js) is responsible for cleaning up `resolvedDir` afterward either way. */
+/** Replaces an existing skill's entire folder content in place (the detail page's "Replace" action) — same identity (folder name / state) as before, content swapped for what's in `resolvedDir`. Requires a SKILL.md and/or a skill.toml directly inside `resolvedDir` (either alone is a valid Skill folder — see isSkillFolder()). The caller (skill-zip.js) is responsible for cleaning up `resolvedDir` afterward either way. */
 export function replaceSkillContents(name, resolvedDir) {
-  const mdPath = path.join(resolvedDir, 'SKILL.md');
-  if (!fs.existsSync(mdPath)) throw new Error("That zip doesn't have a SKILL.md in it.");
+  const hasMd = fs.existsSync(path.join(resolvedDir, 'SKILL.md'));
+  const hasToml = fs.existsSync(path.join(resolvedDir, 'skill.toml'));
+  if (!hasMd && !hasToml) throw new Error("That zip doesn't have a SKILL.md or skill.toml in it.");
   const root = skillRoot(name);
   if (!fs.existsSync(root)) throw new Error(`Unknown skill: ${name}`);
   fs.rmSync(root, { recursive: true, force: true });
   fs.cpSync(resolvedDir, root, { recursive: true });
-  setStateFor(name, { updatedAt: new Date().toISOString() });
+  // Replace is upload-shaped regardless of this Skill's ORIGINAL source —
+  // it swaps in content from a file the user just picked, same as a fresh
+  // Upload. A pipeline arriving this way is never auto-trusted just because
+  // the folder it's replacing happened to be user-authored before; it needs
+  // its own fresh approval (server/tools/approve_skill_pipeline.js).
+  setStateFor(name, { updatedAt: new Date().toISOString(), pipelineApproved: false });
   return getSkill(name);
 }
 
@@ -504,11 +558,14 @@ export function installFromMarkdown(text, reservedNames = new Set()) {
   fs.writeFileSync(path.join(root, 'SKILL.md'), String(text).trim() + '\n', 'utf8');
 
   const now = new Date().toISOString();
-  setStateFor(name, { enabled: true, source: { type: 'upload' }, installedAt: now, updatedAt: now });
+  // pipelineApproved: false — uploaded content is untrusted until the user
+  // explicitly agrees, even though a bare-.md upload can never actually
+  // carry a skill.toml itself (harmless/consistent default regardless).
+  setStateFor(name, { enabled: true, source: { type: 'upload' }, installedAt: now, updatedAt: now, pipelineApproved: false });
   return getSkill(name);
 }
 
-/** Replace — the bare-`.md` counterpart to replaceSkillContents(): swaps an existing skill's entire folder (dropping any bundled files it had) for just a fresh SKILL.md, same identity as before. Same name/description requirement as installFromMarkdown() above. */
+/** Replace — the bare-`.md` counterpart to replaceSkillContents(): swaps an existing skill's entire folder (dropping any bundled files it had, including any skill.toml) for just a fresh SKILL.md, same identity as before. Same name/description requirement as installFromMarkdown() above. */
 export function replaceSkillMarkdown(name, text) {
   const { frontmatter } = parseSkillMd(text);
   if (!frontmatter.name?.trim()) throw new Error('That file needs a "name" in its YAML frontmatter.');
@@ -519,17 +576,18 @@ export function replaceSkillMarkdown(name, text) {
   fs.rmSync(root, { recursive: true, force: true });
   fs.mkdirSync(root, { recursive: true });
   fs.writeFileSync(path.join(root, 'SKILL.md'), String(text).trim() + '\n', 'utf8');
-  setStateFor(name, { updatedAt: new Date().toISOString() });
+  setStateFor(name, { updatedAt: new Date().toISOString(), pipelineApproved: false });
   return getSkill(name);
 }
 
-/** Installs a brand-new skill from an already-unpacked directory (skill-zip.js's job to unpack + find the right subfolder) — the Upload flow. Requires a SKILL.md directly inside `resolvedDir`, not searched for in subfolders (picking the wrong one out of a folder with several projects would be worse than failing loudly). */
+/** Installs a brand-new skill from an already-unpacked directory (skill-zip.js's job to unpack + find the right subfolder) — the Upload flow. Requires a SKILL.md and/or a skill.toml directly inside `resolvedDir` (either alone is a valid Skill folder), not searched for in subfolders (picking the wrong one out of a folder with several projects would be worse than failing loudly). */
 export function installFromDirectory(resolvedDir, reservedNames = new Set()) {
   const mdPath = path.join(resolvedDir, 'SKILL.md');
-  if (!fs.existsSync(mdPath)) throw new Error("That zip doesn't have a SKILL.md in it.");
+  const hasMd = fs.existsSync(mdPath);
+  const hasToml = fs.existsSync(path.join(resolvedDir, 'skill.toml'));
+  if (!hasMd && !hasToml) throw new Error("That zip doesn't have a SKILL.md or skill.toml in it.");
 
-  const raw = fs.readFileSync(mdPath, 'utf8');
-  const { frontmatter } = parseSkillMd(raw);
+  const frontmatter = hasMd ? parseSkillMd(fs.readFileSync(mdPath, 'utf8')).frontmatter : {};
   const baseName = frontmatter.name || path.basename(resolvedDir);
   const name = uniqueName(baseName, reservedNames);
   validateName(name);
@@ -537,6 +595,10 @@ export function installFromDirectory(resolvedDir, reservedNames = new Set()) {
   fs.cpSync(resolvedDir, root, { recursive: true });
 
   const now = new Date().toISOString();
-  setStateFor(name, { enabled: true, source: { type: 'upload' }, installedAt: now, updatedAt: now });
+  // pipelineApproved: false — untrusted until explicitly approved, same
+  // reasoning as installFromMarkdown() above; THIS is the path where it
+  // actually matters, since a zip upload is exactly how a real skill.toml
+  // pipeline arrives.
+  setStateFor(name, { enabled: true, source: { type: 'upload' }, installedAt: now, updatedAt: now, pipelineApproved: false });
   return getSkill(name);
 }

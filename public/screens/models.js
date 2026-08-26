@@ -28,7 +28,64 @@ const AVAILABILITY_LABELS = {
   unreachable: 'unreachable',
 };
 
-function buildPrefsCard(prefs) {
+const CAP_LABELS = { vision: 'Images', video: 'Video', audio: 'Audio', webSearch: 'Web search' };
+
+function formatDateTime(iso) {
+  if (!iso) return null;
+  return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+/** Read-only "what is this model, really" view — id, connection, adapter, capabilities, tier, and health detail were previously visible nowhere at all; clicking a row used to do nothing. */
+function openModelDetail(m, connection) {
+  openModal({
+    title: m.label,
+    submitLabel: 'Close',
+    build(body) {
+      const info = sectionCard('Details');
+      info.appendChild(Object.assign(document.createElement('p'), { className: 'hint', textContent: `Model id: ${m.model}` }));
+      info.appendChild(Object.assign(document.createElement('p'), { className: 'hint', textContent: `Connection: ${connection?.label || 'unknown'}` }));
+      info.appendChild(Object.assign(document.createElement('p'), { className: 'hint', textContent: `Billing: ${m.billing || 'unknown'}` }));
+      body.appendChild(info);
+
+      const caps = Object.entries(CAP_LABELS)
+        .filter(([key]) => m.caps?.[key])
+        .map(([, label]) => label);
+      const capsCard = sectionCard('Can handle');
+      capsCard.appendChild(
+        Object.assign(document.createElement('p'), { textContent: caps.length ? caps.join(', ') : 'Text only' })
+      );
+      body.appendChild(capsCard);
+
+      if (m.tier) {
+        const tierCard = sectionCard('Tier (1-5)');
+        tierCard.appendChild(
+          Object.assign(document.createElement('p'), {
+            className: 'hint',
+            textContent: `Speed: ${m.tier.speed ?? '—'} · Quality: ${m.tier.quality ?? '—'} · Cost: ${m.tier.cost ?? '—'}`,
+          })
+        );
+        body.appendChild(tierCard);
+      }
+
+      const healthCard = sectionCard('Health');
+      const state = m.availability?.state;
+      healthCard.appendChild(
+        Object.assign(document.createElement('p'), { textContent: state ? AVAILABILITY_LABELS[state] || state : m.ready ? 'ready' : 'needs a key' })
+      );
+      if (m.availability?.detail) {
+        healthCard.appendChild(Object.assign(document.createElement('p'), { className: 'hint', textContent: m.availability.detail }));
+      }
+      const checked = formatDateTime(m.availability?.checkedAt);
+      if (checked) healthCard.appendChild(Object.assign(document.createElement('p'), { className: 'hint', textContent: `Last checked: ${checked}` }));
+      body.appendChild(healthCard);
+    },
+    async onSubmit() {
+      return true;
+    },
+  });
+}
+
+function buildPrefsCard(prefs, models) {
   const card = sectionCard('How Jarvis picks a model');
 
   const autoRow = document.createElement('label');
@@ -74,18 +131,47 @@ function buildPrefsCard(prefs) {
   clarityRow.appendChild(claritySelect);
   card.appendChild(clarityRow);
 
+  // Separate from the global manual pin (autoSelect/manualModelId, set from
+  // the main screen's settings panel) — that one applies to every turn, text
+  // and voice alike. This pins a model specifically for spoken turns
+  // (source: 'voice'), and outranks the global pick only there — a typed
+  // message is unaffected either way. See runner.js's preferredModelId()
+  // for the exact precedence. Exists because auto-ranking's speed/cost
+  // scoring produces wide ties on a real model list, and a spoken
+  // conversation landing on whatever wins that tie (by quality, then id —
+  // see router.js) is worse than just letting the user say which model
+  // should actually be talking to them.
+  const voiceModelRow = document.createElement('label');
+  voiceModelRow.className = 'settings-row';
+  voiceModelRow.appendChild(Object.assign(document.createElement('span'), { textContent: 'Pin a model for voice' }));
+  const voiceModelSelect = document.createElement('select');
+  voiceModelSelect.appendChild(Object.assign(document.createElement('option'), { value: '', textContent: 'None — use the pick above' }));
+  for (const m of models || []) {
+    voiceModelSelect.appendChild(
+      Object.assign(document.createElement('option'), {
+        value: m.id,
+        textContent: m.enabled && m.ready ? m.label : `${m.label} (not ready)`,
+      })
+    );
+  }
+  voiceModelSelect.value = prefs.voiceModelId || '';
+  voiceModelRow.appendChild(voiceModelSelect);
+  card.appendChild(voiceModelRow);
+
   const hint = document.createElement('p');
   hint.className = 'hint';
   hint.textContent =
     "Auto-select weighs each model's speed, quality, and cost for the task at hand, and switches " +
     'models automatically if one breaks — Jarvis will tell you when that happens. Turn it off to pin ' +
-    "a specific model instead, from the main screen's settings panel.";
+    "a specific model instead, from the main screen's settings panel. Pinning a model for voice above " +
+    "only affects spoken conversation — typed messages still follow the pick above it.";
   card.appendChild(hint);
 
   const save = (patch) => postJson('/api/prefs', patch);
   autoCheck.addEventListener('change', () => save({ autoSelect: autoCheck.checked }));
   balanceSelect.addEventListener('change', () => save({ balance: balanceSelect.value }));
   claritySelect.addEventListener('change', () => save({ clarifySensitivity: claritySelect.value }));
+  voiceModelSelect.addEventListener('change', () => save({ voiceModelId: voiceModelSelect.value || null }));
 
   return card;
 }
@@ -122,9 +208,11 @@ function buildBillingBadge(m, onChange) {
   return select;
 }
 
-function buildModelRow(m, healthInfo, onChange) {
+function buildModelRow(m, healthInfo, onChange, connection) {
   const row = document.createElement('div');
-  row.className = 'list-row';
+  row.className = 'list-row list-row-clickable';
+  row.tabIndex = 0;
+  row.setAttribute('role', 'button');
 
   const main = document.createElement('div');
   main.className = 'list-row-main';
@@ -133,6 +221,12 @@ function buildModelRow(m, healthInfo, onChange) {
   sub.className = 'list-row-sub';
   sub.textContent = m.model;
   main.appendChild(sub);
+  // A separate line for Test's result — it used to overwrite `sub` above
+  // (destroying the model id until the next full re-render), which also
+  // meant a failed test permanently hid which model it was even about.
+  const testResult = document.createElement('span');
+  testResult.className = 'list-row-sub hidden';
+  main.appendChild(testResult);
 
   const badge = document.createElement('span');
   const state = m.availability?.state;
@@ -150,6 +244,10 @@ function buildModelRow(m, healthInfo, onChange) {
 
   const actions = document.createElement('div');
   actions.className = 'list-row-actions';
+  // Every action here lives inside a row that's now clickable end-to-end —
+  // without this, clicking any of them would also open the detail modal
+  // underneath.
+  actions.addEventListener('click', (e) => e.stopPropagation());
 
   const toggle = toggleSwitch({
     value: m.enabled,
@@ -169,9 +267,11 @@ function buildModelRow(m, healthInfo, onChange) {
     try {
       const res = await fetch(`/api/models/${encodeURIComponent(m.id)}/test`, { method: 'POST' });
       const result = await res.json();
-      sub.textContent = result.ok ? 'Connection works.' : result.error || 'Connection failed.';
+      testResult.textContent = result.ok ? 'Connection works.' : result.error || 'Connection failed.';
+      testResult.classList.remove('hidden');
     } catch {
-      sub.textContent = 'Could not reach the Jarvis server.';
+      testResult.textContent = 'Could not reach the Jarvis server.';
+      testResult.classList.remove('hidden');
     } finally {
       testBtn.disabled = false;
       testBtn.textContent = 'Test';
@@ -185,6 +285,14 @@ function buildModelRow(m, healthInfo, onChange) {
 
   actions.append(toggle.wrapper, testBtn, removeBtn);
   row.append(main, actions);
+  const open = () => openModelDetail(m, connection);
+  row.addEventListener('click', open);
+  row.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      open();
+    }
+  });
   return row;
 }
 
@@ -553,6 +661,50 @@ function buildAddModelsModal(connection, onChange) {
   });
 }
 
+/** PATCH /api/connections/:id existed since connections shipped — nothing in the UI ever called it with more than the discovery/add flow's own initial values. Renaming a connection or fixing a typo'd address meant deleting and re-adding it (losing every model under it) until this. */
+function buildEditConnectionModal(connection, onChange) {
+  let labelField, baseUrlField, secretField;
+  return openModal({
+    title: `Edit "${connection.label}"`,
+    submitLabel: 'Save',
+    busyLabel: 'Saving…',
+    build(body) {
+      labelField = fieldInput('Name to show you', 'text');
+      labelField.input.value = connection.label || '';
+      body.appendChild(labelField.wrapper);
+
+      baseUrlField = fieldInput('Address', 'text', 'e.g. http://localhost:11434/v1');
+      baseUrlField.input.value = connection.baseUrl || '';
+      body.appendChild(baseUrlField.wrapper);
+
+      secretField = fieldInput(connection.hasSecret ? 'API key (leave blank to keep the current one)' : 'API key', 'password', 'Paste key here…');
+      body.appendChild(secretField.wrapper);
+    },
+    async onSubmit(api) {
+      if (!labelField.input.value.trim()) {
+        api.setError('Please give this connection a name.');
+        return null;
+      }
+      const data = await postJson(
+        `/api/connections/${encodeURIComponent(connection.id)}`,
+        {
+          label: labelField.input.value.trim(),
+          baseUrl: baseUrlField.input.value.trim() || undefined,
+          secret: secretField.input.value || undefined,
+        },
+        'PATCH'
+      );
+      if (!data.ok) {
+        api.setError(data.error || 'Could not save that connection.');
+        return null;
+      }
+      return data;
+    },
+  }).then((result) => {
+    if (result) onChange();
+  });
+}
+
 function buildConnectionGroup(connection, models, health, onChange) {
   const group = document.createElement('div');
   group.className = 'connection-group';
@@ -587,6 +739,11 @@ function buildConnectionGroup(connection, models, health, onChange) {
   addModelsBtn.className = 'btn';
   addModelsBtn.textContent = 'Add models';
   addModelsBtn.addEventListener('click', () => buildAddModelsModal(connection, onChange));
+  const editConnBtn = document.createElement('button');
+  editConnBtn.type = 'button';
+  editConnBtn.className = 'btn';
+  editConnBtn.textContent = 'Edit';
+  editConnBtn.addEventListener('click', () => buildEditConnectionModal(connection, onChange));
   const removeConnBtn = armedButton(
     'Remove connection',
     `Remove it and ${connection.modelCount} model${connection.modelCount === 1 ? '' : 's'}?`,
@@ -595,11 +752,11 @@ function buildConnectionGroup(connection, models, health, onChange) {
       await onChange();
     }
   );
-  headActions.append(addModelsBtn, removeConnBtn);
+  headActions.append(addModelsBtn, editConnBtn, removeConnBtn);
   head.appendChild(headActions);
 
   group.appendChild(head);
-  for (const m of models) group.appendChild(buildModelRow(m, health[m.id], onChange));
+  for (const m of models) group.appendChild(buildModelRow(m, health[m.id], onChange, connection));
   return group;
 }
 
@@ -641,7 +798,7 @@ function buildModelsCard(connections, models, health, onChange, filterState) {
     group.appendChild(
       Object.assign(document.createElement('p'), { className: 'hint', textContent: 'Not linked to a saved connection:' })
     );
-    for (const m of orphans) group.appendChild(buildModelRow(m, health[m.id], onChange));
+    for (const m of orphans) group.appendChild(buildModelRow(m, health[m.id], onChange, null));
     card.appendChild(group);
   }
 
@@ -746,7 +903,7 @@ export async function render(container) {
 
   const onChange = () => render(container);
 
-  container.appendChild(buildPrefsCard(prefs));
+  container.appendChild(buildPrefsCard(prefs, models));
 
   // Moved above the filter bar/models list (was appended after everything,
   // at the very bottom, before this) — with a long models list that meant

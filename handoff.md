@@ -6,47 +6,105 @@ it end to end. See "The pruning rule" at the bottom before adding to it.
 
 ## Right now
 
-The most recent work is a **connector credential-prompt regression fix, ending in a
-final "no Client ID/Secret UI anywhere" decision, plus a live Gmail connection through
-Composio and two risk-classifier/confirm-loop bugs**. Root cause of the reported
-regression: the "Have a Client ID?" link was gated on `!guide` (true for every
-connector before it had even attempted a connect), not on any real per-connector fact —
-fixed to gate on a persisted `connectFlow.manualClient`, live-verified. The user then
-pushed back on "Gmail needs a Client ID" itself; verified live against each service's
-own OAuth metadata (Google/GitHub publish no `registration_endpoint`, Notion does) and
-against the user's own real Composio connector record (`credentialSource:
-"preregistered"`, not `"dcr"` — even Composio's one-click experience came from a
-Client ID entered once, not true auto-registration). Built `catalog-credentials.js` —
-register a Client ID once per catalog entry, every future connector from it is
-pre-seeded from birth — then, after the user compared the result to Claude's real UI
-one more time, made a final call: **removed every Client ID/Secret field, link, and
-modal from the app entirely**, for every connector, deleting the now-unused modals
-outright rather than just unlinking them. `catalog-credentials.js`'s register-client
-route stays reachable server-side only, meant to be called directly (by Claude) rather
-than through any screen. Separately, connected the user's real Gmail through their
-existing Composio connector (`COMPOSIO_MANAGE_CONNECTIONS` — Composio's own
-pre-registered app, zero Google Cloud setup) — real account, real sign-in, confirmed
-`ACTIVE`. A follow-up "stuck in an infinite confirmation loop" report surfaced two real,
-previously-undetected bugs, neither introduced this session: `skills/index.js`'s
-confirm-token redemption required byte-identical resent arguments (broke for any
-complex/nested skill args — now runs with the original args, token alone is the proof
-of consent); `guard.js`'s `classifyActionRisk()` lowercased an identifier before
-checking its camelCase boundary, so a name like `COMPOSIO_MULTI_EXECUTE_TOOL` (the
-platform's own generic action dispatcher) was always 'risky' regardless of what it was
-actually asked to do. Both fixed and verified with a full regression battery against
-the original SharePoint/updatePet cases this project's history already documents. Live
-server not yet restarted to pick any of this up. Full narrative below.
+The most recent work is the tail end of a large **voice/conversation rebuild arc**
+(spanning 2026-08-23→08-24, its own multi-round track run alongside the Pipeline Skills
+work below): full-duplex voice (Deepgram + a generic, provider-swappable TTS seam), a
+20-issue state-machine audit, and four follow-up rounds chasing real reported bugs
+(ElevenLabs cutting off mid-reply, Deepgram typo-matching on a saved key, a one-key-
+per-service collision, and — the very latest — "stuck on speaking" with Windows voice
+plus confirming the ElevenLabs-cutoff fix had one real remaining gap). Full narrative +
+pointer to the still-being-added-to plan file: `handoff-archive.md` §
+"Voice/conversation rebuild: duplex engine, generic TTS, state-machine audit, four
+follow-up rounds". **Nothing in this arc has been committed; the user's live server was
+never restarted to pick any of it up — none of it is live yet.** The two most recent
+fixes (an unconditional watchdog re-arm on `'restart'` missed by an earlier sweep; a new
+engine-level "speaking" safety-net watchdog closing a real structural gap the Round 2
+audit had flagged but never actually closed) could only be verified via standalone timer
+tests, not real audio — needs the user's own restart + retest, specifically: does
+Windows voice's state reliably return to normal after a reply (including a long,
+multi-sentence one), and do ElevenLabs replies still ever cut off mid-sentence.
 
-Before that, the most recent work was a **model/provider system pass** — four linked
-passes (a full system review + a live-health-badge fix, task-aware routing via new
-`server/models/task-types.js`, a cleanup pass, Add-Model UI improvements + duplicate
-prevention), all plan-approved and live-verified via `agent-browser` against scratch
-servers. `CLAUDE.md`'s Model system section still needs updating with these facts
-(Next steps #5).
+Before that, the most recent work was **Pipeline Skills (`skill.toml`) plus a
+tools/skills architectural split**, requested after the user asked directly whether
+building real executable capabilities as "skills" had been a mistake given other
+systems (OpenJarvis) treat Tools and Skills as genuinely separate. Answered honestly
+rather than defending the existing design: the leak-prevention machinery was real (a
+`kind` discriminator already existed, the Skills UI already read a source that couldn't
+return a built-in), but the *vocabulary* ("skill" meaning both the union and one member
+of it — `runSkill`, `hasSkill`, built-ins living in `server/skills/`) was what kept
+regenerating the native-ability-as-Skill confusion across three prior fixes. Found two
+real, previously undocumented issues while assessing: `GET /api/skills` (the mixed
+builtin+skill+connector list) had zero front-end consumers — dead code — and the
+task-action picker's `type:'skill'` was a working server capability with no UI path to
+it (the briefing picker that would have exposed it was deleted outright in an earlier
+session, for the same native-ability-leak reason). User chose, via explicit fork
+questions, the full `server/tools/` split (not just a seam) done first and verified
+before any pipeline code, templated step-to-step data flow, and a per-skill
+upload-approval gate for uploaded pipelines. Plan written, approved, executed in 5
+verified phases:
+
+**Phase 1** — moved all 37 built-in capability files `server/skills/` →
+`server/tools/`; new `server/tools/index.js` (loader only, no confirm gate); new
+`server/capabilities.js` (the composition seam — `getToolDeclarations`/
+`listCapabilities`/`listStepCandidates`/`invoke`, the confirm-token gate moved
+verbatim); `server/skills/index.js` shrunk to folder-Skills-only. Caught a real bug the
+move itself would have introduced (`control/session.js`'s `open_app.js` import) before
+it shipped. Verified via direct `invoke()` calls (built-in, folder Skill, confirm-token
+round-trip incl. the mismatched-resent-args edge case, `autoConfirm` bypass) plus a live
+`agent-browser` check showing zero built-ins on the Skills screen.
+**Phase 2** — hand-rolled `skill.toml` TOML subset (`[[inputs]]`/`[[steps]]`/
+`[steps.args]` only; everything else — inline tables, dotted keys, dates, hex — a named
+parse error) plus `{{inputs.x}}`/`{{steps.id.path}}` template resolution, built together
+since validation needs the same reference-parsing the resolver does. 46 pure-logic
+tests. **Phase 4** — `pipeline.js`'s `runPipeline()` (sequential, `continue_on_error`,
+per-step timeout, 20-step cap, a defense-in-depth re-check of every step's tool target
+independent of author-time validation); a real gate hole found and fixed before it
+shipped (`Replace` wasn't resetting `pipelineApproved`, which would have let uploaded
+content inherit an existing folder's trust — now always forces re-approval, verified
+directly for both `replaceSkillContents` and `replaceSkillMarkdown`); a confirm-under-
+`autoConfirm` refusal I'd initially missed entirely, caught by my own integration test
+failing honestly rather than by review. 20 stub-based + 29 real end-to-end tests, all
+passing. **Phase 5** — closed the Phase-4-flagged gap for real (`readSkillMd()` no
+longer throws for a toml-only Skill); detail-page Pipeline card (status/inputs/steps,
+deliberately no approve button — matches the existing `scriptsApproved` precedent of
+real consent living in conversation, not a checkbox); a `Pipeline` list-row badge.
+Verified live across all 4 pipeline states plus a plain-SKILL.md control. Full
+phase-by-phase record: `C:\Users\HP\.claude\plans\can-you-give-me-async-crayon.md`.
+**Nothing committed; the user's live server was never touched or restarted — none of
+this is live yet.**
+
+**Worth flagging for whoever picks this up next**: `server/capabilities.js`,
+`server/live.js`, and `server/models/runner.js` changed on disk mid-session — a
+concurrent session (see the project's own "second Claude session" gotcha) added a
+`core`/`unlocked` tool-declaration-slimming layer (`find_capability.js`,
+`searchCapabilities()`, cutting per-turn declarations from ~81/~40k tokens) directly on
+top of this session's `capabilities.js`. It was built compatibly — `listStepCandidates`,
+the `ctx.invoke` self-injection, and the confirm gate are all intact — but it has one
+real, untested interaction: folder Skills (Pipeline Skills included) are never tagged
+`core: true`, so under the new system a live model wouldn't see a Pipeline Skill in its
+default tool list at all; it would need `find_capability` to discover it first. Not
+broken, just never exercised together — worth a joint look before assuming live chat
+can already reach a Pipeline Skill by name.
+
+Before that, the most recent work was a **connector credential-prompt regression fix**,
+ending in a final "no Client ID/Secret UI anywhere" decision, a live Gmail connection
+through Composio, and two risk-classifier/confirm-loop bugs. Full text: Session log
+below.
 
 ## Next steps
 
-1. **Action the remaining CLAUDE.md staleness findings** — full list in
+1. **Pipeline Skills is built, verified, and uncommitted.** Nothing blocks committing
+   it; the only reason it hasn't been is that no session has been asked to. Once
+   committed, the user's live server needs an ordinary restart to pick up ANY of
+   `server/tools/`, `server/capabilities.js`, or the pipeline machinery — none of it is
+   live yet (same "don't restart their instance yourself" caution as always).
+2. **Live-chat discoverability of a Pipeline Skill through the concurrent session's new
+   `core`/`unlocked` tool-slimming layer has never been exercised** — see "Right now"
+   above. Folder Skills (including Pipeline Skills) aren't tagged `core: true`, so a
+   live model turn may need `find_capability` to surface one before it can be called at
+   all. Worth a real conversational test once both changes are live together, not
+   assumed either way from reading the code.
+3. **Action the remaining CLAUDE.md staleness findings** — full list in
    `plans/audit-handoff-md-in-this-graceful-thompson.md`. Two of the highest-value
    items (the connector Client ID/Secret UI design, and `client-identity.js`/CIMD) are
    now resolved as part of this session's docs pass — `server/connectors/CLAUDE.md`
@@ -54,21 +112,21 @@ servers. `CLAUDE.md`'s Model system section still needs updating with these fact
    full. Still open: `friendly-message.js` and the icon system are undocumented; the
    connector permission model is documented as 2-state but is 4; `CONTROL_TOOLS` is
    documented as flat tools but is 3 tools plus a batched `actions[]` array.
-2. **The WSL sandbox backend has still never run against a real WSL distro**
+4. **The WSL sandbox backend has still never run against a real WSL distro**
    — none is installed on this dev machine. `server/sandbox/wsl-backend.js`
    is reasoned through carefully but unverified; test for real the first time
    WSL exists here or on another dev machine.
-3. **Task A is still not started**: a dedicated verification subagent proving
+5. **Task A is still not started**: a dedicated verification subagent proving
    Jarvis actually *invokes* a skill in real conversation (not just that
    upload succeeds) — single-skill trigger, correct pick among several, an
    ambiguous case, a no-match negative case, each backed by logs/traces, not
    Jarvis's own claim. User confirmed real API quota use is fine for this.
-4. **No AI-driven control session has ever reached `report_done` unbroken**
+6. **No AI-driven control session has ever reached `report_done` unbroken**
    end to end (open → act → save → verify → done) — every primitive is
    verified individually; the full happy path with the newer close/restore/
    arrange actions and scratch-window auto-cleanup has not been watched to
    completion.
-5. **Root `CLAUDE.md`'s Model system section is now out of date** — it
+7. **Root `CLAUDE.md`'s Model system section is now out of date** — it
    doesn't yet mention `server/models/task-types.js` (task-aware routing),
    the `model_health` SSE event, or the `addModel()`/`discoverModels()`
    `(connectionId, model)` duplicate-prevention rule, all landed this
@@ -106,6 +164,125 @@ servers. `CLAUDE.md`'s Model system section still needs updating with these fact
 are now in the session log below, marked as reconstructed.)*
 
 ## Session log (newest first)
+
+### 2026-08-23 → 2026-08-24 — Voice/conversation rebuild: duplex engine, generic TTS, state-machine audit, four follow-up rounds
+See `handoff-archive.md` § "Voice/conversation rebuild: duplex engine, generic TTS,
+state-machine audit, four follow-up rounds"; full blow-by-blow in
+`plans/i-would-like-you-snoopy-bengio.md` (still being added to).
+
+Full-duplex voice built alongside the existing engines (Deepgram STT, a generic
+provider-swappable TTS seam, real ElevenLabs backend), a situational-awareness system
+prompt, model-router tie-break + tool-declaration-slimming fixes, a real state machine +
+audio-reactive orb, and two composer-dictation bugs — all live-confirmed working. Then a
+20-issue state-machine audit (generation tokens + ported per-sentence watchdogs closed
+most of it), a generalized external-service key store, and four follow-up rounds
+chasing real reported bugs: a typo'd service ref needing fuzzy (Levenshtein) matching
+instead of a substring check; ElevenLabs cutting off mid-reply, root-caused to a
+thinking-phase watchdog getting re-armed by events that also fire legitimately while
+already speaking; a one-key-per-service collision; and, most recently, "stuck on
+speaking" with Windows voice (closed with a new engine-level speaking watchdog) plus
+finding the earlier cutoff fix had missed the `'restart'` branch. Nothing committed;
+real playback still needs the user's own restart + retest, same limitation as every
+voice fix in this whole arc.
+
+### 2026-08-23 — Pipeline Skills (skill.toml) + tools/skills architectural split
+See `handoff-archive.md` § "Pipeline Skills (skill.toml) + tools/skills architectural split".
+
+The user asked for `skill.toml` (a fixed, ordered, auto-run pipeline as an alternative
+or addition to `SKILL.md`) and separately questioned whether building real executable
+capabilities (`get_weather`, `open_app`, ...) as "skills" had been a mistake, given
+other systems keep Tools and Skills genuinely separate — asked for an honest
+architectural assessment BEFORE any code, not a defense of what existed. Verified
+before answering rather than from memory: confirmed the leak-prevention machinery
+(`kind` discriminator, `listUserSkills()` as the only source a Skills UI may read) was
+already real and working, but the *vocabulary* — "skill" meaning both the union and one
+member of it (`runSkill`, `hasSkill`, built-ins living in `server/skills/`) — was what
+kept regenerating the native-ability-as-Skill confusion the project's history already
+documents three times. Found two things nobody had flagged: `GET /api/skills` (the
+mixed list) had zero front-end consumers (dead code), and the task-action picker's
+`type:'skill'` was a real, working server capability with no UI path to it (the
+briefing picker that once exposed it was deleted outright for the native-ability-leak
+reason, per this project's own history). Surfaced two real blockers the user hadn't
+named: the circular-import invariant (a pipeline runner needs to call back into the
+tool dispatcher, which would deadlock the dynamic-import loader without careful
+injection) and the standing "Jarvis never executes downloaded code" rule (an uploaded
+`skill.toml` genuinely is downloaded code that runs, unlike an uploaded `SKILL.md`).
+User chose, via explicit fork questions: the full `server/tools/` split done first and
+verified before any pipeline code (not just a lighter seam), templated step-to-step
+data flow (not just end-of-run collection), the hand-rolled TOML subset as asked, and a
+per-skill upload-approval gate mirroring `run_skill_script.js`'s existing
+`scriptsApproved` shape. Plan approved, then executed and verified in 5 phases — see
+`plans/can-you-give-me-async-crayon.md` for the full phase-by-phase record; summary:
+
+Phase 1 moved all 37 built-in capability files to `server/tools/`, split the old merged
+`server/skills/index.js` into a pure loader (`tools/index.js`) and a new composition
+seam (`server/capabilities.js`, owning `invoke()` and the confirm-token gate moved
+verbatim, plus the new `listStepCandidates()` a pipeline step-picker needs), and
+shrunk `server/skills/index.js` to folder-Skills-only — caught and fixed a real bug the
+move itself would have introduced (`control/session.js`'s direct `open_app.js` import)
+before it ever shipped, and swept every stray doc comment across the whole server tree
+plus 5 `CLAUDE.md` files (root, new `server/tools/CLAUDE.md`, rewritten
+`server/skills/CLAUDE.md`, `connectors`/`control`/`scheduler`) for accuracy. Verified via
+direct `invoke()` calls (built-in, folder Skill, unknown name, the confirm-token
+round-trip including the specific mismatched-resent-args edge case this project's
+history already documents as a real prior bug, `autoConfirm` bypass, the injected
+`ctx.reservedSkillNames`) plus a live `agent-browser` check confirming zero built-ins
+ever appear on the Skills screen. Phase 2 built a hand-rolled TOML subset
+(`server/skills/store/skill-toml.js`: `[[inputs]]`/`[[steps]]`/`[steps.args]` only —
+inline tables, dotted keys, dates, hex/octal all named parse errors, the opposite of
+`parseSkillMd()`'s tolerance since a mis-parsed pipeline EXECUTES) alongside
+`{{inputs.x}}`/`{{steps.id.path}}` template resolution
+(`server/skills/pipeline-template.js`), built together since author-time forward-
+reference validation needs the same reference-parsing the run-time resolver does — 46
+pure-logic tests covering every rejected construct, whole-value type preservation on a
+template reference, embedded-reference stringification, and the specific no-recursive-
+expansion safety property (a tool result containing literal `{{...}}` text must never
+be re-interpreted as a new template). Two deliberate deviations flagged to the user at
+the time: `validatePipeline()`'s `knownToolNames` is an injected parameter rather than
+self-fetched (importing `capabilities.js` from `server/skills/store/` would recreate the
+exact deadlock the Phase 1 split exists to prevent, one hop further out), and static
+validation also catches an unknown `{{inputs.x}}` reference, not just the step-id case
+literally asked for. Phase 4 built `server/skills/pipeline.js`'s `runPipeline()`
+(sequential, `continue_on_error`, per-step timeout, a 20-step cap, and a defense-in-
+depth re-check of every step's tool target via `tools/index.js` directly — independent
+of whether author-time validation ever actually ran), plus
+`server/tools/approve_skill_pipeline.js` and `capabilities.js` now injecting `invoke`
+itself into every capability's `ctx` (closing the circular-import gap the same way
+`ctx.reservedSkillNames` already did). Found and fixed a real gate hole before it
+shipped, not after: `Replace` (swapping a Skill's content via a new zip/md) wasn't
+resetting `pipelineApproved`, which would have let untrusted uploaded content silently
+inherit an existing folder's prior trust — both `replaceSkillContents` and
+`replaceSkillMarkdown` now always force it back to `false`, directly verified (not just
+reasoned about) when the user later asked for confirmation of this specific claim. Also
+caught, by the integration test failing honestly rather than by review: the plan's
+"refuse under `autoConfirm`" rule for a confirm-requiring pipeline hadn't actually been
+implemented on the first pass, since `capabilities.js`'s existing `autoConfirm` bypass
+happens BEFORE a capability's own `run()` is ever called — fixed, re-verified. 20
+stub-based unit tests plus 29 real end-to-end tests against `capabilities.js` with 7
+actual Skill folders on disk, covering every scenario in the plan's checklist including
+the inherited `run_skill_script`/`scriptsApproved` gate through a pipeline step. Phase 5
+closed the Phase-4-flagged gap for real rather than leaving it documented:
+`readSkillMd()` no longer throws for a Skill with no `SKILL.md` at all (a valid,
+pipeline-only shape); `GET /api/skills/:name` now returns full pipeline info with each
+step tagged `needsConfirm` via `pipeline.js`'s own `confirmRequiringSteps()`, so the UI
+can never disagree with the real run-time gate; `_skill-detail.js` gained a Pipeline
+card (status/inputs/steps, or plain-language parse errors) with deliberately no approve
+button, matching the existing `scriptsApproved` precedent that real consent belongs in
+conversation, not a checkbox; `skills.js`'s list rows gained a `Pipeline` badge.
+Verified live across all 4 pipeline states (valid+approved, broken, unapproved,
+confirm-requiring) plus a plain `SKILL.md`-only control, screenshots inspected, not just
+asserted. Every phase ran on a scratch `JARVIS_DATA_DIR`/unusual port; the user's real
+`data/`/`.env`/port 3000 were never touched, and nothing from this session has been
+committed or is live yet — the user's server needs both a commit and a restart to pick
+any of it up. One thing discovered but not caused by this session, worth flagging:
+`server/capabilities.js`/`server/live.js`/`server/models/runner.js` changed on disk
+mid-session from what's almost certainly a concurrent second Claude session, adding a
+`core`/`unlocked` tool-declaration-slimming layer on top of this session's
+`capabilities.js` — built compatibly (`listStepCandidates`, the `ctx.invoke`
+self-injection, and the confirm gate are all intact), but folder Skills are never
+tagged `core: true`, so a live model may need the new `find_capability` tool to
+discover a Pipeline Skill before it can call it by name. Never exercised together; see
+Next steps #2.
 
 ### 2026-08-19 — Connector credential-prompt regression, "no Client ID/Secret UI anywhere," Gmail via Composio, two risk-classifier bugs
 See `handoff-archive.md` § "Connector credential-prompt regression, "no Client ID/Secret UI anywhere," Gmail via Composio, two risk-classifier bugs".
@@ -149,7 +326,7 @@ duplicate prevention investigated first (report-only) then fixed on request:
 `addModel()`/`discoverModels()` now guard on `(connectionId, model)`, never `model`
 alone. All verified via `agent-browser` against isolated scratch servers — real
 server/data never touched, no commits made. `CLAUDE.md`'s Model system section still
-needs updating with these facts (Next steps #5).
+needs updating with these facts (Next steps #7).
 
 ### 2026-08-18 → 2026-08-19 — Chat Persistence + Memory built (SQLite)
 See `handoff-archive.md` § "Chat Persistence + Memory built (SQLite)".
@@ -186,7 +363,7 @@ across all 11 files. Two of the new files (`CLAUDE.md`,
 for incident history — this restructure repoints both citations to
 `handoff-archive.md`, since that's where the actual narratives now live.
 This session's own audit (this restructure) found 15 claims in the new
-nested docs that don't match current code — see Next steps #1.
+nested docs that don't match current code — see Next steps #3.
 
 ### 2026-08-18 — MCP connector registration overhaul (CIMD, DCR fallback, Gmail zero-tools bug) + a UI correction
 _(reconstructed from plan file `plans/the-current-mcp-connector-recursive-metcalfe.md`; not written during the session)_

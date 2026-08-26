@@ -35,7 +35,8 @@ own small fixed tool set.
   ACT (`ps-bridge.js`) → back to PERCEIVE, which doubles as verification (the model sees
   the result of its last action in the next PERCEIVE and decides whether to
   proceed/retry/finish) — until done/stuck/stopped/a step cap. Never imports
-  `skills/index.js` (see the circular-import invariant in the root `CLAUDE.md`); a
+  `tools/index.js` or `capabilities.js` (see the circular-import invariant in the root
+  `CLAUDE.md`); a
   control session's tool list is its own `CONTROL_TOOLS` plus merged connector tools,
   not the chat skill catalog. Tracks `preExistingHandles` vs. `createdHandles` per
   session and only ever auto-closes windows Jarvis itself opened for the current task at
@@ -96,7 +97,8 @@ own small fixed tool set.
   per-call, args-aware risk classification (reading the dispatcher's own arguments, not
   just its static declaration) is the honest fix if that gap ever needs closing —
   bigger change, deliberately not attempted here.
-- **`skills/index.js`'s confirm-token redemption used to require the model's "yes, do
+- **`capabilities.js`'s confirm-token redemption (formerly in the merged
+  `skills/index.js`) used to require the model's "yes, do
   it" call to resend byte-identical arguments to the original ask** (`JSON.stringify`'d
   and compared for exact equality). Fine for a skill with one or two simple string
   arguments; a real bug for anything with a complex/nested shape, since a model

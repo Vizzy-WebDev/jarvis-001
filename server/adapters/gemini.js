@@ -17,6 +17,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { getSecret } from '../config.js';
 import { systemInstructionFor } from '../prompt.js';
+import { assistantTextOf } from '../conversation.js';
 
 // What this wire format can do at all — the ceiling for every model saved
 // under a Gemini connection. A model's own caps (models/catalog.js) can
@@ -66,15 +67,32 @@ function toContents(messages) {
       const parts = [...(m.text ? [{ text: m.text }] : []), ...mediaToParts(m.media)];
       contents.push({ role: 'user', parts });
     } else if (m.role === 'assistant') {
-      if (m.raw?.adapter === 'gemini' && m.raw.content) {
+      // assistantTextOf(), not m.text directly — see openai-compatible.js's
+      // identical comment on why an interrupted turn must not leave the
+      // model believing it said more than it actually got to.
+      //
+      // The raw-content round-trip is REQUIRED whenever this message
+      // carries tool calls, interrupted or not — it's what preserves
+      // Gemini's thought_signature (see this file's header comment).
+      // Skipping it on an interrupted tool-calling turn wouldn't just leak
+      // extra text, it would break the NEXT call outright (400). So the
+      // interrupt-truncation trade below only applies to a message
+      // interrupted with NO tool calls — a plain final answer cut short. A
+      // narration interrupted right before its own tool call still replays
+      // in full on the next turn; that's a deliberate, narrower
+      // inconsistency, not a missed case — protecting the tool-calling
+      // protocol wins over exactness of what gets replayed in that one
+      // specific overlap.
+      const spoken = assistantTextOf(m);
+      if (m.raw?.adapter === 'gemini' && m.raw.content && (m.toolCalls?.length || !m.interrupted)) {
         contents.push(m.raw.content);
       } else if (m.toolCalls?.length) {
         contents.push({
           role: 'model',
           parts: m.toolCalls.map((c) => ({ functionCall: { name: c.name, args: c.args } })),
         });
-      } else if (m.text) {
-        contents.push({ role: 'model', parts: [{ text: m.text }] });
+      } else if (spoken) {
+        contents.push({ role: 'model', parts: [{ text: spoken }] });
       }
     } else if (m.role === 'tool' && m.toolResults?.length) {
       contents.push({

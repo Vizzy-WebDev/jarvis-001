@@ -8,8 +8,11 @@ const STORAGE_KEY = 'jarvis.settings';
 const DEFAULTS = {
   speakReplies: true,
   micMode: 'conversation', // 'conversation' | 'push'
-  voiceOutput: 'gemini', // 'gemini' | 'browser'
-  geminiVoice: 'Kore',
+  // 'browser' (the free, offline speechSynthesis voice) or a configured TTS
+  // provider's ref (server/tts/index.js's registry, e.g. 'elevenlabs') —
+  // populated dynamically from /api/tts/providers (app.js's
+  // populateVoiceOutputOptions()), never a fixed set here.
+  voiceOutput: 'browser',
   useAiTurnCheck: false,
   // 'pipeline' works with any AI model (Gemini/Claude/OpenAI), ~0.8-1.5s to
   // first words. 'live' is Gemini-only, ~0.3-0.6s and interruptible

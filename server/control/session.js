@@ -6,9 +6,9 @@
 // independently cancellable without any risk of the model rescheduling
 // itself mid-click via a tool like schedule_task.
 //
-// Never imports skills/index.js — see CLAUDE.md's circular-import
-// invariant. Talks to models directly through the adapter layer, and to the
-// screen/mouse/keyboard through ps-bridge.js.
+// Never imports tools/index.js or capabilities.js — see CLAUDE.md's
+// circular-import invariant. Talks to models directly through the adapter
+// layer, and to the screen/mouse/keyboard through ps-bridge.js.
 //
 // Only one session runs at a time (matching the one-overlay-at-a-time
 // design) — `activeSession` below is the single source of truth server.js's
@@ -23,19 +23,20 @@ import { getAdapter } from '../adapters/index.js';
 import { rankCandidates, controlTaskProfile } from '../models/router.js';
 import { getPrefs } from '../prefs.js';
 import { broadcast } from '../events.js';
-// A direct import of one specific leaf skill file, NOT of skills/index.js —
-// open_app.js has no dependency on the skill loader itself, so this doesn't
+// A direct import of one specific leaf tool file, NOT of tools/index.js —
+// open_app.js has no dependency on the tool loader itself, so this doesn't
 // create the circular-import edge the invariant forbids. Needed because the
 // control loop otherwise has no way to launch an app that isn't already
 // open — perceive() only ever looks at whatever window is currently in
 // front.
-import openApp from '../skills/open_app.js';
-// connectors/index.js does not import skills/index.js (or anything that
-// does), so pulling it in directly here doesn't cross the circular-import
-// invariant — same reasoning as the open_app.js import above. This is what
-// lets a control session call a connected service (Notion, a CLI tool, ...)
-// mid-task, through the exact same guard/confirm discipline as a desktop
-// action (see runControlSession's connector-tool branch below).
+import openApp from '../tools/open_app.js';
+// connectors/index.js does not import tools/index.js or capabilities.js (or
+// anything that does), so pulling it in directly here doesn't cross the
+// circular-import invariant — same reasoning as the open_app.js import
+// above. This is what lets a control session call a connected service
+// (Notion, a CLI tool, ...) mid-task, through the exact same guard/confirm
+// discipline as a desktop action (see runControlSession's connector-tool
+// branch below).
 import { getToolDeclarations as getConnectorTools, runConnectorTool } from '../connectors/index.js';
 import { askModel } from '../ai.js';
 
@@ -101,7 +102,7 @@ You must always respond by calling exactly one of these tools:
 Never invent an element id or window handle that wasn't in the list you were just shown. If you're not sure what's on screen, take a smaller action (like clicking one element) and look again rather than guessing a long sequence.`;
 
 // ---------- CONTROL_TOOLS: this loop's own small, fixed tool set ----------
-// Not the general Skills tool list (server/skills/index.js) — a control
+// Not the general capability list (server/capabilities.js) — a control
 // session's available actions are these desktop primitives, merged at
 // runtime with whatever connector tools are currently enabled (see
 // runControlSession's `tools` build below) — never the chat skill catalog

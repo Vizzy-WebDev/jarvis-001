@@ -70,22 +70,23 @@ function runPowerShell(args) {
 
 /**
  * Walks down through wrapper folders looking for the one that actually
- * holds SKILL.md — handling the single most common real-world zip mistake
- * (zipping the folder itself instead of its contents, sometimes more than
- * once, e.g. a GitHub zip export that was extracted and then re-zipped by
- * hand). Only descends while a directory contains exactly one subfolder and
- * no SKILL.md of its own — an archive with multiple top-level items is left
- * alone rather than guessed at, and the walk gives up after
- * `MAX_WRAPPER_DEPTH` levels either way.
+ * holds SKILL.md and/or skill.toml (either alone is a valid Skill folder —
+ * see skill-files.js's isSkillFolder()) — handling the single most common
+ * real-world zip mistake (zipping the folder itself instead of its
+ * contents, sometimes more than once, e.g. a GitHub zip export that was
+ * extracted and then re-zipped by hand). Only descends while a directory
+ * contains exactly one subfolder and neither file of its own — an archive
+ * with multiple top-level items is left alone rather than guessed at, and
+ * the walk gives up after `MAX_WRAPPER_DEPTH` levels either way.
  */
 function findSkillRoot(startDir) {
   let dir = startDir;
   for (let depth = 0; depth < MAX_WRAPPER_DEPTH; depth++) {
-    if (fs.existsSync(path.join(dir, 'SKILL.md'))) return dir;
+    if (fs.existsSync(path.join(dir, 'SKILL.md')) || fs.existsSync(path.join(dir, 'skill.toml'))) return dir;
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     const dirs = entries.filter((e) => e.isDirectory());
     const files = entries.filter((e) => !e.isDirectory());
-    if (dirs.length !== 1 || files.length !== 0) return dir; // ambiguous or nothing left to descend into — stop and let the caller report "no SKILL.md"
+    if (dirs.length !== 1 || files.length !== 0) return dir; // ambiguous or nothing left to descend into — stop and let the caller report "no SKILL.md or skill.toml"
     dir = path.join(dir, dirs[0].name);
   }
   return dir;

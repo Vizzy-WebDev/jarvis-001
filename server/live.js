@@ -18,7 +18,7 @@
 import { WebSocketServer } from 'ws';
 import { GoogleGenAI } from '@google/genai';
 import { getGeminiKey } from './gemini-key.js';
-import { getToolDeclarations, runSkill } from './skills/index.js';
+import { getToolDeclarations, invoke } from './capabilities.js';
 import { SYSTEM_INSTRUCTION } from './prompt.js';
 
 const MODEL = 'gemini-live-2.5-flash-preview';
@@ -30,8 +30,23 @@ const MODEL = 'gemini-live-2.5-flash-preview';
 // system instruction as every text-mode model (server/prompt.js), so the
 // voice-clarity confirmation read-back behaves identically in both engines.
 
-export function attachLiveServer(httpServer) {
-  const wss = new WebSocketServer({ server: httpServer, path: '/api/live' });
+// noServer: true, not {server, path} — see server.js's header comment on
+// attachUpgradeDispatcher() for why: a second WebSocketServer using
+// {server, path} on the SAME httpServer (duplex.js's /api/duplex) breaks
+// this one. Every {server,...} instance registers its own unconditional
+// 'upgrade' listener, and ws's own path filter rejects a mismatched
+// request by destroying the socket with a 400 — whichever instance was
+// registered FIRST wins that race for every OTHER path, silently 400ing
+// requests meant for the other socket before it ever gets a turn. Found
+// live: this file (registered first) was 400ing every /api/duplex
+// connection attempt, surfacing to the user as "Could not reach the
+// Jarvis server" with no indication the actual cause was two WebSocket
+// servers stepping on each other. This function no longer touches
+// httpServer's upgrade handling at all — it just builds the WSS instance;
+// server.js's single dispatcher calls handleUpgrade() on whichever
+// instance matches the request path.
+export function createLiveWss() {
+  const wss = new WebSocketServer({ noServer: true });
 
   wss.on('connection', (browserWs) => {
     handleConnection(browserWs).catch((err) => {
@@ -62,7 +77,11 @@ async function handleConnection(browserWs) {
   }
 
   const ai = new GoogleGenAI({ apiKey });
-  const tools = [{ functionDeclarations: getToolDeclarations() }];
+  // unlocked: true — Gemini Live sets its tool list once at connect() time
+  // with no per-turn refresh, so it opts out of the core/find_capability
+  // split entirely rather than being silently capped at ~11 tools with no
+  // way to reach anything else (see getToolDeclarations()'s comment).
+  const tools = [{ functionDeclarations: getToolDeclarations({ unlocked: true }) }];
 
   let liveSession = null;
   let clientClosed = false;
@@ -122,13 +141,13 @@ async function handleConnection(browserWs) {
 }
 
 async function onGeminiMessage(message, liveSession, send) {
-  // Tool calls: run the same skills/index.js used everywhere else in the
-  // app, then report the result back to Gemini so it can keep talking.
+  // Tool calls: run the same capabilities.js seam used everywhere else in
+  // the app, then report the result back to Gemini so it can keep talking.
   if (message.toolCall?.functionCalls?.length) {
     const functionResponses = [];
     for (const call of message.toolCall.functionCalls) {
       send({ type: 'tool_start', name: call.name });
-      const result = await runSkill(call.name, call.args);
+      const result = await invoke(call.name, call.args);
       // Same shape as the pipeline path's tool_result event (server/models/runner.js)
       // so the UI's confirmation chips and voice-navigation handling work
       // identically regardless of which engine is active.

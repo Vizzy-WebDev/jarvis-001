@@ -9,6 +9,16 @@ import { sectionCard, armedButton, postJson } from './_helpers.js';
 import { segmented } from './_ui.js';
 import { render as renderNotificationDetail } from './_notification-detail.js';
 
+// Set by public/notifications.js (the header bell popover) right before it
+// calls navigate('notifications') for a row with no action.section — the
+// popover itself has no detail view of its own to open, so it hands off to
+// this screen's real one instead of leaving the click a no-op. Read once,
+// by render() below, then cleared.
+let pendingOpenId = null;
+export function openOnNextRender(id) {
+  pendingOpenId = id;
+}
+
 function timeAgo(iso) {
   const ms = Date.now() - new Date(iso).getTime();
   const min = Math.floor(ms / 60000);
@@ -133,6 +143,15 @@ export async function render(container) {
       return;
     }
     for (const n of visible) card.appendChild(buildRow(n, { onOpen, onChange }));
+  }
+
+  if (pendingOpenId) {
+    const target = notifications.find((n) => n.id === pendingOpenId);
+    pendingOpenId = null;
+    if (target) {
+      await onOpen(target);
+      return;
+    }
   }
 
   renderList();

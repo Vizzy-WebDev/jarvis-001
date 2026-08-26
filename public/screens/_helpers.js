@@ -96,3 +96,19 @@ export async function postJson(url, body, method = 'POST') {
   const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   return res.json();
 }
+
+/** Same shape as postJson above, but rejects on a non-2xx response instead of silently resolving with whatever error JSON the server sent — for any control (a toggle, a permission switch) that needs to know a save actually failed so it can revert its own already-applied UI change, not just log it. Promoted out of _connector-detail.js, which was the first caller. */
+export async function patchJsonStrict(url, body) {
+  const res = await fetch(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(`Save failed (${res.status})`);
+  return res.json();
+}
+
+/** A brief red line appended under `card`, auto-removed after a few seconds — used when a save fails so the user isn't left staring at a control that silently didn't take. */
+export function flashSaveError(card, message) {
+  const el = document.createElement('p');
+  el.className = 'hint save-error';
+  el.textContent = message;
+  card.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}

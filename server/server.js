@@ -7,17 +7,21 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { chat, chatStream, resetConversation, getActiveSessionId, activateConversation } from './brain.js';
+import { markLastAssistantInterrupted } from './conversation.js';
 import * as chatStore from './chat-store.js';
 // Direct runner.js import (not through brain.js) so a monitor's follow-up
 // can run WITHOUT autoConfirm — a risky action must still pause and ask,
 // even though nobody may be watching the moment it fires (see the monitor
 // trigger handler below). scheduler.js's own runOneTurn is the precedent
-// for a server-side (not server/skills/) file importing runner.js directly.
+// for a server-side (not server/tools/ or server/skills/) file importing
+// runner.js directly.
 import { runTurn } from './models/runner.js';
-import { synthesizeSpeech, AVAILABLE_VOICES } from './tts.js';
+import * as tts from './tts/index.js';
+import * as stt from './stt/index.js';
 import { classifyTurnComplete } from './turn-check.js';
 import { isLowConfidence } from './clarify.js';
-import { attachLiveServer } from './live.js';
+import { createLiveWss } from './live.js';
+import { createDuplexWss } from './duplex.js';
 import { addClient, removeClient, broadcast } from './events.js';
 import { addNotification, listNotifications, markRead, markAllRead, removeNotification, clearAll as clearAllNotifications } from './notifications.js';
 import { ADAPTER_NAMES } from './adapters/index.js';
@@ -25,17 +29,20 @@ import { SUGGESTIONS } from './models/catalog.js';
 import { getHealthStatus, markHealthy, markUnhealthy } from './models/health.js';
 import { classifyError, AVAILABILITY_STATE_FOR_KIND } from './models/error-kind.js';
 import { friendlyMessage, friendlyMessageFor } from './friendly-message.js';
-import { listSkills, hasSkill, reservedSkillNames } from './skills/index.js';
+import { listCapabilities, hasCapability, reservedSkillNames, listStepCandidates } from './capabilities.js';
 import {
   listUserSkills,
   getSkill,
   readSkillMd,
+  readSkillToml,
   createSkill,
   updateSkillMd,
   updateSkillState,
   deleteSkill,
   skillRoot,
 } from './skills/store/skill-files.js';
+import { parseToml, validatePipeline } from './skills/store/skill-toml.js';
+import { confirmRequiringSteps } from './skills/pipeline.js';
 import { installFromUpload, replaceFromUpload, buildSkillZip } from './skills/store/skill-zip.js';
 import {
   listModels,
@@ -61,6 +68,15 @@ import {
   startScheduler,
 } from './scheduler/scheduler.js';
 import { getBriefingConfig, setBriefingConfig, composeBriefing } from './scheduler/briefing.js';
+import * as jobStore from './jobs/job-store.js';
+import {
+  startOrchestrator,
+  createJobIfCapacity,
+  resumeOrphan,
+  restartOrphan,
+  resumeStuckJob,
+  cancelJob,
+} from './jobs/orchestrator.js';
 import { showOverlay, hideOverlay, updateStep, isOverlayActive, currentOverlayStep } from './control/overlay-bridge.js';
 import { isIndicatorActive } from './control/observation-bridge.js';
 import { runControlSession, requestStop, confirmPendingAction, getSessionStatus } from './control/session.js';
@@ -90,12 +106,26 @@ import * as cliClient from './connectors/cli-client.js';
 import { classifyToolRisk } from './connectors/index.js';
 import { resolveConnectorIcon, backfillConnectorIcons, isIconStale, resolveCatalogIcons, getCatalogIcon } from './connectors/icon-resolver.js';
 import { saveSecret, deleteSecret } from './config.js';
-import { listEntries as listProfileEntries, addEntry as addProfileEntry, deleteEntry as deleteProfileEntry } from './profile.js';
+import * as externalServices from './external-services.js';
+import {
+  listEntries as listProfileEntries,
+  addEntry as addProfileEntry,
+  deleteEntry as deleteProfileEntry,
+  updateEntry as updateProfileEntry,
+  listVersions as listProfileEntryVersions,
+} from './profile.js';
 import {
   listPendingCandidates as listPendingMemoryCandidates,
   approveCandidate as approveMemoryCandidate,
   rejectCandidate as rejectMemoryCandidate,
   resolveConflict as resolveMemoryConflict,
+  listMemories,
+  listCategories as listMemoryCategories,
+  getVersionHistory as getMemoryVersionHistory,
+  updateMemory,
+  archiveMemory,
+  restoreMemory,
+  deleteMemory,
 } from './memory/memory-store.js';
 // The Planning Partner and Content Analysis have no routes of their own:
 // they had a screen each, and a screen each is what kept them apart. Both
@@ -165,7 +195,7 @@ app.get('/api/models/adapters', (req, res) => {
 });
 
 app.get('/api/skills', (req, res) => {
-  res.json({ skills: listSkills({ includeMeta: req.query.all === '1' }) });
+  res.json({ skills: listCapabilities({ includeMeta: req.query.all === '1' }) });
 });
 
 // ---------- the Skills screen ----------
@@ -186,6 +216,34 @@ app.get('/api/skills/installed', (req, res) => {
   res.json({ skills: listUserSkills() });
 });
 
+/**
+ * Reads + parses + validates a Skill's skill.toml for the detail page, with
+ * the FULL "unknown tool" check — this is the one place that can safely do
+ * that (it has capabilities.js's listStepCandidates() available; neither
+ * server/skills/index.js nor pipeline.js can import capabilities.js at all,
+ * see the root CLAUDE.md's circular-import invariant, so their own
+ * validation always skips that one check). Never throws. `{present: false}`
+ * when this Skill has no skill.toml at all.
+ */
+function pipelineInfoFor(name, approved) {
+  const raw = readSkillToml(name);
+  if (raw === null) return { present: false };
+  try {
+    const doc = parseToml(raw);
+    const { errors } = validatePipeline(doc, { knownToolNames: listStepCandidates().map((t) => t.name) });
+    // Per-step `needsConfirm` — server/skills/pipeline.js's own
+    // confirmRequiringSteps(), the exact function that decides the
+    // wrapper tool's own confirm requirement at run time, so the detail
+    // page can never show a step as "needs confirmation" that the real
+    // run-time gate disagrees with.
+    const confirmIds = new Set(confirmRequiringSteps(doc.steps).map((s) => s.id));
+    const steps = (doc.steps || []).map((s) => ({ ...s, needsConfirm: confirmIds.has(s.id) }));
+    return { present: true, valid: errors.length === 0, errors, approved, description: doc.description || null, inputs: doc.inputs, steps };
+  } catch (err) {
+    return { present: true, valid: false, errors: [err?.message || 'Could not parse skill.toml.'], approved, description: null, inputs: [], steps: [] };
+  }
+}
+
 // Fixed-path routes MUST be registered before '/api/skills/:name' below —
 // Express matches route order, and ':name' would otherwise swallow a request
 // for a fixed path as if it were a skill's name (confirmed live once
@@ -195,7 +253,8 @@ app.get('/api/skills/:name', (req, res) => {
   if (!skill) return res.status(404).json({ ok: false, error: 'Unknown skill.' });
   try {
     const { raw, frontmatter, body } = readSkillMd(req.params.name);
-    res.json({ ok: true, skill, frontmatter, instructions: body, raw });
+    const pipeline = pipelineInfoFor(req.params.name, skill.pipelineApproved);
+    res.json({ ok: true, skill, frontmatter, instructions: body, raw, pipeline });
   } catch (err) {
     res.status(400).json({ ok: false, error: err?.message || 'Could not read that skill.' });
   }
@@ -432,6 +491,102 @@ app.post('/api/prefs', (req, res) => {
   res.json(setPrefs(req.body || {}));
 });
 
+// ---------- external service API keys (Deepgram, a TTS provider, ...) ----------
+//
+// A generic, user-named alternative to hand-editing .env for the standalone
+// service keys the voice layer needs — see external-services.js for the
+// storage design (any name the user types, one key per service, an optional
+// second field). Still NOT a general-purpose secret store for arbitrary
+// refs: models/registry.js's own connection secrets (secretRef values like
+// 'conn_...') are managed entirely through /api/models's own routes, never
+// through here, so a bug or a stray client call here can't silently corrupt
+// an existing model connection's key.
+//
+// One live "test this key" function per STABLE ref, same {ok, error} shape
+// as every model adapter's testConnection(entry) — see stt/deepgram.js's
+// testKey() for the pattern. This map only covers refs this app itself
+// creates deterministically (Deepgram, via a one-time migration) — a
+// generic TTS provider's ref is whatever the USER typed/slugified, which
+// this map can't know in advance, so those are resolved dynamically via
+// tts/index.js's own testerFor() (matchesRef() dispatch) at the route
+// below instead. Extend this map only for a future STABLE-ref service;
+// extend tts/index.js's ADAPTERS for a future TTS provider.
+const EXTERNAL_SERVICE_TESTERS = {
+  deepgram: (key) => stt.testKey(key),
+};
+
+app.get('/api/external-services', (req, res) => {
+  res.json({ services: externalServices.listServices() });
+});
+
+app.post('/api/external-services', (req, res) => {
+  const { label, key, extraFieldLabel, extraFieldValue } = req.body || {};
+  try {
+    // allowUpdate: false — this route is specifically "add something NEW";
+    // a collision here (even an exact-name one) must be a clear error, not
+    // a silent overwrite of an already-connected service's key through the
+    // wrong form. See addOrUpdateService()'s own doc comment.
+    res.json({
+      ok: true,
+      service: externalServices.addOrUpdateService({ label, key, extraFieldLabel, extraFieldValue, allowUpdate: false }),
+    });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Could not add that service.' });
+  }
+});
+
+app.post('/api/external-services/:ref', (req, res) => {
+  const existing = externalServices.getService(req.params.ref);
+  if (!existing) return res.status(404).json({ error: 'Unknown service.' });
+  const { key, extraFieldLabel, extraFieldValue } = req.body || {};
+  try {
+    res.json({
+      ok: true,
+      service: externalServices.addOrUpdateService({ label: existing.label, key, extraFieldLabel, extraFieldValue }),
+    });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Could not update that service.' });
+  }
+});
+
+// Clears the key(s) — the row stays, reverting to "not connected" under the same name.
+app.delete('/api/external-services/:ref', (req, res) => {
+  if (!externalServices.getService(req.params.ref)) return res.status(404).json({ error: 'Unknown service.' });
+  externalServices.removeServiceKey(req.params.ref);
+  res.json({ ok: true });
+});
+
+// Deletes the row entirely — name and all, not just its key.
+app.delete('/api/external-services/:ref/full', (req, res) => {
+  if (!externalServices.getService(req.params.ref)) return res.status(404).json({ error: 'Unknown service.' });
+  externalServices.deleteService(req.params.ref);
+  res.json({ ok: true });
+});
+
+// Tests a key LIVE against the real service — the value in the request body
+// if given (so the UI can test what's in the input box before ever saving
+// it, same as a model connection's "Test and add"), otherwise whatever is
+// already saved (so "test this key" also works as a plain "is this still
+// valid" check later, e.g. after a provider-side rotation).
+app.post('/api/external-services/:ref/test', async (req, res) => {
+  const service = externalServices.getService(req.params.ref);
+  if (!service) return res.status(404).json({ error: 'Unknown service.' });
+  // Static map first (Deepgram — a stable ref created by this app's own
+  // migration, never user-typed), then tts/index.js's own generic
+  // matchesRef() dispatch for TTS providers, whose ref IS whatever the
+  // user happened to type/slugify — see tts/elevenlabs.js's header comment
+  // for why an exact-string map entry isn't reliable for those.
+  const tester = EXTERNAL_SERVICE_TESTERS[req.params.ref] || tts.testerFor(req.params.ref);
+  if (!tester) return res.status(501).json({ ok: false, error: 'No live test is available for this service yet.' });
+  const value = req.body?.value ? String(req.body.value).trim() : externalServices.getKey(req.params.ref);
+  if (!value) return res.status(400).json({ ok: false, error: 'No key to test — paste one or save one first.' });
+  try {
+    res.json(await tester(value));
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err?.message || 'The test itself failed unexpectedly.' });
+  }
+});
+
 // ---------- scheduled tasks ----------
 
 app.get('/api/tasks', (req, res) => {
@@ -441,11 +596,12 @@ app.get('/api/tasks', (req, res) => {
 app.post('/api/tasks', (req, res) => {
   const body = req.body || {};
   // Validated here, not in task-store.js — that file is a plain leaf store
-  // (see its header comment) and hasSkill() lives behind the skills loader,
-  // which task-store.js must never import (the same circular-import risk
-  // documented on briefing-config.js: a skill -> task-store.js is a real,
-  // safe edge today; task-store.js -> skills/index.js would not be).
-  if (body.action?.type === 'skill' && !hasSkill(body.action.skillName)) {
+  // (see its header comment) and hasCapability() lives behind
+  // capabilities.js, which task-store.js must never import (the same
+  // circular-import risk documented on briefing-config.js: a tool ->
+  // task-store.js is a real, safe edge today; task-store.js -> tools/index.js
+  // or capabilities.js would not be).
+  if (body.action?.type === 'skill' && !hasCapability(body.action.skillName)) {
     return res.status(400).json({ ok: false, error: `Unknown skill: ${body.action?.skillName}` });
   }
   try {
@@ -458,7 +614,7 @@ app.post('/api/tasks', (req, res) => {
 
 app.patch('/api/tasks/:id', (req, res) => {
   const body = req.body || {};
-  if (body.action?.type === 'skill' && !hasSkill(body.action.skillName)) {
+  if (body.action?.type === 'skill' && !hasCapability(body.action.skillName)) {
     return res.status(400).json({ ok: false, error: `Unknown skill: ${body.action?.skillName}` });
   }
   try {
@@ -485,6 +641,81 @@ app.post('/api/tasks/:id/run', async (req, res) => {
 
 app.get('/api/task-runs', (req, res) => {
   res.json({ runs: listRuns(req.query.taskId) });
+});
+
+// ---------- background Jobs ----------
+// Phase 2's own testing surface — Phase 3's work_in_background/check_on_work/
+// stop_working_on tools are the real conversational entry point; these
+// routes exist so this subsystem is independently curl-able before that
+// layer lands, and so a future Jobs screen (Phase 4) has something to call.
+// Deliberately a distinct name/route family from the scheduler's own
+// /api/tasks above — "task" was already fully taken by scheduled tasks
+// before this subsystem existed.
+
+app.get('/api/jobs', (req, res) => {
+  const { status } = req.query;
+  res.json({ jobs: jobStore.listJobs(status ? { status: String(status).split(',') } : {}) });
+});
+
+app.post('/api/jobs', (req, res) => {
+  const body = req.body || {};
+  if (!body.goal) {
+    return res.status(400).json({ ok: false, error: 'A job needs a goal.' });
+  }
+  try {
+    const result = createJobIfCapacity({
+      title: body.title,
+      goal: body.goal,
+      kind: body.kind || 'generic',
+      resource: body.resource || null,
+      conversationId: body.conversationId || null,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Could not create that job.' });
+  }
+});
+
+app.get('/api/jobs/:id', (req, res) => {
+  const job = jobStore.getJob(req.params.id);
+  if (!job) return res.status(404).json({ ok: false, error: 'Unknown job.' });
+  res.json({ job, trace: jobStore.getTrace(job.id), outbox: jobStore.getOutboxForJob(job.id) });
+});
+
+app.post('/api/jobs/:id/resume', (req, res) => {
+  try {
+    resumeOrphan(req.params.id);
+    res.json({ ok: true, job: jobStore.getJob(req.params.id) });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Could not resume that job.' });
+  }
+});
+
+app.post('/api/jobs/:id/restart', (req, res) => {
+  try {
+    restartOrphan(req.params.id);
+    res.json({ ok: true, job: jobStore.getJob(req.params.id) });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Could not restart that job.' });
+  }
+});
+
+app.post('/api/jobs/:id/discard', (req, res) => {
+  try {
+    cancelJob(req.params.id);
+    res.json({ ok: true, job: jobStore.getJob(req.params.id) });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Could not discard that job.' });
+  }
+});
+
+app.post('/api/jobs/:id/resume-stuck', (req, res) => {
+  try {
+    resumeStuckJob(req.params.id, req.body?.guidance || null);
+    res.json({ ok: true, job: jobStore.getJob(req.params.id) });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Could not resume that job.' });
+  }
 });
 
 // ---------- monitoring ("tell me when X happens") ----------
@@ -612,6 +843,19 @@ app.post('/api/profile', (req, res) => {
   }
 });
 
+app.patch('/api/profile/:id', (req, res) => {
+  try {
+    const entry = updateProfileEntry(req.params.id, req.body?.text);
+    res.json({ ok: true, entry });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Could not save that note.' });
+  }
+});
+
+app.get('/api/profile/:id/versions', (req, res) => {
+  res.json({ versions: listProfileEntryVersions(req.params.id) });
+});
+
 app.delete('/api/profile/:id', (req, res) => {
   deleteProfileEntry(req.params.id);
   res.json({ ok: true });
@@ -654,6 +898,53 @@ app.post('/api/memories/candidates/:id/resolve-conflict', (req, res) => {
   } catch (err) {
     res.status(400).json({ ok: false, error: err?.message || 'Could not resolve that.' });
   }
+});
+
+// The Memory screen (public/screens/memory.js) — browse/search/edit/
+// archive/delete every saved memory, whether it was approved by hand or
+// saved automatically (see server/memory/memory-policy.js's trust dial).
+// Registered AFTER the /candidates routes above on purpose: Express matches
+// routes in registration order, and a GET /api/memories/:id registered
+// first would swallow GET /api/memories/candidates by matching
+// `:id = 'candidates'`.
+app.get('/api/memories', (req, res) => {
+  const { category, query, origin, includeArchived } = req.query;
+  res.json({ memories: listMemories({ category, query, origin, includeArchived: includeArchived === 'true' }) });
+});
+
+app.get('/api/memories/categories', (req, res) => {
+  res.json({ categories: listMemoryCategories() });
+});
+
+app.get('/api/memories/:id/versions', (req, res) => {
+  res.json({ versions: getMemoryVersionHistory(req.params.id) });
+});
+
+app.patch('/api/memories/:id', (req, res) => {
+  try {
+    // `reason` is optional and only ever sent by the Memory screen's own
+    // "Restore this version" button (public/screens/memory.js) — every
+    // other caller relies on the default, so a plain edit still reads
+    // "Edited on the Memory screen." in the version history.
+    const reason = req.body?.reason === 'restore' ? 'Restored an earlier version.' : 'Edited on the Memory screen.';
+    const memory = updateMemory(req.params.id, { text: req.body?.text, category: req.body?.category }, reason);
+    res.json({ ok: true, memory });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Could not update that memory.' });
+  }
+});
+
+app.post('/api/memories/:id/archive', (req, res) => {
+  res.json({ ok: true, memory: archiveMemory(req.params.id) });
+});
+
+app.post('/api/memories/:id/restore', (req, res) => {
+  res.json({ ok: true, memory: restoreMemory(req.params.id) });
+});
+
+app.delete('/api/memories/:id', (req, res) => {
+  deleteMemory(req.params.id);
+  res.json({ ok: true });
 });
 
 // ---------- attachments ----------
@@ -934,6 +1225,28 @@ app.delete('/api/connectors/catalog/:catalogId/register-client', (req, res) => {
   res.json({ ok: true });
 });
 
+// A canonical form of an MCP server URL, for duplicate-detection comparison
+// ONLY — never used to rewrite what's actually saved. Scheme and host are
+// already lowercased by the WHATWG URL parser itself; this additionally
+// strips a trailing slash (so "/mcp" and "/mcp/" match) and drops the query
+// string/fragment entirely (so a stray "?src=..." doesn't create a false
+// "new" connector for the same real server). Deliberately does NOT
+// normalize scheme — http:// and https:// at the same host+path stay
+// genuinely different connectors, confirmed with the user, since merging
+// them could let a plain-http address silently reuse a real https
+// connector's stored token/config. Falls back to the raw trimmed string on
+// a URL that fails to parse (matches this route's own existing behavior of
+// rejecting an unparseable URL before ever reaching this comparison).
+function canonicalUrl(raw) {
+  try {
+    const u = new URL(raw);
+    const pathname = u.pathname.replace(/\/+$/, '') || '/';
+    return `${u.protocol}//${u.host}${pathname}`;
+  } catch {
+    return String(raw || '').trim();
+  }
+}
+
 // Creates a Custom Connector record — the one place a user picks a
 // mechanism directly (MCP server URL / API key / CLI command), since a
 // custom connector's mechanism can't be inferred the way an Official
@@ -976,8 +1289,9 @@ app.post('/api/connectors/custom', (req, res) => {
     // and description), and could force-rewrite a catalog record verified as
     // needing no auth (`kind: 'none'`) into 'oauth_guided' — breaking a
     // connector that was already working. See CLAUDE.md.
+    const canonicalNewUrl = canonicalUrl(url);
     const existing = listConnectors().find(
-      (c) => c.type === 'mcp' && c.source?.type === 'user' && c.config?.connectFlow?.url === url
+      (c) => c.type === 'mcp' && c.source?.type === 'user' && canonicalUrl(c.config?.connectFlow?.url) === canonicalNewUrl
     );
     if (existing) {
       const existingKind = existing.config?.connectFlow?.kind;
@@ -985,7 +1299,21 @@ app.post('/api/connectors/custom', (req, res) => {
         updateConnector(existing.id, { config: { connectFlow: { ...existing.config.connectFlow, kind: 'oauth_guided', clientId } } });
         if (clientSecret) saveSecret(`connclient_${existing.id}`, clientSecret);
       }
-      return res.json({ ok: true, connectorId: existing.id, label: existing.label });
+      // A real, specific reason this "Add" didn't create anything new — the
+      // typed name/description ARE silently discarded below (the existing
+      // connector's own label survives), so this is the only place that gets
+      // explained anywhere. Reuses the existing toast/bell pipeline
+      // (addNotification -> SSE -> public/notifications.js) rather than
+      // inventing new UI plumbing for what's already a one-line info notice.
+      addNotification({
+        kind: 'connector',
+        level: 'info',
+        title: 'Already connected',
+        body: `You already have a connector for this URL, called "${existing.label}" — opening that one instead of creating a new one.`,
+        action: { label: 'App Control', section: 'app-control' },
+        meta: { connectorId: existing.id },
+      });
+      return res.json({ ok: true, connectorId: existing.id, label: existing.label, reused: true });
     }
 
     // Assume oauth_dcr unless the user already supplied a Client ID via
@@ -1499,30 +1827,75 @@ app.get('/api/chat/stream', async (req, res) => {
   }
 });
 
+// Reports a barge-in: the duplex voice engine cut Jarvis off mid-reply, and
+// this is what was actually spoken before that happened (see
+// public/voice/playback.js's getSpokenText()). Retroactively marks the most
+// recent assistant message so both chat history and the NEXT turn's model
+// context reflect what was truly heard, not the full reply the model
+// finished generating server-side regardless — see conversation.js's
+// markLastAssistantInterrupted() for the full reasoning and its documented
+// race-condition gap. Always 204 (nothing useful to report either way) — a
+// no-op here (nothing to mark yet) should never surface as a client error,
+// since it always fires right after a barge-in the user already caused
+// deliberately.
+app.post('/api/chat/interrupt', (req, res) => {
+  const spokenText = String(req.body?.spokenText || '');
+  try {
+    markLastAssistantInterrupted(getActiveSessionId(), spokenText);
+  } catch (err) {
+    console.error('[chat/interrupt] error:', err);
+  }
+  res.status(204).end();
+});
+
 // ---------- text-to-speech ----------
 
-app.get('/api/voices', (req, res) => {
-  res.json({ voices: AVAILABLE_VOICES });
+// Every server-side TTS provider (server/tts/index.js) — for a settings
+// picker. Browser speech (client-only, no server component) is never
+// listed here — see that file's header comment.
+app.get('/api/tts/providers', (req, res) => {
+  res.json({ providers: tts.listProviders() });
 });
 
 app.post('/api/tts', async (req, res) => {
   const text = String(req.body?.text || '').trim();
   const voice = req.body?.voice;
+  const provider = req.body?.provider || undefined;
   if (!text) {
     return res.status(400).json({ error: 'No text provided.' });
   }
 
   try {
-    const wavBuffer = await synthesizeSpeech(text, { voice });
-    res.set('Content-Type', 'audio/wav');
-    res.send(wavBuffer);
+    // Every provider's stream() is an async generator (even a non-streaming
+    // one, which yields exactly one chunk — see tts/index.js's header
+    // comment) — concatenated here into one response, same simple one-shot
+    // contract both audio-player.js and voice/playback.js already rely on.
+    // A provider whose API supports real HTTP-level streaming is a future
+    // enhancement to this route, not a change to the seam itself.
+    const buffers = [];
+    let mimeType = 'audio/wav';
+    for await (const chunk of tts.stream(text, { voice, provider })) {
+      buffers.push(chunk.buffer);
+      mimeType = chunk.mimeType || mimeType;
+    }
+    if (!buffers.length) throw new Error('The TTS provider returned no audio.');
+    res.set('Content-Type', mimeType);
+    res.send(Buffer.concat(buffers));
   } catch (err) {
     if (err?.code === 'NO_API_KEY') {
-      return res.status(400).json({ error: 'No Gemini API key is set up yet.', code: 'NO_API_KEY' });
+      return res.status(400).json({ error: 'No API key is set up for that voice yet.', code: 'NO_API_KEY' });
     }
     console.error('[tts] error:', err);
     res.status(500).json({ error: 'Could not generate speech audio right now.' });
   }
+});
+
+// Whether a real-time server-proxied STT provider (Deepgram) is available —
+// the duplex engine also learns this from its WebSocket's own 'ready'
+// message, but a plain REST check is useful for a settings screen that
+// shouldn't have to open a socket just to show a status dot.
+app.get('/api/stt/status', (req, res) => {
+  res.json({ configured: stt.isConfigured() });
 });
 
 // Optional layer-3 turn detection (off by default in the UI) — see
@@ -1621,14 +1994,65 @@ const httpServer = app.listen(PORT, HOST, () => {
   getActiveSessionId();
 });
 
-// Engine B (Gemini Live) rides on the same HTTP server, upgraded to a
-// WebSocket at /api/live — no separate port needed.
-attachLiveServer(httpServer);
+// Two WebSocket endpoints ride on this same HTTP server — Engine B (Gemini
+// Live) at /api/live, Engine C's (the duplex engine's) speech-to-text half
+// at /api/duplex. Both are built with `noServer: true` and handed to ONE
+// upgrade dispatcher here, rather than each calling `new
+// WebSocketServer({server: httpServer, path: ...})` internally — that
+// {server, path} pattern registers its OWN unconditional 'upgrade' listener
+// per instance, and Node fires every registered listener for every
+// 'upgrade' event regardless of path; `ws`'s own path filter then aborts a
+// mismatched request with a 400 — whichever instance registered FIRST wins
+// that race for every path meant for a LATER instance. This is exactly
+// what broke the duplex engine: live.js's listener (registered first) was
+// 400ing every /api/duplex connection attempt before duplex.js's own
+// listener ever got a turn, surfacing to the user as a flat "Could not
+// reach the Jarvis server" with nothing pointing at the real cause. `ws`'s
+// own README documents this exact multi-endpoint pattern (noServer + one
+// manual dispatcher) as the correct way to share one HTTP server.
+// CSWSH hardening — the same-origin policy does NOT cover WebSocket
+// handshakes: any page open in the user's browser, regardless of which site
+// served it, can open a `ws://127.0.0.1:PORT/...` connection purely in JS,
+// since loopback is reachable from any tab regardless of that tab's own
+// origin. Both endpoints below proxy a real, paid third-party key
+// (Deepgram/Gemini) — an untrusted page doing this silently could ride the
+// user's own quota/cost. Reject any upgrade whose Origin names a page other
+// than Jarvis's own — but only when Origin IS present: this app has no
+// session/auth system to check instead (single local user, see CLAUDE.md),
+// and non-browser callers (this project's own scratch test scripts using
+// `ws` directly, per CLAUDE.md's testing guidance) don't set it, so
+// requiring it outright would break local testing patterns already in use.
+const ALLOWED_WS_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`]);
+
+const liveWss = createLiveWss();
+const duplexWss = createDuplexWss();
+httpServer.on('upgrade', (req, socket, head) => {
+  const origin = req.headers.origin;
+  if (origin && !ALLOWED_WS_ORIGINS.has(origin)) {
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  const { pathname } = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  if (pathname === '/api/live') {
+    liveWss.handleUpgrade(req, socket, head, (ws) => liveWss.emit('connection', ws, req));
+  } else if (pathname === '/api/duplex') {
+    duplexWss.handleUpgrade(req, socket, head, (ws) => duplexWss.emit('connection', ws, req));
+  } else {
+    socket.destroy();
+  }
+});
 
 // The scheduler is the first background process in the app — started only
 // once the server is actually listening, so its very first tick can already
 // broadcast task-run events to any connected browser.
 startScheduler();
+
+// Background Jobs' own supervisor — its startup call also runs the one-time
+// orphan sweep (any job still 'running' from before this restart), same
+// "started only once the server can already broadcast" reasoning as the
+// scheduler above.
+startOrchestrator();
 
 // Resumes any monitor still 'watching' from before the last restart —
 // without this a server restart would silently orphan an in-progress watch

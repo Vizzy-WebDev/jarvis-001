@@ -41,6 +41,14 @@ function rowToMemory(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     archived: Boolean(row.archived),
+    confidence: row.confidence ?? null,
+    // How consent was given — 'approved' (user approved a candidate),
+    // 'auto' (cleared the trust threshold, see memory-policy.js),
+    // 'explicit' (remember_about_me/update_memory — the user said it
+    // directly), 'legacy' (migrated from the old profile.json). Distinct
+    // from sourceKind, which records WHERE the content came from, not how
+    // it got consent.
+    origin: row.origin,
   };
 }
 
@@ -60,12 +68,13 @@ function rowToCandidate(row) {
     status: row.status,
     createdAt: row.created_at,
     resolvedAt: row.resolved_at,
+    confidence: row.confidence ?? null,
   };
 }
 
 // ---------- memories ----------
 
-export function listMemories({ category, includeArchived = false, query } = {}) {
+export function listMemories({ category, includeArchived = false, query, origin } = {}) {
   const db = getDb();
   const clauses = [];
   const params = [];
@@ -73,6 +82,10 @@ export function listMemories({ category, includeArchived = false, query } = {}) 
   if (category) {
     clauses.push('category = ?');
     params.push(category);
+  }
+  if (origin) {
+    clauses.push('origin = ?');
+    params.push(origin);
   }
   if (query && String(query).trim()) {
     clauses.push('text LIKE ?');
@@ -111,8 +124,8 @@ export function approvedMemoriesText() {
   return lines.join('\n');
 }
 
-/** Creates a memory directly, bypassing the candidate/approval queue — only for callers where the user has ALREADY explicitly consented (e.g. remember_about_me's own confirm read-back). Writes an initial version row too, so history reads "created" from the start. */
-export function createMemory({ category, text, sourceKind, sourceRef } = {}) {
+/** Creates a memory directly, bypassing the candidate/approval queue — only for callers where the user has ALREADY explicitly consented (e.g. remember_about_me's own confirm read-back). Writes an initial version row too, so history reads "created" from the start. `origin` records HOW consent was given (defaults to 'approved' — the right default for every existing caller, all of which go through some form of user approval); `confidence` is the extraction model's own score, null for anything not extracted (explicit tools never set it). */
+export function createMemory({ category, text, sourceKind, sourceRef, confidence = null, origin = 'approved' } = {}) {
   const trimmedText = String(text || '').trim();
   if (!trimmedText) throw new Error('A memory needs some text.');
   const cat = String(category || 'Uncategorized').trim() || 'Uncategorized';
@@ -122,8 +135,8 @@ export function createMemory({ category, text, sourceKind, sourceRef } = {}) {
   db.exec('BEGIN');
   try {
     db.prepare(
-      'INSERT INTO memories (id, category, text, source_kind, source_ref, created_at, updated_at, archived) VALUES (?, ?, ?, ?, ?, ?, ?, 0)'
-    ).run(id, cat, trimmedText, sourceKind || null, sourceRef || null, ts, ts);
+      'INSERT INTO memories (id, category, text, source_kind, source_ref, created_at, updated_at, archived, confidence, origin) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)'
+    ).run(id, cat, trimmedText, sourceKind || null, sourceRef || null, ts, ts, confidence, origin);
     db.prepare('INSERT INTO memory_versions (memory_id, text, category, changed_at, reason) VALUES (?, ?, ?, ?, ?)').run(
       id,
       trimmedText,
@@ -139,14 +152,24 @@ export function createMemory({ category, text, sourceKind, sourceRef } = {}) {
   return getMemory(id);
 }
 
-/** Edits a memory's text/category, recording the PRE-edit state as a version row first — never a silent overwrite. `reason` is a short human-readable note ("user requested update via conversation", "merged with <id>", ...). */
-export function updateMemory(id, { text, category } = {}, reason = 'Edited.') {
+/**
+ * Edits a memory's text/category, recording the PRE-edit state as a version
+ * row first — never a silent overwrite. `reason` is a short human-readable
+ * note ("user requested update via conversation", "merged with <id>", ...).
+ * `origin`, if given, replaces the memory's origin badge too — used when
+ * the user EXPLICITLY corrects a memory's content (update_memory.js), since
+ * the badge should reflect how the CURRENT text got its consent, not just
+ * how the row was first created; omitted for edits that aren't a fresh
+ * user statement (e.g. mergeMemories()'s bookkeeping calls below).
+ */
+export function updateMemory(id, { text, category } = {}, reason = 'Edited.', origin) {
   const existing = getDb().prepare('SELECT * FROM memories WHERE id = ?').get(id);
   if (!existing) throw new Error('That memory no longer exists.');
   const db = getDb();
   const ts = nowIso();
   const nextText = text !== undefined ? String(text).trim() : existing.text;
   const nextCategory = category !== undefined ? String(category).trim() || existing.category : existing.category;
+  const nextOrigin = origin !== undefined ? origin : existing.origin;
   if (!nextText) throw new Error('A memory needs some text.');
 
   db.exec('BEGIN');
@@ -159,7 +182,13 @@ export function updateMemory(id, { text, category } = {}, reason = 'Edited.') {
       ts,
       reason
     );
-    db.prepare('UPDATE memories SET text = ?, category = ?, updated_at = ? WHERE id = ?').run(nextText, nextCategory, ts, id);
+    db.prepare('UPDATE memories SET text = ?, category = ?, origin = ?, updated_at = ? WHERE id = ?').run(
+      nextText,
+      nextCategory,
+      nextOrigin,
+      ts,
+      id
+    );
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
@@ -256,29 +285,61 @@ export function getCandidate(id) {
   return row ? rowToCandidate(row) : null;
 }
 
-/** Written the moment a candidate exists — crash-safe by construction, since it's just a normal committed SQLite row, not something held in process memory waiting to be flushed. */
-export function createCandidate({ conversationId, sourceKind, sourceRef, category, text, conflictWith } = {}) {
+/** Written the moment a candidate exists — crash-safe by construction, since it's just a normal committed SQLite row, not something held in process memory waiting to be flushed. `confidence` is the extraction model's own 0..1 score, consulted by memory-policy.js's decide() to route this candidate. */
+export function createCandidate({ conversationId, sourceKind, sourceRef, category, text, conflictWith, confidence = null } = {}) {
   const trimmedText = String(text || '').trim();
   if (!trimmedText) return null;
   const db = getDb();
   const id = makeId('cand');
   db.prepare(
-    'INSERT INTO memory_candidates (id, conversation_id, source_kind, source_ref, category, text, conflict_with, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(id, conversationId || null, sourceKind || 'chat', sourceRef || null, category || 'Uncategorized', trimmedText, conflictWith || null, 'pending', nowIso());
+    'INSERT INTO memory_candidates (id, conversation_id, source_kind, source_ref, category, text, conflict_with, status, created_at, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(id, conversationId || null, sourceKind || 'chat', sourceRef || null, category || 'Uncategorized', trimmedText, conflictWith || null, 'pending', nowIso(), confidence);
   return getCandidate(id);
 }
 
-/** Approves a candidate into a real memory — `edits` (optional) lets the user change the text/category before it's saved, per the spec's "approve, reject, or edit" requirement. */
-export function approveCandidate(id, edits = {}) {
+/**
+ * Shared core of turning a pending candidate into a real memory — creates
+ * the memory (carrying the candidate's own confidence score forward),
+ * approves a pending category the moment anything in it is saved (whether
+ * by a human clicking Approve or by clearing the auto-save threshold), and
+ * marks the candidate resolved with the given status. `approveCandidate()`
+ * and `autoApproveCandidate()` both call this and ONLY this — one code path
+ * for "a candidate became a memory" means the two can never quietly diverge
+ * in what a saved memory ends up looking like.
+ */
+function resolveCandidateIntoMemory(id, edits, { origin, status }) {
   const candidate = getCandidate(id);
   if (!candidate) throw new Error('That memory suggestion is no longer pending.');
   const text = edits.text !== undefined ? edits.text : candidate.text;
   const category = edits.category !== undefined ? edits.category : candidate.category;
 
-  const memory = createMemory({ category, text, sourceKind: candidate.sourceKind, sourceRef: candidate.sourceRef });
-  if (candidate.category) approveCategory(candidate.category); // a category that was pending is approved the moment anything in it is approved
-  getDb().prepare("UPDATE memory_candidates SET status = 'approved', resolved_at = ? WHERE id = ?").run(nowIso(), id);
+  const memory = createMemory({
+    category,
+    text,
+    sourceKind: candidate.sourceKind,
+    sourceRef: candidate.sourceRef,
+    confidence: candidate.confidence,
+    origin,
+  });
+  if (candidate.category) approveCategory(candidate.category); // a category that was pending is approved the moment anything in it is saved
+  getDb().prepare('UPDATE memory_candidates SET status = ?, resolved_at = ? WHERE id = ?').run(status, nowIso(), id);
   return memory;
+}
+
+/** Approves a candidate into a real memory — `edits` (optional) lets the user change the text/category before it's saved, per the spec's "approve, reject, or edit" requirement. */
+export function approveCandidate(id, edits = {}) {
+  return resolveCandidateIntoMemory(id, edits, { origin: 'approved', status: 'approved' });
+}
+
+/**
+ * Auto-approves a candidate that cleared the trust threshold — see
+ * memory-policy.js's decide(). Never called for a candidate carrying a
+ * conflict (decide() always routes those to require-approval instead), so
+ * this path never needs edits: nothing here is a human correcting text
+ * before it saves, it's the model's own extraction going straight through.
+ */
+export function autoApproveCandidate(id) {
+  return resolveCandidateIntoMemory(id, {}, { origin: 'auto', status: 'auto_approved' });
 }
 
 export function rejectCandidate(id) {
@@ -296,7 +357,10 @@ export function resolveConflict(id, choice, edits = {}) {
   if (choice === 'update' && candidate.conflictWith) {
     const text = edits.text !== undefined ? edits.text : candidate.text;
     const category = edits.category !== undefined ? edits.category : candidate.category;
-    const updated = updateMemory(candidate.conflictWith, { text, category }, 'Updated from a conflicting memory suggestion.');
+    // origin: 'approved' — the user just clicked "Update the old one" on
+    // the review card, the same explicit approval approveCandidate() below
+    // records for a plain (non-conflict) candidate.
+    const updated = updateMemory(candidate.conflictWith, { text, category }, 'Updated from a conflicting memory suggestion.', 'approved');
     getDb().prepare("UPDATE memory_candidates SET status = 'approved', resolved_at = ? WHERE id = ?").run(nowIso(), id);
     return updated;
   }

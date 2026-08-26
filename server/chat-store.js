@@ -44,7 +44,71 @@ function rowToConversation(row) {
 /** Decodes one messages row back into a neutral message (conversation.js's shape). */
 function rowToMessage(row) {
   const extra = row.payload ? JSON.parse(row.payload) : {};
-  return { id: `m${row.id}`, role: row.role, text: row.text ?? undefined, ...extra };
+  // createdAt comes from this row's own created_at column, not the JSON
+  // payload — see conversation.js's push()/hydrate() for why it's kept out
+  // of the payload (avoids storing the same timestamp twice).
+  return { id: `m${row.id}`, role: row.role, text: row.text ?? undefined, createdAt: row.created_at, ...extra };
+}
+
+/**
+ * FTS5 MATCH needs its query text quoted to be treated as a literal
+ * phrase/token search rather than parsed as FTS query syntax (a raw
+ * "C++ setup?" would otherwise throw a syntax error inside MATCH — quoting
+ * makes it a literal phrase, not an operator sequence). Used by
+ * listConversations() below, unchanged from before this file's other
+ * search-related additions — this is a human typing into a search box
+ * expecting a literal phrase/substring match, and changing that behavior
+ * was explicitly out of scope here.
+ */
+function ftsPhrase(q) {
+  return `"${q.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Builds an FTS5 query that matches messages containing ALL of `q`'s words,
+ * in ANY order or position — unlike ftsPhrase() above, this does NOT
+ * require them adjacent. Used only by searchMessages() below, for a
+ * different kind of caller: a model handed a few keywords (per
+ * server/tools/search_conversations.js), not a human typing a literal
+ * phrase. Confirmed live (not assumed) that ftsPhrase()'s whole-string
+ * phrase-quote — correct for a human's literal search box — returns ZERO
+ * hits for a multi-keyword model query whenever the words aren't adjacent
+ * in that exact order in the original message, which is the common case,
+ * not the exception. The fix: quote each word individually (so a token
+ * like "C++", an apostrophe, or the literal word "NOT" can never be
+ * misread as FTS query syntax — confirmed live against exactly those
+ * cases), then join with a plain space, which FTS5 treats as AND between
+ * whole, already-literal tokens rather than a phrase requiring adjacency.
+ */
+function quotedTerms(q) {
+  return String(q)
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((t) => `"${t.replace(/"/g, '""')}"`);
+}
+
+function ftsAndTerms(q) {
+  return quotedTerms(q).join(' ');
+}
+
+/**
+ * Same literal, injection-safe individual-term quoting as ftsAndTerms()
+ * above, but OR'd instead of AND'd — bm25's own ranking still puts a
+ * message matching MORE of the terms above one matching fewer, so this
+ * isn't a loss of precision, just a widening of what's allowed to match at
+ * all. Exists for searchMessages()'s fallback below: confirmed live that a
+ * long, generic keyword reduction (research.js's toSearchQuery(), used when
+ * a model hands over a whole question instead of a few keywords) routinely
+ * includes words that were never actually IN the original message at all
+ * ("switching" for a message that said "switched", "development" for
+ * "dev") — requiring ALL of a 9-word reduction to literally match produces
+ * a false negative on exactly the kind of question this fallback exists to
+ * rescue. AND first (precise), OR only if AND finds nothing (recall) is the
+ * same graceful degradation a normal search engine does.
+ */
+function ftsOrTerms(q) {
+  return quotedTerms(q).join(' OR ');
 }
 
 /**
@@ -59,10 +123,6 @@ export function listConversations({ query, includeArchived = false } = {}) {
 
   let rows;
   if (q) {
-    // FTS5 MATCH needs its query text quoted to be treated as a literal
-    // phrase/token search rather than parsed as FTS query syntax (a title
-    // like "C++ setup?" would otherwise throw a syntax error).
-    const ftsQuery = `"${q.replace(/"/g, '""')}"`;
     rows = db
       .prepare(
         `SELECT c.*, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count
@@ -78,7 +138,7 @@ export function listConversations({ query, includeArchived = false } = {}) {
            )
          ORDER BY c.pinned DESC, c.updated_at DESC`
       )
-      .all(`%${q}%`, ftsQuery);
+      .all(`%${q}%`, ftsPhrase(q));
   } else {
     rows = db
       .prepare(
@@ -117,6 +177,74 @@ export function getMessagesSince(id, afterSeq = 0) {
     .prepare('SELECT * FROM messages WHERE conversation_id = ? AND seq > ? ORDER BY seq ASC')
     .all(id, afterSeq);
   return rows.map((row) => ({ ...rowToMessage(row), seq: row.seq }));
+}
+
+/**
+ * Full-text search over EVERY conversation's messages (not just one — see
+ * getMessages()/getMessagesSince() for that), ranked by FTS5's own bm25()
+ * relevance score. Used by server/tools/search_conversations.js so the
+ * model can answer "what did we decide about X" from past conversations
+ * instead of only ever seeing the current one. A new function rather than
+ * a change to listConversations() above — that function's job (browsing
+ * the Chat History screen) is unaffected by this one existing.
+ *
+ * `excludeConversationId` leaves out the conversation the caller is
+ * already in — its content is already in the model's context window, so
+ * surfacing it again here would waste tokens and read as a non sequitur.
+ * `includeArchived` defaults to false, matching listConversations()'s
+ * default — an archived conversation is "put away", not gone, but a
+ * background search shouldn't dredge it up unless asked to.
+ */
+function runMessageSearch(ftsQuery, { limit, excludeConversationId, includeArchived }) {
+  const params = [ftsQuery];
+  let excludeClause = '';
+  if (excludeConversationId) {
+    excludeClause = 'AND c.id != ?';
+    params.push(excludeConversationId);
+  }
+  params.push(limit);
+
+  const rows = getDb()
+    .prepare(
+      `SELECT m.id, m.conversation_id, m.role, m.created_at, c.title,
+              snippet(messages_fts, 0, '', '', '…', 16) AS excerpt,
+              bm25(messages_fts) AS rank
+       FROM messages m
+       JOIN messages_fts f ON f.rowid = m.id
+       JOIN conversations c ON c.id = m.conversation_id
+       WHERE f.text MATCH ?
+         AND (${includeArchived ? '1=1' : 'c.archived = 0'})
+         ${excludeClause}
+       ORDER BY rank
+       LIMIT ?`
+    )
+    .all(...params);
+
+  return rows.map((row) => ({
+    conversationId: row.conversation_id,
+    title: row.title,
+    role: row.role,
+    createdAt: row.created_at,
+    excerpt: row.excerpt,
+  }));
+}
+
+export function searchMessages(query, { limit = 8, excludeConversationId = null, includeArchived = false } = {}) {
+  const q = String(query || '').trim();
+  if (!q) return [];
+
+  const opts = { limit, excludeConversationId, includeArchived };
+  const andQuery = ftsAndTerms(q);
+  if (!andQuery) return [];
+
+  const precise = runMessageSearch(andQuery, opts);
+  if (precise.length) return precise;
+
+  // Nothing matched every term literally — most often a long, generic
+  // keyword reduction of a full question (see ftsOrTerms()'s comment).
+  // Widening to OR only when the strict pass came back empty keeps a
+  // genuinely well-targeted multi-keyword query at its original precision.
+  return runMessageSearch(ftsOrTerms(q), opts);
 }
 
 export function createConversation() {
@@ -173,6 +301,35 @@ export function appendMessage(id, message) {
   }
 
   return getConversation(id);
+}
+
+/**
+ * Merges `patch` into the payload of the most recent assistant message in a
+ * conversation — used only for interrupt correctness (see conversation.js's
+ * markLastAssistantInterrupted()), which needs to retroactively mark a
+ * message `interrupted`/`spokenText` after it's already been persisted. A
+ * genuine UPDATE, not an append — this is the one place chat history is
+ * ever edited after the fact, and the reason is specifically that the
+ * FULL generated text stays in `text` (nothing is ever deleted — a user
+ * might still want to see what the model would have said), while
+ * `spokenText` in payload is what the conversation history sent to the
+ * model on the NEXT turn actually uses (see each adapter's message mapping)
+ * — the model should believe it said only what was truly heard, not
+ * everything it happened to finish generating after being cut off.
+ * No-op (returns false) if there's no assistant message to patch — a race
+ * where the interrupt POST arrives before pushAssistantText ever ran is
+ * possible and is conversation.js's problem to handle, not this function's.
+ */
+export function updateLastAssistantMessage(id, patch) {
+  const db = getDb();
+  const row = db
+    .prepare("SELECT id, payload FROM messages WHERE conversation_id = ? AND role = 'assistant' ORDER BY seq DESC LIMIT 1")
+    .get(id);
+  if (!row) return false;
+  const existing = row.payload ? JSON.parse(row.payload) : {};
+  const merged = { ...existing, ...patch };
+  db.prepare('UPDATE messages SET payload = ? WHERE id = ?').run(JSON.stringify(merged), row.id);
+  return true;
 }
 
 // Deliberately does not touch updated_at — renaming shouldn't bump a

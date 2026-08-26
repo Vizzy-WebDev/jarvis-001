@@ -7,7 +7,7 @@
 
 import { listTasks } from './task-store.js';
 import { listEntries as listProfileEntries } from '../profile.js';
-import { runSkill } from '../skills/index.js';
+import { invoke } from '../capabilities.js';
 import { runTurn, resetConversation } from '../models/runner.js';
 import { getBriefingConfig, setBriefingConfig } from './briefing-config.js';
 
@@ -25,7 +25,7 @@ function timeGreeting() {
 
 /** Runs one built-in ability directly (not through a model) and returns its data, or null if it's off, failed, or no longer exists — never invented around. */
 async function gatherOne(skillName, args, label) {
-  const result = await runSkill(skillName, args, { autoConfirm: true, source: 'briefing' });
+  const result = await invoke(skillName, args, { autoConfirm: true, source: 'briefing' });
   // NOT `!result.ok` — get_time returns no `ok` field on success at all,
   // which would make a bare `!result.ok` check silently drop it.
   if (!result || result.ok === false) {
@@ -114,7 +114,7 @@ function suggestAdditions(config, facts) {
   return suggestions;
 }
 
-function factsToPrompt(facts, suggestions) {
+function factsToPrompt(facts, suggestions, config) {
   const lines = [
     'Compose the morning briefing now, in your own words, as one short spoken passage — a few ' +
       'sentences, not a bulleted list. Use ONLY the facts below; never invent or guess anything not given here.',
@@ -131,7 +131,10 @@ function factsToPrompt(facts, suggestions) {
     lines.push(`Things the user has told Jarvis about themselves and their goals: ${facts.goalsAndNotes.join('; ')}`);
   }
   if (facts.custom) lines.push(`Custom note to include: ${facts.custom}`);
-  if (facts.upcomingTasks?.length || facts.goalsAndNotes?.length) {
+  // Was unconditional — the "Suggested focus for the day" checkbox
+  // (briefing.js's SECTION_LABELS) toggled nothing at all, since this never
+  // consulted config.sections.focus, only whether tasks/goals existed.
+  if (config.sections.focus && (facts.upcomingTasks?.length || facts.goalsAndNotes?.length)) {
     lines.push(
       'If it genuinely fits, end with one brief suggested focus for the day grounded in the facts above — skip it rather than force one.'
     );
@@ -150,7 +153,7 @@ export async function composeBriefing({ modelId } = {}) {
   const config = getBriefingConfig();
   const facts = await gatherFacts(config);
   const suggestions = suggestAdditions(config, facts);
-  const prompt = factsToPrompt(facts, suggestions);
+  const prompt = factsToPrompt(facts, suggestions, config);
 
   const sessionId = `briefing:${Date.now()}`;
   let text = '';

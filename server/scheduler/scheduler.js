@@ -10,7 +10,7 @@
 import { nextRunAt } from './recurrence.js';
 import { composeBriefing } from './briefing.js';
 import { runTurn, resetConversation } from '../models/runner.js';
-import { runSkill } from '../skills/index.js';
+import { invoke } from '../capabilities.js';
 import { getModel } from '../models/registry.js';
 import { broadcast } from '../events.js';
 import { addNotification } from '../notifications.js';
@@ -79,7 +79,7 @@ async function runOneTurn(sessionId, text, { modelId = null, noTools = false, al
 /** The 'skill' action: run the skill directly (the user already chose it — no need for a model to decide to call it), then have a model narrate the raw result into a short sentence for the log. Mirrors briefing.js's "gather facts in code, narrate via model" pattern. */
 async function runSkillAction(task) {
   const { skillName, args, modelId } = task.action;
-  const result = await runSkill(skillName, args || {}, { autoConfirm: true, source: 'task' });
+  const result = await invoke(skillName, args || {}, { autoConfirm: true, source: 'task' });
 
   // NOT `!result.ok` — get_time returns no `ok` field on success at all, so
   // that check would silently treat every get_time-based task as a failure.

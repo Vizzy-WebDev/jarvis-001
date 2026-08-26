@@ -86,7 +86,7 @@ server/
   clarify.js         Voice-confidence gate for the "ifUnclear" confirm tier
   turn-check.js      classifyTurnComplete — always Gemini directly, independent of active model
   prompt.js          Shared system instruction (was duplicated 4x pre-refactor); injects approved memories (see "Memory")
-  tts.js             Gemini text-to-speech -> WAV buffer (always Gemini, independent of active model)
+  tts/               Provider-agnostic server-side TTS seam (see "TTS provider system")
   live.js            WebSocket proxy (/api/live) to Gemini Live, via ai.live.connect()
   events.js          SSE hub (/api/events) for server -> browser push
   db.js              The one SQLite connection (Chat History + Memory), migrations (see "Chat Persistence")
@@ -96,7 +96,10 @@ server/
   adapters/          One module per wire format (see "Model system")
   models/            Registry, connections, routing, health, execution (see "Model system")
   scheduler/         Tasks, recurrence, briefing (see "Scheduler + briefing")
-  skills/            Auto-loaded tool implementations (below); skills/store/ holds folder-Skill install logic
+  tools/             Auto-loaded executable capabilities (below) — get_weather, open_app, run_code, ...
+  skills/            Folder Skills ONLY — SKILL.md instructions; skills/store/ holds install logic (see "Skills")
+  capabilities.js    The composition seam: tools + folder Skills + connectors -> one declaration list,
+                     one invoke(), one confirm gate (see "Skills" and "Tools")
   connectors/        MCP/API/CLI/browser/files connector mechanisms (see "App Control connectors")
   documents/         Word/Excel/PowerPoint -> Markdown reader, no new dependency (see server/documents/CLAUDE.md)
   monitor/           "Watch for X, then act" background checks (see "Monitoring")
@@ -150,8 +153,8 @@ connection instead of each duplicating the same key. `updateModel()` whitelists 
 patch keys on purpose — never let adapter/baseUrl/secretRef/connectionId be set through
 it, or a model desyncs from its connection. Legacy secrets (the original
 `gemini`/`anthropic`/`openai` refs) are never deleted by a connection removal —
-`tts.js`/`turn-check.js` depend on `GEMINI_API_KEY` regardless of which model is
-chatting. **`assumesVision()` (`catalog.js`) does not treat every non-local cloud model
+`turn-check.js` depends on `GEMINI_API_KEY` regardless of which model is chatting
+(TTS no longer does — see "TTS provider system"). **`assumesVision()` (`catalog.js`) does not treat every non-local cloud model
 as vision-capable** — aggregator hosts (openrouter/groq/together) are matched by
 name-hint only, same as local models, since discovery-guessed quality scores are
 unreliable signals for what a model can actually see.
@@ -172,6 +175,53 @@ confirm gate (for unattended/scheduled runs).
 translates to/from, so switching models mid-conversation doesn't lose context. A
 message's `raw: {adapter, content}` carries a model's own reply object verbatim when
 needed — Gemini's `thought_signature` (see Gotchas) is why this exists.
+
+## Voice-layer providers: generic keys, STT, TTS
+
+Three small, deliberately layered pieces, none of which know about the others' provider
+names — the point of the design is that a real provider is "one adapter file + one
+registry entry," never a change to storage or UI:
+
+- **`server/external-services.js`** — generic, user-named external-service key storage.
+  A "service" is any name the user types (Deepgram, ElevenLabs, ...) plus a key and an
+  optional second field (e.g. a Voice ID); `ref` is a stable slug derived from the typed
+  label. Structural metadata (`label`, `extraFieldLabel`) lives in
+  `data/external-services.json` (`store.js`'s `readJson`/`writeJson`); every actual
+  credential value goes through `config.js`'s existing `getSecret`/`saveSecret`/
+  `deleteSecret` unchanged — `${ref}` for the key, `${ref}_extra` for the second field's
+  value. **This is not a general-purpose secret store** — model-provider connection
+  secrets stay entirely on `models/registry.js`'s own routes, never here, so a bug here
+  can't corrupt a model connection's key. `server.js`'s `/api/external-services*` routes
+  are the only consumer of `addOrUpdateService`/`removeServiceKey`/`deleteService`
+  (Remove clears the key and keeps the row; a separate "delete this service" removes the
+  row entirely) — a real adapter's own module (see below) reads a saved key/field via
+  `getKey(ref)`/`getExtraField(ref)`.
+- **`server/stt/`** — real-time speech-to-text. `stt/deepgram.js` is the one real
+  provider today (its ref is created once, deterministically, via a one-time migration
+  of the legacy `JARVIS_SECRET_DEEPGRAM`, so `server.js`'s `EXTERNAL_SERVICE_TESTERS` map
+  can key its live-test function by that exact stable ref). The browser's own
+  `SpeechRecognition` is the automatic no-key fallback (`server/duplex.js` reports
+  `mode:'browser'`) and has no server component at all.
+- **`server/tts/`** — server-side text-to-speech, `stream(text, {voice}) -> async
+  generator of {buffer, mimeType}` on every provider (even a non-streaming one, which
+  yields exactly one chunk). Unlike Deepgram, **a TTS provider's ref is NOT stable** —
+  it's whatever the user typed as a service label, slugified, so `tts/index.js` never
+  matches a provider to a service by exact ref string. Instead every adapter (currently
+  just `tts/elevenlabs.js`) exports `matchesRef(ref)`, a small, self-contained, bounded
+  recognizer (normalizes and checks for its own provider name, so "ElevenLabs",
+  "Elevenlab", "11labs" etc. all resolve to the same provider) — `tts/index.js` just asks
+  each registered adapter "is this configured service yours?" and defers entirely to the
+  answer, so the shared seam itself never hardcodes a provider's name anywhere.
+  `tts/index.js`'s `testerFor(ref)` gives `server.js`'s generic test route the same
+  dynamic dispatch for TTS providers that `EXTERNAL_SERVICE_TESTERS` gives Deepgram.
+  Voice selection has no separate picker UI at all — a provider resolves its own voice
+  server-side, from the service's optional extra field if set, otherwise a sensible
+  provider-specific default (`tts/elevenlabs.js`'s: the account's own first available
+  voice from a live `GET /v1/voices` call, briefly cached — **not** a single hardcoded
+  "standard" voice id, confirmed live that a free-tier account can 400 on one of those).
+  The free, offline `browser` voice (`public/browser-speaker.js`) is deliberately not a
+  provider here at all — no server component, handled entirely client-side, and is the
+  one guaranteed-always-available `voiceOutput` value both voice engines default to.
 
 ## Chat Persistence (`server/db.js`, `server/chat-store.js`)
 
@@ -206,11 +256,18 @@ an attachment) always lands in whatever conversation the user actually has open.
 See `server/memory/CLAUDE.md` (loads automatically when working in that directory) for
 the module-by-module breakdown. The decisions that matter beyond that file:
 
-- **Approval-first is the only policy, and it lives behind one seam.**
-  `memory-policy.js`'s `decide()` always returns `'require-approval'` in this build —
-  every caller asks it, none hardcode the assumption themselves. A future configurable
-  trust level is a change to that one function, not a rewrite of the skills/UI that
-  currently assume approval-first.
+- **Approval is tiered behind one seam, and one hard floor never moves.**
+  `memory-policy.js`'s `decide(candidate, {trust})` is a pure function — every caller
+  asks it, none hardcode "ask the user" or "just save it" themselves. `prefs.js`'s
+  `memoryTrust` (`'ask'` | `'balanced'` | `'auto'`, default `'ask'` — reproduces the
+  original approval-first behavior byte for byte for anyone who never opens the Memory
+  screen) picks a confidence threshold the extraction model's own per-candidate score
+  must clear to auto-save. **A candidate that conflicts with an existing memory always
+  requires approval, at every trust level, with no override** — resolving a conflict
+  changes or duplicates something that already exists, and that is never done silently.
+  A `memories` row's `origin` column (`'approved'` | `'auto'` | `'explicit'` | `'legacy'`)
+  records how consent was given, separately from `source_kind` (where the content came
+  from) — the Memory screen's badge reads directly off it.
 - **Nothing is extracted per turn.** `memory-review.js` batches extraction into one
   model call per *checkpoint* — new chat, Jarvis reopening (checked once, at server
   startup), a scheduled task finishing (only `prompt`-type actions, since those are the
@@ -229,9 +286,18 @@ the module-by-module breakdown. The decisions that matter beyond that file:
   foreign key to `conversations` at all — an approved memory cannot structurally be
   cascaded away by a conversation delete, and deleting a memory cannot touch a
   conversation.
-- **"Recall" is not a tool.** The full approved-memory set is small enough to sit
-  directly in the system prompt (`prompt.js`'s `memorySection()`, injected in
-  `systemInstructionFor()`) — nothing is ever searched for at answer time.
+- **Recalling a durable FACT is not a tool** — the full approved-memory set is small
+  enough to sit directly in the system prompt (`prompt.js`'s `memorySection()`, injected
+  in `systemInstructionFor()`), so nothing is ever searched for to answer "what do you
+  know about me." Curation (small, approved, or at least confidence-gated) is what keeps
+  this affordable — a store that grew without limit would force search here too.
+  **Recalling something SAID is a different problem and does use a tool** —
+  `search_conversations` (`server/tools/search_conversations.js`) full-text-searches
+  every past conversation via `chat-store.js`'s `searchMessages()` (built on the same
+  `messages_fts` index Chat History's own search already used, just not previously
+  reachable from a live turn). Dated results are the point: a past statement is not
+  automatically still true, and the model is instructed to say when something was said
+  rather than assert it as current.
 - **The old "About You" store is gone.** `data/profile.json` was migrated once (inside
   `db.js`'s migration step, so it can only ever run once) into Memory's `About You`
   category. `profile.js` is now a thin adapter over `memory-store.js` fixed to that one
@@ -240,6 +306,12 @@ the module-by-module breakdown. The decisions that matter beyond that file:
   into that same fixed category directly (never asks the model to pick one on a quick
   voice utterance) — the only place a category is genuinely chosen is inside a
   checkpoint's own extraction call, which has time to reason about it.
+- **The Memory screen (`public/screens/memory.js`, `#/memory`) is `memory-store.js`'s
+  first UI.** The engine (browse, search, edit, merge, archive, version history) has been
+  complete since Memory shipped, deliberately screenless while every save was
+  individually approved. Once a save can happen without being asked, seeing and undoing
+  it stops being optional — the trust dial, and every memory with its origin badge, live
+  here.
 
 ## Front-end (public/)
 
@@ -247,21 +319,46 @@ See `public/CLAUDE.md` (loads automatically when working in that directory) for 
 voice engines (`PipelineEngine`/`LiveEngine`), the 3D orb, and the SECTIONS-driven
 navigation/modal system.
 
+## Tools (`server/tools/*.js`)
+
+Real executable capabilities — `get_weather`, `open_app`, `run_code`, `schedule_task`,
+...  Auto-loaded by `tools/index.js`; file anatomy, confirm/meta mechanics, and the
+OS-command allowlist discipline are all in `server/tools/CLAUDE.md` (loads automatically
+when working in that directory).
+
 ## Skills (`server/skills/*.js`)
 
-Auto-loaded by `skills/index.js` — file anatomy, confirm/meta mechanics, Folder Skills,
-and script execution are all in `server/skills/CLAUDE.md` (loads automatically when
-working in that directory). The one rule that stays here because it's cross-cutting:
+**A Skill is a folder of instructions, never a rename of an executable capability.**
+This directory used to hold both — built-in tools AND folder Skills — under the one word
+"skill," which is what let a real capability get offered as an installable Skill in the
+UI three separate times before this split. It now holds ONLY folder Skills:
+`SKILL.md`-based instructions under `data/skills/<name>/`. File anatomy, the folder-Skill
+mechanics, and upload/replace/download are all in `server/skills/CLAUDE.md` (loads
+automatically when working in that directory). The one rule that stays here because it's
+cross-cutting:
 
-**PERMANENT RULE — Jarvis's built-in abilities (this file's list above) are not Skills
-and must NEVER appear as a Skill anywhere in the UI.** This includes, without limit: the
-Skills screen's own list, its create/edit forms, any browse/gallery/catalog/marketplace
-view, and any other screen's picker that lists "things Jarvis can do" (e.g. a briefing's
-data-source picker). A Skill is knowledge Jarvis doesn't already have — a process, a
-house style, a template — never a rename of an existing ability. Structurally enforced,
-not just remembered — see `server/skills/CLAUDE.md` for how — because this has
+**PERMANENT RULE — Jarvis's built-in tools (`server/tools/`, listed in the Structure
+block above) are not Skills and must NEVER appear as a Skill anywhere in the UI.** This
+includes, without limit: the Skills screen's own list, its create/edit forms, any
+browse/gallery/catalog/marketplace view, and any other screen's picker that lists
+"things Jarvis can do" (e.g. a briefing's data-source picker). A Skill is knowledge
+Jarvis doesn't already have — a process, a house style, a template — never a rename of
+an existing ability. Structurally enforced, not just remembered — a Skills UI may only
+ever read `listUserSkills()` (`server/skills/store/skill-files.js`), which has no code
+path back to a built-in tool; see `server/skills/CLAUDE.md` for how — because this has
 regressed multiple times before despite being called out each time (see
 `skills-system-rebuild.md` project memory / `handoff-archive.md` for incident history).
+
+## `server/capabilities.js` — the composition seam
+
+The one place tools (`server/tools/`), folder Skills (`server/skills/`), and connector
+tools (`server/connectors/`) merge into what a model, a scheduled task, or a briefing
+source actually sees: `getToolDeclarations()` (model-facing, stripped to
+`{name, description, parameters}`), `listCapabilities()` (the tagged union — a Skills UI
+must never read this, see the PERMANENT RULE above), `listStepCandidates()` (built-in
+tools only, non-meta — the one honest enumeration a pipeline step picker can be built
+on), `hasCapability()`, and `invoke()` (the one dispatcher; owns the confirm-and-
+read-back token gate, moved here verbatim from the old merged `skills/index.js`).
 
 ## Scheduler + briefing (`server/scheduler/*.js`)
 
@@ -321,7 +418,7 @@ calling `adapter.stream()` with a `systemOverride`.
   the next one down would be fine. `content/investigator.js`'s
   `examineMediaFile()`/`examineYoutube()` walk it so one bad winner doesn't
   end the whole job.
-- Safe for skills to import (no path to `skills/index.js` or `runner.js`).
+- Safe for tools to import (no path to `tools/index.js`, `capabilities.js`, or `runner.js`).
 
 **Capabilities.** Each adapter exports `CAPABILITIES`; `adapters/index.js`'s
 `getCapabilities()` reads it, and an adapter that declares nothing is treated as
@@ -434,18 +531,21 @@ readable without a dedicated rule for each one.
   incremental delta (not cumulative) — concatenate `chunk.candidates[0].content.parts`
   across all chunks to reconstruct the full turn correctly.
 - **Circular-import deadlock, and the exact invariant that avoids it.**
-  `skills/index.js` dynamically imports every file in `server/skills/` at load time; if
-  any of those files (transitively) imports something that imports `skills/index.js`
+  `tools/index.js` dynamically imports every file in `server/tools/` at load time; if
+  any of those files (transitively) imports something that imports `tools/index.js`
   back, dynamic `import()` deadlocks (it waits for the target module to finish
   evaluating, which is exactly what's blocked on this same import resolving). **The
-  rule: nothing under `server/skills/` may import `skills/index.js`, `models/runner.js`,
-  `scheduler/scheduler.js`, `scheduler/briefing.js`, or `control/session.js` — directly
-  or transitively.** This is why `task-store.js`, `briefing-config.js`, and
-  `skill-store.js` are split out as dependency-free leaf modules. The direct-import
-  exception: a skill file (or `control/session.js`) importing one specific *other* leaf
-  skill file directly (e.g. `control/session.js` importing `skills/open_app.js`) is fine
-  — the forbidden edge is importing the *loader* or anything that transitively reaches
-  it, not an individual leaf skill module.
+  rule: nothing under `server/tools/` may import `tools/index.js`, `capabilities.js`,
+  `models/runner.js`, `scheduler/scheduler.js`, `scheduler/briefing.js`, or
+  `control/session.js` — directly or transitively.** This is why `task-store.js`,
+  `briefing-config.js`, and `skill-files.js` are split out as dependency-free leaf
+  modules. The direct-import exception: a tool file (or `control/session.js`) importing
+  one specific *other* leaf tool file directly (e.g. `control/session.js` importing
+  `tools/open_app.js`) is fine — the forbidden edge is importing the *loader* (or
+  `capabilities.js`, the seam built on top of it) or anything that transitively reaches
+  either, not an individual leaf tool module. A tool file that needs something only
+  `capabilities.js` can provide (the reserved-name set, for `create_skill.js`) receives
+  it via `ctx`, injected by `capabilities.js`'s `invoke()`, never via a top-level import.
 - **Node's `fetch` blocks a handful of "unsafe" ports** (9, 21, 25, ...) with a `bad
   port` error unrelated to whether anything is listening — don't use those when testing
   discovery/connection-refused error paths; a real unbound high port (e.g. 19999) gives

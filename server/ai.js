@@ -7,11 +7,11 @@
 // with a video or an image attached, give me back text or a JSON object.
 // This is that third shape, and the two features are built on it.
 //
-// Why not just use runner.js: skills must never import it (CLAUDE.md's
-// circular-import invariant — skills/index.js dynamically imports every file
-// in server/skills/, so anything reachable from a skill must not lead back
+// Why not just use runner.js: tools/skills must never import it (CLAUDE.md's
+// circular-import invariant — tools/index.js dynamically imports every file
+// in server/tools/, so anything reachable from a tool must not lead back
 // there). This file imports only adapters and the model registry/router, so
-// a skill can safely use it. It follows control/session.js's precedent of
+// a tool can safely use it. It follows control/session.js's precedent of
 // calling `adapter.stream()` directly with a `systemOverride`.
 //
 // Capability filtering lives HERE rather than in models/router.js on purpose:

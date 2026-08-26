@@ -6,7 +6,7 @@
 // automatic once the preferred model is working again.
 
 import { getAdapter } from '../adapters/index.js';
-import { getToolDeclarations, runSkill } from '../skills/index.js';
+import { getToolDeclarations, invoke } from '../capabilities.js';
 import * as conversation from '../conversation.js';
 import { getModel, updateModel } from './registry.js';
 import { profileTask, rankCandidates } from './router.js';
@@ -37,9 +37,15 @@ function leadWith(modelId, ranked) {
   return [lead, ...ranked.filter((e) => e.id !== lead.id)];
 }
 
-/** A task's own pinned model (opts.modelId) outranks the user's global manual pick, which outranks pure auto-ranking. */
+/**
+ * A task's own pinned model (opts.modelId) outranks the user's pinned voice
+ * model, which outranks the user's global manual pick, which outranks pure
+ * auto-ranking. `voiceModelId` only applies to `source: 'voice'` turns — a
+ * typed message is unaffected even if a voice model is pinned.
+ */
 function preferredModelId(prefs, opts) {
   if (opts.modelId) return opts.modelId;
+  if (opts.source === 'voice' && prefs.voiceModelId) return prefs.voiceModelId;
   if (!prefs.autoSelect && prefs.manualModelId) return prefs.manualModelId;
   return null;
 }
@@ -103,18 +109,22 @@ function friendlyReason(adapterName, err) {
 }
 
 /**
- * Builds the tool list offered to the model this turn. `opts.noTools` (a
- * narration-only turn) always wins with an empty list. Otherwise
+ * Builds the tool list offered to the model this turn/step. `opts.noTools`
+ * (a narration-only turn) always wins with an empty list. Otherwise
  * `opts.background === true` (unattended/scheduled runs) drops meta skills
  * (schedule_task, cancel_task, ...) regardless of `allowedTools` — they only
  * make sense in a live conversation. `opts.allowedTools`, when an array,
  * further restricts the list to exactly those names (a scheduled task's own
- * per-task connector allowlist); null/undefined leaves the full list
- * (current behavior for live chat).
+ * per-task connector allowlist); null/undefined leaves the full list.
+ *
+ * `unlocked` (a Set<string>, mutated in place across a turn's steps by
+ * runOnEntry below) is what find_capability.js surfaces mid-turn — see
+ * capabilities.js's getToolDeclarations() for the two-tier split this
+ * exists to serve. Declarations otherwise default to the core-only set.
  */
-function toolsForTurn(opts) {
+function toolsForTurn(opts, unlocked) {
   if (opts.noTools) return [];
-  const declarations = getToolDeclarations({ includeMeta: !opts.background });
+  const declarations = getToolDeclarations({ includeMeta: !opts.background, unlocked });
   if (Array.isArray(opts.allowedTools)) {
     return declarations.filter((d) => opts.allowedTools.includes(d.name));
   }
@@ -154,18 +164,32 @@ function recordAvailability(modelId, state, detail, { allowStaleRewrite = true }
 
 /** Runs the tool-calling loop against a single model. Yields chunk/tool events; returns {text}. */
 async function* runOnEntry(sessionId, entry, opts) {
-  const tools = toolsForTurn(opts);
   const adapter = getAdapter(entry.adapter);
   const maxSteps = opts.maxToolSteps || DEFAULT_MAX_TOOL_STEPS;
   let finalText = null;
+  // Names find_capability.js has surfaced so far THIS turn — starts seeded
+  // with opts.allowedTools (if given), not empty, then grows across steps
+  // and never shrinks, recomputed into the tool list fresh each step below.
+  // The seeding matters: toolsForTurn's own allowedTools filter only NARROWS
+  // whatever getToolDeclarations() already returned, which defaults to
+  // core-only without a non-empty `unlocked` — so naming a non-core tool
+  // (a connector, or an internal job-only tool like report_job_done) in an
+  // explicit allowlist used to have no effect at all, since it never became
+  // visible in the first place. An allowlist is itself a clear statement of
+  // intent to include exactly those names regardless of core status, so it
+  // now pre-unlocks them. Strictly additive versus the old behavior — a
+  // caller with no allowedTools (the common case) or one naming only
+  // already-core tools sees no change at all.
+  const unlocked = new Set(Array.isArray(opts.allowedTools) ? opts.allowedTools : []);
 
   for (let step = 0; step < maxSteps; step++) {
+    const tools = toolsForTurn(opts, unlocked);
     const messages = conversation.getMessages(sessionId);
     let text = '';
     let callEvent = null;
     let finalEvent = null;
 
-    for await (const ev of adapter.stream(entry, messages, { tools, lowConfidence: opts.lowConfidence })) {
+    for await (const ev of adapter.stream(entry, messages, { tools, lowConfidence: opts.lowConfidence, gapMs: opts.gapMs, background: opts.background })) {
       if (ev.type === 'chunk') {
         text += ev.text;
         yield { type: 'chunk', text: ev.text };
@@ -185,17 +209,59 @@ async function* runOnEntry(sessionId, entry, opts) {
 
       const toolResults = [];
       for (const call of callEvent.calls) {
-        yield { type: 'tool_start', name: call.name };
-        const result = await runSkill(call.name, call.args, {
-          sessionId,
-          modelId: entry.id,
-          lowConfidence: opts.lowConfidence,
-          // Unattended runs (scheduled tasks, briefing sources) were
-          // consented to once at creation — nobody is present to answer a
-          // live read-back, so the confirmation gate is bypassed rather
-          // than stalling on a token nobody will ever send back.
-          autoConfirm: Boolean(opts.autoConfirm),
-        });
+        // `args` rides along so a caller outside this loop (jobs/worker.js's
+        // write-ahead trace) can log the intent BEFORE invoke() runs, without
+        // this file needing to know Jobs exists — additive field, no existing
+        // consumer (public/app.js, the voice engines) destructures anything
+        // beyond `type`/`name` off this event today.
+        yield { type: 'tool_start', name: call.name, args: call.args };
+        // toolsForTurn's allowedTools filter only decides what gets OFFERED
+        // to the model — a real model literally can't call a tool it was
+        // never given a declaration for, but that's a property of well-
+        // behaved function-calling, not something this file enforces. A
+        // hallucinated or malformed call naming something outside an
+        // explicit allowlist (a scheduled task's own connector restriction,
+        // or a background Job's kind-restricted tool set — see
+        // jobs/orchestrator.js's KIND_TOOL_NAMES) must not silently execute
+        // just because invoke() itself doesn't know about the restriction —
+        // confirmed live: a research-kind job's stub test could still reach
+        // get_time even though it was never in that kind's allowedTools.
+        // report_job_done/report_job_stuck ride in `allowedTools` for every
+        // kind precisely so this same check doesn't need a separate carve-out
+        // for them.
+        const notAllowed = Array.isArray(opts.allowedTools) && !opts.allowedTools.includes(call.name);
+        const result = notAllowed
+          ? { ok: false, error: 'That capability is not available for this task.' }
+          : await invoke(call.name, call.args, {
+              sessionId,
+              modelId: entry.id,
+              lowConfidence: opts.lowConfidence,
+              // Unattended runs (scheduled tasks, briefing sources) were
+              // consented to once at creation — nobody is present to answer a
+              // live read-back, so the confirmation gate is bypassed rather
+              // than stalling on a token nobody will ever send back.
+              autoConfirm: Boolean(opts.autoConfirm),
+              // find_capability.js reads this to keep its own search scoped to
+              // non-meta capabilities on a background run, matching what a
+              // background run could always reach before the two-tier tool
+              // split existed (see that file's comment).
+              background: Boolean(opts.background),
+              // The third confirm mode (server/jobs/worker.js) — present only
+              // for a background Job's own turn; absent (undefined) for every
+              // other caller, so capabilities.js's invoke() falls through to
+              // its existing token-minting behavior exactly as before for
+              // live chat and scheduled tasks alike.
+              onEscalate: opts.onEscalate,
+            });
+        // find_capability just ran — fold its matches into the set for the
+        // NEXT step's tool list (see toolsForTurn's `unlocked` param above).
+        // Not reachable on any other tool, since only find_capability.js
+        // returns a `matches` array shaped like this.
+        if (call.name === 'find_capability' && Array.isArray(result?.matches)) {
+          for (const m of result.matches) {
+            if (m?.name) unlocked.add(m.name);
+          }
+        }
         // ui_action/needs_confirmation/summary/confirm_token are only ever
         // present on skills that set them — JSON.stringify drops the rest.
         yield {
@@ -251,6 +317,17 @@ async function* runOnEntry(sessionId, entry, opts) {
  *   {type:'paused', reason}                   — nothing could complete the turn; no answer was produced
  */
 export async function* runTurn(sessionId, userText, opts = {}) {
+  // Read the PREVIOUS last message's timestamp before pushUserText() below
+  // adds a new one — this is what lets prompt.js's situationSection() tell
+  // the model how long it's actually been since the last exchange (a model
+  // otherwise has no clock at all; see the root CLAUDE.md's Model system
+  // section for why that mattered). null on the very first turn of a
+  // session, or if that message predates createdAt existing on messages.
+  const priorMessages = conversation.getMessages(sessionId);
+  const lastPrior = priorMessages[priorMessages.length - 1];
+  const gapMs = lastPrior?.createdAt ? Date.now() - Date.parse(lastPrior.createdAt) : null;
+  const situationOpts = { ...opts, gapMs: Number.isFinite(gapMs) ? gapMs : null };
+
   // `media` rides on the user's own message, so it stays in the transcript
   // and every later turn still sees it — the same way Claude keeps an image
   // in a conversation (see attachments.js for why images aren't digested).
@@ -278,7 +355,7 @@ export async function* runTurn(sessionId, userText, opts = {}) {
       yield { type: 'model_switch', from: previousId, to: entry.id, reason: lastError || 'the previous model ran into a problem' };
     }
 
-    const gen = runOnEntry(sessionId, entry, opts);
+    const gen = runOnEntry(sessionId, entry, situationOpts);
     let streamed = false;
     let finalResult = null;
     let failed = false;

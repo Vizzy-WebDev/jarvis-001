@@ -21,9 +21,9 @@
 //               answer. Nothing here is "the" verdict; there can be many.
 //
 // A dependency-free leaf module — same circular-import reasoning as the
-// project store: server/skills/ files import this, and skills/index.js
-// dynamically imports every file in server/skills/ at load time, so nothing
-// reachable from a skill may lead back to that loader.
+// project store: server/tools/ files import this, and tools/index.js
+// dynamically imports every file in server/tools/ at load time, so nothing
+// reachable from a tool may lead back to that loader.
 
 import { readJson, writeJson } from '../store.js';
 

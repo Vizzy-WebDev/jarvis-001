@@ -58,7 +58,7 @@ function statusBadge(status) {
 // title-over-subtitle row elsewhere) with a plain horizontal icon+name pair
 // — the old code put the icon ABOVE the name rather than beside it, a
 // pre-existing layout bug this fixes along with dropping the description.
-function buildRow({ icon, iconDataUri, label, status }, onOpen) {
+function buildRow({ icon, iconDataUri, label, status, accountHint }, onOpen) {
   const el = document.createElement('div');
   el.className = 'list-row list-row-clickable';
   el.tabIndex = 0;
@@ -67,7 +67,16 @@ function buildRow({ icon, iconDataUri, label, status }, onOpen) {
   const main = document.createElement('div');
   main.className = 'list-row-main connector-row';
   main.appendChild(iconTile(iconForConnector({ catalogIcon: icon, iconDataUri })));
-  main.appendChild(Object.assign(document.createElement('span'), { className: 'list-row-title', textContent: label }));
+  // Name + account hint stack, same reasoning as _connector-detail.js's own
+  // title row — the one thing that tells two connectors to the same service
+  // apart at a glance in this list, e.g. two Notion rows for two workspaces.
+  const nameStack = document.createElement('div');
+  nameStack.className = 'connector-row-name-stack';
+  nameStack.appendChild(Object.assign(document.createElement('span'), { className: 'list-row-title', textContent: label }));
+  if (accountHint) {
+    nameStack.appendChild(Object.assign(document.createElement('span'), { className: 'connector-row-hint', textContent: accountHint }));
+  }
+  main.appendChild(nameStack);
 
   const actions = document.createElement('div');
   actions.className = 'list-row-actions';
@@ -245,14 +254,36 @@ function buildMechanismFields(body, mechanism) {
   if (mechanism === 'mcp') {
     const urlField = fieldInput('Remote MCP Server URL', 'text', 'https://example.com/mcp');
     body.appendChild(urlField.wrapper);
-    // Deliberately no Client ID/Secret field of any kind here, collapsed or
-    // not — the user's explicit choice, made after direct comparison against
-    // Claude's own "Advanced settings" UI. Most custom MCP servers register
-    // Jarvis as a client on the spot (Dynamic Client Registration) and never
-    // need one; a server that doesn't just won't connect from this screen —
-    // see CLAUDE.md's "No Client ID/Secret UI anywhere" rule for what that
-    // trades away and why it was still the user's call to make.
-    return { urlField };
+
+    // Round 5 (see CLAUDE.md's "Client ID/Secret UI" history): a collapsed,
+    // optional Client ID/Secret pair, same as the per-connector Connect card
+    // (_connector-detail.js's buildMcpConnectSection()) — this is the
+    // creation-time equivalent, matching the user's own Claude.ai reference
+    // screenshot, where this exact section lives inside the creation dialog
+    // itself. Most custom MCP servers still register Jarvis on the spot
+    // (Dynamic Client Registration) and never need this; it's here only for
+    // the ones that don't, so the connector can be created already-configured
+    // instead of needing a create-then-retry round trip.
+    const advToggle = document.createElement('button');
+    advToggle.type = 'button';
+    advToggle.className = 'advanced-settings-toggle';
+    advToggle.setAttribute('aria-expanded', 'false');
+    advToggle.textContent = '▸ Advanced settings';
+
+    const advBody = document.createElement('div');
+    advBody.className = 'advanced-settings-body collapsed';
+    const clientIdField = fieldInput('OAuth Client ID (optional)', 'text');
+    const clientSecretField = fieldInput('OAuth Client Secret (optional)', 'password');
+    advBody.append(clientIdField.wrapper, clientSecretField.wrapper);
+
+    advToggle.addEventListener('click', () => {
+      const collapsed = advBody.classList.toggle('collapsed');
+      advToggle.textContent = `${collapsed ? '▸' : '▾'} Advanced settings`;
+      advToggle.setAttribute('aria-expanded', String(!collapsed));
+    });
+
+    body.append(advToggle, advBody);
+    return { urlField, clientIdField, clientSecretField };
   }
   if (mechanism === 'api') {
     const baseUrlField = fieldInput('Base web address', 'text', 'https://api.example.com');
@@ -330,6 +361,12 @@ async function buildAddConnectorModal(onDone) {
           return null;
         }
         body.url = url;
+        // Left blank (the default, collapsed state), these are undefined and
+        // JSON.stringify drops them — the request is byte-for-byte what it
+        // always was. POST /api/connectors/custom already accepts both; see
+        // that route's own header comment.
+        body.clientId = mechanismFields.clientIdField.input.value.trim() || undefined;
+        body.clientSecret = mechanismFields.clientSecretField.input.value.trim() || undefined;
       } else if (mechanism === 'api') {
         const baseUrl = mechanismFields.baseUrlField.input.value.trim();
         if (!baseUrl) {
@@ -449,7 +486,7 @@ export async function render(container) {
         // directory.
         const catalogEntry = c.source?.type === 'catalog' ? catalogById.get(c.source.id) : null;
         card.appendChild(
-          buildRow({ icon: catalogEntry?.icon, iconDataUri: c.iconDataUri, label: c.label, status: c.status?.state }, () =>
+          buildRow({ icon: catalogEntry?.icon, iconDataUri: c.iconDataUri, label: c.label, status: c.status?.state, accountHint: c.accountHint }, () =>
             showDetail({ catalogEntry, connectorId: c.id, type: c.type })
           )
         );

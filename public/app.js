@@ -6,6 +6,7 @@
 import { getSetting, setSetting } from './settings.js';
 import { PipelineEngine } from './engines/pipeline-engine.js';
 import { LiveEngine } from './engines/live-engine.js';
+import { DuplexEngine } from './engines/duplex-engine.js';
 import { SECTIONS } from './nav.js';
 import { navigate, initRouter, currentSectionId, refreshIfActive } from './router.js';
 import { createOrb } from './orb.js';
@@ -69,6 +70,10 @@ const TOOL_LABELS = {
   research_project: 'Looking into that…',
   write_project_plan: 'Writing that up…',
   write_build_prompts: 'Writing the build prompt…',
+  search_conversations: 'Checking past conversations…',
+  work_in_background: 'Setting that up in the background…',
+  check_on_work: 'Checking on your background work…',
+  stop_working_on: 'Stopping that…',
 };
 
 // ---------- Screen switching (the primitive public/router.js drives) ----------
@@ -98,23 +103,35 @@ function setMicVisual(state) {
   const btn = document.getElementById('mic-button');
   const statusLine = document.getElementById('status-line');
 
-  const isListening = state === 'listening';
+  // hearing_speech counts as "listening" for the button's visual too — it's
+  // a listening substate (the user is actively confirmed talking), not a
+  // separate mode; see engines/duplex-engine.js.
+  const isListening = state === 'listening' || state === 'hearing_speech';
   const muted = Boolean(engine?.muted);
-  // The slash shows for an explicit mute AND for the plain not-started-yet
-  // idle case — both genuinely mean "the mic isn't capturing right now."
-  const showMutedSlash = muted || (!isListening && state !== 'thinking' && state !== 'speaking');
+  // The slash reflects the mic's REAL capture state, not `state` — an
+  // active hands-free session that's dropped to a real 'idle' (quiet for a
+  // while — see duplex-engine.js's HANDS_FREE_IDLE_MS) still has the mic
+  // genuinely open, so it must not show as muted. Only an explicit mute, or
+  // the engine not being active at all, means the mic truly isn't capturing.
+  const showMutedSlash = muted || !engine?.active;
   btn.classList.toggle('listening', isListening && !muted);
   btn.classList.toggle('muted', showMutedSlash);
   btn.setAttribute('aria-label', isListening && !muted ? 'Mute the microphone' : 'Unmute the microphone');
 
   if (muted && engine?.active) {
     statusLine.textContent = 'Muted — click the mic to unmute';
-  } else if (state === 'listening') {
+  } else if (state === 'listening' || state === 'hearing_speech' || state === 'interrupted') {
     statusLine.textContent = 'Listening…';
   } else if (state === 'thinking') {
     statusLine.textContent = 'Thinking…';
+  } else if (state === 'tool_running') {
+    statusLine.textContent = 'Working on it…';
   } else if (state === 'speaking') {
     statusLine.textContent = 'Speaking…';
+  } else if (state === 'idle' && engine?.active) {
+    // Real hands-free idle (F7) — quiet for a while, mic still genuinely
+    // open, distinct from the plain not-started-yet idle below.
+    statusLine.textContent = 'Still here — say something anytime';
   } else {
     statusLine.textContent = micModeHint();
   }
@@ -465,7 +482,13 @@ let memoryReviewCardEl = null;
 
 function buildCandidateRow(candidate, onResolved) {
   const row = document.createElement('div');
-  row.className = 'list-row';
+  // list-row-stacked: this card's sentence + wide action buttons don't fit
+  // side by side on the docked conversation rail — see style.css's comment
+  // by that class for the confirmed cause (a conflict row's three buttons
+  // squeezed the text down to ~1 word per line). Applied to every candidate
+  // row, not just the conflict branch below, so a longer plain suggestion
+  // can't hit the same wall.
+  row.className = 'list-row list-row-stacked';
   row.dataset.candidateId = candidate.id;
 
   const main = document.createElement('div');
@@ -623,6 +646,51 @@ async function showMemoryReviewCard(candidates) {
   }
 }
 
+// ---------- "Open that old conversation?" offer (server/tools/search_conversations.js) ----------
+//
+// A single click target next to Jarvis's reply when search_conversations
+// found a good match — it never switches the transcript on its own.
+// Reuses the EXACT same activate-then-rehydrate wiring
+// screens/chat-history.js already uses (POST .../activate, then dispatch
+// the same 'jarvis:conversation-activated' window event app.js already
+// listens for at setupChatHistoryIntegration() below) rather than a second,
+// parallel way of switching conversations.
+
+function renderOpenConversationOffer(conversationId, title) {
+  const card = document.createElement('div');
+  card.className = 'list-row';
+
+  const main = document.createElement('div');
+  main.className = 'list-row-main';
+  main.appendChild(
+    Object.assign(document.createElement('span'), { className: 'list-row-title', textContent: title || 'That conversation' })
+  );
+  card.appendChild(main);
+
+  const actions = document.createElement('div');
+  actions.className = 'list-row-actions';
+  const openBtn = document.createElement('button');
+  openBtn.type = 'button';
+  openBtn.className = 'btn btn-primary';
+  openBtn.textContent = 'Open conversation';
+  openBtn.addEventListener('click', async () => {
+    openBtn.disabled = true;
+    try {
+      const res = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/activate`, { method: 'POST' });
+      if (!res.ok) throw new Error();
+      window.dispatchEvent(new CustomEvent('jarvis:conversation-activated', { detail: { id: conversationId } }));
+    } catch {
+      openBtn.disabled = false;
+      openBtn.textContent = "Couldn't open — try again";
+    }
+  });
+  actions.appendChild(openBtn);
+  card.appendChild(actions);
+
+  document.getElementById('transcript').appendChild(card);
+  scrollToBottom();
+}
+
 // ---------- Chat History (persisted conversations — server/chat-store.js) ----------
 
 /** Wipes the transcript and any turn-in-progress UI state tied to it — used before rehydrating a different conversation. */
@@ -631,6 +699,13 @@ function clearTranscript() {
   currentAssistantEl = null;
   interimEl = null;
   activeConfirmRow = null;
+  // Was left dangling here (pointing at a now-detached, wiped-out node) —
+  // harmless in itself (.remove() on a detached node is a no-op) but wrong,
+  // and the real fix for "a pending suggestion is unreachable after a new
+  // chat" is the Memory screen's own pending section, not resurrecting this
+  // one — a stray card reappearing over whatever conversation is now open
+  // would be its own confusion.
+  memoryReviewCardEl = null;
   announcedJobs.clear();
 }
 
@@ -724,14 +799,17 @@ function createEngine(type = getSetting('voiceEngine')) {
   const e =
     type === 'live'
       ? new LiveEngine()
-      : new PipelineEngine({
-          voiceOutput: SPEECH_OUTPUT_SUPPORTED ? getSetting('voiceOutput') : 'gemini',
-          geminiVoice: getSetting('geminiVoice'),
-          useAiTurnCheck: getSetting('useAiTurnCheck'),
-        });
+      : type === 'duplex'
+        ? new DuplexEngine({
+            voiceOutput: SPEECH_OUTPUT_SUPPORTED ? getSetting('voiceOutput') : 'browser',
+          })
+        : new PipelineEngine({
+            voiceOutput: SPEECH_OUTPUT_SUPPORTED ? getSetting('voiceOutput') : 'browser',
+            useAiTurnCheck: getSetting('useAiTurnCheck'),
+          });
 
-  // Both engines emit the same event set (see engines/voice-engine.js), so
-  // the wiring below is identical regardless of which one is active.
+  // All three engines emit the same event set (see engines/voice-engine.js),
+  // so the wiring below is identical regardless of which one is active.
   e.on('state', ({ state }) => {
     setMicVisual(state);
     maybeShowLatency(state);
@@ -761,6 +839,9 @@ function createEngine(type = getSetting('voiceEngine')) {
     }
     if (data.ui_action?.type === 'memory_review') {
       showMemoryReviewCard();
+    }
+    if (data.ui_action?.type === 'open_conversation') {
+      renderOpenConversationOffer(data.ui_action.conversationId, data.ui_action.title);
     }
     if (data.needs_confirmation) {
       showConfirmRow(data.summary);
@@ -1120,7 +1201,17 @@ function createPushRecognition() {
 function startPushListening() {
   pushRecognition = createPushRecognition();
 
-  pushRecognition.onstart = () => setMicVisual('listening');
+  // engine._setState(...), NOT setMicVisual(...) directly — F6: push mode
+  // used to paint the visual without ever touching engine.state, leaving it
+  // stuck at 'idle' the whole time push-to-talk was actually listening.
+  // That silently broke two things that check engine.state: clicking the
+  // mic again to stop early (below) and the onend handler's return-to-idle,
+  // both never reachable since engine.state never became 'listening' in
+  // the first place. Calling the engine's own state setter fires its
+  // 'state' event exactly like every other transition, which also repaints
+  // the visual automatically via the listener already wired in
+  // createEngine() — no separate setMicVisual() call needed here anymore.
+  pushRecognition.onstart = () => engine._setState('listening');
 
   pushRecognition.onresult = (event) => {
     let interim = '';
@@ -1140,7 +1231,7 @@ function startPushListening() {
   pushRecognition.onerror = (event) => {
     clearInterim();
     if (event.error === 'no-speech' || event.error === 'aborted') {
-      setMicVisual('idle');
+      engine._setState('idle');
       return;
     }
     if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
@@ -1155,17 +1246,20 @@ function startPushListening() {
       // straight to the user, not plain language.
       notify({ kind: 'voice', level: 'warning', title: 'There was a problem with speech recognition. Try again in a moment.' });
     }
-    setMicVisual('idle');
+    engine._setState('idle');
   };
 
+  // Genuinely reachable now (see onstart's comment) — this is what makes
+  // the orb/status line actually return to idle once a push-to-talk
+  // utterance finishes.
   pushRecognition.onend = () => {
-    if (engine.state === 'listening') setMicVisual('idle');
+    if (engine.state === 'listening') engine._setState('idle');
   };
 
   try {
     pushRecognition.start();
   } catch {
-    setMicVisual('idle');
+    engine._setState('idle');
   }
 }
 
@@ -1314,22 +1408,33 @@ async function populateModelPicker() {
 
 // ---------- Settings panel ----------
 
-async function populateGeminiVoices() {
-  const select = document.getElementById('gemini-voice-select');
+/**
+ * Populates `voice-output-select` with every real, configured TTS provider
+ * (server/tts/index.js's registry, e.g. ElevenLabs) on top of the one
+ * static 'browser' option already in index.html — same shape as the old
+ * populateGeminiVoices(), generalized: this file never names a specific
+ * provider, it just renders whatever /api/tts/providers returns, labeled
+ * with that service's own name. Falls back to 'browser' if the saved
+ * setting no longer matches an available option (the service was removed
+ * or renamed since).
+ */
+async function populateVoiceOutputOptions() {
+  const select = document.getElementById('voice-output-select');
   try {
-    const res = await fetch('/api/voices');
+    const res = await fetch('/api/tts/providers');
     const data = await res.json();
-    select.innerHTML = '';
-    for (const voice of data.voices || []) {
+    for (const provider of data.providers || []) {
       const opt = document.createElement('option');
-      opt.value = voice.name;
-      opt.textContent = `${voice.name} — ${voice.description}`;
+      opt.value = provider.id;
+      opt.textContent = `${provider.label} voice`;
       select.appendChild(opt);
     }
-    select.value = getSetting('geminiVoice');
   } catch {
-    // Leave the dropdown empty — voice output will fall back to the default.
+    // Leave the dropdown at just its static 'browser' option.
   }
+  if (select.disabled) return; // SPEECH_OUTPUT_SUPPORTED is false — already forced to 'browser', must not be overwritten
+  const saved = getSetting('voiceOutput');
+  select.value = [...select.options].some((o) => o.value === saved) ? saved : 'browser';
 }
 
 // Gemini Live always speaks with its own voice and can't run through a
@@ -1338,9 +1443,245 @@ async function populateGeminiVoices() {
 function applyVoiceEngineVisibility(engineType) {
   const isLive = engineType === 'live';
   document.getElementById('voice-output-row').classList.toggle('hidden', isLive);
-  document.getElementById('gemini-voice-row').classList.toggle('hidden', isLive || getSetting('voiceOutput') !== 'gemini');
   document.getElementById('model-row').classList.toggle('hidden', isLive);
   document.getElementById('live-engine-note').classList.toggle('hidden', !isLive);
+  // External services (below) is deliberately NOT gated by voice engine
+  // any more — it used to be a Deepgram-only row, hidden unless the duplex
+  // engine was selected, which made sense only because Deepgram itself is
+  // duplex-specific. Now that it's a generic list (any service, e.g. a
+  // future TTS provider unrelated to any one engine), tying its visibility
+  // to one particular engine selection would be wrong in general.
+}
+
+/**
+ * Generic in-app key management for standalone external services — any
+ * name the user types (Deepgram today; a paid TTS provider if one is ever
+ * added), server/external-services.js's storage over server.js's
+ * /api/external-services routes. Model-provider keys are NOT here — those
+ * have their own full UI on the Models screen.
+ *
+ * A service's `label` is user-typed, user-controlled text — built with
+ * createElement/textContent throughout, never innerHTML for anything
+ * carrying it, same discipline screens/models.js already uses for the
+ * identical reason (the two `.innerHTML = ''` calls below only ever CLEAR
+ * a container, never inject a string, which is the safe half of that rule).
+ */
+function setupExternalServices() {
+  const listEl = document.getElementById('external-services-list');
+  const addBtn = document.getElementById('add-external-service-btn');
+  const addForm = document.getElementById('add-external-service-form');
+
+  function makeButton(label, onClick) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn';
+    btn.textContent = label;
+    btn.addEventListener('click', onClick);
+    return btn;
+  }
+
+  async function runTest(ref, unsavedValue, btn) {
+    btn.disabled = true;
+    const originalLabel = btn.textContent;
+    btn.textContent = 'Testing…';
+    try {
+      const res = await fetch(`/api/external-services/${encodeURIComponent(ref)}/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(unsavedValue ? { value: unsavedValue } : {}),
+      });
+      const data = await res.json();
+      if (data.ok) notify({ kind: 'system', level: 'info', title: 'Key works.' });
+      else notify({ kind: 'system', level: 'warning', title: data.error || 'Key test failed.' });
+    } catch {
+      notify({ kind: 'system', level: 'warning', title: 'Could not reach the Jarvis server to run the test.' });
+    } finally {
+      btn.disabled = false;
+      btn.textContent = originalLabel;
+    }
+  }
+
+  function renderServiceRow(service, refresh) {
+    const row = document.createElement('div');
+    row.className = 'key-row';
+
+    row.appendChild(Object.assign(document.createElement('span'), { textContent: service.label }));
+
+    const right = document.createElement('div');
+    right.className = 'key-editor-form';
+
+    if (service.configured) {
+      right.appendChild(Object.assign(document.createElement('span'), { className: 'key-status saved', textContent: 'Connected' }));
+      const testBtn = makeButton('Test', () => runTest(service.ref, null, testBtn));
+      const removeBtn = makeButton('Remove', async () => {
+        try {
+          await fetch(`/api/external-services/${encodeURIComponent(service.ref)}`, { method: 'DELETE' });
+          await refresh();
+        } catch {
+          notify({ kind: 'system', level: 'warning', title: `Could not remove the ${service.label} key.` });
+        }
+      });
+      right.appendChild(testBtn);
+      right.appendChild(removeBtn);
+      row.appendChild(right);
+    } else {
+      const keyInput = Object.assign(document.createElement('input'), {
+        type: 'password',
+        placeholder: `Paste a ${service.label} key`,
+        autocomplete: 'off',
+      });
+      right.appendChild(keyInput);
+
+      let extraInput = null;
+      if (service.extraFieldLabel) {
+        extraInput = Object.assign(document.createElement('input'), {
+          type: 'text',
+          placeholder: service.extraFieldLabel,
+          autocomplete: 'off',
+        });
+        right.appendChild(extraInput);
+      }
+
+      const saveBtn = makeButton('Save', async () => {
+        const key = keyInput.value.trim();
+        if (!key) return;
+        saveBtn.disabled = true;
+        try {
+          const res = await fetch(`/api/external-services/${encodeURIComponent(service.ref)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              key,
+              extraFieldLabel: service.extraFieldLabel || '',
+              extraFieldValue: extraInput ? extraInput.value.trim() : '',
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok || !data.ok) throw new Error(data.error);
+          notify({ kind: 'system', level: 'info', title: `${service.label} key saved.` });
+          await refresh();
+        } catch (err) {
+          notify({ kind: 'system', level: 'warning', title: err?.message || `Could not save the ${service.label} key.` });
+        } finally {
+          saveBtn.disabled = false;
+        }
+      });
+      const testBtn = makeButton('Test', () => runTest(service.ref, keyInput.value.trim(), testBtn));
+      right.appendChild(saveBtn);
+      right.appendChild(testBtn);
+      row.appendChild(right);
+
+      // Distinct from Remove above — this deletes the ROW (name and all),
+      // not just its key. Only offered on a not-connected row: a typo'd
+      // name, or a service no longer wanted at all.
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.className = 'link-btn';
+      deleteBtn.textContent = 'Delete this service';
+      deleteBtn.addEventListener('click', async () => {
+        try {
+          await fetch(`/api/external-services/${encodeURIComponent(service.ref)}/full`, { method: 'DELETE' });
+          await refresh();
+        } catch {
+          notify({ kind: 'system', level: 'warning', title: `Could not delete ${service.label}.` });
+        }
+      });
+      row.appendChild(deleteBtn);
+    }
+
+    return row;
+  }
+
+  async function refresh() {
+    let services = [];
+    try {
+      const res = await fetch('/api/external-services');
+      const data = await res.json();
+      services = data.services || [];
+    } catch {
+      return; // leave whatever was last successfully shown
+    }
+    listEl.innerHTML = ''; // clearing only — every child below is createElement-built, see this function's header comment
+    for (const service of services) listEl.appendChild(renderServiceRow(service, refresh));
+  }
+
+  function buildAddForm() {
+    addForm.innerHTML = ''; // clearing only — see this function's header comment
+    addForm.className = 'key-editor-form';
+
+    const nameInput = Object.assign(document.createElement('input'), {
+      type: 'text',
+      placeholder: 'Service name (e.g. Deepgram)',
+      autocomplete: 'off',
+    });
+    const keyInput = Object.assign(document.createElement('input'), { type: 'password', placeholder: 'Key', autocomplete: 'off' });
+
+    const extraToggleLabel = document.createElement('label');
+    const extraToggle = document.createElement('input');
+    extraToggle.type = 'checkbox';
+    extraToggleLabel.appendChild(extraToggle);
+    extraToggleLabel.appendChild(document.createTextNode(' Needs an extra field (e.g. a voice ID)'));
+
+    const extraLabelInput = Object.assign(document.createElement('input'), {
+      type: 'text',
+      placeholder: 'Field name (e.g. Voice ID)',
+      autocomplete: 'off',
+    });
+    const extraValueInput = Object.assign(document.createElement('input'), { type: 'text', placeholder: 'Value', autocomplete: 'off' });
+    extraLabelInput.classList.add('hidden');
+    extraValueInput.classList.add('hidden');
+    extraToggle.addEventListener('change', () => {
+      extraLabelInput.classList.toggle('hidden', !extraToggle.checked);
+      extraValueInput.classList.toggle('hidden', !extraToggle.checked);
+    });
+
+    const saveBtn = makeButton('Add service', async () => {
+      const label = nameInput.value.trim();
+      const key = keyInput.value.trim();
+      if (!label || !key) return;
+      saveBtn.disabled = true;
+      try {
+        const res = await fetch('/api/external-services', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            label,
+            key,
+            extraFieldLabel: extraToggle.checked ? extraLabelInput.value.trim() : '',
+            extraFieldValue: extraToggle.checked ? extraValueInput.value.trim() : '',
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error);
+        notify({ kind: 'system', level: 'info', title: `${label} added.` });
+        addForm.classList.add('hidden');
+        addForm.innerHTML = ''; // clearing only
+        addBtn.textContent = '+ Add a service';
+        await refresh();
+      } catch (err) {
+        notify({ kind: 'system', level: 'warning', title: err?.message || 'Could not add that service.' });
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+
+    addForm.appendChild(nameInput);
+    addForm.appendChild(keyInput);
+    addForm.appendChild(extraToggleLabel);
+    addForm.appendChild(extraLabelInput);
+    addForm.appendChild(extraValueInput);
+    addForm.appendChild(saveBtn);
+  }
+
+  addBtn.addEventListener('click', () => {
+    const opening = addForm.classList.contains('hidden');
+    addForm.classList.toggle('hidden');
+    addBtn.textContent = opening ? 'Cancel' : '+ Add a service';
+    if (opening) buildAddForm();
+    else addForm.innerHTML = ''; // clearing only
+  });
+
+  refresh();
 }
 
 function setupSettingsPanel() {
@@ -1351,8 +1692,6 @@ function setupSettingsPanel() {
   const voiceEngineSelect = document.getElementById('voice-engine-select');
   const micModeSelect = document.getElementById('mic-mode-select');
   const voiceOutputSelect = document.getElementById('voice-output-select');
-  const geminiVoiceRow = document.getElementById('gemini-voice-row');
-  const geminiVoiceSelect = document.getElementById('gemini-voice-select');
   const aiTurnCheckToggle = document.getElementById('ai-turn-check-toggle');
   const providerSelect = document.getElementById('provider-select');
   const providerErrorEl = document.getElementById('provider-error');
@@ -1360,9 +1699,8 @@ function setupSettingsPanel() {
   speakToggle.checked = getSetting('speakReplies');
   voiceEngineSelect.value = getSetting('voiceEngine');
   micModeSelect.value = getSetting('micMode');
-  voiceOutputSelect.value = SPEECH_OUTPUT_SUPPORTED ? getSetting('voiceOutput') : 'gemini';
+  voiceOutputSelect.value = SPEECH_OUTPUT_SUPPORTED ? getSetting('voiceOutput') : 'browser';
   aiTurnCheckToggle.checked = getSetting('useAiTurnCheck');
-  geminiVoiceRow.classList.toggle('hidden', voiceOutputSelect.value !== 'gemini');
   applyVoiceEngineVisibility(voiceEngineSelect.value);
 
   if (!MIC_SUPPORTED) {
@@ -1371,7 +1709,7 @@ function setupSettingsPanel() {
   if (!SPEECH_OUTPUT_SUPPORTED) {
     speakToggle.checked = false;
     speakToggle.disabled = true;
-    voiceOutputSelect.value = 'gemini';
+    voiceOutputSelect.value = 'browser';
     voiceOutputSelect.disabled = true;
   }
   if (!MIC_SUPPORTED || !SPEECH_OUTPUT_SUPPORTED) {
@@ -1381,8 +1719,9 @@ function setupSettingsPanel() {
     noteEl.classList.remove('hidden');
   }
 
-  populateGeminiVoices();
+  populateVoiceOutputOptions();
   populateModelPicker();
+  setupExternalServices();
 
   toggleBtn.addEventListener('click', () => panel.classList.toggle('hidden'));
 
@@ -1399,18 +1738,40 @@ function setupSettingsPanel() {
 
   speakToggle.addEventListener('change', () => {
     setSetting('speakReplies', speakToggle.checked);
-    if (!speakToggle.checked && SPEECH_OUTPUT_SUPPORTED) window.speechSynthesis.cancel();
+    // Routed through the active engine's own interrupt() instead of
+    // reaching into window.speechSynthesis.cancel() directly — found during
+    // the state-machine audit that the raw cancel() call only ever
+    // affected Chrome's native queue, so it silently did nothing at all
+    // when a server-side voice was active (nothing in that queue to
+    // cancel), and even on the browser voice it bypassed BrowserSpeaker's
+    // own pending/stopped bookkeeping, desyncing it. interrupt() is safe to
+    // call unconditionally (every engine null-checks before touching
+    // anything) and correctly stops whichever voice output is actually in use.
+    if (!speakToggle.checked) engine.interrupt?.();
   });
 
   micModeSelect.addEventListener('change', () => {
+    // `engine.active` only reflects whether a full mic SESSION is running —
+    // Jarvis can still be mid-reply (typed message, or push-to-talk, which
+    // never sets `active` at all) with it false the whole time. Without the
+    // else branch, switching mic mode mid-reply orphaned a still-talking
+    // engine — same class of gap the Stage-4 dictation fix closed for the
+    // composer mic, found here during the state-machine audit.
     if (engine.active) engine.stop();
+    else engine.interrupt?.();
     pushRecognition?.stop();
     setSetting('micMode', micModeSelect.value);
     setMicVisual('idle');
   });
 
   voiceEngineSelect.addEventListener('change', () => {
+    // Same gap as micModeSelect's handler above — and more consequential
+    // here, since `engine` itself is about to be entirely REPLACED: without
+    // this, the OLD engine's speaker kept talking (and its 'state' listener
+    // kept repainting the UI) after being discarded, with the new engine
+    // showing nothing until the user acted.
     if (engine.active) engine.stop();
+    else engine.interrupt?.();
     pushRecognition?.stop();
     currentAssistantEl = null;
     clearInterim();
@@ -1422,13 +1783,7 @@ function setupSettingsPanel() {
 
   voiceOutputSelect.addEventListener('change', () => {
     setSetting('voiceOutput', voiceOutputSelect.value);
-    geminiVoiceRow.classList.toggle('hidden', voiceOutputSelect.value !== 'gemini');
     engine.updateOptions({ voiceOutput: voiceOutputSelect.value });
-  });
-
-  geminiVoiceSelect.addEventListener('change', () => {
-    setSetting('geminiVoice', geminiVoiceSelect.value);
-    engine.updateOptions({ geminiVoice: geminiVoiceSelect.value });
   });
 
   aiTurnCheckToggle.addEventListener('change', () => {
@@ -1607,12 +1962,35 @@ function connectEvents() {
         handleJobProgress(data);
         return;
       }
+      if (data.type === 'job_progress') {
+        // A background Job (server/jobs/) changed status — the
+        // notification bell already covers "tell the owner it happened";
+        // this just keeps an open Jobs screen from showing a stale list.
+        // Distinct from handleJobProgress() above, which is
+        // project_progress/content_progress's own unrelated transcript-note
+        // handler — this event only ever refreshes a screen.
+        refreshIfActive('jobs');
+        return;
+      }
       if (data.type === 'memory_candidates_ready') {
         // Proactive checkpoint result (server/memory/memory-review.js) —
         // appears on its own, no request needed. If a card is already
         // showing (unlikely — checkpoints are one-at-a-time) this simply
         // replaces it with the fuller, current list.
         showMemoryReviewCard(data.candidates);
+        // The Memory screen's own pending section (public/screens/memory.js)
+        // is a separate fetch, not fed by this event — keep it live too if
+        // it's the screen currently open, same as memory_auto_saved below.
+        refreshIfActive('memory');
+        return;
+      }
+      if (data.type === 'memory_auto_saved') {
+        // A checkpoint saved something without asking (cleared the trust
+        // threshold — see memory-policy.js). The notification bell already
+        // covers "tell the user it happened"; this just keeps an open
+        // Memory screen from showing a stale list if it saved while the
+        // screen was already open.
+        refreshIfActive('memory');
         return;
       }
       // connector_status and task_run used to add a transcript system note
@@ -1656,12 +2034,14 @@ function setupOrb() {
   const fallbackEl = document.getElementById('orb-fallback');
   orb = createOrb(canvas, {
     fallbackEl,
-    // The orb reacts to whatever's actually making sound right now: the
-    // dictation mic while dictating, Jarvis's own voice while speaking,
-    // otherwise the voice-control mic — except while muted, where it stays
-    // still, since Jarvis genuinely isn't hearing you.
+    // The orb reacts to Jarvis's own state ONLY — Jarvis's own voice while
+    // speaking, otherwise the voice-control mic — except while muted, where
+    // it stays still, since Jarvis genuinely isn't hearing you. Deliberately
+    // never reacts to the composer's own dictation mic: the orb is Jarvis's
+    // face, not "whatever mic happens to be focused right now" — dictation
+    // has its own separate, real indicator instead (the composer button's
+    // `.dictating` pulse, style.css).
     getLevel: () => {
-      if (dictation?.active) return dictation.getLevel();
       if (engine?.state === 'speaking') return engine.getOutputLevel?.() ?? 0;
       if (engine?.muted) return 0;
       return engine?.getMicLevel?.() ?? 0;
@@ -1703,6 +2083,13 @@ function setupComposer() {
   textInput.addEventListener('input', () => {
     autoGrowTextarea(textInput);
     updateSendButtonState();
+    // A manual edit while dictation is live must not get silently
+    // reverted by the next recognized word — see dictation.js's rebase()
+    // header comment. Safe to call unconditionally: setting textInput.value
+    // programmatically (dictation's own onText callback, below) never fires
+    // a real 'input' event, so this genuinely only ever fires for an actual
+    // keystroke/paste, and rebase() itself no-ops while inactive anyway.
+    dictation?.rebase(textInput.value);
   });
 
   // A <textarea> in a <form> doesn't submit on Enter the way a single-line
@@ -1728,6 +2115,10 @@ function setupComposer() {
   }
 
   dictation = new Dictation({
+    // See dictation.js's header comment — the backstop half of the F4 fix
+    // (the primary half is this file's dictationBtn click handler, below,
+    // which stops/interrupts Jarvis BEFORE ever calling dictation.start()).
+    isJarvisSpeaking: () => engine?.state === 'speaking',
     onText: (text) => {
       textInput.value = text;
       autoGrowTextarea(textInput);
@@ -1753,6 +2144,16 @@ function setupComposer() {
     if (engine.active) {
       engine.stop();
       addSystemNote("Jarvis's voice control paused while you dictate.");
+    } else {
+      // `engine.active` only reflects whether a full voice-control SESSION
+      // is running — Jarvis can still be mid-reply to a plain TYPED message
+      // (engine.sendText()) with `active` false the whole time, since
+      // sendText() never needs a mic session at all. stop() would be wrong
+      // here (nothing to tear down), but playback must still be cut, or
+      // dictation's own SpeechRecognition transcribes Jarvis's own voice
+      // straight into the composer. This was a real, reported bug — see the
+      // project plan's F4 finding for the full trace.
+      engine.interrupt?.();
     }
     pushRecognition?.stop();
     dictation.start(textInput.value.trim());

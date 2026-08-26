@@ -1,15 +1,15 @@
 // Just the briefing's saved configuration (data/briefing.json) — split out
 // of briefing.js on purpose so it has NO dependency on the model runner or
-// skills loader. The configure_briefing skill needs this file directly:
-// skills/index.js dynamically imports every file in server/skills/,
+// tools loader. The configure_briefing tool needs this file directly:
+// tools/index.js dynamically imports every file in server/tools/,
 // including configure_briefing.js, and briefing.js pulls in
 // models/runner.js (for composeBriefing) which itself imports
-// skills/index.js — a skill reaching back through that chain into the
-// loader that's still in the middle of loading it is a real deadlock (a
-// dynamic import() of a module still "evaluating" waits for it to finish,
-// which here never happens). Keeping config get/set dependency-free avoids
-// the cycle entirely; briefing.js still re-exports these two for anyone
-// that doesn't care about the distinction.
+// capabilities.js, which imports tools/index.js — a tool reaching back
+// through that chain into the loader that's still in the middle of loading
+// it is a real deadlock (a dynamic import() of a module still "evaluating"
+// waits for it to finish, which here never happens). Keeping config get/set
+// dependency-free avoids the cycle entirely; briefing.js still re-exports
+// these two for anyone that doesn't care about the distinction.
 
 import { readJson, writeJson } from '../store.js';
 

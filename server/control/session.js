@@ -30,6 +30,13 @@ import { broadcast } from '../events.js';
 // open — perceive() only ever looks at whatever window is currently in
 // front.
 import openApp from '../tools/open_app.js';
+// Same sanctioned direct-leaf-tool-import pattern as open_app.js above —
+// look_at_screen.js imports nothing that reaches tools/index.js or
+// capabilities.js either. Reused here so a control session's own PERCEIVE
+// never picks Jarvis's own browser tab as "the front window" — the exact
+// bug that tool's own isJarvisOwnWindow()/pickWindow() were built to fix,
+// which this loop had no equivalent for (see perceive() below).
+import { isJarvisOwnWindow } from '../tools/look_at_screen.js';
 // connectors/index.js does not import tools/index.js or capabilities.js (or
 // anything that does), so pulling it in directly here doesn't cross the
 // circular-import invariant — same reasoning as the open_app.js import
@@ -160,10 +167,19 @@ function newId() {
   return `cs${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function pickModelEntry() {
+// Bounded the same way models/runner.js's own chat-turn fallback is —
+// confirmed gap this closes: a control session used to pick exactly one
+// model (ranked[0]) for its whole run, so a single rate-limited/unreachable
+// model errored out the ENTIRE task on step one, with no fallback at all.
+const MAX_CONTROL_MODEL_ATTEMPTS = 3;
+
+function pickModelCandidates() {
   const prefs = getPrefs();
-  const ranked = rankCandidates(controlTaskProfile(), { balance: prefs.balance });
-  return ranked[0] || null;
+  return rankCandidates(controlTaskProfile(), { balance: prefs.balance }).slice(0, MAX_CONTROL_MODEL_ATTEMPTS);
+}
+
+function pickModelEntry() {
+  return pickModelCandidates()[0] || null;
 }
 
 function formatElements(elements) {
@@ -190,11 +206,32 @@ function formatWindowList(windows) {
     .join('\n');
 }
 
-/** Waits for the user's yes/no on one risky action batch — resolved by requestConfirmation()/server.js's /api/control/confirm route, or immediately false if the session is stopped first. */
+// How long a risky-action confirmation waits before giving up on its own —
+// confirmed live gap: this used to have no timeout at all, so a missed SSE
+// event (no browser tab attached, a reconnect gap) left the whole session
+// hanging forever with nothing visible failing. Generous on purpose — a
+// real person may be away from the screen or genuinely thinking it over —
+// but bounded is strictly better than never, and declining (the same
+// outcome as a real "no") is a safe default the rest of the loop already
+// knows how to handle cleanly.
+const CONFIRM_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Waits for the user's yes/no on one risky action batch — resolved by requestConfirmation()/server.js's /api/control/confirm route, immediately false if the session is stopped first, or false after CONFIRM_TIMEOUT_MS if nobody ever answers. */
 function awaitConfirmation(session, summary) {
   return new Promise((resolve) => {
-    session.pendingConfirmation = { resolve };
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    session.pendingConfirmation = { resolve: finish };
     session.pendingSummary = summary;
+    const timer = setTimeout(() => {
+      updateStep(`No response to the confirmation request — treating "${summary}" as declined.`);
+      finish(false);
+    }, CONFIRM_TIMEOUT_MS);
     updateStep(`Waiting for your OK: ${summary}`);
     broadcast({ type: 'control_confirm_needed', summary });
   });
@@ -207,7 +244,15 @@ function clearConfirmation(session) {
 
 async function perceive(session, entry) {
   const { windows } = await sendCommand('windows');
-  const front = windows.find((w) => w.foreground) || windows[0];
+  // Exclude Jarvis's own browser tab from the candidate pool, same reasoning
+  // as look_at_screen.js's pickWindow() — the OS foreground window at the
+  // moment a control session starts (or reads back a result mid-task) is
+  // very often Jarvis's own tab, since that's what the user was just typing
+  // into. Only fall back to including it if it's genuinely the only window
+  // open — acting on nothing at all would be worse than acting on ourselves.
+  const others = windows.filter((w) => !isJarvisOwnWindow(w));
+  const pool = others.length ? others : windows;
+  const front = pool.find((w) => w.foreground) || pool[0];
   if (!front) return { front: null, windows, description: 'Nothing appears to be open right now.', elements: [] };
 
   const blocklist = checkBlocklist({ windowTitle: front.title, processName: front.processName }, getSafetyConfig());
@@ -251,9 +296,10 @@ async function perceive(session, entry) {
   return { front, windows, elements, description, media };
 }
 
-async function actOnBatch(session, entry, front, windows, elements, actions) {
+async function actOnBatch(session, entry, front, windows, elements, actions, reasoning) {
+  const batch = actions.slice(0, MAX_ACTIONS_PER_BATCH);
   const results = [];
-  for (const action of actions.slice(0, MAX_ACTIONS_PER_BATCH)) {
+  for (const action of batch) {
     if (session.stopped) {
       results.push({ action, ok: false, error: 'Stopped before this action ran.' });
       break;
@@ -286,8 +332,13 @@ async function actOnBatch(session, entry, front, windows, elements, actions) {
       targetWindow = match;
     }
 
+    // `reasoning` is the BATCH's own field (a sibling of `actions` in the
+    // perform_actions schema), not per-action — `action.reasoning` was
+    // always undefined, silently dropping the model's stated intent from
+    // ever reaching the risk check. The whole batch's one reasoning string
+    // is the best available signal for every action in it.
     const evaluation = evaluateAction(
-      { kind: action.kind, label: action.text || action.combo || action.app || '', description: action.reasoning || '' },
+      { kind: action.kind, label: action.text || action.combo || action.app || '', description: reasoning || '' },
       { windowTitle: targetWindow.title, processName: targetWindow.processName },
       getSafetyConfig()
     );
@@ -325,27 +376,42 @@ async function actOnBatch(session, entry, front, windows, elements, actions) {
           results.push({ action, ok: false, error: opened.error || `Could not open "${action.app}".` });
           continue;
         }
-        // Apps take a moment to actually create their window — the next
-        // PERCEIVE would otherwise still see whatever was in front before.
-        await new Promise((resolve) => setTimeout(resolve, 900));
-        // Temporary task context (see runControlSession's cleanup step):
-        // whatever window handle(s) show up now that weren't in the list
-        // this batch started with are Jarvis's own — remembered so they can
-        // be auto-tidied at the end if they turn out to be scratch. Only
-        // launch_app triggers this (not every perceive), matching the
-        // requirement's own "windows it created for the task", not
-        // incidental dialogs from clicking within an already-tracked window.
-        try {
-          const { windows: afterLaunch } = await sendCommand('windows');
-          const priorHandles = new Set(windows.map((w) => w.handle));
-          for (const w of afterLaunch) {
-            if (!priorHandles.has(w.handle)) session.createdHandles.add(w.handle);
+        // Poll for a new window to actually appear rather than one fixed
+        // sleep — a cold-starting app (Windows 11's own Store Notepad,
+        // confirmed slow to cold-start) can take several seconds, and a
+        // too-short fixed wait meant the next PERCEIVE still saw whatever
+        // was in front before, which could make the model think the launch
+        // failed and start a second copy. Still bounded — if nothing new
+        // ever appears, move on with a note rather than hanging the whole
+        // task on one slow or silently-failed launch. Also does the
+        // createdHandles bookkeeping (temporary task context — see
+        // runControlSession's cleanup step) inline, on the same reads,
+        // instead of a separate window-list call after a fixed delay.
+        const priorHandles = new Set(windows.map((w) => w.handle));
+        const LAUNCH_POLL_INTERVAL_MS = 300;
+        const LAUNCH_POLL_MAX_MS = 5000;
+        let appeared = false;
+        for (let waited = 0; waited < LAUNCH_POLL_MAX_MS; waited += LAUNCH_POLL_INTERVAL_MS) {
+          await new Promise((resolve) => setTimeout(resolve, LAUNCH_POLL_INTERVAL_MS));
+          try {
+            const { windows: afterLaunch } = await sendCommand('windows');
+            for (const w of afterLaunch) {
+              if (!priorHandles.has(w.handle)) session.createdHandles.add(w.handle);
+            }
+            if (afterLaunch.some((w) => !priorHandles.has(w.handle))) {
+              appeared = true;
+              break;
+            }
+          } catch {
+            // Best-effort — keep polling; a transient bridge hiccup
+            // shouldn't abandon the wait early.
           }
-        } catch {
-          // Best-effort — worst case this one window doesn't get auto-tidied
-          // later and the user sees one extra scratch window, not a failure.
         }
-        results.push({ action, ok: true });
+        results.push({
+          action,
+          ok: true,
+          note: appeared ? undefined : 'No new window appeared yet — it may still be starting, or launched into an existing window.',
+        });
         break; // the window landscape just changed — re-perceive before anything else
       } else if (action.kind === 'switch_window') {
         await sendCommand('focus', { handle: targetWindow.handle });
@@ -416,6 +482,20 @@ async function actOnBatch(session, entry, front, windows, elements, actions) {
     } catch (err) {
       results.push({ action, ok: false, error: err?.message || 'Action failed.' });
     }
+  }
+  // A `break` above (a window-changing action, being stopped mid-batch, or
+  // a cursor-drift stop) can leave later actions in this same batch never
+  // even attempted — used to leave them with NO result entry at all, which
+  // the model could easily misread as "the rest also succeeded" rather than
+  // "never ran" (the reported case this was found from: a batched
+  // [launch_app, type] silently dropped the type). Every action in the
+  // batch gets an explicit result one way or another now.
+  for (let i = results.length; i < batch.length; i++) {
+    results.push({
+      action: batch[i],
+      ok: false,
+      error: "Not attempted — an earlier action in this batch changed what's on screen. Call again for this one.",
+    });
   }
   return results;
 }
@@ -488,21 +568,37 @@ async function cleanUpOwnScratch(session, entry, goalSummary) {
 }
 
 async function planTask(goal) {
-  const entry = pickModelEntry();
-  if (!entry) return { entry: null, planText: null };
-  const adapter = getAdapter(entry.adapter);
+  const candidates = pickModelCandidates();
+  if (!candidates.length) return { entry: null, planText: null };
   const messages = [
     {
       role: 'user',
       text: `The user asked for this to be done on their computer: "${goal}"\n\nGive a short plain-language plan (2-5 steps) for how you'll approach it. This is shown to the user for approval before anything happens — no tool calls, just the plan as plain text.`,
     },
   ];
-  let text = '';
-  for await (const ev of adapter.stream(entry, messages, { systemOverride: CONTROL_SYSTEM_INSTRUCTION })) {
-    if (ev.type === 'chunk') text += ev.text;
-    else if (ev.type === 'final') text = ev.text || text;
+  // Try each ranked candidate in turn — a single unreachable/rate-limited
+  // model used to fail planning outright with no fallback at all. Same
+  // shape as the DECIDE loop's own fallback below.
+  let lastErr = null;
+  for (const entry of candidates) {
+    try {
+      const adapter = getAdapter(entry.adapter);
+      let text = '';
+      for await (const ev of adapter.stream(entry, messages, { systemOverride: CONTROL_SYSTEM_INSTRUCTION })) {
+        if (ev.type === 'chunk') text += ev.text;
+        else if (ev.type === 'final') text = ev.text || text;
+      }
+      return { entry, planText: text || `I'll work toward: ${goal}` };
+    } catch (err) {
+      lastErr = err;
+    }
   }
-  return { entry, planText: text || `I'll work toward: ${goal}` };
+  // Every candidate failed — fall back to the first one's identity (so the
+  // caller still has a real entry to keep trying with in the DECIDE loop,
+  // which has its own independent fallback) and a plain default plan text
+  // rather than surfacing the raw error at the planning stage.
+  console.error('[control] planTask: every candidate model failed:', lastErr);
+  return { entry: candidates[0], planText: `I'll work toward: ${goal}` };
 }
 
 /** Generates and returns a short plan for approval — does not act. Used by skills/control_computer.js's confirm-gate summarize() step. */
@@ -536,11 +632,19 @@ export async function runControlSession(goal, planText) {
   activeSession = session;
 
   try {
-    const entry = pickModelEntry();
-    if (!entry) {
+    const modelCandidates = pickModelCandidates();
+    if (!modelCandidates.length) {
       return { status: 'error', reason: 'No model set up right now can do this — add or fix one in Model Settings.' };
     }
-    const adapter = getAdapter(entry.adapter);
+    // Mutable — the DECIDE loop below can advance to the next candidate on
+    // a real adapter failure (see decideWithFallback()). Confirmed gap this
+    // closes: a control session used to pick exactly one model for its
+    // whole run, so a single rate-limited/unreachable model errored out the
+    // ENTIRE task, with no fallback at all — everything else in this file
+    // (chat turns, briefings, tasks) already has one.
+    let candidateIndex = 0;
+    let entry = modelCandidates[candidateIndex];
+    let adapter = getAdapter(entry.adapter);
     const plan = planText || (await planTask(goal)).planText;
 
     // Politeness: remember whatever was in front before Jarvis touched
@@ -587,21 +691,36 @@ export async function runControlSession(goal, planText) {
 
       messages.push({ role: 'user', text: perceived.description, media: perceived.media });
 
-      const decideWork = (async () => {
-        let callEvent = null;
-        let finalText = '';
-        for await (const ev of adapter.stream(entry, messages, { tools, systemOverride: CONTROL_SYSTEM_INSTRUCTION })) {
-          if (ev.type === 'call') callEvent = ev;
-          else if (ev.type === 'final') finalText = ev.text;
-        }
-        return { callEvent, finalText };
-      })();
+      // Retries with the next ranked candidate on a genuine adapter failure
+      // (the call itself throwing — network/quota/auth/etc.), NOT on a
+      // timeout or a stop (raceAgainstStop resolves normally for both of
+      // those, it only rejects when the underlying adapter call throws) —
+      // a slow-but-working model deserves its full timeout, not a switch.
+      let decideOutcome = null;
+      while (true) {
+        const decideWork = (async () => {
+          let callEvent = null;
+          let finalText = '';
+          for await (const ev of adapter.stream(entry, messages, { tools, systemOverride: CONTROL_SYSTEM_INSTRUCTION })) {
+            if (ev.type === 'call') callEvent = ev;
+            else if (ev.type === 'final') finalText = ev.text;
+          }
+          return { callEvent, finalText };
+        })();
 
-      let decideOutcome;
-      try {
-        decideOutcome = await raceAgainstStop(session, decideWork, DECIDE_TIMEOUT_MS);
-      } catch (err) {
-        return { status: 'error', reason: err?.message || 'The model failed mid-task.' };
+        try {
+          decideOutcome = await raceAgainstStop(session, decideWork, DECIDE_TIMEOUT_MS);
+          break;
+        } catch (err) {
+          if (candidateIndex + 1 < modelCandidates.length) {
+            candidateIndex++;
+            entry = modelCandidates[candidateIndex];
+            adapter = getAdapter(entry.adapter);
+            updateStep('Switching models — the previous one ran into a problem.');
+            continue;
+          }
+          return { status: 'error', reason: err?.message || 'The model failed mid-task.' };
+        }
       }
       if (decideOutcome.interrupted) {
         if (decideOutcome.reason === 'stopped') break; // fall through to the normal stopped-status handling below
@@ -648,7 +767,7 @@ export async function runControlSession(goal, planText) {
 
       if (call.name === 'perform_actions') {
         const actions = Array.isArray(call.args?.actions) ? call.args.actions : [];
-        const results = await actOnBatch(session, entry, perceived.front, perceived.windows, perceived.elements, actions);
+        const results = await actOnBatch(session, entry, perceived.front, perceived.windows, perceived.elements, actions, call.args?.reasoning);
         messages.push({
           role: 'tool',
           toolResults: [

@@ -34,8 +34,15 @@ function resolveKey(entry) {
   return null;
 }
 
+// `entry.keyRequired`, when set, is the stored fact from the provider
+// catalog / probe (server/models/providers.js, probe.js) — a saved
+// connection's own classification, which is more accurate than re-guessing
+// from the host every call. Only a boolean is honored; undefined (any
+// connection saved before this field existed) falls through to the
+// original host-regex guess unchanged, so nothing already saved changes
+// behavior.
 function requireKeyIfNeeded(entry) {
-  const needsKey = !entry.baseUrl || KEY_REQUIRED_HOSTS.test(entry.baseUrl);
+  const needsKey = typeof entry.keyRequired === 'boolean' ? entry.keyRequired : !entry.baseUrl || KEY_REQUIRED_HOSTS.test(entry.baseUrl);
   if (needsKey && !resolveKey(entry)) {
     const err = new Error('No API key configured.');
     err.code = 'NO_API_KEY';
@@ -116,12 +123,15 @@ export async function* stream(entry, messages, opts = {}) {
   const c = client(entry);
   const tools = opts.tools?.length ? toolsForOpenAI(opts.tools) : undefined;
 
-  const resp = await c.chat.completions.create({
-    model: entry.model,
-    messages: toMessages(messages, opts),
-    tools,
-    stream: true,
-  });
+  const resp = await c.chat.completions.create(
+    {
+      model: entry.model,
+      messages: toMessages(messages, opts),
+      tools,
+      stream: true,
+    },
+    { signal: opts.signal }
+  );
 
   let text = '';
   // Tool calls stream as incremental deltas keyed by index — name and
@@ -180,6 +190,23 @@ export async function testConnection(entry) {
     }
     return { ok: true };
   } catch (err) {
+    // A host requireKeyIfNeeded() assumed was keyless (no keyRequired fact
+    // stored yet, host not in KEY_REQUIRED_HOSTS) can still reject an
+    // unauthenticated request — this is the exact OmniRoute-class failure
+    // that used to surface as "That API key isn't valid" for a key the user
+    // never even had a field to type. Named correctly only when no key was
+    // actually sent; a real, wrong key on a 401 still goes through
+    // friendlyError()'s normal path below.
+    if (err?.status === 401 && !resolveKey(entry)) {
+      // `friendly: true` tells registry.js's testModelConnection() this
+      // message is already final English, not raw provider text — without
+      // it, that layer's own friendlyMessage(result.error, ...) re-runs
+      // classifyError() on THIS string, finds no auth-pattern match for
+      // "needs an API key" (only "invalid key" text matches), and silently
+      // replaces it with the generic "That connection didn't work." —
+      // confirmed live against a stub gateway before adding this flag.
+      return { ok: false, error: 'That server was reached but needs an API key.', friendly: true };
+    }
     return { ok: false, error: friendlyError(err) };
   }
 }

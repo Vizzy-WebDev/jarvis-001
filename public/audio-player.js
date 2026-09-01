@@ -13,6 +13,19 @@ import { buildEnvelope, sampleEnvelope } from './voice-envelope.js';
 
 const SENTENCE_END = /[^.!?]*[.!?]+(\s+|$)/;
 
+// A clause boundary (comma/semicolon/colon + whitespace) — a SECONDARY
+// flush point used only for the OPENING clause of a reply (see
+// pushText()'s _firstFlushDone), so the first /api/tts round trip doesn't
+// wait for a full sentence when the model's opening sentence happens to be
+// long. Only fires once the clause is already CLAUSE_MIN_CHARS or longer —
+// flushing a bare "Sure," alone would sound choppy and cost an extra TTS
+// round trip for almost no benefit. CLAUSE_FALLBACK_CHARS is the last
+// resort for an opening sentence with no punctuation at all for a while —
+// bounds how long first audio can be made to wait either way.
+const CLAUSE_END = /[^,;:]*[,;:]+\s+/;
+const CLAUSE_MIN_CHARS = 24;
+const CLAUSE_FALLBACK_CHARS = 90;
+
 // How long to wait before retrying a failed /api/tts fetch.
 const TTS_RETRY_DELAY_MS = 400;
 
@@ -84,6 +97,12 @@ export class AudioPlayer {
     this.streamEnded = false;
     this.stopped = false;
     this._buffer = '';
+    // Whether this reply has had its opening clause/sentence flushed yet —
+    // see pushText()'s clause-boundary fallback. Reset per reply (here and
+    // in reset() below), not per sentence: only the OPENING of a reply is
+    // latency-sensitive, everything after it plays while the listener is
+    // already hearing audio.
+    this._firstFlushDone = false;
   }
 
   /** For the orb: Jarvis's own voice output energy while speaking, 0..1 — sampled from an offline-decoded envelope of whatever's currently playing (see voice-envelope.js). 0 if nothing's playing yet, or the envelope hasn't finished building/failed to build for this clip. */
@@ -95,12 +114,66 @@ export class AudioPlayer {
   /** Feeds streamed text in; complete sentences are queued for playback as soon as they're ready. */
   pushText(textChunk) {
     this._buffer += textChunk;
+
+    // Full sentences always win — best prosody, and the common case once a
+    // reply is already under way.
     let match;
     while ((match = SENTENCE_END.exec(this._buffer)) && match[0].trim()) {
       const sentence = match[0].trim();
       this._buffer = this._buffer.slice(match[0].length);
       this.enqueueText(sentence);
+      this._firstFlushDone = true;
     }
+
+    // Before this reply's first sentence has gone out, don't make the
+    // listener wait on a long opening sentence with no punctuation break
+    // yet — flush an opening clause (or, past CLAUSE_FALLBACK_CHARS with
+    // still no clause boundary, a bounded chunk of plain words) as soon as
+    // there's enough of it to read as a real phrase rather than one word
+    // at a time. Applies only once per reply — the rest still speaks in
+    // full, natural sentences via the loop above.
+    if (!this._firstFlushDone && this._buffer.trim()) {
+      const clauseMatch = CLAUSE_END.exec(this._buffer);
+      if (clauseMatch && clauseMatch[0].trim().length >= CLAUSE_MIN_CHARS) {
+        const clause = clauseMatch[0].trim();
+        this._buffer = this._buffer.slice(clauseMatch[0].length);
+        this.enqueueText(clause);
+        this._firstFlushDone = true;
+      } else if (this._buffer.length >= CLAUSE_FALLBACK_CHARS) {
+        const chunk = this._buffer.trim();
+        this._buffer = '';
+        this.enqueueText(chunk);
+        this._firstFlushDone = true;
+      }
+    }
+  }
+
+  /**
+   * Queues a real, pre-recorded sound clip (not TTS-fetched text) — for a
+   * 'reaction' event (see server/personality.js's createReactionScanner()
+   * and runner.js). Reuses this SAME ordered queue as spoken sentences so
+   * the clip plays at exactly the right position relative to the
+   * surrounding speech, rather than a second, parallel scheduling
+   * mechanism. `url` is a static, cacheable asset path (e.g.
+   * "/sounds/laugh.mp3"), not a per-request TTS result — nothing here owns
+   * or must release its lifetime the way a fetchTts() blob URL does.
+   */
+  enqueueClip(url) {
+    if (this.stopped || !url) return;
+    this.pending++;
+    this.queue.push(
+      // A SEPARATE copy of the same bytes, purely for the orb's envelope —
+      // never touches the actual <audio> element that plays `url` itself,
+      // same reasoning as every other clip in this file's header comment.
+      // Falls back to a null blob (no envelope, orb just shows no reactivity
+      // for this clip) rather than dropping the clip entirely if this fetch
+      // fails — the clip itself still plays via `url` regardless.
+      fetch(url)
+        .then((r) => r.blob())
+        .then((blob) => ({ url, blob, text: '' }))
+        .catch(() => ({ url, blob: null, text: '' }))
+    );
+    if (!this.playing) this._advance();
   }
 
   /** Queues a sentence for playback; starts fetching (with retry — see fetchTts()) immediately. */
@@ -180,10 +253,15 @@ export class AudioPlayer {
 
     // Decoded from a SEPARATE copy of the same bytes (see fetchTts()'s
     // return shape and this file's header comment) — never gates or touches
-    // the `audio.play()` above in any way, including on failure.
-    buildEnvelope(blob).then((envelope) => {
-      if (this.currentAudio === audio) this.currentEnvelope = envelope;
-    });
+    // the `audio.play()` above in any way, including on failure. `blob` can
+    // be null here for a clip whose envelope-copy fetch failed (see
+    // enqueueClip()) — the orb just shows no reactivity for that one clip,
+    // same as any other envelope-build failure.
+    if (blob) {
+      buildEnvelope(blob).then((envelope) => {
+        if (this.currentAudio === audio) this.currentEnvelope = envelope;
+      });
+    }
   }
 
   _maybeIdle() {
@@ -223,5 +301,6 @@ export class AudioPlayer {
     this.stopped = false;
     this.streamEnded = false;
     this._buffer = '';
+    this._firstFlushDone = false;
   }
 }

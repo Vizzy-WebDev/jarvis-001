@@ -15,6 +15,12 @@ function findMatch(query) {
 
 export default {
   name: 'update_memory',
+  // Parallel to remember_about_me/forget_something (both core) — a
+  // correction is exactly as common and as clearly user-triggered as a
+  // save or a forget, and the prompt already instructs using this instead
+  // of remember_about_me for a correction. See root CLAUDE.md's Model
+  // system section.
+  core: true,
   meta: true,
   description:
     'Change what Jarvis remembers about something — a fact that\'s changed, a correction, an update. ' +

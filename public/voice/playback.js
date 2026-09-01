@@ -118,6 +118,30 @@ export class Playback {
     if (!this.playing) this._advance();
   }
 
+  /**
+   * Queues a real, pre-recorded sound clip (not TTS-fetched text) — for a
+   * 'reaction' event (see server/personality.js's createReactionScanner()
+   * and runner.js). Same reasoning and shape as audio-player.js's identical
+   * method: reuses this SAME ordered queue so the clip plays at exactly the
+   * right position relative to the surrounding speech. `isReaction: true`
+   * is the one extra field _advance() checks, to skip updating
+   * `_spokenText` for it — a sound effect isn't spoken words, and this
+   * text is what a barge-in truncates the stored transcript to (see this
+   * file's header comment), so it must never include anything but real
+   * speech.
+   */
+  enqueueClip(url) {
+    if (this.stopped || !url) return;
+    this.pending++;
+    this.queue.push(
+      fetch(url)
+        .then((r) => r.blob())
+        .then((blob) => ({ url, blob, text: '', isReaction: true }))
+        .catch(() => ({ url, blob: null, text: '', isReaction: true }))
+    );
+    if (!this.playing) this._advance();
+  }
+
   /** Call once the text stream is fully done — flushes any trailing partial clause. */
   end() {
     const rest = this._buffer.trim();
@@ -146,13 +170,17 @@ export class Playback {
       this._advance();
       return;
     }
-    const { url, blob, text } = result;
+    const { url, blob, text, isReaction } = result;
 
     if (this.onStart) this.onStart();
     // Appended the moment this chunk actually STARTS playing, not when it
     // was fetched or queued — pipelining means several chunks can be
-    // in-flight ahead of what's audible right now.
-    this._spokenText = this._spokenText ? `${this._spokenText} ${text}` : text;
+    // in-flight ahead of what's audible right now. Skipped for a reaction
+    // clip (see enqueueClip()) — it isn't spoken words, and this text is
+    // exactly what a barge-in truncates the stored transcript to.
+    if (!isReaction) {
+      this._spokenText = this._spokenText ? `${this._spokenText} ${text}` : text;
+    }
 
     const audio = new Audio(url);
     this.currentAudio = audio;
@@ -189,9 +217,13 @@ export class Playback {
     audio.onerror = settle;
     audio.play().catch(settle);
 
-    buildEnvelope(blob).then((envelope) => {
-      if (this.currentAudio === audio) this.currentEnvelope = envelope;
-    });
+    // `blob` can be null for a clip whose envelope-copy fetch failed (see
+    // enqueueClip()) — the orb just shows no reactivity for that one clip.
+    if (blob) {
+      buildEnvelope(blob).then((envelope) => {
+        if (this.currentAudio === audio) this.currentEnvelope = envelope;
+      });
+    }
   }
 
   _maybeIdle() {

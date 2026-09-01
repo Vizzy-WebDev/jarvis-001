@@ -122,8 +122,13 @@ common case.
 
 `buildToolsetForKind(kind)` — `'generic'` gets every non-meta, non-internal capability
 (`listCapabilities({includeMeta:false})`) with **no restriction at all**; `'research'`/
-`'files'` filter that same list down to a small hardcoded `KIND_TOOL_NAMES` array;
-`'computer'` never calls this (see `driveComputerJob` above). Every kind gets
+`'files'` filter that same list down to a small hardcoded `KIND_TOOL_NAMES` array PLUS
+every currently-enabled folder Skill, unconditionally (`c.kind === 'skill'`) — a Skill is
+the user's own packaged process, not a raw capability the kind is trying to fence off, so
+every kind can reach one regardless of `KIND_TOOL_NAMES`. Before this, a `research`- or
+`files`-kind job could not call an installed Skill under any circumstances, however well
+it matched the job's actual goal — confirmed live, not assumed. `'computer'` never calls
+this (see `driveComputerJob` above). Every kind gets
 `report_job_done`/`report_job_stuck`/`request_job_split` appended regardless of what's
 otherwise restricted — the completion/stuck/split vocabulary isn't something a narrower
 kind should have to give up.

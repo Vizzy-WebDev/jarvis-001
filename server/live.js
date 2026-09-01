@@ -19,7 +19,7 @@ import { WebSocketServer } from 'ws';
 import { GoogleGenAI } from '@google/genai';
 import { getGeminiKey } from './gemini-key.js';
 import { getToolDeclarations, invoke } from './capabilities.js';
-import { SYSTEM_INSTRUCTION } from './prompt.js';
+import { systemInstructionParts } from './prompt.js';
 
 const MODEL = 'gemini-live-2.5-flash-preview';
 
@@ -92,7 +92,17 @@ async function handleConnection(browserWs) {
       config: {
         responseModalities: ['AUDIO'],
         tools,
-        systemInstruction: SYSTEM_INSTRUCTION,
+        // The `stable` half of systemInstructionParts() — this used to be the
+        // bare SYSTEM_INSTRUCTION constant, which silently gave Live NONE of
+        // the personality framework's two hard rules (never personal; distress
+        // outranks directness), let alone memory/connectors. `volatile` (the
+        // per-turn floors/timestamp) is deliberately left out: Live sets its
+        // system instruction once at connect() with no per-turn refresh, so
+        // there is no hook to re-inject a per-turn computed floor later —
+        // Live gets the always-stated rules only, not per-turn floor detection
+        // (see personality.js's header comment; a real, accepted gap, not
+        // parity with the text/voice-pipeline path).
+        systemInstruction: systemInstructionParts({}).stable,
         inputAudioTranscription: {},
         outputAudioTranscription: {},
       },

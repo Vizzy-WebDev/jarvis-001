@@ -30,9 +30,11 @@ export default {
   name: 'control_computer',
   description:
     'Take control of the user\'s mouse, keyboard, and screen to actually carry out a task on their computer — ' +
-    'opening apps, clicking, typing, and checking the result. Use this only when the user clearly wants Jarvis to ' +
-    'DO something on the computer itself (not just answer a question or use a normal built-in ability like opening ' +
-    'a website or an app by name — those have their own simpler tools). Always confirms a short plan first.',
+    'opening apps, clicking, typing or pasting text into a window (Notepad, a form, an editor, any app), and ' +
+    'checking the result. Use this whenever the user wants something actually written, typed, or pasted INTO an ' +
+    'app or window, not just the app opened — opening alone has its own simpler tool, but writing into it once ' +
+    'open needs this one. Also use this for any other on-computer task not covered by a simpler built-in ability ' +
+    '(opening a website or an app by name have their own tools). Always confirms a short plan first.',
   confirm: 'always',
   parameters: {
     type: 'object',

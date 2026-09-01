@@ -41,7 +41,26 @@ own small fixed tool set.
   not the chat skill catalog. Tracks `preExistingHandles` vs. `createdHandles` per
   session and only ever auto-closes windows Jarvis itself opened for the current task at
   `report_done` — closing anything pre-existing or unsaved-looking always confirms first
-  (a risky action).
+  (a risky action). **PERCEIVE excludes Jarvis's own browser tab from the front-window
+  pick** (reuses `tools/look_at_screen.js`'s `isJarvisOwnWindow()`, same reasoning as
+  that file's own gotcha below — a control session used to have no equivalent guard,
+  so it could start by reading/acting on Jarvis's own tab instead of the app the user
+  meant). **DECIDE now falls back across up to 3 ranked candidate models**
+  (`pickModelCandidates()`), same shape as `models/runner.js`'s own chat-turn fallback —
+  confirmed gap: a single rate-limited/unreachable model used to fail the whole session
+  on step one, with no fallback at all; only triggers on a genuine adapter throw, never
+  on a timeout (a slow-but-working model still gets its full `DECIDE_TIMEOUT_MS`).
+  **A risky-action confirmation now times out** (`CONFIRM_TIMEOUT_MS`, 10 minutes) rather
+  than waiting forever — a missed SSE event used to hang the whole session with nothing
+  visibly failing; a timeout resolves as a decline, the same outcome as a real "no".
+  **A `launch_app` action polls for the new window to actually appear** (up to 5s, every
+  300ms) instead of one fixed 900ms sleep — a cold-starting app (Windows 11's own Store
+  Notepad, confirmed slow) could still be missing from the very next PERCEIVE otherwise,
+  which could read to the model as "the launch failed" and prompt a second copy.
+  **A batched `perform_actions` call reports every action, even ones a window-changing
+  action earlier in the same batch left unattempted** — those used to get no result
+  entry at all, which could read as "it also succeeded" rather than "never ran" (the
+  reported case: a batched `[launch_app, type]` silently dropped the `type`).
 - **`guard.js`** — `classifyActionRisk()` (safe/notable/risky — keyword-scanned BEFORE
   the kind lookup, so a low-level primitive like `key` or `type` still escalates if what
   it's actually doing sounds irreversible) and `checkBlocklist()` (window title/process/
@@ -59,6 +78,27 @@ own small fixed tool set.
 
 ## Gotchas
 
+- **A `type` action's own `RISKY_KEYWORDS` scan was matching ordinary typed
+  sentences, not just dangerous ones.** `label` for a `type` action is the LITERAL text
+  being typed — and that same everyday-language list (tuned for a tool/action's own
+  NAME or description, where "update"/"write"/"move"/"buy"/"post"/"message" are
+  legitimate signals) matches constantly in ordinary prose ("write a note", "Buy milk,
+  eggs and bread", "Remember to post the invoice" all confirmed live to trip 'risky').
+  The original motivating case for scanning typed text at all (see
+  `classifyActionRisk()`'s own doc comment) was catching something like `rm -rf` typed
+  into a terminal — a destructive COMMAND, not ordinary language. Fixed with a second,
+  narrow, substring-matched `DANGEROUS_TEXT_PATTERNS` list (`rm -rf`, `format c:`,
+  `drop table`, a shell fork bomb, ...) used ONLY for a `type` action's `label`;
+  `description` (the model's own stated reasoning, once actually threaded through —
+  see the next gotcha) and every non-`type` action still go through the original
+  broader `RISKY_KEYWORDS` word-tokenized scan unchanged.
+- **`action.reasoning` was always `undefined`, silently dropping the model's stated
+  intent from ever reaching the risk check.** `reasoning` is a field on the
+  `perform_actions` call itself (a sibling of `actions`), not per-action — `session.js`
+  was reading `action.reasoning` inside the per-action loop, which no schema anywhere
+  actually populates. Fixed by threading the batch's one `reasoning` string into
+  `actOnBatch()` as its own parameter, applied to every action in that batch (the best
+  available signal, since the schema has no true per-action equivalent).
 - **`classifyActionRisk()` lowercased an identifier before ever checking its camelCase
   boundaries — again — undoing the exact fix this file's own history already made
   once.** The genuinely wrong-but-not-obviously-wrong version: `const kind =

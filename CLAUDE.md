@@ -145,21 +145,60 @@ OpenRouter, Groq — anything OpenAI-shaped — by pointing `baseUrl` elsewhere.
 `stream(entry, messages, opts)` (async generator over the neutral message format below),
 `testConnection(entry)`, `listModels(entry)` (throws on failure — registry.js's
 `discoverModels()` catches it and turns it into `{models, error}`), `friendlyError(err)`.
+All three now accept `entry.baseUrl` (Anthropic/Gemini included, via each SDK's own
+custom-base-URL option) so a Custom connection resolved to any of the three shapes can
+actually be called, not just discovered.
+
+**Providers vs. adapters — a provider is what the user picks, an adapter is the wire
+format underneath it, and these are deliberately two different things now.**
+`server/models/providers.js` (data-only, zero imports) is the five-tile catalog the
+"Add a model" screen shows: OpenAI, Anthropic, Gemini, Local server, Custom — never an
+adapter name like `openai-compatible`, which used to leak straight into the UI as
+`"OpenAI-compatible (OpenAI, Ollama, LM Studio, OpenRouter, Groq, ...)"`. OpenRouter,
+Groq, Together, OmniRoute, and any other gateway all go through **Custom**, which has no
+fixed adapter of its own — `server/models/probe.js`'s `probeEndpoint()` resolves one by
+actually trying the address: normalizes the URL (auto-tries `+ '/v1'`), attempts the
+OpenAI chat-completions shape, then Anthropic's, then Gemini's, and returns `steps[]` —
+what it tried, in plain language — alongside the result, shown in the UI on both success
+and failure rather than the old single "That connection didn't work." A 401 with no key
+supplied is classified as "reached it, needs a key," never as "that key is invalid" (the
+literal OmniRoute-connection failure this whole redesign started from — no field to type
+an address into, then a misleading auth error once one was added by hand).
+
+**A connection stores `provider`, `kind` (`'first-party'|'gateway'|'local'`), and
+`keyRequired` as facts, captured once at add time — this is the one thing that made
+removing the OpenRouter/gateway tiles safe.** Before this, `catalog.js` re-derived
+"is this local? is this an aggregator? does this need a key?" from `adapter` + a
+host-regex on every read — workable when every non-first-party connection was
+`openai-compatible` with a real address to regex-match, but Custom's whole point is that
+the address alone doesn't say what's on the other end. `isLocalConnection()`/
+`isAggregatorConnection()` (`catalog.js`) now take an optional `kind` and use it outright
+when present, falling back to the original regex only for a connection saved before this
+existed (`providers.js`'s `providerForLegacy()` backfills `provider`/`kind` for those at
+*read* time — `registry.js`'s `hydrate()` and `server.js`'s `publicConnection()` — never
+a data migration; confirmed live that the two pre-existing OpenRouter connections still
+classify as `kind:'gateway'` with no changes to `data/connections.json`).
+`registry.js`'s `isReady()` and `adapters/openai-compatible.js`'s `requireKeyIfNeeded()`
+both check `entry.keyRequired` first (a real boolean overrides the old "any non-openai.com
+baseUrl is assumed keyless" guess entirely) before falling back to the same regex.
+`server/models/redact.js`'s `redactSecrets()` scrubs a submitted key out of the raw
+adapter error text (`registry.js`'s `detail` field on a failed test/discovery, surfaced
+in the UI as a collapsible "Technical details" line) before it ever leaves the server.
 
 **Connections + models** (`server/models/connections.js` + `registry.js`) — a
 "connection" is one saved address+key (`data/connections.json`); a "model" is one model
 name under a connection (`data/models.json`, holding only `connectionId` plus its own
 label/caps/tier — `registry.listModels()`/`getModel()` hydrate in the connection's
-adapter/baseUrl/secretRef at read time). Several models discovered together share one
-connection instead of each duplicating the same key. `updateModel()` whitelists its
-patch keys on purpose — never let adapter/baseUrl/secretRef/connectionId be set through
-it, or a model desyncs from its connection. Legacy secrets (the original
+adapter/baseUrl/secretRef/keyRequired at read time). Several models discovered together
+share one connection instead of each duplicating the same key. `updateModel()`
+whitelists its patch keys on purpose — never let adapter/baseUrl/secretRef/connectionId
+be set through it, or a model desyncs from its connection. Legacy secrets (the original
 `gemini`/`anthropic`/`openai` refs) are never deleted by a connection removal —
 `turn-check.js` depends on `GEMINI_API_KEY` regardless of which model is chatting
 (TTS no longer does — see "TTS provider system"). **`assumesVision()` (`catalog.js`) does not treat every non-local cloud model
-as vision-capable** — aggregator hosts (openrouter/groq/together) are matched by
-name-hint only, same as local models, since discovery-guessed quality scores are
-unreliable signals for what a model can actually see.
+as vision-capable** — a stored `kind:'gateway'` (or, absent that, the original
+aggregator-host regex) is matched by name-hint only, same as local models, since
+discovery-guessed quality scores are unreliable signals for what a model can actually see.
 
 **Routing + execution** (`router.js`, `health.js`, `runner.js`) — `router.js` ranks
 enabled+healthy+ready models by a task profile and the balance dial. `health.js` is an
@@ -355,6 +394,17 @@ ever read `listUserSkills()` (`server/skills/store/skill-files.js`), which has n
 path back to a built-in tool; see `server/skills/CLAUDE.md` for how — because this has
 regressed multiple times before despite being called out each time (see
 `skills-system-rebuild.md` project memory / `handoff-archive.md` for incident history).
+
+**Every installed Skill is declared to every turn, and the system prompt tells the model
+to actually prefer one, not just discover it.** `prompt.js`'s `skillsSection()` — already
+unconditionally injected into the shared system prompt every adapter builds from, live
+chat and background alike — lists each enabled Skill by name/description AND instructs:
+when what's being asked genuinely matches one, call it and follow it rather than
+reasoning the task out from scratch. This closed a confirmed, live gap: asked "how many
+Skills do you have," the model used to answer from vague self-conception, folding in
+built-in abilities and connected apps under the same word — the honest count was sitting
+in the very system prompt the whole time. The same section now also tells it not to make
+that conflation when asked directly.
 
 ## `server/capabilities.js` — the composition seam
 
@@ -631,6 +681,207 @@ UTF-16 BOM, otherwise decode UTF-8 and reject on too high a replacement-
 character ratio) rather than a fixed, ever-growing extension list. This is
 what makes an arbitrary code/config file (`.js`, `.py`, `.ini`, `.log`, ...)
 readable without a dedicated rule for each one.
+
+## Adaptive Communication Register (`server/personality.js`)
+
+Jarvis has one voice, not a set of switchable "modes" — no hardcoded `friendMode`/
+`coachMode` personas anywhere. What varies is delivery (warmth, directness, playfulness,
+formality, how hard it pushes back); what never varies is the actual conclusion. This
+is deliberately two separable *inputs* to one model call, not two engines — there is no
+code seam between "Jarvis reasoned" and "Jarvis spoke."
+
+- **The one invariant this subsystem exists to protect: style is downstream of
+  substance and cannot write back to it.** `personality.js` is a dependency-free leaf
+  module (same circular-import discipline as `task-store.js`/`skill-files.js` — see
+  "Gotchas" below) whose only output is prose appended to a delivery-instructions
+  block. It has no import path to anything that shapes what Jarvis concludes, and
+  never should — an edit here that wants to reach content belongs in `prompt.js`'s
+  `SYSTEM_INSTRUCTION` (the judgment layer) instead.
+- **Hybrid design: code computes safety floors, the model infers everything else.**
+  `detectFloors()` is pure regex over the turn's own text — no extra model call, no
+  added latency. It deliberately catches only two things in code: **distress**
+  (narrow — self/situation-directed only, e.g. "I'm exhausted, nothing works"; heat
+  aimed at a bug or tool does NOT fire it, since that reads as wanting speed, not
+  care) and **serious topic** (real financial/health/legal/relationship stakes,
+  keyword-based, backstopped by the model's own broader read). Both floors can only
+  push the register toward *more* measured, never less — a false positive costs tone,
+  never information. **Both regexes were broadened once already from real user
+  testing**, not written once and trusted: `seriousTopic` originally matched only
+  "medication," not "meds" (missed "skip my meds for a bit"); `distress`'s
+  "feel like a failure" pattern originally required that literal phrase, missing
+  "feel like SUCH a failure" — now tolerant of a few words of filler between "like"
+  and the actual word, plus a standalone "I'm a failure" pattern with no "feel like"
+  at all. Confirmed live afterward with a false-positive guard test ("I am the
+  failure point in this design" must NOT fire) so the broadening didn't overreach.
+- **Two hard rules live in the always-injected `STYLE_FRAMEWORK` text, written as
+  unconditional** — never personal criticism, and genuine distress softens directness
+  even over the user's own explicit request for bluntness. These sit above the user's
+  own explicit style instructions, which in turn outrank whatever Jarvis would infer
+  on its own. A third rule of the same shape, added after live testing surfaced a real
+  gap: **if a moment genuinely calls for pointing someone toward crisis/emergency
+  support, say "your local crisis line" or "emergency services," never a specific
+  number like 988** — the model doesn't know the user's country, and naming one
+  US-specific number as if universal is actively unhelpful outside the US. Confirmed
+  live: a stacked distress+meds turn that previously named 988 now says "your local
+  crisis line" instead.
+- **Explicit requests don't just set the register — they also block an old,
+  already-acknowledged concern from re-hijacking a moment the user asked to keep
+  light.** Found live: after a serious exchange about financial risk, asking Jarvis to
+  "keep this light, I just want to joke around" got a full paragraph re-litigating the
+  earlier concern instead of staying light. `STYLE_FRAMEWORK` now says explicitly that
+  a genuine concern can still be named *briefly* but must never take over a reply the
+  user has asked to keep light. A related, still-open regex gap found the same way:
+  `EXPLICIT_PLAYFUL_PATTERNS` didn't match "I just want to joke around" (only the
+  more rigid "just joke around," no words in between) — same class of miss as the
+  distress-regex ones above, not yet fixed.
+- **Reactions scale with how funny something actually is, never a flat tic.** Found
+  and fixed live in the same pass: "When something actually strikes you as funny, let
+  that show for real, scaled to how funny it actually is" — mild amusement gets a
+  mild reaction, something genuinely funny gets more, nothing funny gets nothing. No
+  scripted "lol," no reflexive laugh line repeated regardless of content.
+- **Explicit style requests are sticky per session** (`readStyle()`'s
+  `sessionStickyStyle` Map, same lifetime/cleanup pattern as `runner.js`'s
+  `sessionStickyModel`/`sessionUnlockedTools` — cleared together in
+  `resetConversation()`). "Give it to me straight" holds across turns; a serious-topic
+  or distress floor overrides for that one turn only, then the sticky style resumes —
+  the user never has to re-ask.
+- **The stable/volatile split (`prompt.js`) is what keeps this cacheable.**
+  `STYLE_FRAMEWORK` (constant) goes in `stable`; `floorsSection()` (depends on this
+  turn's text) goes in `volatile`, same discipline as `situationSection()`'s wall-clock
+  time. Putting the framework in `volatile` would silently defeat Anthropic prompt
+  caching for the whole prefix.
+- **Scope: needs a real audience, not just `!background`.** `briefing.js`,
+  `scheduler.js`'s own prompt-action turns, and a Job worker's turn (`jobs/worker.js`)
+  all set `opts.background: true`, but only a briefing is actually spoken to the
+  owner. `addressed: true` (set only by `briefing.js`) overrides the background gate
+  for the style framework and floors specifically — `jobsSection()` stays gated on
+  `background` alone, unaffected by `addressed`, since a briefing has no
+  `check_on_work`/`stop_working_on` tools to act on it with. A scheduled task's own
+  turn and a Job worker's own turn correctly get neither: nobody is being talked to.
+- **Gemini Live gets the constant framework only, not per-turn floors — a real,
+  accepted gap, not parity.** Live sets its system instruction once at
+  `ai.live.connect()` with no per-turn refresh (`live.js`), so there is no hook to
+  re-inject a per-turn computed floor mid-session. `live.js` was passing the bare
+  `SYSTEM_INSTRUCTION` constant before this existed, which meant Live got neither hard
+  rule at all; it now gets `systemInstructionParts({}).stable`.
+- **No mechanism here builds domain expertise or frames analysis by topic** — that
+  was an explicit scope decision, not an oversight. `personality.js` only ever touches
+  *how* something is said; a domain-framing mechanism would be code shaping *what*
+  gets concluded, which is the exact category this subsystem exists to keep out.
+- **Debug-only visibility, off by default.** `runner.js`'s `runTurn()` yields
+  `{type:'style_floors', floors, sticky}` only when a floor actually fired (same
+  three-hop path as `model_switch`: `pipeline-engine.js`/`duplex-engine.js` re-emit
+  it, `app.js` renders it as a system note) — gated behind `public/settings.js`'s
+  `debugStyleFloors` toggle, default off. Nothing about this event is ever seen by
+  the model itself.
+- **On `autoSelect`, any prompt-driven behavior here is only as reliable as whichever
+  candidate model actually answers this turn — and per "Free-tier quota varies wildly
+  by model" (Gotchas, below), that is frequently a weak/free fallback model, not the
+  user's preferred one.** Confirmed live during a
+  real "why isn't this working" investigation: nearly every model in a real user's
+  `data/models.json` was `state:'unreachable'` (quota/rate-limit/connection failures)
+  at the moment of testing, leaving Auto to land on whichever free-tier model
+  happened to be alive — exactly the kind of model least likely to reliably follow an
+  unusual formatting instruction (see the reaction-marker section below). **The
+  diagnostic technique that actually separated "is the code broken" from "is the
+  model just not following instructions": write a small, read-only, one-off script
+  that imports `models/registry.js`'s `getModel()` and `adapters/index.js`'s
+  `getAdapter()` directly and calls `adapter.stream()` against one specific real,
+  currently-working model entry, with the exact message text that was failing live.**
+  This exercises the REAL production code (real system prompt via
+  `systemInstructionFor()`, real adapter, real network call) with no stub and no
+  server, and definitively answers "does the instruction work at all" independent of
+  which model Auto happens to route to on a given turn. Touches no files, no server,
+  no user data — safe to run anytime this exact class of "is it my prompt or is it
+  the model" question comes up again.
+
+## Real Vocal Laughter (reaction sounds)
+
+Built on top of the Adaptive Communication Register above, but a genuinely separate
+mechanism: a real, audible non-verbal sound spliced into playback, never text read
+aloud as words. The trigger for this — the user explicitly rejecting a TTS voice
+literally speaking "haha" — is why this exists as audio splicing rather than another
+prompt paragraph.
+
+- **Two real approaches exist; this project deliberately chose splicing a pre-recorded
+  clip over asking a TTS voice to produce the sound live.** Investigated first: the
+  free browser voice (`speechSynthesis`) has a hard ceiling — it hands plain text
+  straight to `SpeechSynthesisUtterance` with zero channel for a non-verbal sound, no
+  build can change that. ElevenLabs, as wired (`eleven_multilingual_v2`), has no
+  non-verbal-sound feature either; their newer expressive model reportedly does, but
+  that was never live-verified (blocked on account quota — 3 credits remaining, 46
+  required for even one short attempt) and is not what routes the user's regular
+  conversation. Splicing works identically regardless of which voice is narrating,
+  since the clip isn't generated by that voice at all.
+- **The model writes a literal token — `[[laugh]]` (`personality.js`'s
+  `REACTION_MARKERS`) — at the point a real laugh belongs, per `STYLE_FRAMEWORK`'s own
+  instruction.** That token must never reach the user as visible text or be spoken as
+  words by any voice. Handled ONCE, server-side, in `runner.js`'s per-step loop
+  (`createReactionScanner()`) — not duplicated across the transcript display and every
+  playback engine — which strips the marker from the `chunk` text stream and yields a
+  separate `{type:'reaction', kind:'laugh'}` event at the correct position. A consumer
+  that doesn't know about reactions (today: nothing, but this is what makes it safe to
+  add one later) just sees clean text with nothing missing.
+- **The scanner is chunk-boundary-safe by necessity, verified against character-by-
+  character streaming, not just whole-chunk delivery** — some adapters/providers
+  stream far smaller pieces than a full marker. `createReactionScanner()`'s `feed()`
+  holds back only as many trailing characters as could still be the start of a marker
+  (including one that might turn out to have its own preceding space), never the whole
+  buffer, so ordinary text is never meaningfully delayed.
+- **Only the marker's own PRECEDING space is swallowed; the text AFTER it is left
+  completely untouched, including its own leading space — found live, not assumed.**
+  Swallowing both sides was tried first and produced words glued together with no
+  space at all ("hilariousokay") once a consumer naively concatenates every `text`
+  segment and ignores `reaction` entirely. Leaving the trailing space intact is what
+  makes that naive concatenation still read as a normal, single-spaced sentence.
+  `stripReactionMarkers()` (for the adapter's own already-assembled `finalEvent.text`/
+  `callEvent.text`, which the scanner never sees) is built ON TOP of the same scanner
+  (fed the whole string, then flushed) rather than a second implementation, so the two
+  paths cannot drift apart.
+- **`browser-speaker.js` was restructured, not just extended — a real, load-bearing
+  architecture change worth knowing before touching that file again.** Before this, it
+  fired each utterance straight onto Chrome's own internal `speechSynthesis` queue as
+  soon as `pushText()` found a sentence boundary, relying entirely on Chrome to
+  serialize playback. Chrome's queue only ever holds actual utterances — there is no
+  way to interleave a raw audio clip into it. The class now owns an explicit
+  `queue`/`_processing`/`_advance()` sequential model (utterances AND clips both),
+  pulling one item at a time and waiting for it to fully settle before starting the
+  next — audibly identical for plain speech (Chrome was already strictly serializing
+  regardless of when `speak()` was technically called), but this is what makes
+  inserting a clip at the right position possible at all. `audio-player.js` and
+  `voice/playback.js` (the two OTHER independent sentence-chunked-queue
+  implementations — see their own header comments for why three exist) needed only an
+  additive `enqueueClip(url)` each, since they already had this exact sequencing.
+- **Gemini Live is explicitly excluded — a real architectural gap, not deferred
+  silently.** It streams continuous raw PCM audio directly from the model with no
+  discrete "sentence" boundary at all, so there is no clean point to splice a separate
+  clip into the way there is in every other, sentence-chunked path.
+- **The current clip is a placeholder, not a real laugh** — `public/sounds/laugh.wav`,
+  a synthesized two-note chirp built with zero external dependencies (a raw PCM WAV
+  written by hand, no audio library), generated purely to prove the pipeline works
+  end to end while ElevenLabs generation was blocked on quota. Swapping in a real
+  clip once sourced is a one-file change (`public/reaction-sounds.js`'s
+  `REACTION_SOUNDS` map) — nothing else in the pipeline needs to change.
+- **Verification here required going further than reading code or curling an SSE
+  stream — real audio playback needed a real browser.** A live `claude-in-chrome`
+  session confirmed the marker never leaks into the transcript, `enqueueClip()` is
+  called with the right URL, the server serves the asset correctly, and — this took
+  isolating two different tools to actually prove — the WAV file itself is
+  byte-perfect valid audio (`AudioContext.decodeAudioData()` succeeded cleanly) even
+  though the `<audio>` element's own network loading stalled specifically inside that
+  automated tab. That isolates a known category of CDP-automation quirk in
+  `<audio>`/`<video>` element loading specifically (plain `fetch()` on the identical
+  URL worked fine in the same tab) from an actual application bug — worth knowing
+  before concluding audio playback is broken from automated-browser testing alone;
+  confirm with the user's own regular browser instead.
+- **The instruction is a real gap on weaker models, confirmed live, not yet fixed.**
+  A real production call to the user's own currently-working free-tier model DID
+  correctly write `[[laugh]]` when genuinely warranted, proving the mechanism itself
+  works — but placed it at the very START of the reply and used it TWICE in one
+  reply, both explicitly against `STYLE_FRAMEWORK`'s own instruction ("never at the
+  very start... never more than once"). The scanner handles either case correctly
+  (verified: marker-at-start, and multiple markers in one reply, are both in its own
+  test suite) — this is a prompt-adherence gap on the model's side, not a scanner bug.
 
 ## Gotchas
 

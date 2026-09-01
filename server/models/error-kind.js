@@ -99,7 +99,11 @@ export function classifyError(err) {
     if (status === 403) return 'no_access';
 
     const text = findMessageText(err).toLowerCase();
-    if (/quota|rate.?limit/.test(text)) return 'quota';
+    // "usage limit" is friendly-message.js's own rewritten wording for a
+    // quota error (see its 'quota' case) — needed because server.js's
+    // manual Test path can end up classifying that already-friendlied text
+    // when no raw detail is available (see testAndRecord()'s comment).
+    if (/quota|rate.?limit|usage limit/.test(text)) return 'quota';
     // Both word orders needed — a real, live gap found while building
     // server/friendly-message.js: Gemini's actual invalid-key text is "API
     // key not valid. Please pass a valid API key.", which the single

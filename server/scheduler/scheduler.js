@@ -10,7 +10,8 @@
 import { nextRunAt } from './recurrence.js';
 import { composeBriefing } from './briefing.js';
 import { runTurn, resetConversation } from '../models/runner.js';
-import { invoke } from '../capabilities.js';
+import { invoke, getToolDeclarations } from '../capabilities.js';
+import { toolNamesForConnector } from '../connectors/index.js';
 import { getModel } from '../models/registry.js';
 import { broadcast } from '../events.js';
 import { addNotification } from '../notifications.js';
@@ -130,14 +131,27 @@ async function runAction(task) {
   }
 
   if (task.action.type === 'prompt') {
-    // `task.action.connectors` (an array of allowed skill names, written by
-    // the task-creation UI) restricts which tools the model can call for
-    // this unattended run — absent/null means "all non-meta tools" (see
-    // runner.js's toolsForTurn: background:true already drops meta skills
-    // regardless of this).
+    // `task.action.connectors` (an array of connector ids, written by the
+    // task-creation UI's picker — see public/screens/tasks.js) is resolved
+    // to real tool names HERE, at run time, rather than saved as tool names
+    // directly — a connector's own tool list can change (reconnect,
+    // refresh) between when the task was created and when it runs, and
+    // resolving fresh each run means a task never silently goes stale.
+    // Absent/empty means "all non-meta tools, no restriction" (today's
+    // original default, unchanged for any task that never touches the
+    // picker) — one or more selected connectors ADDS them to the task's
+    // normal built-in ability set (getToolDeclarations()'s own core-only
+    // default) rather than replacing it, since picking a connector for a
+    // task is "let it use this too," not "restrict it to only this."
+    // background:true already drops meta skills regardless of what's
+    // listed here (see runner.js's toolsForTurn).
+    const connectorIds = task.action.connectors || [];
+    const allowedTools = connectorIds.length
+      ? [...getToolDeclarations({ includeMeta: true }).map((d) => d.name), ...connectorIds.flatMap(toolNamesForConnector)]
+      : null;
     return runOneTurn(`task:${task.id}:${Date.now()}`, task.action.text, {
       modelId: task.action.modelId,
-      allowedTools: task.action.connectors || null,
+      allowedTools,
     });
   }
 

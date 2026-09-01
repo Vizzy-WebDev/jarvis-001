@@ -57,6 +57,26 @@ const RISKY_KEYWORDS = [
   // is now a permanent annoyance, not a one-time one — worth being choosier.
 ];
 
+// A `type` action's `label` is the LITERAL text being typed — not an
+// identifier or a tool's own description, which is what RISKY_KEYWORDS
+// above is tuned for. Confirmed live: everyday words like "write", "buy",
+// "update", "message", "post", "move" (all in RISKY_KEYWORDS, legitimate
+// signals for a tool/action NAME) show up constantly in perfectly ordinary
+// typed sentences ("write a note", "Buy milk, eggs and bread", "Remember
+// to post the invoice") and were forcing a confirmation on nearly anything
+// typed at all. The original motivating case for scanning typed text
+// (see classifyActionRisk's own comment) was catching something like
+// "rm -rf" typed into a terminal — a destructive COMMAND, not ordinary
+// prose. This narrower list keeps exactly that protection (checked as
+// plain substrings, since these are command fragments, not whole words to
+// tokenize) without flagging normal sentences.
+const DANGEROUS_TEXT_PATTERNS = [
+  'rm -rf', 'rm -r ', 'sudo rm', 'del /f', 'del /s', 'rd /s', 'rmdir /s',
+  'format c:', 'format d:', ':(){ :|:& };:', // the classic shell fork bomb
+  'drop table', 'drop database', 'truncate table',
+  'shutdown /s', 'shutdown -s',
+];
+
 // Splits into whole words (handling hyphens, underscores, AND camelCase
 // boundaries — same tokenization idea as _connector-detail.js's groupFor(),
 // duplicated rather than shared since that file runs in the browser and this
@@ -95,7 +115,23 @@ function words(text) {
 export function classifyActionRisk(action) {
   const kindRaw = String(action?.kind || '');
   const kind = kindRaw.toLowerCase(); // only for the RISK_BY_KIND lookup below
-  const proseText = `${action?.label || ''} ${action?.description || ''}`;
+  // For a 'type' action, `label` is the LITERAL text being typed — scanned
+  // against the narrow, command-specific DANGEROUS_TEXT_PATTERNS instead of
+  // the everyday-language RISKY_KEYWORDS below (see that list's own
+  // comment for why: ordinary typed sentences constantly contain words like
+  // "write"/"buy"/"update" that are legitimate signals in a tool's NAME but
+  // meaningless in typed prose). `description` (the model's own stated
+  // reasoning for the action, once actually threaded through — see
+  // session.js's actOnBatch) is always scanned with the broader list
+  // regardless of kind, since that's genuine signal about intent, not raw
+  // text content.
+  const label = String(action?.label || '');
+  const description = String(action?.description || '');
+  if (kind === 'type') {
+    const typedLower = label.toLowerCase();
+    if (DANGEROUS_TEXT_PATTERNS.some((p) => typedLower.includes(p))) return 'risky';
+  }
+  const proseText = kind === 'type' ? description : `${label} ${description}`;
   // `kindRaw` is tokenized with its ORIGINAL case, `proseText` pre-lowered
   // before tokenizing — two different text shapes need two different rules:
   //   - `kindRaw` is an identifier (a tool/action name like "updatePet" or

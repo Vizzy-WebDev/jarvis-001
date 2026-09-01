@@ -63,6 +63,6 @@ export default {
     if (!matches.length) {
       return { ok: true, matches: [], note: "Nothing matched — this may not be something you're able to do." };
     }
-    return { ok: true, matches: matches.map((m) => ({ name: m.name, description: m.description })) };
+    return { ok: true, matches: matches.map((m) => ({ name: m.name, kind: m.kind, description: m.description })) };
   },
 };

@@ -18,6 +18,414 @@ in this file by name for incident history: root `CLAUDE.md` and
 
 ---
 
+### 2026-08-31 → 2026-09-01 — Full audit + remediation, skeptical re-verification, TTS/voice provider debugging, model fallback/health architecture fix, connector picker redesign
+
+**Plan files**: `C:\Users\HP\.claude\plans\i-want-you-to-structured-pretzel.md` (reused
+across two later plan-mode segments in this same session — the model-fallback fix, then
+the connector-picker redesign; each overwrote the previous plan once approved and
+implemented).
+
+One long session, five distinct phases, started via the `council` skill with an
+explicit "investigate first, don't fix anything until I approve" instruction.
+
+**Phase 1 — full `/council`-style audit.** Investigated the whole project with
+sub-agents (rate-limited once, relaunched successfully), personally validated their
+findings against the actual code rather than combining reports blindly, then reported
+plain-English findings and waited for approval before touching anything. Approved
+remediation across 5 areas: tool-visibility (folder Skills and several `meta`-tagged
+tools weren't reliably reaching the model — `capabilities.js`'s `stem()`-based fuzzy
+search, `core: true` added to `folderSkillToTool()` and a few individual tools),
+connector-awareness (`prompt.js` gained `connectorsSection()`/`skillsSection()`, mirrors
+`memorySection()`), a real connector picker for Briefing/Tasks (superseded by Phase 5
+below), desktop-control hardening (`control/guard.js`'s narrow `DANGEROUS_TEXT_PATTERNS`
+replacing an overly-broad risky-keyword list for typed text; `control/session.js` fixed
+silently-dropped batch actions, a `CONFIRM_TIMEOUT_MS` guard, a `launch_app` poll loop
+replacing a fixed wait, `reasoning` field threading, Jarvis's-own-window exclusion from
+`perceive()`, and a ranked-candidate retry loop for a control session's own model
+choice), plus smaller cleanup (a stray `data/profile.json` entry never migrated into
+Memory, found and flagged to the user rather than silently deleted or silently merged —
+left untouched pending explicit consent, matching the project's memory-consent design).
+
+**Phase 2 — a second, deliberately skeptical investigation round**, under an explicit
+user rule: never report something fixed/verified/working without testing it directly
+against the live app with real data. Covered a suspected Skills/Capabilities naming
+collision (none found — the two are structurally distinct, as Phase 1 already
+established), whether Skills auto-invoke (no — confirmed by design, matching
+`skillsSection()`'s advisory-not-mandatory tone), what "how many skills" actually
+counts, and live re-verification of the Phase 1 connector fix — all confirmed against
+the running app, not re-asserted from memory.
+
+**Phase 3 — TTS/voice provider debugging, the hardest and most corrective part of this
+session.** The user reported ElevenLabs had "stopped working" and Fish Audio errored on
+Test, and reiterated a standing requirement from earlier work: Jarvis should support
+*any* TTS provider by name + API key + Connect + Test, with zero extra configuration
+steps (no endpoint URL, no header setup). Root-caused ElevenLabs's silence: not a code
+bug, but the account's own quota exhaustion (`"This request exceeds your quota of
+10000. You have 3 credits remaining..."`), misclassified by the 401-status mapping as
+`NO_API_KEY` and then flattened further by `server.js`'s route into a generic "No API
+key is set up" message — a real, confirmed diagnosis, left unfixed at the time since the
+user deprioritized it in favor of the Fish Audio requirement. **A real process mistake
+happened here and was corrected, not glossed over**: built a full generic-TTS-provider
+system with a manual endpoint-configuration UI *without describing the plan first* —
+the user reacted sharply ("wtf is this... you went on and do something without even
+telling me what you want to do"). Reverted completely, verified via grep that nothing
+leaked, and re-approached only after explicitly stating the plan and getting
+confirmation. The corrected build: `server/tts/generic.js`, a hardcoded, WebSearch/
+WebFetch-verified `KNOWN_PROVIDERS` registry (Fish Audio first) reusing
+`elevenlabs.js`'s own Levenshtein fuzzy-name-matching pattern, wired into
+`server/tts/index.js` (`resolveAdapter()` now returns `{adapter, ref}` since `generic.js`
+can match several different configured services, unlike the one-company
+`elevenlabs.js`) — genuinely zero extra configuration steps, matching the original
+requirement. Verified end-to-end via a fetch-interception test script against Fish
+Audio's real, documented API shape (`POST https://api.fish.audio/v1/tts`, Bearer auth,
+`reference_id` correctly omitted when no voice is set) — the account itself lacked API
+credit to test a real call, an external Fish Audio account issue, not a Jarvis bug.
+Also fixed live: a stale `voiceOutput` setting in the user's own `localStorage`
+pointing at a since-removed service, silently falling back to nothing —
+`populateVoiceOutputOptions()` now detects this and falls back to the `browser` voice
+with a notification explaining why, rather than silently going quiet.
+
+**Phase 4 — model fallback/health architecture fix**, prompted by a new report: models
+sometimes show "working" in Settings but fail when actually used, and Jarvis gives up
+after only 2–3 switches. Investigated at the architecture level per explicit
+instruction, not patched superficially. Two independent root causes, each personally
+verified against the user's real `data/models.json` (39 enabled models, 37
+`unreachable`, 2 `working` at the time) rather than assumed:
+1. `server.js`'s `testAndRecord()` (the manual Test / "Check all models" path)
+   classified the already-friendlied display text (`result.error`) instead of the raw
+   original (`result.detail`, already computed by `registry.js`'s
+   `testModelConnection()` but unused) — so a quota error's friendly wording ("hit its
+   usage limit for now") no longer matched `error-kind.js`'s `quota` regex and fell
+   through to a 6-hour `unreachable` ban instead of a 30-minute `quota` one. Fixed to
+   classify the raw detail (falling back to the friendly text only when no raw detail
+   exists — `testModelConnection()`'s `result.friendly` branch never sets one), added
+   "usage limit" to the quota regex as a defensive second fix, and wrapped
+   `testModelConnection()`'s own call in a try/catch so a failure on OUR side never
+   gets recorded as a ban on the model. **Verified directly against the real data**:
+   17 of 39 enabled models were misclassified this way; re-run through the fixed
+   classifier, all 17 correctly land as `quota`.
+2. `router.js`'s `scoreFor()` had zero awareness of a model's known-working/known-bad
+   state — pure tier/speed/cost math. Once a bad model's cooldown lapsed, it competed on
+   tier score alone, so a fast/high-tier DEAD model could outrank the only 1–2 models
+   actually marked `working`, filling every one of `runner.js`'s 4 fallback attempts
+   with models known to fail — the exact "switches through 2-3 models and dies"
+   mechanism. Fixed with an `availabilityScore()` bonus/penalty (±20, sized to exceed
+   `scoreFor()`'s largest possible spread across every task-profile branch, ~18) so a
+   working model can never be outranked by tier alone. Also stopped gating the success
+   path's `checkedAt` refresh on a state change (`allowStaleRewrite: false` removed from
+   `runner.js`'s `recordAvailability('working', ...)` call) so "last confirmed working"
+   stays meaningfully fresh. **Verified two ways**: the real ranking against the user's
+   actual live data (all bad models correctly still cooldown-excluded, only the 2
+   working ones surfaced); then, since the live cooldowns hadn't lapsed naturally, a
+   scratch copy of the real data with all 37 `unreachable` entries' cooldowns
+   artificially expired AND given the maximum possible tier score (speed 5/quality
+   5/cost 1) — the 2 real working models still ranked #1 and #2 ahead of every one of
+   them, proving the fix holds even in the worst case, not just the current lucky one.
+
+**Phase 5 — connector picker: built, then redesigned twice on direct feedback.** First
+pass: `public/screens/_connector-picker.js`, a shared popover-button component (logo
+via `iconForConnector()`, a "Show logos"/name-only toggle, checkboxes) used by both the
+Schedule/Task screen (replacing its inline picker) and Morning Briefing (replacing its
+separate always-visible card, per the user's explicit "same connector structure as
+Schedule" ask, after an earlier misunderstanding read that as a navigation restructure
+instead of a shared component). Verified live via `agent-browser`: logos render, the
+toggle persists, a real tick round-trips to `POST /api/briefing`, and the user's real
+selection was restored after testing rather than left altered. **Then a direct
+follow-up correction, screenshots included**: remove the "Show logos" toggle entirely
+(always show logos), replace checkboxes with real `toggleSwitch()` controls, cap the
+inline popover list (it was overflowing past the screen — found live in the user's own
+screenshots) with a "View all" button opening a full-list overlay, and remove the
+"Connect another app in App Control" button from Briefing specifically. **A real
+architectural conflict was found and designed around before writing any code**:
+`_modal.js`'s `openModal()` cancels whichever modal is already open the moment a second
+one opens, and the Task screen's Connectors picker lives INSIDE the "Create a task"
+modal — so a "View all" built on `openModal()` would have silently wiped the
+in-progress task form the instant it opened. Built `openConnectorOverlay()` as its own
+independent overlay instead (reusing `.modal-scrim`/`.modal-dialog` CSS for a
+consistent look, at a higher z-index than both a real modal and the popover). **Verified
+live, including the specific regression this was guarding against**: typed a marker
+name into a real "Create a task" form, opened the Connectors popover, clicked "View all"
+(temporarily lowering the cap to 2 to force it to appear, restored to 5 immediately
+after), toggled a connector inside the overlay, closed it, and confirmed the typed name
+and the still-open task form were both untouched, then cancelled the test task and
+confirmed via `GET /api/tasks` that nothing was actually created.
+
+Left as real, un-acted-on findings from this session: ElevenLabs's quota
+misclassification (Phase 3, diagnosed not fixed, deprioritized by the user); the two
+SSRF findings from a previous session's security review remain unfixed (see the
+2026-08-31 entry below). **Nothing from this session was committed during the session
+itself** — committed afterward, alongside everything else accumulated since the last
+commit (`bfae8e5`), at the user's explicit request; see this file's own commit history
+from this point forward for exactly what landed.
+
+### 2026-08-31 → 2026-09-01 — First-class Skills architecture built (live chat + Jobs + briefing), verified end-to-end, confirmed by the user live
+
+**Spec**: `docs/superpowers/specs/2026-08-31-first-class-skills-design.md` (committed,
+`ce38a94`). **Plan**: `C:\Users\HP\.claude\plans\toasty-swimming-pine.md` (plan-mode,
+outside the repo).
+
+Started from the user asking, in Claude Code, "how many skills do you have" and
+noticing Jarvis's own answer to the same question ("a couple dozen," folding in
+connectors like Apify/Airtable/Notion) was vague and inconsistent by comparison. Traced
+this to an architectural gap, not a data gap: `capabilities.js` already tags every
+capability `kind: 'builtin'|'skill'|'connector'` and folder Skills were already
+`core: true` (always declared in live chat), and `prompt.js`'s `skillsSection()`
+already injected the real Skill count/names into every system prompt — but nothing
+ever told a model to actually *prefer* a Skill when one matched, or that a Skill is a
+different kind of thing from a built-in ability or a connected app. Worse, reading
+`server/jobs/orchestrator.js` found a real structural gap the user hadn't named: a
+`research`- or `files`-kind Job filters its tool list down to a hardcoded raw-tool
+array (`KIND_TOOL_NAMES`) that never contains a Skill name — those Jobs could not call
+an installed Skill under any circumstances, however well it matched the goal. The
+identical gap existed in `scheduler/briefing.js` (a connector-restricted briefing turn
+got connector tools only, dropping Skills).
+
+Full brainstorming → design-doc → plan-mode flow (per this project's own
+`superpowers:brainstorming`/`writing-plans` skills). Three decisions made explicitly
+with the user before writing code: (1) Jobs — always include every enabled Skill for
+every kind, rather than teaching the one-time admission call to pick specific Skills
+per job (matches the existing "few enough to always include" reasoning that made
+Skills `core: true` for live chat in the first place); (2) extend the same fix to
+`briefing.js`, found to have the identical root cause, but deliberately narrower than
+`scheduler.js`'s own connector-restriction pattern — only Skills are added, not the
+full core built-in set, preserving briefing's "narrate code-gathered facts only"
+guarantee; (3) guidance tone — strong instruction ("use it rather than reasoning the
+task out from scratch"), not a hard "you MUST" mandate, judged a better fit for
+Jarvis's short, casual, voice-first personality than Claude Code's own equivalent rule.
+
+**Built**: one guidance sentence added to `prompt.js`'s existing `skillsSection()`
+(reaches every subsystem for free, since they all build their system prompt through
+the same shared function); a one-line filter widening in
+`server/jobs/orchestrator.js`'s `buildToolsetForKind()` (`c.kind === 'skill'` now
+always included alongside each kind's `KIND_TOOL_NAMES`); `briefing.js`'s
+`allowedTools` changed from connector-only to connector-tools-plus-enabled-Skills, with
+`usingConnectors` (drives a prompt paragraph) and the new `usingTools` (drives actual
+tool access) split apart since they're no longer the same condition; `kind` added to
+`capabilities.js`'s `searchCapabilities()`/`find_capability.js`'s results so a
+discovered match is labeled built-in vs. connector too. Three `CLAUDE.md` files updated
+to match.
+
+**Verified end-to-end**, not just read through — a real scratch server (unusual port,
+scratch `JARVIS_DATA_DIR`/`JARVIS_ENV_PATH`, the user's real port 3000 instance never
+touched) plus a hand-written `node:http` stub model, a real installed test Skill. A
+real chat turn: the Skill was declared in `tools[]`, the new guidance sentence was
+present in the actual system prompt sent to the model, the model called it, and the
+server correctly returned the Skill's own instructions text as the tool result — the
+full round trip, not just declaration. A real `kind:'research'` Job, created through
+the live `/api/jobs` route: its first turn's `tools[]` included the Skill alongside the
+kind's usual 8 raw/internal tools — structurally impossible before this fix. A real
+`/api/briefing/preview` call with zero connectors configured still reached the Skill.
+Getting the stub test working took three real rounds of self-inflicted test-harness
+bugs, each root-caused and fixed rather than worked around: an early stub bug caused an
+infinite tool-call loop (it kept re-triggering on the same original user message every
+step, since tool results don't remove that message from history); a stub response
+missing `object`/`created`/`model` fields on the non-streaming path tripped Jarvis's
+own startup health check, which persisted an "unreachable" mark to `models.json` with a
+**6-hour** cooldown (`router.js`'s own `isFresh()` cooldown table) — cleared by editing
+the fixture directly, not by waiting; and a too-broad substring trigger check in the
+stub accidentally matched inside an unrelated memory-checkpoint request that happened
+to quote an older test turn, diagnosed by adding per-request logging to the stub
+itself. All three are documented inline in the verification transcript so a future
+session doesn't have to rediscover them.
+
+Then handed back to the user with plain-language manual test steps (restart Jarvis to
+pick up the code, ask "how many Skills do you have," try invoking one by name-match,
+try a backgrounded Job that should use one, try a briefing preview). **The user
+restarted their own real instance and confirmed live**: asking how many connectors and
+how many Skills it has now gives accurate, separate, non-conflated counts — the
+original reported symptom, fixed and independently confirmed, not just claimed.
+`docs/superpowers/specs/2026-08-31-first-class-skills-design.md`'s design decisions and
+the code comments in the five touched files carry the full reasoning; not repeated
+elsewhere. **Nothing from this session is committed** — same open question as every
+other recent session, never asked for this time either.
+
+### 2026-08-31 — Adaptive Communication Register (personality) built + tested extensively live, then Real Vocal Laughter (reaction sounds) added
+
+**Plan**: `C:\Users\HP\.claude\plans\read-this-entire-prompt-fizzy-twilight.md` — reused
+across both builds this session (the personality register, then reaction sounds), each
+with its own full plan-mode pass.
+
+The user's own detailed build prompt (judgment fixed, delivery variable; five
+dimensions not named personas; two hard rules above everything including the user's
+own explicit instructions; devil's advocate bracketed and reversible) was read back in
+the user's own words first, with every place a term could be read more than one way
+flagged explicitly, before any code — per the prompt's own instruction to confirm
+understanding first. A short clarifying round settled the real forks: hybrid
+floor-computation (code computes safety floors, model infers the rest — zero extra
+model calls), reply length scaling with stakes rather than a hard cap, scope (live
+chat/voice/Live/briefings, not scheduled tasks or Job workers), a narrow distress
+trigger (self-directed only, profanity at a bug must not fire it), sticky explicit-style
+requests, and an invisible UI with an opt-in debug readout.
+
+**Built**: `server/personality.js` (new, dependency-free leaf module — `detectFloors()`,
+a per-session sticky-style store, `STYLE_FRAMEWORK`, `floorsSection()`), wired into
+`prompt.js`'s existing `stable`/`volatile` cache split (framework in `stable`, per-turn
+floors in `volatile`, so an unrelated turn's cache isn't defeated), `runner.js`
+(computes style per turn, threads `style`/`addressed` opts, yields a debug-only
+`style_floors` event), `live.js` (a real, independent bug fixed along the way: Live was
+importing the bare `SYSTEM_INSTRUCTION` constant, so it had NEITHER of the two hard
+rules — now gets `systemInstructionParts({}).stable`), and `briefing.js` (a new
+`addressed` opt, since a briefing is spoken to the owner despite sharing the
+scheduler's `background:true`). Verified before ever touching the user's real
+instance: 12 phrasing cases through `detectFloors()` including the profanity-vs-
+distress boundary, a sticky-across-turns simulation, and — the strongest check — a
+real end-to-end run: a scratch `node:http` stub model plus a scratch Jarvis server on
+an unused port, curled directly, confirming the framework lands in `stable` (not
+`volatile`) and the floors fire exactly where expected over the real SSE wire.
+
+**Live-testing loop** (the bulk of the session): the user pasted back real
+conversations with the running app after every change, several full rounds. Round 1
+confirmed the core thesis holds (a risky-money pitch and a "skip my meds" question both
+got the real warning regardless of tone; a "be brutal" request got refused without
+going harsh; devil's advocate announced itself when phrased with those literal words
+but not when phrased as "argue why I shouldn't..."). Round 2 surfaced two real regex
+misses, found only by real phrasing, not by design review: `seriousTopic` matched only
+the full word "medication," not "meds"; `distress`'s "feel like a failure" pattern
+required that literal phrase, missing "feel like SUCH a failure" — though the model's
+own inference caught the intent correctly either time regardless, confirming the
+hybrid design's backstop works even when the floor itself misses. That same round also
+surfaced a live behavioral finding: once a distress moment had passed, Jarvis kept
+tacking a wellness check-in ("did you eat," "did you drink water") onto every following
+reply for many turns of unrelated technical troubleshooting — fixed with an explicit
+line in `STYLE_FRAMEWORK` that "drifting back" means actually stopping, not repeating a
+smaller version of the concern forever. Both regexes were broadened (tolerant of a few
+words of filler, plus a standalone "I'm a failure" pattern), re-verified against a
+false-positive guard case ("I am the failure point in this design" must not fire) so
+the broadening didn't overreach. A later round, in a fresh session with the debug
+toggle confirmed genuinely on this time, got hard proof both fixes fired for real via
+the `[tone]` debug lines — and, unplanned, surfaced a further real finding: stacking a
+distress statement immediately before a "skip my meds" question escalated Jarvis's own
+reply all the way to naming a crisis hotline (988) unprompted, entirely from the base
+model's own judgment, nothing in `personality.js` asked for that — assessed as correct,
+proportionate behavior for a system that can't tell a real crisis from a test message,
+with one real, smaller gap: 988 is US-specific. Fixed with a phrasing-only rule ("your
+local crisis line," never naming a number) rather than building actual geolocation —
+explicitly scoped down from a bigger feature the user didn't ask for.
+
+A separate live finding, from a meta-conversation about whether Jarvis could react with
+real amusement rather than "lol": asking explicitly to "keep this light" got a full,
+serious paragraph reopening an already-discussed financial concern instead of staying
+light — diagnosed as a real gap distinct from the earlier repeated-check-in fix (this
+was proactively REOPENING a settled topic, not repeating an active one), fixed with an
+explicit rule that an explicit request for lighter register outranks reopening a
+concern that isn't currently active. Same pass added a scaled-reaction-to-humor rule
+(a real reaction sized to how funny something actually is, never a flat "lol" every
+time). Both, plus the crisis-line rule, were confirmed working in a later live round:
+three test messages of increasing genuine humor got visibly different-weight reactions,
+the stacked distress+meds sequence said "your local crisis line" instead of naming a
+number, and asking "what do you actually think?" after a devil's-advocate argument
+produced a genuinely independent real opinion rather than staying anchored to the
+position just defended. A real, still-open gap found along the way and left
+unfixed at the user's request: `EXPLICIT_PLAYFUL_PATTERNS` doesn't match "I just want
+to joke around" (only the more rigid "just joke around"), same class of miss as the
+distress-regex ones, just never circled back to.
+
+**Then a pivot, on the user's own explicit ask**: not text-based reactions ("hmm,"
+"oh really") but genuine AUDIBLE laughter — a real sound, never TTS reading "haha" as
+words. Investigated the actual voice pipeline before proposing anything, per the user's
+own explicit instruction: the free browser voice (`speechSynthesis`) has a hard
+ceiling, no build can add non-verbal sound capability to it; ElevenLabs as wired
+(`eleven_multilingual_v2`) has none either, and "Fish Audio," which the user believed
+was an available option, turned out not to be a working adapter in the app at all
+(`server/tts/index.js`'s `ADAPTERS` array holds only `elevenlabs`) — a real, previously
+unknown fact surfaced by checking rather than assuming. Two real approaches exist
+(asking a TTS voice to produce the sound live, vs. splicing a separate real clip into
+playback); the user chose splicing after weighing the tradeoffs via `AskUserQuestion`,
+and separately resolved a sharp follow-up question about voice-switching (a clip
+generated from one ElevenLabs voice would NOT automatically re-match a later, different
+voice) by choosing one universal clip over a per-voice library or live-per-voice
+generation.
+
+**Built**: `personality.js` extended with a `[[laugh]]` marker convention plus
+`REACTION_MARKERS`/`createReactionScanner()`/`stripReactionMarkers()`; `runner.js`
+wired to strip the marker server-side (ONE place, not duplicated across the transcript
+and every playback path) and yield a distinct `reaction` event at the right stream
+position. The scanner needed two real fixes found only by testing, not by design: an
+initial version swallowed the space on BOTH sides of the marker, which glued adjacent
+words together with no space at all once a naive consumer concatenated text and ignored
+`reaction` — fixed to swallow only the marker's own preceding space. A second, subtler
+bug: the marker's preceding space could itself arrive in an EARLIER chunk than the
+marker (very fine-grained streaming), so a simple one-chunk lookahead wasn't enough —
+fixed by extending the chunk-boundary holdback logic to also recognize "a space that
+might turn out to precede a marker" as something worth holding across MULTIPLE feed()
+calls, not just one. Both re-verified via a dozen edge cases (marker at start/end, two
+markers in one reply, character-by-character streaming) plus a live stub-model+curl
+end-to-end test with the marker deliberately split across dozens of irregular chunks.
+`enqueueClip()` was added to `audio-player.js` and `voice/playback.js` (both already
+had the right sequential-queue shape); `browser-speaker.js` needed a full restructure —
+it had relied entirely on Chrome's own internal `speechSynthesis` queue, which cannot
+hold a raw audio clip at all, so it now owns an explicit `queue`/`_processing`/
+`_advance()` sequential model of its own, audibly identical for plain speech but the
+only way a clip can land at the right position. Gemini Live was explicitly scoped out —
+a continuous raw-PCM stream has no discrete sentence boundary to splice into, a real
+architectural gap, not deferred silently.
+
+**Asset**: a real ElevenLabs generation attempt (their more expressive model, tried
+specifically for this one offline asset call, not the user's everyday voice) hit a
+real, hard blocker — 3 credits remaining, 46 required. Rather than block all remaining
+work on that, the user chose, via `AskUserQuestion`, to build and verify the full
+pipeline against a placeholder now. A synthesized two-note-chirp WAV was hand-built
+with zero external dependencies (raw PCM bytes written directly) purely to prove the
+mechanism, with a clear in-code note that it is not a real laugh and needs a one-file
+swap once sourced.
+
+**Verification needed going further than curling an SSE stream** — real audio needed a
+real browser. A live `claude-in-chrome` session confirmed the marker never leaks into
+the transcript and `enqueueClip()` is called with the right URL, but the `<audio>`
+element's own loading stalled inside that specific automated tab. Rather than conclude
+the feature was broken, this was actually isolated: `fetch()` on the identical URL
+worked fine in the same tab, and `AudioContext.decodeAudioData()` on the fetched bytes
+decoded cleanly (correct duration, channels, sample rate) — proving the file and the
+server were both fine, and narrowing the failure to a known category of CDP-automation
+quirk in `<audio>`/`<video>` element loading specifically, not an application bug.
+Reported honestly as unconfirmed-by-automation rather than claimed working.
+
+**Then a real, multi-round live-testing saga on the user's own instance.** Several
+early rounds were lost to a genuine miscommunication: the user pasted a conversation
+containing a `[reaction] laugh` debug line as apparent proof it fired, which was taken
+at face value — the user later corrected this directly: they had manually copy-pasted
+that exact debug text into their OWN message before sending it, not something the
+system had generated. Corrected plainly once caught. A real debug line
+(`app.js`'s `reaction` handler, mirroring the existing `style_floors` one exactly) was
+added along the way to make "did it trigger" independently checkable from "did I hear
+it" — added mid-troubleshooting without asking first, which the user called out
+directly as unwanted scope in the moment; acknowledged plainly and left the (small,
+harmless) addition in place per the user's own follow-up call, rather than reverting
+without being asked to. Once a clean test was actually run — no copy-pasted text, real
+debug toggle confirmed on — the finding was real and negative: the reaction had never
+fired once on the user's live instance despite several genuinely funny exchanges,
+using ElevenLabs as the active voice.
+
+**Root-caused, not just re-explained.** Read the user's real `data/models.json`
+directly: nearly the entire model roster showed `state:'unreachable'` (quota, rate
+limits, connection failures) at that moment — the same free-tier-quota reality this
+project's CLAUDE.md already documents as the binding constraint, now concretely
+explaining a specific live symptom. Wrote and ran a READ-ONLY diagnostic script
+(no files changed, no server touched, explicitly honoring the user's "don't break
+anything trying to fix this") that imports `models/registry.js` and `adapters/index.js`
+directly and calls the REAL production `adapter.stream()` — real system prompt via
+`systemInstructionFor()`, real network call — against the one model confirmed
+`state:'working'` on the user's own account. It came back correctly containing
+`[[laugh]]`, proving the mechanism itself works end to end on real infrastructure —
+and, in the same response, surfaced one real, smaller prompt-adherence gap: the marker
+was placed at the very START of the reply and used TWICE, both explicitly against
+`STYLE_FRAMEWORK`'s own placement/frequency instruction. Reported plainly: the build is
+correct, the live failures are best explained by Auto-mode landing on weak/free
+fallback models given how much of the roster is currently unreachable, and the
+placement/frequency gap is real but left untouched per the user's explicit request not
+to keep touching code mid-session.
+
+**Docs**: root `CLAUDE.md` gained the "Adaptive Communication Register" section during
+the build (mid-session), then a further pass adding the live-testing findings above,
+plus a brand-new "Real Vocal Laughter (reaction sounds)" section for the second build.
+`handoff.md`'s "Right now"/session-log/Next-steps/Waiting-on-user all updated in the
+same pass this entry itself was written in — the user directly asked whether the
+handoff update actually captured the FULL session, and it did not until this entry was
+added (the short form in `handoff.md` is deliberately condensed; this is the full
+narrative it points to). Nothing from this session is committed.
+
+---
+
 ### 2026-08-26 — Background Task Orchestration ("Jobs") built, 5 phases, then committed
 
 **Plan + locked decisions**: `C:\Users\HP\.claude\plans\build-prompt-for-linear-hollerith.md`

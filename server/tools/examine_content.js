@@ -18,6 +18,12 @@ import { latestInSession, getContent } from '../content/content-store.js';
 
 export default {
   name: 'examine_content',
+  // The prompt describes a two-step "share, then examine" flow and treats
+  // examine_content as the always-available second half of share_content
+  // (also core) — non-core here would mean that documented flow literally
+  // cannot complete without the model first guessing to search for its own
+  // next step. See root CLAUDE.md's Model system section.
+  core: true,
   meta: true,
   description:
     'Ask something about a piece of content Jarvis already knows about (from share_content) — what it says, ' +

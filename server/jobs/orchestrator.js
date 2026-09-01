@@ -81,12 +81,20 @@ const INTERNAL_JOB_TOOLS = ['report_job_done', 'report_job_stuck', 'request_job_
  * startWorker below). Recomputed per job rather than cached: a connector's
  * tools can change between jobs (connected/disconnected mid-use).
  */
-function buildToolsetForKind(kind) {
+export function buildToolsetForKind(kind) {
   const caps = listCapabilities({ includeMeta: false }); // already excludes internal tools
-  const filtered = kind === 'generic' ? caps : caps.filter((c) => KIND_TOOL_NAMES[kind]?.includes(c.name));
   if (kind !== 'generic' && !KIND_TOOL_NAMES[kind]) {
     throw new Error(`Unknown job kind "${kind}".`);
   }
+  // A folder Skill is never in KIND_TOOL_NAMES (those are raw built-in tool names), but a
+  // Skill is the user's own packaged process — not a capability the kind is trying to fence
+  // off — so every kind gets all of them. Same reasoning that makes folder Skills
+  // `core: true` for live chat (server/skills/index.js): few in number, cheap to always
+  // include, and a Skill nobody can see is a Skill that never gets used.
+  const filtered =
+    kind === 'generic'
+      ? caps
+      : caps.filter((c) => c.kind === 'skill' || KIND_TOOL_NAMES[kind]?.includes(c.name));
   const kindByName = new Map(filtered.map((c) => [c.name, c.kind]));
   for (const name of INTERNAL_JOB_TOOLS) kindByName.set(name, 'builtin');
   const allowedTools = [...filtered.map((c) => c.name), ...INTERNAL_JOB_TOOLS];

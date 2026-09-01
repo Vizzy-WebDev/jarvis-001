@@ -73,6 +73,7 @@ import { Playback } from '../voice/playback.js';
 import { MicLevelMonitor, BargeInDetector } from '../voice/vad.js';
 import { computeWaitMs } from '../turn-detector.js';
 import { BrowserSpeaker } from '../browser-speaker.js';
+import { REACTION_SOUNDS } from '../reaction-sounds.js';
 
 const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -767,6 +768,15 @@ export class DuplexEngine extends VoiceEngine {
         this._emit('tool_result', data);
       } else if (data.type === 'model_switch') {
         this._emit('model_switch', data);
+      } else if (data.type === 'style_floors') {
+        this._emit('style_floors', data);
+      } else if (data.type === 'reaction') {
+        // Real, non-verbal vocal cue (see server/personality.js's
+        // createReactionScanner()) — same pattern as pipeline-engine.js:
+        // queued into the SAME speaker used for spoken text (BrowserSpeaker
+        // or Playback, both share enqueueClip() now) so it plays at exactly
+        // the right position relative to the surrounding speech.
+        this.playback?.enqueueClip(REACTION_SOUNDS[data.kind]);
       } else if (data.type === 'restart') {
         // Same gating as 'chunk'/'tool_start'/'tool_result' above, and the
         // exact same real bug: a model-switch mid-turn can land here while

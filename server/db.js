@@ -275,6 +275,44 @@ const MIGRATIONS = [
   (conn) => {
     conn.exec(`ALTER TABLE jobs ADD COLUMN resume_note TEXT;`);
   },
+
+  // 6: One-off repair for a real, now-fixed bug — a turn that failed
+  // between writing a tool-call step and writing its result
+  // (server/models/runner.js's runOnEntry, between pushAssistantToolCalls
+  // and pushToolResults) used to leave the tool-call message behind
+  // forever, with nothing rolling it back. Going forward, runner.js's own
+  // catch block calls conversation.js's removeLastOrphanedToolCall() the
+  // moment this happens, keeping both the in-memory session and this table
+  // in sync. This migration is the one-time cleanup of rows that already
+  // existed from before that fix: an assistant message carrying
+  // `toolCalls` whose very next message (by seq, same conversation) either
+  // doesn't exist or isn't the matching `tool` reply. Left alone, a lone
+  // tool-call with no result is exactly what every adapter (gemini.js,
+  // anthropic.js, openai-compatible.js) replays as an unanswered
+  // function/tool call on every later turn — which every provider's API
+  // rejects outright, so the conversation's whole model fallback chain
+  // fails turn after turn. Confirmed live: 10 such rows existed across the
+  // real conversation history before this migration was written.
+  (conn) => {
+    const rows = conn
+      .prepare(`SELECT id, conversation_id, seq, payload FROM messages WHERE role = 'assistant' AND payload IS NOT NULL`)
+      .all();
+    const nextRole = conn.prepare(
+      `SELECT role FROM messages WHERE conversation_id = ? AND seq > ? ORDER BY seq ASC LIMIT 1`
+    );
+    const del = conn.prepare('DELETE FROM messages WHERE id = ?');
+    for (const row of rows) {
+      let payload;
+      try {
+        payload = JSON.parse(row.payload);
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(payload.toolCalls) || !payload.toolCalls.length) continue;
+      const next = nextRole.get(row.conversation_id, row.seq);
+      if (!next || next.role !== 'tool') del.run(row.id);
+    }
+  },
 ];
 
 function migrate(conn) {

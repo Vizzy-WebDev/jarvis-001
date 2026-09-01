@@ -36,6 +36,21 @@ it into the plan text was gone by the time the prompt was written.
 model decides based on the size of the project; the old build only ever
 produced one, regardless.
 
+**Every background step (research/plan/prompts) actually lands in the
+conversation now, success or failure** (`pushStepToConversation()`) — a
+confirmed, live gap: each tool's own doc comment already promised this ("the
+plan arrives as a document card in the conversation," `write_project_
+plan.js`), but the engine only ever `announce()`d over SSE (a UI-only
+broadcast) and updated the project record, with nothing ever reaching the
+model's own transcript either way. A failed step used to be silently
+undiscoverable from conversation entirely — asking "so what did the research
+find?" got no honest answer, since the model had no record anything was even
+attempted. Matches `content/investigator.js`'s
+`pushFindingToConversation()` shape: the full document goes into history (a
+later "what did that say again?" works, and the model can read it back); the
+model's own SPOKEN reply stays governed separately by each tool's own
+`spoken_hint` — landing in history is not the same as reciting it out loud.
+
 `assistants.js` is plain data so adding a receiving AI is one entry; the
 `custom` entry carries a user-supplied tool name, since the requirement was
 explicitly that this not be a fixed list.

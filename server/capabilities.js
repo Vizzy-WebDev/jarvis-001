@@ -115,6 +115,22 @@ export function getToolDeclarations({ includeMeta = true, unlocked } = {}) {
   }));
 }
 
+// Very small, deliberately conservative stemmer — normalizes a handful of
+// common verb/plural endings (typing/typed/types -> typ) so a query using
+// one word form matches a description using another. Applied to both the
+// query and the haystack, so the match is symmetric either direction.
+// Confirmed live gap this closes: "type text into notepad" scored 0 against
+// control_computer.js's description, which says "typing" — a real word,
+// just not the one the user said. Not a real stemmer (no dictionary, no
+// irregular forms) — just enough to stop the most common verb-form miss.
+function stem(word) {
+  if (word.length > 5 && word.endsWith('ing')) return word.slice(0, -3);
+  if (word.length > 4 && word.endsWith('ed')) return word.slice(0, -2);
+  if (word.length > 4 && word.endsWith('es')) return word.slice(0, -2);
+  if (word.length > 3 && word.endsWith('s') && !word.endsWith('ss')) return word.slice(0, -1);
+  return word;
+}
+
 /**
  * Simple keyword-overlap search over every NON-core capability (built-in
  * tools, folder Skills, connector tools alike) — what find_capability.js
@@ -126,7 +142,7 @@ export function getToolDeclarations({ includeMeta = true, unlocked } = {}) {
  * drops anything already unlocked this turn, so repeated searches don't
  * keep re-surfacing what the model can already call.
  */
-export function searchCapabilities(query, { includeMeta = true, limit = 6, excludeNames } = {}) {
+export function searchCapabilities(query, { includeMeta = true, limit = 8, excludeNames } = {}) {
   const q = String(query || '').toLowerCase();
   // length > 2 drops stopwords ("a", "to", "of", "is", ...) — without this,
   // a 1-2 letter query word matches almost every description as a bare
@@ -136,6 +152,7 @@ export function searchCapabilities(query, { includeMeta = true, limit = 6, exclu
   // unrelated tools that happened to share more short, meaningless words.
   const queryWords = q.split(/[^a-z0-9]+/).filter((w) => w.length > 2);
   if (!queryWords.length) return [];
+  const queryStems = queryWords.map(stem);
 
   const candidates = allCapabilities({ includeMeta }).filter(
     (c) => !c.core && c.name !== 'find_capability' && !excludeNames?.has(c.name)
@@ -144,20 +161,45 @@ export function searchCapabilities(query, { includeMeta = true, limit = 6, exclu
   const scored = candidates
     .map((c) => {
       const haystack = `${c.name.replace(/_/g, ' ')} ${c.description || ''}`.toLowerCase();
+      const haystackStems = new Set(haystack.split(/[^a-z0-9]+/).filter(Boolean).map(stem));
       // Word-boundary match, not a bare substring — otherwise a query word
       // like "an" or "or" matches as a fragment inside unrelated longer
       // words (e.g. "an" inside "channel"), the same false-positive class
-      // the length filter above addresses, just for longer words.
+      // the length filter above addresses, just for longer words. An exact
+      // match scores a full point; a stemmed-only match (the query's verb
+      // form differs from the description's) scores half, so a literal
+      // match still outranks a looser one on a tie.
       let score = 0;
-      for (const w of queryWords) {
+      for (let i = 0; i < queryWords.length; i++) {
+        const w = queryWords[i];
         if (new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(haystack)) score += 1;
+        else if (haystackStems.has(queryStems[i])) score += 0.5;
       }
       return { c, score };
     })
     .filter((s) => s.score > 0)
     .sort((a, b) => b.score - a.score);
 
-  return scored.slice(0, limit).map(({ c }) => ({ name: c.name, description: c.description, parameters: c.parameters }));
+  // Capped, not the full raw description — confirmed live source of the
+  // connector-hallucination problem: one connector's own cached MCP tool
+  // description ran to 4,500+ characters and, ~1,500 characters in,
+  // asserted (in that service's own voice) which apps ITS account has
+  // connected — text with nothing to do with what the tool actually does,
+  // that a search result would otherwise hand the model verbatim before
+  // the tool is ever even unlocked. A plain length cap (not a
+  // first-sentence cut — some real descriptions carry load-bearing schema
+  // guidance past the first sentence) keeps enough for the model to judge
+  // relevance without carrying arbitrarily long, unvetted text from a
+  // remote service. The FULL description is still exactly what reaches the
+  // model once a tool is actually unlocked and declared via
+  // getToolDeclarations() below — this cap applies only to the discovery
+  // step, where the full text was never needed anyway.
+  const SEARCH_DESCRIPTION_CAP = 300;
+  return scored.slice(0, limit).map(({ c }) => {
+    const full = c.description || '';
+    const description = full.length > SEARCH_DESCRIPTION_CAP ? `${full.slice(0, SEARCH_DESCRIPTION_CAP)}…` : full;
+    return { name: c.name, kind: c.kind, description, parameters: c.parameters };
+  });
 }
 
 /**

@@ -102,24 +102,78 @@ export function getMemory(id) {
 }
 
 /**
- * Every approved, non-archived memory, formatted for injection into the
- * system prompt (see server/prompt.js) — grouped by category so it reads as
- * organized context, not a flat dump. This is the whole of "recall": the
- * set is small enough to just always be in context, so nothing needs to be
- * searched for at answer time.
+ * Ids of memories a still-PENDING candidate says contradicts what's
+ * currently saved (memory_candidates.conflict_with, status='pending') —
+ * used by approvedMemoriesText() to hold a contradicted memory out of the
+ * prompt until the user actually resolves the conflict on the Memory
+ * screen. memory-policy.js already makes a conflicting candidate
+ * un-auto-resolvable at every trust level (a conflict always needs a human
+ * decision) — this is the other half of that: while it waits, the OLD,
+ * possibly-wrong memory shouldn't keep being asserted to the model as
+ * settled fact every single turn. Confirmed live: a memory reading "User
+ * uses a Mac for development" kept being injected while a pending
+ * candidate said the opposite, directly contradicting the base system
+ * prompt's own "present with them on their Windows PC" line.
+ */
+function conflictedMemoryIds() {
+  const rows = getDb()
+    .prepare(`SELECT DISTINCT conflict_with AS id FROM memory_candidates WHERE status = 'pending' AND conflict_with IS NOT NULL`)
+    .all();
+  return new Set(rows.map((r) => r.id));
+}
+
+// Hard ceiling on what gets injected into the system prompt, regardless of
+// how large the underlying memory set grows — this is what keeps
+// "curation is what keeps this affordable" (root CLAUDE.md's Memory
+// section) true even once memoryTrust:'auto' lets memories accumulate with
+// no per-save review. listMemories() already returns newest-updated first,
+// so capping is just "keep the front of the list".
+const MAX_INJECTED_MEMORIES = 30;
+const MAX_INJECTED_CHARS = 6000;
+
+/** "Aug 12, 2026" — an absolute date, not a relative one, so it stays true no matter how long the memory sits in the prompt unread before the model actually processes this turn. */
+function shortDate(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+/**
+ * Every approved, non-archived, non-conflicted memory, formatted for
+ * injection into the system prompt (see server/prompt.js) — grouped by
+ * category so it reads as organized context, not a flat dump, and dated so
+ * the model can tell how old a note is (the same discipline
+ * search_conversations.js's own tool already asks the model to apply to
+ * anything it recalls — a memory is no different: an old note isn't
+ * automatically still true). This is the whole of "recall": the set is
+ * small enough to just always be in context, so nothing needs to be
+ * searched for at answer time — capped (see MAX_INJECTED_MEMORIES/CHARS)
+ * so that stays true as the store grows, rather than an assumption that
+ * quietly stops holding.
  */
 export function approvedMemoriesText() {
-  const memories = listMemories({});
+  const conflicted = conflictedMemoryIds();
+  const memories = listMemories({}).filter((m) => !conflicted.has(m.id));
   if (!memories.length) return '';
+
   const byCategory = new Map();
+  let used = 0;
+  let count = 0;
   for (const m of memories) {
+    if (count >= MAX_INJECTED_MEMORIES) break;
+    const date = shortDate(m.updatedAt || m.createdAt);
+    const line = `- ${m.text}${date ? ` (noted ${date})` : ''}`;
+    if (used + line.length > MAX_INJECTED_CHARS) break;
     if (!byCategory.has(m.category)) byCategory.set(m.category, []);
-    byCategory.get(m.category).push(m.text);
+    byCategory.get(m.category).push(line);
+    used += line.length;
+    count++;
   }
+
   const lines = [];
-  for (const [category, texts] of byCategory) {
+  for (const [category, entries] of byCategory) {
     lines.push(`${category}:`);
-    for (const t of texts) lines.push(`- ${t}`);
+    lines.push(...entries);
   }
   return lines.join('\n');
 }

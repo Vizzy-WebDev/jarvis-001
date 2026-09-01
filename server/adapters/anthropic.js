@@ -4,7 +4,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { getSecret } from '../config.js';
-import { systemInstructionFor } from '../prompt.js';
+import { systemInstructionParts } from '../prompt.js';
 import { assistantTextOf } from '../conversation.js';
 
 const MAX_TOKENS = 1024;
@@ -32,6 +32,15 @@ function requireKey(entry) {
     throw err;
   }
   return apiKey;
+}
+
+// `entry.baseUrl` is set only for a Custom connection whose probe (see
+// server/models/probe.js) resolved to this adapter's wire shape against a
+// non-Anthropic host — real Anthropic accounts never set it. Undefined
+// falls through to the SDK's own default (api.anthropic.com).
+function client(entry) {
+  const apiKey = requireKey(entry);
+  return new Anthropic({ apiKey, baseURL: entry.baseUrl || undefined });
 }
 
 // Anthropic has no video-input path in this API — a `kind: 'video'` media
@@ -113,17 +122,36 @@ function toolsForAnthropic(tools) {
 }
 
 export async function* stream(entry, messages, opts = {}) {
-  const apiKey = requireKey(entry);
-  const client = new Anthropic({ apiKey });
+  const c = client(entry);
   const tools = toolsForAnthropic(opts.tools);
 
-  const s = client.messages.stream({
-    model: entry.model,
-    max_tokens: MAX_TOKENS,
-    system: systemInstructionFor(opts),
-    messages: toMessages(messages),
-    tools,
-  });
+  // Two text blocks, not one plain string: `cache_control` on the stable
+  // block marks "everything up to and including this is a cache
+  // breakpoint" — a turn whose memories/pending-jobs haven't changed since
+  // the last one reuses Anthropic's cached prefix (lower latency, lower
+  // cost) instead of a full re-prefill on every single turn. The volatile
+  // block (current time, "N minutes ago", low-confidence note) rides
+  // AFTER the breakpoint with no cache_control of its own, so it never
+  // needs to match byte-for-byte for the cached part to still hit — see
+  // prompt.js's systemInstructionParts().
+  const { stable, volatile } = systemInstructionParts(opts);
+  const system = volatile
+    ? [
+        { type: 'text', text: stable, cache_control: { type: 'ephemeral' } },
+        { type: 'text', text: volatile },
+      ]
+    : [{ type: 'text', text: stable, cache_control: { type: 'ephemeral' } }];
+
+  const s = c.messages.stream(
+    {
+      model: entry.model,
+      max_tokens: MAX_TOKENS,
+      system,
+      messages: toMessages(messages),
+      tools,
+    },
+    { signal: opts.signal }
+  );
 
   for await (const event of s) {
     if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
@@ -146,19 +174,28 @@ export async function* stream(entry, messages, opts = {}) {
     return;
   }
 
-  const textBlock = message.content.find((b) => b.type === 'text');
+  // Join ALL text blocks, not just the first — a reply can carry more than
+  // one (e.g. text before and after a thinking/tool-adjacent block), and
+  // `.find()` here used to silently drop everything after the first one:
+  // the UI (which streams every text_delta above) would show the full
+  // reply, but the transcript, the `done` event, and Chat History would
+  // all persist only its opening fragment — invisible until a model switch
+  // dropped the raw round-trip that was papering over it.
+  const text = message.content
+    .filter((b) => b.type === 'text')
+    .map((b) => b.text)
+    .join('');
   yield {
     type: 'final',
-    text: textBlock?.text || "Sorry, I didn't quite catch that.",
+    text: text || "Sorry, I didn't quite catch that.",
     raw: { adapter: 'anthropic', content: message.content },
   };
 }
 
 export async function testConnection(entry) {
   try {
-    const apiKey = requireKey(entry);
-    const client = new Anthropic({ apiKey });
-    const response = await client.messages.create({
+    const c = client(entry);
+    const response = await c.messages.create({
       model: entry.model,
       max_tokens: 10,
       messages: [{ role: 'user', content: 'Say "ready" and nothing else.' }],
@@ -184,9 +221,8 @@ export async function testConnection(entry) {
  * friendly {models, error} shape.
  */
 export async function listModels(entry) {
-  const apiKey = requireKey(entry);
-  const client = new Anthropic({ apiKey });
-  const page = await client.models.list();
+  const c = client(entry);
+  const page = await c.models.list();
 
   const out = [];
   for await (const m of page) {

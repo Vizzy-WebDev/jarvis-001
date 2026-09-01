@@ -125,6 +125,17 @@ function folderSkillToTool(folder) {
     description: folder.description || runnablePipeline?.description || pipeline?.description || '',
     parameters: runnablePipeline ? inputsToParameters(runnablePipeline) : { type: 'object', properties: {}, required: [] },
     meta: false,
+    // Confirmed live: with folder Skills excluded from the model's default
+    // (core) tool list, a Skill was never noticed as relevant to a
+    // conversation unless the user named it outright — the model has no
+    // reason to search for something it doesn't know exists, and a live
+    // test confirmed it substitutes a generic built-in tool (web_search)
+    // instead of an actual installed Skill that plainly applied. Folder
+    // Skills are few in number (unlike the 46 built-in tools or the 100+
+    // connector tools the core/non-core split exists to hide the bulk of),
+    // so making all of them always-visible is cheap and is what makes real
+    // auto-invocation possible at all.
+    core: true,
     kind: 'skill',
     confirm: confirmSteps.length ? 'always' : undefined,
     summarize() {

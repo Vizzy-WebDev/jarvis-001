@@ -19,6 +19,12 @@ const DEFAULTS = {
   // mid-word, but locks voice mode to Gemini. Default to pipeline since
   // it's the more thoroughly tested path.
   voiceEngine: 'pipeline', // 'pipeline' | 'live'
+  // Off by default — see server/personality.js. When on, a system note
+  // appears in the transcript whenever a communication-register "floor"
+  // fired (distress detected, serious-topic detected, an explicit style
+  // request, devil's-advocate framing) — purely diagnostic, never shown to
+  // the model, never required for normal use.
+  debugStyleFloors: false,
 };
 
 function load() {

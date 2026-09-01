@@ -19,6 +19,32 @@ import { checkpointConversation } from './memory/memory-review.js';
 let activeId = null; // cached; chat-store.js's app_state table is the source of truth
 let reopenCheckpointDone = false; // the "next open" memory checkpoint only ever fires once per process
 
+// Per-session turn coordinator — fixes the "requirements get lost or
+// replaced instead of merged" symptom. Voice input can arrive as several
+// separate messages in quick succession (a follow-up said while Jarvis is
+// still "thinking" about the first one); before this, each one opened its
+// own EventSource -> runTurn on the SAME session with no idea the other
+// existed — two turns ran concurrently against one transcript, each
+// replying to a transcript the other hadn't caught up to yet. Confirmed
+// live: 149 adjacent assistant-reply-then-assistant-reply pairs across the
+// real chat history, several visibly contradicting each other (see the
+// diagnosis in the plan this implements).
+//
+// sessionId -> { controller: AbortController|null, stopped: Promise|null }
+// `controller` is set for exactly as long as a turn is actually running;
+// `stopped` resolves the moment it fully stops (aborted or not), which is
+// what lets the next caller wait for a clean handoff instead of racing it.
+const turnState = new Map();
+
+function getTurnState(sessionId) {
+  let s = turnState.get(sessionId);
+  if (!s) {
+    s = { controller: null, stopped: null };
+    turnState.set(sessionId, s);
+  }
+  return s;
+}
+
 /**
  * The session id every chat turn should use right now. Lazily creates the
  * very first conversation (fresh install) or resumes whatever was active
@@ -52,9 +78,65 @@ export function getActiveSessionId() {
   return activeId;
 }
 
-/** Streams one turn in the currently active chat session. See models/runner.js for the full event shape. */
+/**
+ * Streams one turn in the currently active chat session — merge-and-restart
+ * coordinated, so a message that arrives while a turn is still in flight
+ * never runs as a second, independent turn racing the first. See
+ * models/runner.js for the full event shape.
+ *
+ * If a turn is already running for this session, it's aborted (no health
+ * penalty, nothing partial persisted — see runner.js's catch block) and
+ * this call waits for it to actually stop before starting its own. No text
+ * needs to be manually joined: runTurn() pushes the user's message to the
+ * transcript BEFORE trying any model, so an earlier message that got
+ * aborted before it was answered is already sitting there — this new turn
+ * reads the transcript fresh and naturally sees both, answering everything
+ * in one reply instead of dropping or racing the earlier one. The older
+ * call's own connection is always the one the browser already closed
+ * before opening this one (see pipeline-engine.js's _send(), which calls
+ * interrupt() first) — it doesn't try to run anything further once
+ * aborted, it just stops.
+ */
 export async function* chatStream(userText, opts = {}) {
-  yield* runTurn(getActiveSessionId(), userText, opts);
+  const sessionId = getActiveSessionId();
+  const state = getTurnState(sessionId);
+
+  // Claim the slot. Loops (rather than a single abort-and-wait) because a
+  // THIRD message racing in during the wait could claim the freed slot
+  // first — rare given real request timing, but this converges cleanly
+  // either way instead of assuming it never happens.
+  while (state.controller) {
+    state.controller.abort();
+    await state.stopped;
+  }
+
+  const controller = new AbortController();
+  state.controller = controller;
+  let resolveStopped;
+  state.stopped = new Promise((resolve) => {
+    resolveStopped = resolve;
+  });
+
+  try {
+    yield* runTurn(sessionId, userText, { ...opts, signal: controller.signal });
+  } finally {
+    if (state.controller === controller) state.controller = null;
+    resolveStopped();
+  }
+}
+
+/**
+ * Aborts whatever turn is currently running for a session, if any — a
+ * no-op (nothing to do) once a turn has already finished. Wired to the
+ * chat-stream route's `req.on('close', ...)` (server.js) so a browser tab
+ * closing, a network drop, or the client abandoning its own EventSource
+ * for a reason other than sending a new message (chatStream() above
+ * already covers that case on its own) stops the server-side work instead
+ * of it running to completion — and possibly appending a late reply —
+ * with nobody left to see it.
+ */
+export function abortActiveTurn(sessionId) {
+  getTurnState(sessionId).controller?.abort();
 }
 
 /** Non-streaming convenience wrapper — collects the streamed turn into a single reply string. */

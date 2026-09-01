@@ -6,53 +6,75 @@ it end to end. See "The pruning rule" at the bottom before adding to it.
 
 ## Right now
 
-**Everything on disk was committed for the first time this session** (2026-08-26) — the
-voice/conversation rebuild, Pipeline Skills + the tools/skills split, Chat Persistence +
-Memory, connector fixes, and this session's own new work (below), all of it previously
-sitting uncommitted since the initial commit. Two commits on branch
-`jobs-subsystem-and-backlog` off `main` (not merged, not pushed): one bundling
-everything that predates this session, one for this session's own new files — see that
-second commit's message, or `handoff-archive.md` § "Background Task Orchestration
-("Jobs") built, 5 phases, then committed", for why it's split that way and not further.
-**The user's live server has still never been restarted to pick up ANY of it — none of
-it is live yet**, same caution as always about not restarting their instance without
-being asked. The two most-recently-reported voice bugs (an unconditional watchdog
-re-arm on `'restart'`; a new engine-level "speaking" safety-net watchdog) were only ever
-verified via standalone timer tests, not real audio — still needs the user's own
-restart + retest once the branch is live.
+**This session (2026-08-31 → 2026-09-01) ran a full audit + remediation, then fixed
+two real, live-verified bugs the user reported after using the app.** See
+`handoff-archive.md` § "Full audit + remediation, skeptical re-verification, TTS/voice
+provider debugging, model fallback/health architecture fix, connector picker redesign"
+for the full five-phase narrative; the session log entry below for the short version.
+Headline outcomes:
+- **Model fallback/health architecture fixed at the root**, not patched superficially,
+  per explicit instruction to check the architecture first. Two causes, both verified
+  directly against the user's real `data/models.json` (not assumed): a quota error was
+  being misclassified as a 6-hour "unreachable" ban instead of a 30-minute "quota" one
+  (`server.js`'s `testAndRecord()` was classifying already-friendlied text instead of
+  the raw detail); and `router.js`'s ranking had zero awareness of whether a model was
+  actually known to work, letting a dead-but-high-tier model outrank the only real
+  working ones. Both fixed and verified against real + scratch-simulated data — root
+  `CLAUDE.md`'s Model system section still needs updating with these facts (folded
+  into Next steps #8 below, not yet done).
+- **The connector picker (Schedule/Task + Morning Briefing) was built, then redesigned
+  twice on direct user feedback** — real toggle switches instead of checkboxes, logos
+  always on, a capped inline list with a "View all" overlay for the rest, and the
+  "Connect another app in App Control" shortcut removed from Briefing. A real
+  architectural conflict (`_modal.js` cancels whichever modal is already open the
+  moment a second one appears — this picker lives inside the Task screen's own modal)
+  was found and designed around, not discovered by breaking something live.
+- **TTS/voice provider debugging** root-caused ElevenLabs's silence to real account
+  quota exhaustion, misclassified into a generic "no API key" message (diagnosed, not
+  fixed — deprioritized by the user); built the "any provider, zero extra config"
+  system the user had been asking for (`server/tts/generic.js`, Fish Audio as the first
+  real entry), after one real process mistake (built unrequested UI without describing
+  the plan first, caught by the user, fully reverted) corrected mid-session.
 
-This session's own work: **Background Task Orchestration ("Jobs")** — lets Jarvis work
-on a long task in the background while the user keeps talking about anything else,
-built in 5 verified phases against the user's own spec, held for a full session before
-implementation began per its own explicit instruction. See root `CLAUDE.md`'s
-"Background Task Orchestration (Jobs)" section and `server/jobs/CLAUDE.md` for the
-architecture; `handoff-archive.md`'s entry above for the phase-by-phase build narrative
-and every real bug found live. **One open design question the user is actively
-probing, not yet decided**: `kind` today is only ever a fixed tool-list restriction
-(`generic` = the full unrestricted tool catalog, `research`/`files` = small hardcoded
-arrays chosen once at build time) — there is no per-task role or expertise framing at
-all, and a split's pieces are always `kind:'generic'`. Whether to build a genuinely
-adaptable worker instead — the Orchestrator selecting tools AND framing per task, not a
-fixed enum — is open; see CLAUDE.md's Jobs section, "kind is a tool-list restriction,
-nothing more" for the full explanation already given to the user.
+**Everything accumulated since the last commit (`bfae8e5`) — this session's own work,
+plus the previous session's first-class Skills architecture and personality/reaction-
+sounds work, all still on `jobs-subsystem-and-backlog` — was committed at the user's
+explicit request once this session's work was confirmed working.** See the top of the
+session log below for the exact commit(s).
+
+**Still open, not investigated further this session**: a background security review
+flagged two real SSRF findings — `server/server.js` and `server/tts/generic.js`'s
+custom-TTS-endpoint route accept a user-supplied URL with no host/protocol validation
+before the server fetches it. Not fixed, not asked for; worth a look next time
+security-adjacent work is in scope. **Also still open**: ElevenLabs's quota-error
+misclassification (see above); the real laugh sound is still a placeholder
+(`public/sounds/laugh.wav`, blocked on ElevenLabs account quota); the `[[laugh]]`
+marker's placement/frequency instructions aren't reliably followed by weaker/free-tier
+models.
 
 ## Next steps
 
-1. **`jobs-subsystem-and-backlog` is committed but not merged to `main` and not
-   pushed.** Nothing blocks either; the only reason it hasn't happened is that the user
-   hasn't asked — merging/pushing weren't part of what was asked this session, and
-   both are worth confirming explicitly rather than assumed. Either way, the user's
-   live server needs an ordinary restart to pick up ANY of this — none of it is live
-   yet (same "don't restart their instance yourself" caution as always).
+1. **`jobs-subsystem-and-backlog` now holds everything through this session's own work,
+   committed, but still not merged to `main` and not pushed.** Nothing blocks either —
+   merging/pushing weren't asked for, only committing was; worth confirming explicitly
+   rather than assumed next time it comes up. Either way, the user's live server needs
+   an ordinary restart to pick up ANY of this — none of it is live yet (same "don't
+   restart their instance yourself" caution as always).
 2. **Whether to build an adaptable `generic` worker is still an open design
-   question**, raised by the user right after Jobs shipped — see "Right now" above and
-   CLAUDE.md's Jobs section. Not a bug, not blocking anything; worth surfacing early to
-   whoever picks this up next since the user was actively mid-thought on it.
-3. **Live-chat discoverability of a Pipeline Skill through the `core`/`unlocked`
-   tool-slimming layer has never been exercised.** Folder Skills (including Pipeline
-   Skills) aren't tagged `core: true`, so a live model turn may need `find_capability`
-   to surface one before it can be called at all. Worth a real conversational test once
-   the branch is live, not assumed either way from reading the code.
+   question**, raised by the user right after Jobs shipped — see CLAUDE.md's Jobs
+   section. Not a bug, not blocking anything; worth surfacing early to whoever picks
+   this up next since the user was actively mid-thought on it.
+3. **RESOLVED for a plain (`SKILL.md`-only) Skill, confirmed live by the user — but a
+   `skill.toml` Pipeline Skill specifically was never separately exercised.** The
+   `core:true`/`unlocked` premise this item was originally worried about was already
+   wrong by the time of the 2026-08-31 → 2026-09-01 session (folder Skills, Pipeline
+   ones included, are `core: true` — `find_capability` was never actually needed for
+   discovery); what that session found and fixed instead was that nothing told the
+   model to *prefer* a matching Skill, and that Jobs/briefing couldn't reach one at all
+   structurally. Both are now fixed and confirmed live for a `SKILL.md`-only test
+   Skill. A `skill.toml`-driven Pipeline Skill uses the identical declaration path
+   (`folderSkillToTool()`), so the same fix should generalize, but this hasn't been
+   separately watched happen — worth a quick real test if a Pipeline Skill is in play.
 4. **Action the remaining CLAUDE.md staleness findings** — full list in
    `plans/audit-handoff-md-in-this-graceful-thompson.md`. Two of the highest-value
    items (the connector Client ID/Secret UI design, and `client-identity.js`/CIMD) are
@@ -65,11 +87,15 @@ nothing more" for the full explanation already given to the user.
    — none is installed on this dev machine. `server/sandbox/wsl-backend.js`
    is reasoned through carefully but unverified; test for real the first time
    WSL exists here or on another dev machine.
-6. **Task A is still not started**: a dedicated verification subagent proving
-   Jarvis actually *invokes* a skill in real conversation (not just that
-   upload succeeds) — single-skill trigger, correct pick among several, an
-   ambiguous case, a no-match negative case, each backed by logs/traces, not
-   Jarvis's own claim. User confirmed real API quota use is fine for this.
+6. **Task A is partially done now, not fully.** The 2026-08-31 → 2026-09-01 session
+   confirmed the single-skill-trigger case with real logs/traces (a scripted stub
+   model's exact request/response captured, not Jarvis's own claim) AND, separately, a
+   live confirmation from the user on their real restarted instance. Still not
+   exercised: correct pick among SEVERAL installed Skills, a genuinely ambiguous case,
+   and a no-match negative case (does it correctly do nothing when no Skill fits,
+   rather than over-eagerly reaching for one on a stretch?). Worth a real conversational
+   pass once there are enough installed Skills to make "correct pick among several" a
+   meaningful test — right now there are only 4.
 7. **No AI-driven control session has ever reached `report_done` unbroken**
    end to end (open → act → save → verify → done) — every primitive is
    verified individually; the full happy path with the newer close/restore/
@@ -83,18 +109,36 @@ nothing more" for the full explanation already given to the user.
    double-render around "Check all models" (SSE-triggered re-render racing
    the button's own) was also flagged as a known, low-priority cosmetic item,
    deliberately left unfixed.
+9. **The `[[laugh]]` marker's placement/frequency instructions aren't reliably
+    followed by weaker/free-tier models** (see CLAUDE.md's "Real Vocal Laughter"
+    section) — a real production test caught a violation of both rules in one reply.
+    Left as-is at the user's explicit request not to keep touching code mid-session;
+    worth tightening if it recurs once retested against a model that isn't
+    Auto-selected free-tier fallback.
+10. **Two real SSRF findings from a background security review, never investigated**:
+    `server/server.js` and `server/tts/generic.js`'s custom-TTS-endpoint route fetch a
+    user-supplied URL with no protocol/host validation first (could be pointed at an
+    internal address). Unrelated to any specific session's own work — surfaced
+    mid-session, flagged to the user, not acted on.
+11. **ElevenLabs's quota-exhaustion error is still misclassified as a generic "no API
+    key" message** (`server/tts/elevenlabs.js`'s 401-status mapping, then further
+    collapsed by `server.js`'s route) — root-caused and confirmed live (2026-08-31 →
+    2026-09-01 session), not fixed since the user deprioritized it in favor of the
+    Fish Audio "any provider" work. Worth a real fix (classify on the actual response
+    body, not just the HTTP status) next time voice-provider work is in scope.
 
 ## Waiting on the user
 
 - **A merge/push decision for `jobs-subsystem-and-backlog`, then an ordinary restart of
-  the user's own live Jarvis** — the branch holds EVERYTHING (Chat Persistence + Memory,
-  the tools/skills split, Pipeline Skills, the duplex voice rebuild, connector fixes,
-  and Background Task Orchestration), none of which is live on the currently-running
-  instance, which predates all of it. Not merged, pushed, or restarted automatically —
-  the user was actively using the instance and none of those are decisions to make
-  without asking. Once merged and restarted, the specific test steps already given
-  in-chat for Chat Persistence/Memory (and this session's Jobs testing steps) are what
-  to run through.
+  the user's own live Jarvis** — the branch now holds EVERYTHING committed to date
+  (Chat Persistence + Memory, the tools/skills split, Pipeline Skills, the duplex voice
+  rebuild, connector fixes, Background Task Orchestration, first-class Skills,
+  personality/reaction-sounds, and this session's audit/TTS/model-fallback/connector-
+  picker work), none of which is live on the currently-running instance, which predates
+  all of it. Not merged, pushed, or restarted automatically — the user was actively
+  using the instance and none of those are decisions to make without asking. Once
+  merged and restarted, the specific test steps already given in-chat for each piece
+  are what to run through.
 - **A real interactive OAuth login click-through** — now genuinely done for Notion,
   Composio, and (this session) Gmail-through-Composio, all real accounts, all
   confirmed Active. Still outstanding, and — new fact worth recording — can no longer
@@ -109,6 +153,11 @@ nothing more" for the full explanation already given to the user.
   never resolved — screenshots of that specific error were requested twice
   and never arrived. Everything else diagnosed in that session turned out to
   be genuine Jarvis-side bugs unrelated to this specific claim.
+- **A real laugh sound clip, to replace the current synthesized placeholder
+  (`public/sounds/laugh.wav`)** — ElevenLabs generation of one is blocked on account
+  quota (3 credits remaining, 46 required). Either wait for quota to refresh, add
+  credits, or the user supplies a real recorded clip directly; whichever path, it's a
+  one-file swap in `public/reaction-sounds.js` once sourced, nothing else changes.
 
 ## Not yet written up
 
@@ -116,6 +165,74 @@ nothing more" for the full explanation already given to the user.
 are now in the session log below, marked as reconstructed.)*
 
 ## Session log (newest first)
+
+### 2026-08-31 → 2026-09-01 — Full audit + remediation, skeptical re-verification, TTS/voice provider debugging, model fallback/health architecture fix, connector picker redesign
+See `handoff-archive.md` § "Full audit + remediation, skeptical re-verification,
+TTS/voice provider debugging, model fallback/health architecture fix, connector picker
+redesign" for the full five-phase narrative.
+
+Started via `council` with an explicit investigate-first/wait-for-approval rule, then a
+second, stricter round with an explicit no-unverified-claims rule. Approved remediation
+across tool-visibility, connector-awareness, and desktop-control hardening. Then a long,
+corrective TTS/voice-provider debugging arc: root-caused ElevenLabs's silence to real
+account quota exhaustion (misclassified into a generic message, not fixed), reverted a
+real process mistake (built unrequested UI without describing the plan first, caught by
+the user), and shipped the "any provider, zero extra config" system the user had been
+asking for (`server/tts/generic.js`, Fish Audio first). Then, on a fresh report, fixed
+the model fallback/health architecture at the root — two independently-verified causes
+(a quota-vs-unreachable misclassification in `server.js`, and `router.js`'s ranking
+having zero awareness of known-working/known-bad state) — verified against the user's
+real model data plus a scratch-data worst-case simulation, not just read through. Then
+built, and twice redesigned on direct screenshot feedback, a shared connector picker for
+Schedule/Task and Morning Briefing — real toggle switches, always-on logos, a capped
+list with a "View all" overlay, and a found-and-designed-around conflict with the app's
+single-modal-at-a-time component. Everything accumulated since the last commit
+(`bfae8e5`) — this session's own work plus the previous session's first-class Skills and
+personality/reaction-sounds work — was committed at the user's explicit request; see
+git log from this point for the exact commit.
+
+### 2026-08-31 → 2026-09-01 — First-class Skills architecture built (live chat + Jobs + briefing), verified end-to-end, confirmed by the user live
+See `handoff-archive.md` § "First-class Skills architecture built (live chat + Jobs +
+briefing), verified end-to-end, confirmed by the user live" for the full narrative;
+root `CLAUDE.md`'s "Skills" section, `server/jobs/CLAUDE.md`, and
+`server/scheduler/CLAUDE.md` for the architecture; `docs/superpowers/specs/2026-08-31-
+first-class-skills-design.md` for the design.
+
+Started from the user noticing Jarvis's own answer to "how many skills do you have"
+was vague and folded in connectors, unlike a comparable answer from Claude Code itself.
+Found the real gap by reading the code, not guessing: the data model already separates
+Skill/Tool/Connector correctly, but nothing told a model to prefer a matching Skill,
+and `research`/`files`-kind Jobs plus connector-restricted briefings structurally could
+not reach a Skill at all. Fixed with small, targeted extensions to code already there
+(a guidance sentence in `prompt.js`'s existing `skillsSection()`, a one-line filter
+widening in `jobs/orchestrator.js`, a briefing.js change mirroring `scheduler.js`'s own
+existing pattern) rather than a new mechanism. Verified against a real scratch server +
+stub model — a real chat turn's full declare→invoke→instructions-round-trip, a real
+Job's tool list, a real briefing preview — with three self-inflicted test-harness bugs
+found and fixed along the way (documented in the archive entry so they aren't
+rediscovered). Then handed the user plain-language manual test steps; **the user
+restarted their real instance and confirmed live** that both "how many skills" and "how
+many connectors" now answer accurately and separately. Nothing committed.
+
+### 2026-08-31 — Adaptive Communication Register (personality) built + tested extensively live, then Real Vocal Laughter (reaction sounds) added
+See `handoff-archive.md` § "Adaptive Communication Register (personality) built +
+tested extensively live, then Real Vocal Laughter (reaction sounds) added" for the
+full session narrative; root `CLAUDE.md`'s "Adaptive Communication Register" and "Real
+Vocal Laughter" sections for the architecture.
+
+Built the user's own personality spec (five dimensions, two hard rules, hybrid
+code-floor/model-inference design), then a long live-testing loop finding and fixing
+several real gaps only real phrasing surfaced (two regex misses, a repeated-check-in
+bug, a reopened-settled-topic bug, a US-specific crisis-number gap). Then, on the
+user's own follow-up ask, built a second, separate mechanism — real audible laughter
+spliced into playback, never TTS reading "haha" as words — which required restructuring
+`browser-speaker.js` from scratch and two real chunk-boundary bugs found only by
+testing. Verified via live browser testing (isolating a browser-automation quirk from a
+real bug) and a read-only diagnostic against the user's own real, currently-working
+model, which also surfaced that nearly the user's entire model roster is
+quota-exhausted, explaining live-testing flakiness. The real laugh sound itself is
+still a placeholder — ElevenLabs generation is blocked on account quota. Nothing
+committed this session.
 
 ### 2026-08-26 — Background Task Orchestration ("Jobs") built, 5 phases, then committed
 See `handoff-archive.md` § "Background Task Orchestration ("Jobs") built, 5 phases, then

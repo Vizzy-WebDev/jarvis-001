@@ -45,6 +45,15 @@ tool work" / "what does this typically cost" questions that don't fit a
 true/false judgement. Before this, research was only reachable *through* a
 verdict.
 
+**A failed `examine()` now lands in the conversation too** — confirmed gap:
+`pushFindingToConversation()` only ever ran on success; a failure only
+`announce()`d over SSE (a UI-only note), so on a free-tier account (where
+quota exhaustion mid-background-job is the normal case, not an edge case)
+asking "so what did that turn up?" got no honest answer at all — the model
+had no record anything was ever asked, let alone that it failed.
+`pushFailureToConversation()` is the symmetric fix, same shape, phrased as a
+failure instead of a finding.
+
 ## Gotchas
 
 **YouTube captions are not obtainable by scraping any more.** The watch page

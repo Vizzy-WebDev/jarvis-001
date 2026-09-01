@@ -26,7 +26,22 @@ const AVAILABILITY_COOLDOWNS_MS = {
   quota: 30 * 60 * 1000,
   auth: 6 * 60 * 60 * 1000,
   no_access: 6 * 60 * 60 * 1000,
-  unreachable: 5 * 60 * 1000,
+  // Was 5 minutes — far shorter than health.js's in-memory breaker even
+  // gives the SAME kind (network: 1min, other: 5min) despite this being the
+  // cooldown for a state that's already been persisted across a restart, so
+  // it's necessarily at least that stale already. Confirmed live: with 47
+  // of 62 enabled models sitting 'unreachable' (wrong model name, retired,
+  // no access on this key — not transient), every `checkedAt` on disk was
+  // DAYS old, so this 5-minute window was never actually protecting
+  // anything — it let every one of those 47 models back into the ranked
+  // list on every single turn, each costing a full round-trip before the
+  // runner could cross it off (see runner.js's MAX_FALLBACK_ATTEMPTS,
+  // which bounds how many of them one turn will pay for, but does nothing
+  // for how often they're offered in the first place). 6 hours matches the
+  // auth/no_access tiers — a genuinely-fixed model (key added, name
+  // corrected) is still reachable via Model Settings' own "Check all" in
+  // the meantime, which re-probes directly rather than waiting on this.
+  unreachable: 6 * 60 * 60 * 1000,
 };
 
 /** False only for a model whose PERSISTED availability is a known-bad state and still inside its cooldown. A model never checked, or last seen 'working', always passes — this only ever narrows the field, never requires a state to be present. */
@@ -121,6 +136,27 @@ function scoreFor(entry, task, balance) {
   return speed * 2 - cost;
 }
 
+// scoreFor() above is purely tier/speed/cost math — it has NO awareness of
+// whether a model is actually known to work. hardFilter() only excludes a
+// known-bad model while it's still within its cooldown; once that cooldown
+// lapses (making the model eligible again), it used to compete on tier
+// score alone, so a fast/cheap/high-tier model that was actually DEAD could
+// — and, confirmed live, did — outrank the only 1-2 models actually marked
+// 'working', filling every one of runner.js's limited fallback attempts
+// with models known to fail ("switches through 2-3 models and dies").
+// Sized to exceed scoreFor's largest possible spread across every
+// task.profile branch (~18, worked out from each branch's own min/max) so
+// this ordering is guaranteed, not just likely, regardless of tier:
+// working > never-checked > known-bad-but-retry-eligible.
+const AVAILABILITY_SCORE_BONUS = 20;
+
+function availabilityScore(entry) {
+  const state = entry.availability?.state;
+  if (state === 'working') return AVAILABILITY_SCORE_BONUS;
+  if (state && AVAILABILITY_COOLDOWNS_MS[state]) return -AVAILABILITY_SCORE_BONUS;
+  return 0; // never checked — no signal either way, unchanged from before
+}
+
 /**
  * Ranks enabled, healthy, capable models best-first for this task. Empty
  * array means nothing qualifies.
@@ -137,7 +173,8 @@ function scoreFor(entry, task, balance) {
 export function rankCandidates(task, { balance = 'balanced' } = {}) {
   const entries = hardFilter(listModels(), task);
   return entries.sort((a, b) => {
-    const scoreDiff = scoreFor(b, task, balance) - scoreFor(a, task, balance);
+    const scoreDiff =
+      (scoreFor(b, task, balance) + availabilityScore(b)) - (scoreFor(a, task, balance) + availabilityScore(a));
     if (scoreDiff !== 0) return scoreDiff;
     const qualityDiff = (b.tier?.quality ?? 3) - (a.tier?.quality ?? 3);
     if (qualityDiff !== 0) return qualityDiff;

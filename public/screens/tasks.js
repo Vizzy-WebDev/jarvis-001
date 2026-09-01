@@ -9,9 +9,10 @@
 // always existed server-side but was never called with more than {enabled}
 // until this screen grew a real task detail page (_task-detail.js).
 
-import { fieldInput, fieldSelect, sectionCard, armedButton, postJson } from './_helpers.js';
+import { fieldInput, fieldSelect, sectionCard, armedButton, postJson, usableConnectors } from './_helpers.js';
 import { openModal } from './_modal.js';
 import { iconTile, segmented, popover, noticeBox, toggleSwitch } from './_ui.js';
+import { connectorPickerButton } from './_connector-picker.js';
 import { render as renderTaskDetail } from './_task-detail.js';
 import { render as renderRunDetail } from './_task-run-detail.js';
 
@@ -29,8 +30,8 @@ const DAY_NAMES_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 
 // The 3 "when it runs, Jarvis should..." modes offered by the segmented
 // control in the Instructions section. A 4th option ('skill' — run one
 // specific skill directly) isn't offered here — this version has no
-// per-task skill picker at all (see the "coming later" Connectors badge and
-// the blanket permission notice further down).
+// per-task skill picker at all (see the Connectors button, a per-task
+// connected-app picker, and the blanket permission notice further down).
 const INSTRUCTION_MODES = [
   ['prompt', 'Instructions'],
   ['message', 'Just remind me'],
@@ -430,16 +431,21 @@ export async function buildTaskModal(models, onChange, existingTask = null) {
   // changing what render() fetches/passes, keeps this scoped to just the
   // modal.
   let connections = [];
+  let usable = [];
   try {
-    const res = await fetch('/api/models');
-    const data = await res.json();
+    const [modelsRes, connectorsRes] = await Promise.all([fetch('/api/models'), fetch('/api/connectors')]);
+    const data = await modelsRes.json();
     connections = data.connections || [];
+    const { connectors } = await connectorsRes.json();
+    usable = usableConnectors(connectors);
   } catch {
     connections = [];
+    usable = [];
   }
 
   let titleField, typeField, dateField, timeField, minutesField, daysWrapper, dayChecks;
   let modeSeg, promptTextarea, messageField, toolbarLeft, instructionsBox, notice, notifyField;
+  const selectedConnectors = new Set(existingTask?.action?.connectors || []);
 
   const modelPicker = buildModelPicker(models, connections, existingTask?.action?.modelId || '');
 
@@ -511,15 +517,15 @@ export async function buildTaskModal(models, onChange, existingTask = null) {
       toolbar.className = 'instructions-toolbar';
       toolbarLeft = document.createElement('div');
       toolbarLeft.className = 'instructions-toolbar-left';
-      // Connectors means real external app/service integrations (MCP or
-      // similar) — none exist yet, so this is an inert label, not a picker,
-      // marked the same way Calendar/Email are marked on the Morning
-      // Briefing page. Jarvis's own built-in abilities (opening an app,
-      // browsing, searching, checking the weather, ...) aren't "connectors"
-      // and don't get a per-task toggle here — see the blanket notice below.
-      toolbarLeft.appendChild(
-        Object.assign(document.createElement('span'), { className: 'badge', textContent: 'Connectors — coming later' })
-      );
+      // A real picker over the user's already-connected apps (see
+      // usableConnectors() in _helpers.js for what counts as connected).
+      // Nothing pre-selected — picking one ADDS it to this task's normal
+      // built-in ability set, it never restricts what the task could
+      // already do (see scheduler.js's runAction() for the resolution).
+      // Shared component (_connector-picker.js) — briefing.js uses the same
+      // one, so both pickers look and behave identically.
+      const connectorsBtn = connectorPickerButton({ usable, selected: selectedConnectors, label: 'Connectors' });
+      toolbarLeft.appendChild(connectorsBtn);
       toolbar.append(toolbarLeft, modelPicker.el);
       instructionsBox.appendChild(toolbar);
       body.appendChild(instructionsBox);
@@ -550,11 +556,11 @@ export async function buildTaskModal(models, onChange, existingTask = null) {
       }
 
       // A single fixed heads-up rather than one built from checked
-      // connectors — there's nothing left to enumerate (Connectors is
-      // "coming later", Skills isn't in this version), but a prompt-mode
-      // task can still lead Jarvis to open apps/websites/searches on its
-      // own on a schedule, which is worth a plain warning before that's
-      // allowed to run unattended.
+      // connectors — a prompt-mode task can lead Jarvis to open apps,
+      // browse websites, search the web, or use any selected connector on
+      // its own on a schedule, which is worth a plain warning before
+      // that's allowed to run unattended, regardless of which connectors
+      // (if any) are picked above.
       function refreshNotice(api) {
         const show = modeSeg.getValue() === 'prompt';
         notice.wrapper.classList.toggle('hidden', !show);
@@ -649,13 +655,10 @@ export async function buildTaskModal(models, onChange, existingTask = null) {
           api.setError('Please describe what Jarvis should do.');
           return null;
         }
-        // No `connectors` key at all — absent/undefined means "unrestricted"
-        // to runner.js, which is the correct way to say "every built-in
-        // ability is available" now that there's no per-item picker to
-        // build a narrower list from (Connectors is "coming later", Skills
-        // isn't in this version). The server-side allowlist plumbing this
-        // used to feed is left in place for when a real picker comes back.
-        action = { type: 'prompt', text, modelId };
+        // An empty array (no connector ticked) reads identically to no key
+        // at all to scheduler.js's runAction() — "unrestricted, every
+        // built-in ability available" — so this is safe to always include.
+        action = { type: 'prompt', text, modelId, connectors: [...selectedConnectors] };
       } else if (mode === 'briefing') {
         action = { type: 'briefing', modelId };
       } else {

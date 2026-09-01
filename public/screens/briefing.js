@@ -1,8 +1,5 @@
-// Morning Briefing screen — which sections are included, a custom note, and
-// a live preview button. Calendar/email are shown as reserved, disabled
-// slots — they need their own Google sign-in, a separate, bigger step that
-// hasn't been built. See server/scheduler/briefing-config.js's DEFAULT_CONFIG
-// comment for why those slots exist in the saved config already.
+// Morning Briefing screen — which sections are included, a custom note, a
+// real connector picker, and a live preview button.
 //
 // Weather and headlines have NO controls here at all, on purpose — they're
 // fixed, always-available native abilities (server/tools/get_weather.js,
@@ -16,9 +13,19 @@
 // configure_briefing skill ("set my weather to Lagos", "turn on headlines"),
 // matching CLAUDE.md's existing "Desktop control / Browser / Files have no
 // settings screen" precedent for a built-in ability with no UI.
+//
+// Connectors ARE a real, user-driven picker here (replacing a permanently-
+// disabled Calendar/Email placeholder that predated any real connector
+// system existing) — see server/scheduler/briefing-config.js's `connectors`
+// field. Populated from the same connectors the App Control screen shows,
+// filtered to ones actually usable right now (usableConnectors() in
+// _helpers.js — the same definition server/prompt.js's connectorsSection()
+// uses, so this picker never offers something the model itself wouldn't
+// recognize as connected). Nothing is pre-selected — the briefing includes
+// a connector only once explicitly ticked here.
 
-import { sectionCard, fieldTextarea, postJson } from './_helpers.js';
-import { toggleSwitch } from './_ui.js';
+import { sectionCard, fieldTextarea, postJson, usableConnectors } from './_helpers.js';
+import { connectorPickerButton } from './_connector-picker.js';
 import { markdownBlock } from './_markdown.js';
 import { navigate } from '../router.js';
 
@@ -75,39 +82,37 @@ function buildCustomCard(config, onSave) {
 }
 
 /**
- * Was a plain static badge with no state at all — now a real (disabled)
- * toggleSwitch reflecting the config slot that's already saved
- * (briefing-config.js's `calendar.enabled`/`email.enabled`), so the only
- * change needed once the connector is actually built is dropping `disabled`.
- * Not faking the feature — clicking has no effect and says so.
+ * Real connector picker — nothing pre-selected, only what's ticked here
+ * gets used (config.connectors, an array of connector ids). `usable` is
+ * already filtered to connectors that are genuinely connected and have at
+ * least one real tool available (see usableConnectors() in _helpers.js).
+ * Uses the SAME popover-button picker as the Schedule/Task screen
+ * (_connector-picker.js) — this used to be its own separately-built
+ * always-visible checklist card; the user asked for the two to share one
+ * structure instead of looking and behaving differently.
+ *
+ * No "Connect another app in App Control" shortcut here on purpose (removed
+ * per explicit request) — App Control is still reachable from the main nav
+ * drawer as always, this screen just doesn't duplicate a link to it any more.
  */
-function buildComingSoonCard(config, onSave) {
-  const card = sectionCard('Coming later');
+function buildConnectorsCard(config, usable, onSave) {
+  const card = sectionCard('Connected apps for this briefing');
   card.appendChild(
     Object.assign(document.createElement('p'), {
       className: 'hint',
-      textContent:
-        'Calendar and email sections are reserved for a future update — they need their own Google ' +
-        'sign-in, which is a separate, bigger step than this upgrade.',
+      textContent: usable.length
+        ? 'Nothing is included automatically — pick exactly which of your connected apps this briefing may use.'
+        : "You don't have any connected apps usable here yet.",
     })
   );
-  for (const [key, label] of [
-    ['calendar', 'Calendar events'],
-    ['email', 'Unread email summary'],
-  ]) {
-    const row = document.createElement('div');
-    row.className = 'settings-row';
-    row.appendChild(Object.assign(document.createElement('span'), { textContent: label }));
-    const toggle = toggleSwitch({ value: Boolean(config[key]?.enabled), disabled: true });
-    row.appendChild(toggle.wrapper);
-    card.appendChild(row);
-  }
-  const setupBtn = document.createElement('button');
-  setupBtn.type = 'button';
-  setupBtn.className = 'btn';
-  setupBtn.textContent = 'Set this up in App Control';
-  setupBtn.addEventListener('click', () => navigate('app-control'));
-  card.appendChild(setupBtn);
+  const selected = new Set(config.connectors || []);
+  const picker = connectorPickerButton({
+    usable,
+    selected,
+    label: 'Connectors',
+    onChange: () => onSave({ connectors: [...selected] }),
+  });
+  card.appendChild(picker);
   return card;
 }
 
@@ -149,13 +154,14 @@ function buildPreviewCard() {
 
 export async function render(container) {
   container.innerHTML = '';
-  const configRes = await fetch('/api/briefing');
+  const [configRes, connectorsRes] = await Promise.all([fetch('/api/briefing'), fetch('/api/connectors')]);
   const config = await configRes.json();
+  const { connectors } = await connectorsRes.json();
 
   const onSave = (patch) => postJson('/api/briefing', patch);
 
   container.appendChild(buildSectionsCard(config, onSave));
   container.appendChild(buildCustomCard(config, onSave));
-  container.appendChild(buildComingSoonCard(config, onSave));
+  container.appendChild(buildConnectorsCard(config, usableConnectors(connectors), onSave));
   container.appendChild(buildPreviewCard());
 }

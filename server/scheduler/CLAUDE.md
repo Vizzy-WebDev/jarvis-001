@@ -10,10 +10,27 @@
   it — then has a model narrate the result), `prompt` (free-text through the model), or
   `briefing`. Catches up a missed run once (never once-per-missed-day) and flags it
   `late`. Every unattended run records which model handled it and any fallback, via
-  `runner.js`'s `model_switch` events.
+  `runner.js`'s `model_switch` events. A `prompt` action's `connectors` field (an array
+  of connector ids, from the task-creation UI's real picker — see
+  `public/screens/tasks.js`) is resolved to real tool names fresh at RUN time (a
+  connector's own tool list can change between creation and run) via
+  `connectors/index.js`'s `toolNamesForConnector()`, and ADDS those names to the task's
+  normal core built-in set rather than restricting the task down to only them — empty
+  (the default) means fully unrestricted, unchanged from before this picker existed.
 - `briefing-config.js` / `briefing.js` — split for the same circular-import reason as
   task-store.js. Sections (greeting, date/time, upcoming tasks, goals, focus, custom)
-  are fixed; live data (weather, headlines, anything else) is an open `sources` array,
-  each `{skillName, args, enabled, label}` — `briefing.js` calls `capabilities.js`'s
-  `invoke()` generically per source, then has a model narrate the gathered facts. Never
-  lets the model invent data.
+  are fixed; weather/headlines are fixed, always-available native abilities, not a
+  user-managed list (an earlier open `sources[]` shape was reverted — it let Jarvis's
+  own built-ins be offered through the same "add a source" UI as a Skill, a real
+  instance of the native-ability-as-Skill bug). Connectors are the one real, user-picked
+  addition (`config.connectors`, an array of connector ids, empty by default — see the
+  Briefing screen's own picker): `composeBriefing()` still gathers everything else in
+  code first and narrates only what it found (never lets the model invent data), but
+  when at least one connector is selected the turn ALSO gets real tool access to
+  exactly those connectors' tools, on top of the code-gathered facts, so the model can
+  genuinely check them rather than only narrate pre-fetched data. Every enabled folder
+  Skill is added to that same tool list unconditionally too (`listUserSkills()`), even
+  with no connectors selected at all — deliberately narrower than `scheduler.js`'s own
+  prompt-action pattern (which widens to the full core built-in set): a briefing stays a
+  narrate-code-gathered-facts turn, only gaining a Skill and whichever connectors were
+  explicitly picked, never the rest of Jarvis's abilities.

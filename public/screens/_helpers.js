@@ -3,6 +3,26 @@
 // server- or user-supplied text — since screen content (model labels, task
 // titles, error messages, ...) isn't trusted.
 
+/**
+ * The same "connected AND actually usable" definition server/prompt.js's
+ * connectorsSection() uses, applied to a `GET /api/connectors` response —
+ * shared here so the Briefing and Task connector pickers can never disagree
+ * with each other, or with what the model itself is told, about which
+ * connectors are real options. `status.state === 'working'` alone is NOT
+ * enough (confirmed live: a connector can report `working` while never
+ * having actually discovered any of its own tools yet) — real saved
+ * credentials (`config.hasSecret`, the redacted stand-in for `secretRef`
+ * the server sends) AND at least one already-cached tool are both
+ * required. The two built-in singleton connectors (Files, Browser) are
+ * excluded — they're Jarvis's own native abilities, never a "connected
+ * app" a picker like this means.
+ */
+export function usableConnectors(connectors) {
+  return (connectors || []).filter(
+    (c) => c.type === 'mcp' && c.config?.hasSecret && Array.isArray(c.tools) && c.tools.length > 0
+  );
+}
+
 export function fieldInput(labelText, type, placeholder) {
   const wrapper = document.createElement('div');
   wrapper.className = 'field';

@@ -856,6 +856,31 @@ function createEngine(type = getSetting('voiceEngine')) {
     addSystemNote(`Switching from ${modelLabels[from] || from} to ${toLabel}${reason ? ` — ${reason}` : ''}…`);
   });
 
+  // Debug-only (see server/personality.js) — gated on the settings toggle so
+  // this is fully invisible unless the user turned it on themselves. Never
+  // fires on the common case: runner.js only yields this event when a floor
+  // actually matched.
+  e.on('style_floors', ({ floors, sticky }) => {
+    if (!getSetting('debugStyleFloors')) return;
+    const fired = Object.entries(floors || {})
+      .filter(([, v]) => v)
+      .map(([k]) => k);
+    const parts = [...fired];
+    if (sticky) parts.push(`sticky:${sticky}`);
+    addSystemNote(`[tone] ${parts.join(', ')}`);
+  });
+
+  // Same debug toggle as 'style_floors' — this is what makes "did the model
+  // actually decide to react here" independently checkable from "did I
+  // hear a sound," so a silent test doesn't leave the user unable to tell
+  // which of those two things actually failed. Engines already handle the
+  // real playback themselves (enqueueClip()) — this is purely a visible
+  // confirmation line, added nowhere else.
+  e.on('reaction', ({ kind }) => {
+    if (!getSetting('debugStyleFloors')) return;
+    addSystemNote(`[reaction] ${kind} — queued for playback now`);
+  });
+
   e.on('restart', () => {
     // The partial reply just shown/spoken belonged to the model that
     // failed — clear it; a clean reply from the next model follows on the
@@ -1434,7 +1459,28 @@ async function populateVoiceOutputOptions() {
   }
   if (select.disabled) return; // SPEECH_OUTPUT_SUPPORTED is false — already forced to 'browser', must not be overwritten
   const saved = getSetting('voiceOutput');
-  select.value = [...select.options].some((o) => o.value === saved) ? saved : 'browser';
+  const stillExists = [...select.options].some((o) => o.value === saved);
+  select.value = stillExists ? saved : 'browser';
+  // Confirmed live bug this closes: this used to only correct the DISPLAYED
+  // dropdown value, never the underlying saved setting — so if the
+  // service `saved` pointed at got renamed/removed (e.g. re-added under a
+  // new name after a typo), the setting itself stayed on the dead ref
+  // forever. createEngine() reads getSetting('voiceOutput') directly, not
+  // this dropdown, so the actual engine kept trying to speak through a
+  // provider that no longer existed — silently failing every reply — while
+  // the UI, on a fresh load, could show something else entirely and never
+  // surface that anything was wrong. Persisting the correction here, plus a
+  // one-time, visible notice, closes both the real failure and the silence
+  // about it — a service disappearing out from under you is worth knowing,
+  // not something to quietly paper over.
+  if (!stillExists && saved && saved !== 'browser') {
+    setSetting('voiceOutput', 'browser');
+    notify({
+      kind: 'system',
+      level: 'warning',
+      title: `Your voice was set to a service ("${saved}") that isn't connected any more, so Jarvis switched back to the Windows voice. Reconnect it and pick it again in Settings if you want it back.`,
+    });
+  }
 }
 
 // Gemini Live always speaks with its own voice and can't run through a
@@ -1500,6 +1546,7 @@ function setupExternalServices() {
       btn.textContent = originalLabel;
     }
   }
+
 
   function renderServiceRow(service, refresh) {
     const row = document.createElement('div');
@@ -1653,7 +1700,24 @@ function setupExternalServices() {
         });
         const data = await res.json();
         if (!res.ok || !data.ok) throw new Error(data.error);
-        notify({ kind: 'system', level: 'info', title: `${label} added.` });
+        // Confirmed live gap this closes: saving a service always showed a
+        // plain "added" success toast, even for a name (e.g. "Fish Audio")
+        // that no real TTS/STT adapter recognizes at all — the key is saved
+        // but genuinely never used anywhere, and the only way to discover
+        // that was clicking Test separately later and reading its honest
+        // 501 there. Reusing that same test route right here, once, means
+        // the very first message the user sees already says the truth.
+        let addedTitle = `${label} added.`;
+        try {
+          const testRes = await fetch(`/api/external-services/${encodeURIComponent(data.service.ref)}/test`, { method: 'POST' });
+          if (testRes.status === 501) {
+            addedTitle = `${label} saved — but Jarvis doesn't have a built-in integration that uses this yet, so the key isn't used anywhere right now.`;
+          }
+        } catch {
+          // Couldn't check — fall back to the plain "added" message rather
+          // than blocking the save on this extra, non-essential check.
+        }
+        notify({ kind: 'system', level: 'info', title: addedTitle });
         addForm.classList.add('hidden');
         addForm.innerHTML = ''; // clearing only
         addBtn.textContent = '+ Add a service';
@@ -1693,6 +1757,7 @@ function setupSettingsPanel() {
   const micModeSelect = document.getElementById('mic-mode-select');
   const voiceOutputSelect = document.getElementById('voice-output-select');
   const aiTurnCheckToggle = document.getElementById('ai-turn-check-toggle');
+  const debugStyleFloorsToggle = document.getElementById('debug-style-floors-toggle');
   const providerSelect = document.getElementById('provider-select');
   const providerErrorEl = document.getElementById('provider-error');
 
@@ -1701,6 +1766,7 @@ function setupSettingsPanel() {
   micModeSelect.value = getSetting('micMode');
   voiceOutputSelect.value = SPEECH_OUTPUT_SUPPORTED ? getSetting('voiceOutput') : 'browser';
   aiTurnCheckToggle.checked = getSetting('useAiTurnCheck');
+  debugStyleFloorsToggle.checked = getSetting('debugStyleFloors');
   applyVoiceEngineVisibility(voiceEngineSelect.value);
 
   if (!MIC_SUPPORTED) {
@@ -1789,6 +1855,12 @@ function setupSettingsPanel() {
   aiTurnCheckToggle.addEventListener('change', () => {
     setSetting('useAiTurnCheck', aiTurnCheckToggle.checked);
     engine.updateOptions({ useAiTurnCheck: aiTurnCheckToggle.checked });
+  });
+
+  // Purely a display preference read at event time (see the 'style_floors'
+  // handler below) — no engine option to push, unlike the toggles above.
+  debugStyleFloorsToggle.addEventListener('change', () => {
+    setSetting('debugStyleFloors', debugStyleFloorsToggle.checked);
   });
 
   providerSelect.addEventListener('change', async () => {

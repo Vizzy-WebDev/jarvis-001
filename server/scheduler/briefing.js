@@ -10,6 +10,8 @@ import { listEntries as listProfileEntries } from '../profile.js';
 import { invoke } from '../capabilities.js';
 import { runTurn, resetConversation } from '../models/runner.js';
 import { getBriefingConfig, setBriefingConfig } from './briefing-config.js';
+import { toolNamesForConnector } from '../connectors/index.js';
+import { listUserSkills } from '../skills/store/skill-files.js';
 
 // Re-exported so existing importers (server.js, scheduler.js) don't need to
 // care that these live in a separate, dependency-free file — see
@@ -114,12 +116,22 @@ function suggestAdditions(config, facts) {
   return suggestions;
 }
 
-function factsToPrompt(facts, suggestions, config) {
+function factsToPrompt(facts, suggestions, config, usingConnectors) {
   const lines = [
     'Compose the morning briefing now, in your own words, as one short spoken passage — a few ' +
       'sentences, not a bulleted list. Use ONLY the facts below; never invent or guess anything not given here.',
     '',
   ];
+  if (usingConnectors) {
+    lines.push(
+      'The user has also explicitly chosen to let this briefing use one or more of their connected apps — ' +
+        'you have real tools available for exactly those connected apps, and no others. If checking one of them would ' +
+        'genuinely add something useful to this briefing, call it; otherwise skip it rather than forcing it in. ' +
+        'Same rule as everything else here: say only what a tool result actually returned, never a guess about ' +
+        'what it might say.',
+      ''
+    );
+  }
   if (facts.greeting) lines.push(`Greeting: ${facts.greeting}`);
   if (facts.date) lines.push(`Today: ${facts.date}, ${facts.time}`);
   if (facts.upcomingTasks?.length) lines.push(`Upcoming scheduled items: ${facts.upcomingTasks.join('; ')}`);
@@ -148,12 +160,43 @@ function factsToPrompt(facts, suggestions, config) {
   return lines.join('\n');
 }
 
+/**
+ * Real tool names for every connector id the user explicitly selected for
+ * this briefing (config.connectors — see briefing-config.js) — empty by
+ * default, nothing automatic. A stale id (a since-removed connector)
+ * resolves to no names via toolNamesForConnector() rather than throwing, so
+ * one bad saved id degrades silently instead of breaking the briefing.
+ */
+function connectorToolNames(config) {
+  const names = [];
+  for (const id of config.connectors || []) names.push(...toolNamesForConnector(id));
+  return names;
+}
+
 /** Gathers facts and has the model narrate them. `modelId` optionally pins one specific model (falls back through the usual auto-ranked chain if it breaks). Returns {ok, text, facts, modelId, switchedFrom, switchReason}. */
 export async function composeBriefing({ modelId } = {}) {
   const config = getBriefingConfig();
   const facts = await gatherFacts(config);
   const suggestions = suggestAdditions(config, facts);
-  const prompt = factsToPrompt(facts, suggestions, config);
+
+  // Everything above still gathers in code and narrates only what it found
+  // — the "never invent" guarantee this file exists to enforce. Selected
+  // connectors are the one deliberate, explicit exception: the user picked
+  // exactly these, so the turn is allowed to actually call their tools
+  // too, on top of narrating the code-gathered facts above. No connectors
+  // selected (the default) keeps today's exact behavior — a pure
+  // narration-only turn with no tool access at all.
+  const connectorTools = connectorToolNames(config);
+  const usingConnectors = connectorTools.length > 0;
+  // A Skill is the user's own instructions (a house style for the briefing itself, say) —
+  // always offered here too, same as everywhere else a turn runs, but deliberately NOT
+  // widened to the full core built-in set the way scheduler.js's prompt-action turn is:
+  // a briefing stays a narrate-code-gathered-facts turn, and a Skill can't invent data any
+  // more than the model itself can, so this doesn't weaken the guarantee above.
+  const skillNames = listUserSkills().filter((s) => s.enabled).map((s) => s.name);
+  const allowedTools = [...connectorTools, ...skillNames];
+  const usingTools = allowedTools.length > 0;
+  const prompt = factsToPrompt(facts, suggestions, config, usingConnectors);
 
   const sessionId = `briefing:${Date.now()}`;
   let text = '';
@@ -162,7 +205,15 @@ export async function composeBriefing({ modelId } = {}) {
   let switchedFrom = null;
   let switchReason = null;
 
-  for await (const ev of runTurn(sessionId, prompt, { background: true, source: 'text', modelId, autoConfirm: true, noTools: true })) {
+  // addressed:true overrides the background gate specifically for the personality
+  // framework and jobsSection() (see prompt.js's systemInstructionParts()) — a
+  // briefing IS spoken to the owner, unlike a scheduled task's own prompt-action
+  // turn or a Job worker's turn, even though it shares their background:true.
+  const turnOpts = usingTools
+    ? { background: true, addressed: true, source: 'text', modelId, autoConfirm: true, allowedTools }
+    : { background: true, addressed: true, source: 'text', modelId, autoConfirm: true, noTools: true };
+
+  for await (const ev of runTurn(sessionId, prompt, turnOpts)) {
     if (ev.type === 'model_switch' && !switchedFrom) {
       switchedFrom = ev.from;
       switchReason = ev.reason;

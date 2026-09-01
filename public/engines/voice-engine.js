@@ -28,6 +28,14 @@
 //   'tool'          { name }          - Jarvis is using a skill
 //   'tool_result'   { name, ok, ui_action?, needs_confirmation?, summary? }
 //   'model_switch'  { from, to, reason } - the model handling this turn changed mid-reply
+//   'style_floors'  { floors, sticky } - debug-only: personality.js's readStyle() found at
+//                    least one floor this turn (distress/serious-topic/explicit style/devil's
+//                    advocate). Never shown unless the debug toggle in settings is on
+//                    (public/settings.js) — see app.js's handling of this event.
+//   'reaction'      { kind }           - a real, non-verbal vocal cue belongs here (currently only
+//                    kind:'laugh'). Both engines queue a real sound clip for it (see
+//                    reaction-sounds.js and each speaker's enqueueClip()) rather than re-emitting
+//                    it further — app.js does not need to handle this event itself.
 //   'restart'       {}                 - clear any partial reply shown/spoken; a fresh one follows
 //   'paused'        { reason }         - no model could complete the turn; nothing was answered
 //   'done'          { text }          - the full reply, once finished

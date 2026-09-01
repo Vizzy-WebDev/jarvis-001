@@ -44,6 +44,16 @@ function requireKey(entry) {
   return apiKey;
 }
 
+// `entry.baseUrl` is set only for a Custom connection whose probe (see
+// server/models/probe.js) resolved to this adapter's wire shape against a
+// non-Google host — real Gemini accounts never set it. `httpOptions.baseUrl`
+// is the SDK's own full-URL override (confirmed against the installed
+// @google/genai .d.ts, not docs, per CLAUDE.md's Gemini-shape-drift gotcha).
+function client(entry) {
+  const apiKey = requireKey(entry);
+  return new GoogleGenAI({ apiKey, httpOptions: entry.baseUrl ? { baseUrl: entry.baseUrl } : undefined });
+}
+
 // Gemini takes images and video the same way — an inline base64 blob, or a
 // `fileData` reference for anything the model should fetch itself (this is
 // also how a plain YouTube URL is passed through, no download needed on our
@@ -105,15 +115,14 @@ function toContents(messages) {
 }
 
 export async function* stream(entry, messages, opts = {}) {
-  const apiKey = requireKey(entry);
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = client(entry);
   const contents = toContents(messages);
   const tools = opts.tools?.length ? [{ functionDeclarations: opts.tools }] : undefined;
 
   const genStream = await ai.models.generateContentStream({
     model: entry.model,
     contents,
-    config: { tools, systemInstruction: systemInstructionFor(opts) },
+    config: { tools, systemInstruction: systemInstructionFor(opts), abortSignal: opts.signal },
   });
 
   // Each streamed chunk is an incremental delta, not cumulative — parts
@@ -167,8 +176,7 @@ export async function* stream(entry, messages, opts = {}) {
  * decides what to do about that.
  */
 export async function searchGrounded(entry, query) {
-  const apiKey = requireKey(entry);
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = client(entry);
 
   const response = await ai.models.generateContent({
     model: entry.model,
@@ -205,8 +213,7 @@ export async function searchGrounded(entry, query) {
  * ~48 hours regardless, so a missed cleanup leaks nothing permanent.
  */
 export async function uploadFile(entry, filePath, mimeType, { timeoutMs = 5 * 60 * 1000 } = {}) {
-  const apiKey = requireKey(entry);
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = client(entry);
 
   let file = await ai.files.upload({ file: filePath, config: mimeType ? { mimeType } : undefined });
 
@@ -238,8 +245,7 @@ export async function uploadFile(entry, filePath, mimeType, { timeoutMs = 5 * 60
 
 export async function testConnection(entry) {
   try {
-    const apiKey = requireKey(entry);
-    const ai = new GoogleGenAI({ apiKey });
+    const ai = client(entry);
     const response = await ai.models.generateContent({
       model: entry.model,
       contents: [{ role: 'user', parts: [{ text: 'Say "ready" and nothing else.' }] }],
@@ -266,8 +272,7 @@ export async function testConnection(entry) {
  * discoverModels() is what turns that into a friendly {models, error} shape.
  */
 export async function listModels(entry) {
-  const apiKey = requireKey(entry);
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = client(entry);
   const pager = await ai.models.list();
 
   const out = [];

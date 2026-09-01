@@ -19,10 +19,18 @@ const TRAILING_WORDS = new Set([
 ]);
 
 export const WAIT_MS = {
+  // filler/trailing stay as they are — they exist specifically to avoid
+  // cutting off a thought that's clearly still going ("um...", "and...").
+  // Shortening those would trade real interruptions for latency; not worth
+  // it. default/complete are the tiers that fire on input that already
+  // reads as finished, where the wait is pure dead air rather than a
+  // guard against interrupting — shortened as part of the voice-latency
+  // pass (every voice turn pays one of these before the request is even
+  // sent, on top of everything server-side).
   filler: 2500,
   trailing: 2000,
-  default: 1300,
-  complete: 700,
+  default: 900,
+  complete: 400,
 };
 
 function lastWord(text) {

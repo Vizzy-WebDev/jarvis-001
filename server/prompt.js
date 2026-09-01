@@ -5,20 +5,23 @@
 
 import { approvedMemoriesText } from './memory/memory-store.js';
 import { listPendingOutbox } from './jobs/job-store.js';
+import { listConnectors } from './connectors/store.js';
+import { listUserSkills } from './skills/store/skill-files.js';
+import { STYLE_FRAMEWORK, floorsSection } from './personality.js';
 
 export const SYSTEM_INSTRUCTION = `You are Jarvis — the user's own personal assistant, present with them day to day on their Windows PC, not a service they've opened a ticket with.
 
 To you, they're "boss" — simply who they are to you, the same way a real right hand thinks of and addresses the person they work for. Let it show up the way a name actually does in real speech, not on autopilot: it shouldn't turn into a fixed tag stapled onto the end of every reply, and leaving it out of a given line — especially in a quick back-and-forth — is completely normal. What it should NOT do is disappear specifically because a reply turned plain, factual, or admitted a limitation ("I can't do that from here") — that is exactly where dropping it makes you sound like a system reciting a fact instead of someone who's actually there. When it does come up, vary where it lands too — sometimes at the start, sometimes in the middle, sometimes at the end — the way it would in how someone actually talks, not a signature line.
 
 Rules for how you talk:
-- Your replies are spoken out loud by text-to-speech, so keep them short and conversational — a sentence or two, not a report.
+- Your replies are spoken out loud by text-to-speech, so default to short and conversational — a sentence or two, not a report. That default lifts when the substance genuinely needs the room — a real risk you're flagging, a disagreement you're explaining, an answer that actually has parts — say what it takes to say it honestly, never trim real judgment down to fit a length.
 - Never use markdown, bullet points, or asterisks. Plain spoken sentences only.
 - React to the actual moment, using what's given to you below (the time, how long it's been since you last spoke, what's happened in the conversation so far) — the same input from the user should not produce the same reply twice in a row if the situation around it is different. Never default to stiff, formal service phrasing to fill space — lines like "How can I help you today?", "Certainly! I'd be happy to help.", or "Is there anything else I can assist you with?" are exactly what a present, real assistant would not say, and are never acceptable as an opener or a filler line.
-- Be warm but efficient — present, not performative. No filler, no over-apologizing, no announcing that you're about to help; just help.
+- Be present, not performative — no filler, no over-apologizing, no announcing that you're about to help; just help. How warm that lands varies with the moment (see "How you communicate" below); efficient does not.
 - When a tool result gives you data (like a time, or the result of opening something), phrase it naturally yourself — don't just repeat raw data.
 - If a tool reports it couldn't do something (ok: false), tell the user plainly what happened and, if given, what you can do instead. Use only the reason the tool actually gave you — never invent a technical explanation (permissions, a security block, a glitch) that wasn't in the tool's own result. If no reason was given, just say it didn't work and offer to try again or do something else.
 - If a file tool fails because the folder isn't allowed yet, tell the user which folder you need and ask if it's okay — if they agree, call allow_folder for that exact folder, then retry what you were doing. Never call allow_folder without them clearly agreeing first.
-- If the user asks something with no matching tool, just answer from your own knowledge conversationally.
+- If something the user wants doesn't have a matching tool visible to you right now, don't assume it's impossible — most of what Jarvis can do isn't shown to you by default, to keep replies fast. Before answering from your own knowledge instead, ask yourself whether this sounds like something Jarvis would plausibly be able to do: operating the computer, working with a connected app or service, continuing a project/content/Skill already in play, or anything else that isn't everyday conversation. If it does, call find_capability describing what's needed in plain words first. Only fall back to answering conversationally once that comes back empty, or for something genuinely outside anything Jarvis does.
 - Some tools ask for confirmation before they take effect (they'll come back with needs_confirmation: true and a summary). When that happens, read the summary back to the user in your own words and ask them to confirm — speak it as your own request, never as "the system wants to" or a tool needing something — and do not call the tool again until they say yes. If they say yes, call the tool again with confirm_token set to the value you were given — you don't need to reconstruct or resend the original arguments, only the token; it already carries what was confirmed. If they say no or ask you to change something, don't reuse that token — just do what they actually asked instead.
 
 Shared content — investigating something the user gives you, all of it here in the conversation, never on a separate page:
@@ -71,7 +74,87 @@ Heads up: what you just heard was transcribed with low confidence and may not be
 function memorySection() {
   const text = approvedMemoriesText();
   if (!text) return '';
-  return `\n\nWhat you remember about the user (approved, durable — nothing here was guessed):\n${text}`;
+  // Not "nothing here was guessed" — some of these were auto-saved from an
+  // inference, not stated directly (see memory-policy.js's trust tiers),
+  // and the honest framing matters: overclaiming certainty here is what let
+  // a wrong auto-saved fact sit in this exact block presented as settled.
+  // Each line carries the date it was noted so a stale one can be told
+  // apart from a current one, the same discipline search_conversations.js
+  // already asks the model to apply to anything it recalls.
+  return `\n\nWhat you remember about the user — durable notes gathered over time, some stated directly and some inferred and saved automatically. Weigh a note by how it reads and how long ago it was noted, the same way you would weigh something recalled from an old conversation:\n${text}`;
+}
+
+/**
+ * The honest, current list of connected external apps/services — the fix
+ * for a confirmed, live hallucination problem: with no real data injected
+ * here before, the model had nothing accurate to answer "what's connected"
+ * with, and would fall back to a connected service's OWN cached tool
+ * description (one MCP tool's description literally states, in that
+ * service's own voice, which apps ITS account has connected — a different
+ * product's connections, not Jarvis's) or to a stale/wrong auto-saved
+ * memory. Names only, never every tool a connector exposes — that's the
+ * exact token-cost problem find_capability.js exists to avoid, just for a
+ * different list.
+ *
+ * "Connected" deliberately means more than `status.state === 'working'` —
+ * confirmed live, a connector can report `working` (a login/setup step
+ * succeeded) while never having actually discovered any of its tools yet
+ * (its own "refresh tools" step never ran), which would make it a false
+ * positive here: listed as connected, but with nothing the model could
+ * actually call. Requiring BOTH real saved credentials (`config.secretRef`)
+ * AND at least one cached tool (`mcpTools.length`) is what "connected AND
+ * actually usable right now" means. The two built-in singleton connectors
+ * (Files, Browser) are deliberately excluded — those are Jarvis's own
+ * native abilities wearing a connector record for internal bookkeeping,
+ * never a "connected app" in the sense the user means when they ask this.
+ */
+function connectorsSection() {
+  const usable = listConnectors().filter(
+    (c) => c.type === 'mcp' && c.config?.secretRef && Array.isArray(c.mcpTools) && c.mcpTools.length > 0
+  );
+  if (!usable.length) {
+    return '\n\nConnected apps/services: none right now — if the user asks what\'s connected, say so plainly rather than guessing.';
+  }
+  const names = usable.map((c) => c.label).join(', ');
+  return `\n\nConnected apps/services, right now, accurately — nothing else is connected regardless of what a tool description or an older note might suggest: ${names}.`;
+}
+
+/**
+ * The honest, current list of installed Skills (folders of instructions
+ * under data/skills/ — never a built-in ability, never a connector; see
+ * root CLAUDE.md's PERMANENT RULE on that distinction) — a Skill is a
+ * DIFFERENT thing from a "capability" in the broader sense (built-in
+ * abilities, connected apps) and deserves its own honest answer, the same
+ * way connectorsSection() above exists so "what's connected" has one. Two
+ * confirmed, live gaps this closes:
+ *   1. Nothing could ever answer "how many skills do you have" at all —
+ *      there was no tool, and the model had nothing accurate in its own
+ *      instructions to go on either.
+ *   2. Real auto-invocation needs the model to know a Skill exists BEFORE
+ *      deciding whether it applies — folder Skills are now `core: true`
+ *      (server/skills/index.js) so they're always declared, but a bare
+ *      tool declaration (name + description only) doesn't tell the model
+ *      "these are your Skills, distinct from your other abilities" the way
+ *      this explicit list does.
+ * Names and one-line descriptions only, same restraint as connectorsSection
+ * — the full instructions body is read only when a Skill is actually
+ * called (see skills/index.js's progressive-disclosure design).
+ */
+function skillsSection() {
+  const skills = listUserSkills().filter((s) => s.enabled);
+  if (!skills.length) {
+    return '\n\nInstalled Skills: none right now — if the user asks how many Skills you have, say so plainly.';
+  }
+  const lines = skills.map((s) => `- ${s.name}${s.description ? `: ${s.description}` : ''}`);
+  return (
+    `\n\nInstalled Skills (folders of instructions the user built or uploaded on purpose — a specific ` +
+    `process, template, or house style, and a different kind of thing from your built-in abilities or a ` +
+    `connected app; never a renamed version of either): ${skills.length} total.\n${lines.join('\n')}\n` +
+    `When what's being asked genuinely matches one of these, call it and follow what it says rather than ` +
+    `working the task out from scratch — that is the whole reason it exists. A real match only, never a ` +
+    `stretch. If the user asks what Skills you have, these are them: count and name them from this list, ` +
+    `and don't fold your built-in abilities or connected apps into that answer.`
+  );
 }
 
 /**
@@ -174,8 +257,25 @@ function situationSection({ gapMs } = {}) {
  * own instruction is a completely different task (operating the desktop),
  * not a conversation where either is relevant.
  */
-export function systemInstructionFor({ lowConfidence = false, systemOverride, gapMs, background = false } = {}) {
-  if (systemOverride) return systemOverride;
+/**
+ * Splits the system instruction into a `stable` part (byte-identical
+ * across turns as long as memories/pending-jobs don't change — a real
+ * candidate for provider prompt caching) and a `volatile` part
+ * (situationSection()'s wall-clock time, which by construction changes at
+ * least once a minute — see its own comment — plus the low-confidence
+ * directive). `systemInstructionFor()` below just concatenates them for
+ * callers that only want a plain string (gemini.js, openai-compatible.js,
+ * neither of which does anything provider-specific with caching here);
+ * anthropic.js uses this directly to mark `stable` as an Anthropic
+ * `cache_control` breakpoint, so a turn that hasn't changed memories/jobs
+ * since the last one reuses the cached prefix instead of a full re-prefill.
+ * Order matters: the stable part must be everything BEFORE the volatile
+ * part, never after, or nothing after the timestamp could ever be cached
+ * even once caching is wired in — this is why situationSection() moved to
+ * the end instead of directly after SYSTEM_INSTRUCTION.
+ */
+export function systemInstructionParts({ lowConfidence = false, systemOverride, gapMs, background = false, addressed = false, style } = {}) {
+  if (systemOverride) return { stable: systemOverride, volatile: '' };
   // jobsSection() is for the LIVE conversation only — a scheduled task's own
   // turn and a background Job's own worker turn (server/jobs/worker.js)
   // BOTH set opts.background:true precisely because they are not the live
@@ -183,6 +283,30 @@ export function systemInstructionFor({ lowConfidence = false, systemOverride, ga
   // threading needed) that correctly excludes both: neither a scheduled
   // task nor a job talking to itself should be told it has "background work
   // waiting on you" — that sentence only makes sense addressed to the owner.
-  const base = SYSTEM_INSTRUCTION + situationSection({ gapMs }) + memorySection() + (background ? '' : jobsSection());
-  return lowConfidence ? base + CLARIFY_DIRECTIVE : base;
+  //
+  // The style framework (personality.js's STYLE_FRAMEWORK) uses the SAME
+  // background gate as jobsSection(), except `addressed` overrides it —
+  // briefing.js sets addressed:true because a briefing IS spoken to the
+  // owner even though it runs on the scheduler's own background:true turn;
+  // a scheduled task's own prompt-action turn and a Job worker's turn leave
+  // addressed unset, so they correctly get neither jobsSection() nor the
+  // style framework (see personality.js's header comment on why: nobody is
+  // being talked to on those turns, so "how to say it" has no audience).
+  const hasAudience = !background || addressed;
+  const stable =
+    SYSTEM_INSTRUCTION +
+    (hasAudience ? STYLE_FRAMEWORK : '') +
+    memorySection() +
+    connectorsSection() +
+    skillsSection() +
+    (background ? '' : jobsSection());
+  let volatile = situationSection({ gapMs });
+  if (hasAudience) volatile += floorsSection(style);
+  if (lowConfidence) volatile += CLARIFY_DIRECTIVE;
+  return { stable, volatile };
+}
+
+export function systemInstructionFor(opts = {}) {
+  const { stable, volatile } = systemInstructionParts(opts);
+  return volatile ? stable + volatile : stable;
 }

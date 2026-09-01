@@ -31,6 +31,11 @@ function isDenylisted(resolved) {
 
 export default {
   name: 'allow_folder',
+  // The prompt's own documented recovery step for a file tool's "folder
+  // isn't allowed yet" failure — non-core here would mean that documented
+  // recovery cannot happen without the model first guessing to search for
+  // it. See root CLAUDE.md's Model system section.
+  core: true,
   meta: true,
   description:
     'Grants Jarvis permission to read, write, and move files inside one specific folder. Only call this ' +

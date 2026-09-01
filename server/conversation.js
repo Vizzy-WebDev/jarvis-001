@@ -44,11 +44,30 @@ function newId() {
   return `m${nextId++}`;
 }
 
+/**
+ * A tail slice that never cuts between an assistant `toolCalls` message and
+ * its matching `tool` result message — a blind `slice(-N)` can land exactly
+ * there, and every adapter then replays an orphaned function/tool call on
+ * the very next turn, which every provider's API rejects outright. Walks
+ * backward from the target cut point to the nearest safe boundary (a
+ * message that ISN'T a `tool` role reply immediately following a
+ * `toolCalls` assistant message it would separate from) rather than
+ * cutting exactly at N. This can keep a handful more than
+ * MAX_HISTORY_ENTRIES messages in a run of back-to-back tool steps — an
+ * acceptable trade against handing a model a structurally invalid
+ * transcript.
+ */
+function safeCutIndex(list, target) {
+  let i = target;
+  while (i > 0 && list[i].role === 'tool') i--;
+  return i;
+}
+
 function trim(sessionId) {
   const list = sessions.get(sessionId);
-  if (list && list.length > MAX_HISTORY_ENTRIES) {
-    sessions.set(sessionId, list.slice(list.length - MAX_HISTORY_ENTRIES));
-  }
+  if (!list || list.length <= MAX_HISTORY_ENTRIES) return;
+  const cut = safeCutIndex(list, list.length - MAX_HISTORY_ENTRIES);
+  sessions.set(sessionId, list.slice(cut));
 }
 
 function push(sessionId, message) {
@@ -191,6 +210,33 @@ export function markLastAssistantInterrupted(sessionId, spokenText) {
     }
   }
   return false;
+}
+
+/**
+ * Removes the most recent message if it's an assistant tool-call turn with
+ * no matching tool-result message after it yet — the state left behind
+ * when a turn dies between pushAssistantToolCalls() and pushToolResults()
+ * (see models/runner.js's runOnEntry/runTurn). Left in place, this
+ * orphaned call would poison every later turn AND every fallback model:
+ * every adapter replays it as an unanswered function/tool call, which
+ * every provider's API rejects outright — confirmed live, this is why a
+ * turn that failed partway through a tool step used to fail on every
+ * subsequent turn too, forever, until the user started a new chat.
+ * A no-op (returns false) if the last message isn't actually an orphaned
+ * tool call, so callers can call this unconditionally after any turn
+ * failure without checking first. See db.js's migration 6 for the
+ * one-time cleanup of rows that already existed from before this existed.
+ */
+export function removeLastOrphanedToolCall(sessionId) {
+  const list = sessions.get(sessionId);
+  if (!list || !list.length) return false;
+  const last = list[list.length - 1];
+  if (last.role !== 'assistant' || !last.toolCalls?.length) return false;
+  list.pop();
+  if (boundSessions.has(sessionId)) {
+    chatStore.removeLastMessageIfMatches(sessionId, 'assistant');
+  }
+  return true;
 }
 
 export function resetSession(sessionId = 'main') {

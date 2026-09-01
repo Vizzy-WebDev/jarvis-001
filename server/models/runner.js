@@ -20,6 +20,7 @@ import { getPrefs } from '../prefs.js';
 // never disagree about what counts as vision-capable. ai.js does not import
 // this file, so there's no cycle.
 import { meetsNeed } from '../ai.js';
+import { readStyle, clearSession as clearStyleSession, createReactionScanner, stripReactionMarkers } from '../personality.js';
 
 // Raised from 5 once installed folder Skills (server/skills-fs.js) arrived —
 // calling a Skill consumes one step just to fetch its instructions, leaving
@@ -28,6 +29,47 @@ import { meetsNeed } from '../ai.js';
 // control session capping steps tighter or looser); undefined uses
 // this default.
 const DEFAULT_MAX_TOOL_STEPS = 12;
+
+// A turn that fails on its first candidate doesn't need to walk the ENTIRE
+// ranked list before giving up — on a free-tier account most of that list
+// is models that failed hours or days ago (see AVAILABILITY_COOLDOWNS_MS in
+// router.js), and each one costs a full network round-trip before it's
+// crossed off. Confirmed live: 47 of 62 enabled models sitting
+// 'unreachable', a top pick that fails walking through all of them cost up
+// to 370s of silence — during which the user, reasonably, assumed Jarvis
+// had stopped responding. A user told plainly within a few tries that
+// nothing is reachable right now is strictly better than one left waiting
+// minutes for an answer that was always going to fail anyway; the ranked
+// list behind the cap is still there for a genuinely quick retry.
+const MAX_FALLBACK_ATTEMPTS = 4;
+
+// Which model actually answered last, per session — the "sticky model"
+// mechanism (see preferredModelId below). In-memory only, same lifetime as
+// conversation.js's session map; cleared on resetConversation() so a new
+// chat starts with a clean auto-pick instead of inheriting whatever
+// answered the PREVIOUS conversation.
+const sessionStickyModel = new Map(); // sessionId -> modelId
+
+// Non-core capability names find_capability.js has ever surfaced in THIS
+// conversation, kept for the conversation's lifetime rather than just the
+// current turn. Before this existed, runOnEntry's own `unlocked` Set was
+// declared fresh on every runTurn() call — so a Skill, connector tool, or
+// Planning Partner tool the model found via find_capability on one message
+// went invisible again on the very next message, forcing a fresh search
+// every single step of what the user experiences as one continuous
+// multi-turn task (confirmed against real data: several real Planning
+// Partner projects stalled after their first step for exactly this
+// reason). Same lifetime/cleanup story as sessionStickyModel above.
+const sessionUnlockedTools = new Map(); // sessionId -> Set<string>
+
+function getSessionUnlocked(sessionId) {
+  let set = sessionUnlockedTools.get(sessionId);
+  if (!set) {
+    set = new Set();
+    sessionUnlockedTools.set(sessionId, set);
+  }
+  return set;
+}
 
 /** Puts one specific, still-enabled model at the head of the ranked list, keeping the rest behind it as a live fallback chain. An unknown or disabled id is ignored — the ranked list stands alone. */
 function leadWith(modelId, ranked) {
@@ -39,18 +81,30 @@ function leadWith(modelId, ranked) {
 
 /**
  * A task's own pinned model (opts.modelId) outranks the user's pinned voice
- * model, which outranks the user's global manual pick, which outranks pure
+ * model, which outranks the user's global manual pick, which outranks the
+ * session's own "sticky" model (whichever model last actually answered in
+ * THIS conversation — see sessionStickyModel above), which outranks pure
  * auto-ranking. `voiceModelId` only applies to `source: 'voice'` turns — a
  * typed message is unaffected even if a voice model is pinned.
+ *
+ * The sticky tier only applies when auto-select is on — a manual pick is
+ * already an explicit, stronger statement of intent, and letting stickiness
+ * override it would silently ignore the user's own choice the moment a
+ * different model happened to answer once (e.g. during the manual model's
+ * own downtime). This is also the direct fix for "it doesn't feel like one
+ * assistant": confirmed live, a single 300-message conversation had been
+ * answered by 15 different models, switching 78 times, because every turn
+ * re-ranked from scratch with nothing remembering who answered last.
  */
-function preferredModelId(prefs, opts) {
+function preferredModelId(prefs, opts, sessionId) {
   if (opts.modelId) return opts.modelId;
   if (opts.source === 'voice' && prefs.voiceModelId) return prefs.voiceModelId;
   if (!prefs.autoSelect && prefs.manualModelId) return prefs.manualModelId;
+  if (prefs.autoSelect) return sessionStickyModel.get(sessionId) || null;
   return null;
 }
 
-function buildCandidateList(task, opts = {}) {
+function buildCandidateList(task, opts = {}, sessionId) {
   const prefs = getPrefs();
   let ranked = rankCandidates(task, { balance: prefs.balance });
 
@@ -62,10 +116,11 @@ function buildCandidateList(task, opts = {}) {
     ranked = ranked.filter((e) => meetsNeed(e, opts.need));
   }
 
-  // Manual/task pick leads; the auto-ranked list behind it is the temporary
-  // fallback chain used only if the pick is unavailable or breaks mid-turn.
-  // Preference resumes on its own next turn once it's healthy again.
-  const withLead = leadWith(preferredModelId(prefs, opts), ranked);
+  // Manual/task/sticky pick leads; the auto-ranked list behind it is the
+  // temporary fallback chain used only if the pick is unavailable or breaks
+  // mid-turn. Preference resumes on its own next turn once it's healthy
+  // again.
+  const withLead = leadWith(preferredModelId(prefs, opts, sessionId), ranked);
   return opts.need && Object.keys(opts.need).length
     ? withLead.filter((e) => meetsNeed(e, opts.need))
     : withLead;
@@ -140,10 +195,14 @@ const AVAILABILITY_RECHECK_MS = 60 * 1000;
 
 // Failure path: re-persist on a state change OR once the last check is
 // stale, since the same model can keep failing turn after turn and it's
-// worth refreshing `checkedAt` occasionally. Success path (see
-// recordAvailability's `allowStaleRewrite: false` caller) only re-persists
-// on an actual state change — once a model is marked 'working' there's no
-// need to keep rewriting the same state on every successful turn.
+// worth refreshing `checkedAt` occasionally. Success path now uses the same
+// discipline (see the call site below) — it used to pass
+// `allowStaleRewrite: false`, meaning a model that kept succeeding forever
+// still showed the SAME `checkedAt` from whenever it first flipped to
+// 'working', so "how recently was this actually confirmed alive" wasn't a
+// trustworthy signal (router.js's availability-based ranking, and
+// passesAvailabilityCooldown() elsewhere, both lean on `checkedAt` being
+// meaningfully fresh).
 function shouldRecordAvailability(entry, nextState, allowStaleRewrite) {
   const current = entry?.availability;
   if (!current || current.state !== nextState) return true;
@@ -167,44 +226,83 @@ async function* runOnEntry(sessionId, entry, opts) {
   const adapter = getAdapter(entry.adapter);
   const maxSteps = opts.maxToolSteps || DEFAULT_MAX_TOOL_STEPS;
   let finalText = null;
-  // Names find_capability.js has surfaced so far THIS turn — starts seeded
-  // with opts.allowedTools (if given), not empty, then grows across steps
-  // and never shrinks, recomputed into the tool list fresh each step below.
-  // The seeding matters: toolsForTurn's own allowedTools filter only NARROWS
-  // whatever getToolDeclarations() already returned, which defaults to
-  // core-only without a non-empty `unlocked` — so naming a non-core tool
-  // (a connector, or an internal job-only tool like report_job_done) in an
-  // explicit allowlist used to have no effect at all, since it never became
-  // visible in the first place. An allowlist is itself a clear statement of
-  // intent to include exactly those names regardless of core status, so it
-  // now pre-unlocks them. Strictly additive versus the old behavior — a
-  // caller with no allowedTools (the common case) or one naming only
-  // already-core tools sees no change at all.
-  const unlocked = new Set(Array.isArray(opts.allowedTools) ? opts.allowedTools : []);
+  // Names find_capability.js has surfaced, seeded from two sources: whatever
+  // this conversation has EVER unlocked before (sessionUnlockedTools — see
+  // its own comment above; this is what makes a find_capability result
+  // stick for the rest of the conversation, not just this one message), plus
+  // opts.allowedTools if given. Grows across this turn's own steps too
+  // (below), and every addition is written back into the session-scoped set
+  // so it survives into the NEXT runTurn() call on this session.
+  // The allowedTools seeding matters on its own: toolsForTurn's own
+  // allowedTools filter only NARROWS whatever getToolDeclarations() already
+  // returned, which defaults to core-only without a non-empty `unlocked` —
+  // so naming a non-core tool (a connector, or an internal job-only tool
+  // like report_job_done) in an explicit allowlist used to have no effect at
+  // all, since it never became visible in the first place. An allowlist is
+  // itself a clear statement of intent to include exactly those names
+  // regardless of core status, so it now pre-unlocks them. Strictly additive
+  // versus the old behavior — a caller with no allowedTools (the common
+  // case) or one naming only already-core tools sees no change at all.
+  const sessionUnlocked = getSessionUnlocked(sessionId);
+  const unlocked = new Set([...sessionUnlocked, ...(Array.isArray(opts.allowedTools) ? opts.allowedTools : [])]);
 
   for (let step = 0; step < maxSteps; step++) {
+    // Checked at the top of every step (not just relied on via the adapter
+    // call throwing) so a turn superseded by a newer message in the same
+    // session (see brain.js's per-session coordinator) stops between steps
+    // too, not only while a request is actually in flight.
+    if (opts.signal?.aborted) {
+      throw Object.assign(new Error('Turn superseded by a newer message.'), { aborted: true });
+    }
     const tools = toolsForTurn(opts, unlocked);
     const messages = conversation.getMessages(sessionId);
     let text = '';
     let callEvent = null;
     let finalEvent = null;
+    // Scoped to this one step's stream — a marker split across a TOOL-CALL
+    // boundary would be meaningless anyway, since a new step is a fresh
+    // generation, not a continuation of the same text stream. See
+    // personality.js's createReactionScanner() for why this exists: the
+    // model writes a literal token (e.g. "[[laugh]]") when a real vocal
+    // reaction belongs at that point in its reply — this turns that token
+    // into a distinct `reaction` event instead of ever letting it reach the
+    // transcript or any voice as literal words.
+    const reactionScanner = createReactionScanner();
 
-    for await (const ev of adapter.stream(entry, messages, { tools, lowConfidence: opts.lowConfidence, gapMs: opts.gapMs, background: opts.background })) {
+    for await (const ev of adapter.stream(entry, messages, { tools, lowConfidence: opts.lowConfidence, gapMs: opts.gapMs, background: opts.background, addressed: opts.addressed, style: opts.style, signal: opts.signal })) {
       if (ev.type === 'chunk') {
-        text += ev.text;
-        yield { type: 'chunk', text: ev.text };
+        for (const scanEv of reactionScanner.feed(ev.text)) {
+          if (scanEv.type === 'text') {
+            text += scanEv.text;
+            yield { type: 'chunk', text: scanEv.text };
+          } else if (scanEv.type === 'reaction') {
+            yield { type: 'reaction', kind: scanEv.kind };
+          }
+        }
       } else if (ev.type === 'call') {
         callEvent = ev;
       } else if (ev.type === 'final') {
         finalEvent = ev;
       }
     }
+    // Anything still held back was never a real marker — just ordinary
+    // text that happened to look like the start of one (e.g. "[[" used for
+    // emphasis) — flush it as plain text now that the stream is done.
+    for (const scanEv of reactionScanner.flush()) {
+      text += scanEv.text;
+      yield { type: 'chunk', text: scanEv.text };
+    }
 
     if (callEvent) {
       conversation.pushAssistantToolCalls(sessionId, callEvent.calls, {
         modelId: entry.id,
         raw: callEvent.raw,
-        text: callEvent.text || text || undefined,
+        // stripReactionMarkers() here, not another detection pass — a
+        // reaction in this text was already caught and yielded above, via
+        // the SAME underlying chunk stream this field is built from
+        // (adapter-internal). This only cleans the STORED/echoed text so a
+        // raw marker never lands in conversation history or Chat History.
+        text: stripReactionMarkers(callEvent.text) || text || undefined,
       });
 
       const toolResults = [];
@@ -259,7 +357,11 @@ async function* runOnEntry(sessionId, entry, opts) {
         // returns a `matches` array shaped like this.
         if (call.name === 'find_capability' && Array.isArray(result?.matches)) {
           for (const m of result.matches) {
-            if (m?.name) unlocked.add(m.name);
+            if (m?.name) {
+              unlocked.add(m.name);
+              // Persist past this single turn — see sessionUnlockedTools above.
+              sessionUnlocked.add(m.name);
+            }
           }
         }
         // ui_action/needs_confirmation/summary/confirm_token are only ever
@@ -278,7 +380,13 @@ async function* runOnEntry(sessionId, entry, opts) {
       continue;
     }
 
-    finalText = finalEvent?.text ?? (text || "Sorry, I didn't quite catch that.");
+    // stripReactionMarkers() — same reasoning as callEvent.text above: the
+    // reaction itself was already yielded from the live chunk stream; this
+    // only keeps a raw marker out of the STORED text (conversation history,
+    // Chat History). stripReactionMarkers(undefined) returns undefined
+    // unchanged, so this preserves the original `??` fallback to `text`
+    // exactly when finalEvent has no text of its own.
+    finalText = stripReactionMarkers(finalEvent?.text) ?? (text || "Sorry, I didn't quite catch that.");
     conversation.pushAssistantText(sessionId, finalText, { modelId: entry.id, raw: finalEvent?.raw });
     break;
   }
@@ -309,7 +417,19 @@ async function* runOnEntry(sessionId, entry, opts) {
  * model — for a narration-only turn), `allowedTools` (array of skill names
  * to restrict the tool list to — e.g. a scheduled task's own connector
  * allowlist; null/undefined means no restriction). Yields, in order:
+ *   {type:'style_floors', floors, sticky}     — only when personality.js's readStyle()
+ *                                                found at least one floor for this turn;
+ *                                                a debug-only signal (see public/settings.js's
+ *                                                toggle), never something the model itself sees
  *   {type:'chunk', text}
+ *   {type:'reaction', kind}                   — a real, non-verbal vocal cue belongs here (currently
+ *                                                only kind:'laugh') — see personality.js's
+ *                                                createReactionScanner(); the model's own literal
+ *                                                token is stripped before it ever reaches this event
+ *                                                or any 'chunk' text, so it's never spoken or shown
+ *                                                as words. A playback engine queues a real sound clip
+ *                                                for it; a consumer that doesn't care (the transcript)
+ *                                                just ignores it, same as 'style_floors'.
  *   {type:'tool_start', name} / {type:'tool_result', name, ok}
  *   {type:'model_switch', from, to, reason}   — only when a fallback actually happens
  *   {type:'restart'}                          — clear any partial reply already shown; a fresh one follows
@@ -326,16 +446,27 @@ export async function* runTurn(sessionId, userText, opts = {}) {
   const priorMessages = conversation.getMessages(sessionId);
   const lastPrior = priorMessages[priorMessages.length - 1];
   const gapMs = lastPrior?.createdAt ? Date.now() - Date.parse(lastPrior.createdAt) : null;
-  const situationOpts = { ...opts, gapMs: Number.isFinite(gapMs) ? gapMs : null };
+  // readStyle() is pure/cheap (regex over this turn's own text, personality.js) —
+  // computed unconditionally and gated later in prompt.js by background/addressed,
+  // same pattern as gapMs above. Skipped when systemOverride is set (the control
+  // loop's own instruction is a different task entirely — see prompt.js).
+  const style = opts.systemOverride ? undefined : readStyle(sessionId, userText);
+  const situationOpts = { ...opts, gapMs: Number.isFinite(gapMs) ? gapMs : null, style };
+  // Debug-only signal (public/settings.js's toggle gates whether the UI shows it) —
+  // never read by the model itself, purely for the user to confirm a floor actually
+  // fired. Only yielded when something did, so the common case emits nothing extra.
+  if (style && Object.values(style.floors).some(Boolean)) {
+    yield { type: 'style_floors', floors: style.floors, sticky: style.sticky };
+  }
 
   // `media` rides on the user's own message, so it stays in the transcript
   // and every later turn still sees it — the same way Claude keeps an image
   // in a conversation (see attachments.js for why images aren't digested).
   conversation.pushUserText(sessionId, userText, { media: opts.media });
   const task = profileTask({ text: userText, source: opts.source, background: opts.background, type: opts.type });
-  const candidates = buildCandidateList(task, opts);
+  const allCandidates = buildCandidateList(task, opts, sessionId);
 
-  if (candidates.length === 0) {
+  if (allCandidates.length === 0) {
     yield {
       type: 'paused',
       reason:
@@ -346,6 +477,12 @@ export async function* runTurn(sessionId, userText, opts = {}) {
     };
     return;
   }
+
+  // Cap how many models a single turn will walk through on failure — see
+  // MAX_FALLBACK_ATTEMPTS's comment. The full ranked list stays available
+  // to the NEXT turn (health/availability cooldowns move on independently),
+  // this only bounds how long any one turn makes the user wait.
+  const candidates = allCandidates.slice(0, MAX_FALLBACK_ATTEMPTS);
 
   let previousId = null;
   let lastError = null;
@@ -371,6 +508,21 @@ export async function* runTurn(sessionId, userText, opts = {}) {
         yield value;
       }
     } catch (err) {
+      // Either an abort (superseded by a newer message in the same
+      // session — brain.js's per-session turn coordinator) or a genuine
+      // failure can leave a tool-call message with no matching result, if
+      // it happened between pushAssistantToolCalls and pushToolResults
+      // inside runOnEntry — clean that up regardless of which one this
+      // was. Safe to call unconditionally: a no-op whenever the last
+      // message isn't actually an orphaned tool call (the common case,
+      // since most stops happen before any tool call this step at all).
+      conversation.removeLastOrphanedToolCall(sessionId);
+      // Superseded, not a real model failure: no health penalty, and
+      // whatever text/tool-calls this step was mid-generating was never
+      // pushed (the throw happened before reaching those push calls). Stop
+      // silently — the coordinator that aborted us is the one running the
+      // merged retry, on its own connection.
+      if (opts.signal?.aborted) return;
       failed = true;
       console.error(`[runner] model "${entry.id}" failed:`, err);
       const kind = classifyError(err);
@@ -383,7 +535,11 @@ export async function* runTurn(sessionId, userText, opts = {}) {
 
     if (!failed && finalResult) {
       markHealthy(entry.id);
-      recordAvailability(entry.id, 'working', null, { allowStaleRewrite: false });
+      recordAvailability(entry.id, 'working', null);
+      // Remember who actually answered — see preferredModelId()'s sticky
+      // tier above. Only meaningful when auto-select is on (a manual pick
+      // already outranks it), but harmless to always record.
+      sessionStickyModel.set(sessionId, entry.id);
       yield { type: 'done', text: finalResult.text, modelId: entry.id };
       return;
     }
@@ -394,13 +550,19 @@ export async function* runTurn(sessionId, userText, opts = {}) {
   // category sentences (see friendlyReason() above), and three of its four
   // real categories already end with their own specific next step ("...
   // switch models in Model Settings" etc.); appending the same generic
-  // advice again read redundant.
+  // advice again read redundant. Wording says "a few" rather than "every
+  // model I have available" since MAX_FALLBACK_ATTEMPTS means this is no
+  // longer literally the whole list — the ranked list itself, and the
+  // user's next turn, are unaffected by this turn giving up early.
   yield {
     type: 'paused',
-    reason: `I tried every model I have available and none of them could finish that. Most recent problem: ${lastError || 'unknown error'}`,
+    reason: `I tried a few models and none of them could finish that. Most recent problem: ${lastError || 'unknown error'}`,
   };
 }
 
 export function resetConversation(sessionId = 'main') {
   conversation.resetSession(sessionId);
+  sessionStickyModel.delete(sessionId);
+  sessionUnlockedTools.delete(sessionId);
+  clearStyleSession(sessionId);
 }

@@ -131,6 +131,24 @@ function rawToolsFor(connector) {
   return [];
 }
 
+/**
+ * The real, prefixed tool names belonging to one connector id — what a
+ * Briefing/Task connector picker needs to turn "the user selected this
+ * connector" into an `allowedTools` entry runner.js actually understands
+ * (a plain connector id means nothing to the tool-declaration layer; only
+ * its prefixed tool names do). Returns `[]` for an unknown/disabled
+ * connector or a `files`/`browser` singleton (those aren't picker-eligible
+ * "connected apps" — see the picker UI's own filtering) rather than
+ * throwing, so a stale saved id from a since-removed connector degrades
+ * silently instead of breaking the whole allowlist it's part of.
+ */
+export function toolNamesForConnector(connectorId) {
+  const connector = getConnector(connectorId);
+  if (!connector || !connector.enabled) return [];
+  if (connector.type !== 'mcp' && connector.type !== 'api' && connector.type !== 'cli') return [];
+  return rawToolsFor(connector).map((t) => prefixedName(connector, t.name));
+}
+
 /** Every currently enabled connector's tool declarations, in the plain `{name, description, parameters}` shape every adapter expects — plus enough bookkeeping for dispatch() to route a call back to the right connector. */
 export function getToolDeclarations() {
   const declarations = [];

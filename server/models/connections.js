@@ -70,8 +70,16 @@ export function defaultConnectionLabel({ adapter, baseUrl }) {
  * given, is used exactly as-is instead of being derived from the label —
  * the legacy-.env migration needs this so a connection's id can match its
  * secretRef alias exactly ('anthropic', not a label-derived 'claude').
+ *
+ * `provider` (a server/models/providers.js id), `kind`
+ * ('first-party'|'gateway'|'local'), and `keyRequired` (boolean) are the
+ * Provider System Refactor's stored facts — captured once here, at add
+ * time, instead of being re-derived from a URL regex on every read. All
+ * three are optional; a connection saved without them (every connection
+ * saved before this existed) is backfilled at read time by
+ * providers.js's providerForLegacy(), never migrated on disk.
  */
-export function addConnection({ adapter, baseUrl, label, secret, secretRef, id: forcedId }) {
+export function addConnection({ adapter, baseUrl, label, secret, secretRef, id: forcedId, provider, kind, keyRequired }) {
   if (!adapter) throw new Error('A connection needs an adapter.');
   const data = load();
   const finalLabel = label || defaultConnectionLabel({ adapter, baseUrl });
@@ -87,6 +95,9 @@ export function addConnection({ adapter, baseUrl, label, secret, secretRef, id: 
     adapter,
     baseUrl: baseUrl || null,
     secretRef: ref,
+    provider: provider || null,
+    kind: kind ?? null,
+    keyRequired: typeof keyRequired === 'boolean' ? keyRequired : null,
     createdAt: new Date().toISOString(),
   };
 

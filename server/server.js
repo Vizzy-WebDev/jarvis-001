@@ -6,7 +6,7 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { chat, chatStream, resetConversation, getActiveSessionId, activateConversation } from './brain.js';
+import { chat, chatStream, resetConversation, getActiveSessionId, activateConversation, abortActiveTurn } from './brain.js';
 import { markLastAssistantInterrupted } from './conversation.js';
 import * as chatStore from './chat-store.js';
 // Direct runner.js import (not through brain.js) so a monitor's follow-up
@@ -24,8 +24,7 @@ import { createLiveWss } from './live.js';
 import { createDuplexWss } from './duplex.js';
 import { addClient, removeClient, broadcast } from './events.js';
 import { addNotification, listNotifications, markRead, markAllRead, removeNotification, clearAll as clearAllNotifications } from './notifications.js';
-import { ADAPTER_NAMES } from './adapters/index.js';
-import { SUGGESTIONS } from './models/catalog.js';
+import { PROVIDERS, providerForLegacy } from './models/providers.js';
 import { getHealthStatus, markHealthy, markUnhealthy } from './models/health.js';
 import { classifyError, AVAILABILITY_STATE_FOR_KIND } from './models/error-kind.js';
 import { friendlyMessage, friendlyMessageFor } from './friendly-message.js';
@@ -57,6 +56,7 @@ import {
   testModelConnection,
   discoverModels,
 } from './models/registry.js';
+import { probeEndpoint } from './models/probe.js';
 import { getPrefs, setPrefs } from './prefs.js';
 import {
   listTasks,
@@ -141,12 +141,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const HOST = '127.0.0.1';
 
-const ADAPTER_LABELS = {
-  gemini: 'Google (Gemini)',
-  anthropic: 'Anthropic (Claude)',
-  'openai-compatible': 'OpenAI-compatible (OpenAI, Ollama, LM Studio, OpenRouter, Groq, ...)',
-};
-
 const app = express();
 // Mounted BEFORE the global JSON parser, and only for this one path: a
 // browser tags a .json file's upload as Content-Type: application/json, and
@@ -165,9 +159,21 @@ function publicModel(entry) {
   return { ...rest, hasSecret: Boolean(secretRef), ready: isReady(entry) };
 }
 
+// A connection saved before the provider catalog existed has no
+// provider/kind of its own — backfilled here at read time via
+// providerForLegacy() (server/models/providers.js), the same read-time
+// pattern catalog.js's withCapabilityDefaults() already uses. Never
+// migrates connections.json; a connection saved through the new flow
+// already has these set and is passed through untouched.
 function publicConnection(conn, models) {
   const { secretRef, ...rest } = conn;
-  return { ...rest, hasSecret: Boolean(secretRef), modelCount: models.filter((m) => m.connectionId === conn.id).length };
+  const backfill = conn.provider ? {} : providerForLegacy(conn.adapter, conn.baseUrl);
+  return {
+    ...rest,
+    ...backfill,
+    hasSecret: Boolean(secretRef),
+    modelCount: models.filter((m) => m.connectionId === conn.id).length,
+  };
 }
 
 // ---------- status ----------
@@ -187,11 +193,13 @@ app.get('/api/models', (req, res) => {
   });
 });
 
-app.get('/api/models/adapters', (req, res) => {
-  res.json({
-    adapters: ADAPTER_NAMES.map((name) => ({ name, label: ADAPTER_LABELS[name] || name })),
-    suggestions: SUGGESTIONS,
-  });
+// Replaces the old /api/models/adapters, which asked the user to pick a
+// wire protocol by name ("OpenAI-compatible (OpenAI, Ollama, LM Studio,
+// OpenRouter, Groq, ...)") — see the Provider System Refactor design note
+// in CLAUDE.md. Returns the five user-facing provider tiles; the
+// adapter/kind/keyRequired each one resolves to stays entirely server-side.
+app.get('/api/models/providers', (req, res) => {
+  res.json({ providers: PROVIDERS });
 });
 
 app.get('/api/skills', (req, res) => {
@@ -355,33 +363,53 @@ app.post('/api/models/test', async (req, res) => {
   res.json(result);
 });
 
-// The combined "Test and add" entry point: tests the connection ONCE (using
-// the first selected model), then — only on success — saves the connection
-// and every selected model together, so several models sharing one
-// address+key don't each duplicate the same saved secret (see registry.js).
+// The combined "Test and add" entry point: resolves `provider` (the
+// five-tile selection — see Provider System Refactor design note in
+// CLAUDE.md) to an adapter, tests the connection ONCE (using the first
+// selected model), then — only on success — saves the connection and every
+// selected model together, so several models sharing one address+key don't
+// each duplicate the same saved secret (see registry.js). `adapter` alone
+// is still accepted (no `provider`) for anything not yet updated to the new
+// flow.
 app.post('/api/connections', async (req, res) => {
-  const { adapter, baseUrl, label, secret, models } = req.body || {};
-  if (!adapter) {
-    return res.status(400).json({ ok: false, error: 'Please choose a model type.' });
+  const { provider, adapter, baseUrl, label, secret, models, resolved } = req.body || {};
+  if (!provider && !adapter) {
+    return res.status(400).json({ ok: false, error: 'Please choose a provider.' });
   }
   try {
-    const result = await createConnectionWithModels({ adapter, baseUrl, label, secret, models });
+    const result = await createConnectionWithModels({ provider, adapter, baseUrl, label, secret, models, resolved });
     if (!result.ok) return res.status(400).json(result);
     res.json({
       ok: true,
       connection: publicConnection(result.connection, listModels()),
       added: result.added.map(publicModel),
       failed: result.failed,
+      steps: result.steps,
     });
   } catch (err) {
     res.status(400).json({ ok: false, error: err?.message || 'Could not add that connection.' });
   }
 });
 
+// Probes a not-yet-saved Custom address: tries the OpenAI/Anthropic/Gemini
+// wire shapes in turn (server/models/probe.js) and reports each attempt in
+// `steps` so a failure is explainable rather than one generic sentence —
+// this is the direct fix for the OmniRoute-class failure the Provider
+// System Refactor was written for (see CLAUDE.md). Used by the Custom
+// tile's own "Find models at this address" step; the OpenAI/Anthropic/
+// Gemini/Local tiles never call this — their wire shape is already known.
+app.post('/api/connections/probe', async (req, res) => {
+  const { baseUrl, secret } = req.body || {};
+  const result = await probeEndpoint({ baseUrl, secret });
+  res.json(result);
+});
+
 // Discovers what models a server has. `connectionId` reuses an already-saved
 // connection's key instead of re-typing it (used by the "Find models at
 // this address" button on an existing connection); otherwise `adapter`/
-// `baseUrl`/`secret` describe a not-yet-saved one (the "Add a model" popup).
+// `baseUrl`/`secret` describe a not-yet-saved one (the "Add a model" popup
+// for a known provider — OpenAI/Anthropic/Gemini/Local. A Custom connection
+// uses /api/connections/probe above instead, since it has no adapter yet).
 app.post('/api/connections/discover', async (req, res) => {
   const { adapter, baseUrl, secret, connectionId } = req.body || {};
   const result = await discoverModels({ adapter: adapter || 'openai-compatible', baseUrl, secret, connectionId });
@@ -435,13 +463,30 @@ app.patch('/api/models/:id', (req, res) => {
 // model in the same recorded state.
 /** Runs one adapter test call and records the outcome as the model's `availability` — the same bookkeeping a live turn does in runner.js, so a manual "Test" click keeps the models screen's badges accurate between real conversations. */
 async function testAndRecord(entry) {
-  const result = await testModelConnection(entry);
+  let result;
+  try {
+    result = await testModelConnection(entry);
+  } catch (err) {
+    // testModelConnection() itself throwing (vs. resolving with {ok:false})
+    // means something on OUR side broke, not the model — never record that
+    // as a ban on the model.
+    console.error(`[models] testModelConnection threw for "${entry.id}":`, err);
+    return { ok: false, error: 'The test could not be run — try again.' };
+  }
   try {
     if (result.ok) {
       markHealthy(entry.id);
       updateModel(entry.id, { availability: { state: 'working', checkedAt: new Date().toISOString(), detail: null } });
     } else {
-      const kind = classifyError({ message: result.error });
+      // Classify the RAW error (result.detail) whenever it exists, not the
+      // already-cleaned-up result.error — friendlyMessage() rewrites e.g. a
+      // quota error into "This model has hit its usage limit for now...",
+      // which no longer contains "quota" or "rate limit" and was being
+      // misclassified as generic 'other'/'unreachable' (a 6h ban) instead
+      // of 'quota' (30min). registry.js's testModelConnection() only sets
+      // `detail` on the non-`friendly` branch (see its own comment), so
+      // fall back to `result.error` when `detail` is absent.
+      const kind = classifyError({ message: result.detail || result.error });
       markUnhealthy(entry.id, result.error, kind);
       updateModel(entry.id, {
         availability: { state: AVAILABILITY_STATE_FOR_KIND[kind] || 'unreachable', checkedAt: new Date().toISOString(), detail: result.error },
@@ -1800,6 +1845,22 @@ app.get('/api/chat/stream', async (req, res) => {
   });
 
   const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+
+  // The client closes its EventSource before opening a new one for its next
+  // message (see public/engines/pipeline-engine.js's _send()), and
+  // brain.js's chatStream() coordinator already handles that case on its
+  // own (a NEW call aborts whatever's running). This covers the other way
+  // a connection can go away — the tab closing, a network drop, or an
+  // EventSource simply being abandoned with no follow-up message — so the
+  // turn stops using API quota and streaming work for a reply nobody is
+  // left to receive, rather than running to completion regardless.
+  req.on('close', () => {
+    try {
+      abortActiveTurn(getActiveSessionId());
+    } catch (err) {
+      console.error('[chat/stream] abort-on-close failed:', err);
+    }
+  });
 
   try {
     let text = message;

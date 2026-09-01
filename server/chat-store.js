@@ -320,6 +320,25 @@ export function appendMessage(id, message) {
  * where the interrupt POST arrives before pushAssistantText ever ran is
  * possible and is conversation.js's problem to handle, not this function's.
  */
+/**
+ * Deletes the most recent message row for a conversation, but only if its
+ * role matches — a no-op (returns false) otherwise, so a caller can call
+ * this unconditionally without a separate read-then-check. Used by
+ * conversation.js's removeLastOrphanedToolCall() to keep this persisted
+ * copy in sync when an in-flight turn dies between writing a tool call and
+ * writing its result (see server/models/runner.js's runOnEntry and root
+ * CLAUDE.md's Chat Persistence section).
+ */
+export function removeLastMessageIfMatches(id, role) {
+  const db = getDb();
+  const row = db
+    .prepare('SELECT id, role FROM messages WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1')
+    .get(id);
+  if (!row || row.role !== role) return false;
+  db.prepare('DELETE FROM messages WHERE id = ?').run(row.id);
+  return true;
+}
+
 export function updateLastAssistantMessage(id, patch) {
   const db = getDb();
   const row = db

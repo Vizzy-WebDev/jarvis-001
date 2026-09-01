@@ -9,9 +9,9 @@
 // each duplicating the same saved key. "Add a model" is a popup (see
 // _modal.js) rather than a permanently-inline form.
 
-import { fieldInput, fieldSelect, sectionCard, armedButton, postJson } from './_helpers.js';
+import { fieldInput, sectionCard, armedButton, postJson } from './_helpers.js';
 import { openModal } from './_modal.js';
-import { dropdownControl, toggleSwitch } from './_ui.js';
+import { dropdownControl, toggleSwitch, iconTile } from './_ui.js';
 
 // Local servers rarely publish more than a handful of models, but a host
 // like OpenRouter's /v1/models can return hundreds — defaulting those all
@@ -29,6 +29,41 @@ const AVAILABILITY_LABELS = {
 };
 
 const CAP_LABELS = { vision: 'Images', video: 'Video', audio: 'Audio', webSearch: 'Web search' };
+
+/**
+ * A collapsible "Technical details" block for a failed test/discovery —
+ * the raw (redacted) adapter error text server/models/registry.js's
+ * `detail` field now carries alongside the friendly one-sentence message.
+ * Previously that friendly sentence ("That connection didn't work.") was
+ * the ENTIRE signal a user had to diagnose a failure with; this is what
+ * makes an OmniRoute-class failure (wrong path, no key sent, wrong model
+ * name, server down — four failures that all read identically before this)
+ * actually distinguishable. Plain textContent throughout — `detail` is raw
+ * provider/server text. Returns null when there's nothing to show.
+ */
+function technicalDetails(detail) {
+  if (!detail) return null;
+  const details = document.createElement('details');
+  details.className = 'technical-details';
+  const summary = document.createElement('summary');
+  summary.textContent = 'Technical details';
+  const pre = document.createElement('p');
+  pre.className = 'hint';
+  pre.textContent = detail;
+  details.append(summary, pre);
+  return details;
+}
+
+/** Renders a probe's `steps[]` (server/models/probe.js — what it tried, in plain language) as a small list. Absent/empty on every non-Custom provider's plain discoverModels() result, so this is a no-op there. */
+function probeStepsList(steps) {
+  if (!steps?.length) return null;
+  const list = document.createElement('ul');
+  list.className = 'probe-steps hint';
+  for (const step of steps) {
+    list.appendChild(Object.assign(document.createElement('li'), { textContent: step }));
+  }
+  return list;
+}
 
 function formatDateTime(iso) {
   if (!iso) return null;
@@ -185,6 +220,7 @@ function modelMatchesFilter(m, filterState) {
   if (status === 'all') return true;
   if (status === 'free') return m.billing === 'free';
   if (status === 'paid') return m.billing === 'paid';
+  if (status === 'local') return m.billing === 'local';
   const state = m.availability?.state;
   if (status === 'working') return state === 'working';
   if (status === 'not_working') return Boolean(state) && state !== 'working' && state !== 'unknown';
@@ -261,14 +297,23 @@ function buildModelRow(m, healthInfo, onChange, connection) {
   testBtn.type = 'button';
   testBtn.className = 'btn';
   testBtn.textContent = 'Test';
+  // A separate block below the row (not inline in `testResult`, which is a
+  // short single-line label) for the raw error text on a failed test — see
+  // technicalDetails() above.
+  const testDetailWrap = document.createElement('div');
   testBtn.addEventListener('click', async () => {
     testBtn.disabled = true;
     testBtn.textContent = 'Testing…';
+    testDetailWrap.innerHTML = '';
     try {
       const res = await fetch(`/api/models/${encodeURIComponent(m.id)}/test`, { method: 'POST' });
       const result = await res.json();
       testResult.textContent = result.ok ? 'Connection works.' : result.error || 'Connection failed.';
       testResult.classList.remove('hidden');
+      if (!result.ok) {
+        const detail = technicalDetails(result.detail);
+        if (detail) testDetailWrap.appendChild(detail);
+      }
     } catch {
       testResult.textContent = 'Could not reach the Jarvis server.';
       testResult.classList.remove('hidden');
@@ -284,7 +329,11 @@ function buildModelRow(m, healthInfo, onChange, connection) {
   });
 
   actions.append(toggle.wrapper, testBtn, removeBtn);
-  row.append(main, actions);
+  // Same guard as `actions` above — a click inside the "Technical details"
+  // block (opening it, selecting its text) must not also open the row's
+  // own detail modal underneath it.
+  testDetailWrap.addEventListener('click', (e) => e.stopPropagation());
+  row.append(main, actions, testDetailWrap);
   const open = () => openModelDetail(m, connection);
   row.addEventListener('click', open);
   row.addEventListener('keydown', (e) => {
@@ -351,13 +400,21 @@ function buildModelPicker({ suggestions = [], canDiscover, discover }) {
   const paidCb = document.createElement('input');
   paidCb.type = 'checkbox';
   paidLabel.append(paidCb, document.createTextNode('Paid'));
+  // Same pattern as Free/Paid — narrows a large discovered list (an
+  // OpenRouter- or OmniRoute-scale host can return hundreds of entries) down
+  // to just the self-hosted, no-cost ones.
+  const localLabel = document.createElement('label');
+  localLabel.className = 'day-check';
+  const localCb = document.createElement('input');
+  localCb.type = 'checkbox';
+  localLabel.append(localCb, document.createTextNode('Local'));
   // Live "N selected" count, pushed to the row's right edge — always
   // reflects every checked box regardless of the current text/billing
   // filter, matching exactly what resolveSelection() below actually
   // submits, so this number never disagrees with what clicking Add sends.
   const selectedCountEl = document.createElement('span');
   selectedCountEl.className = 'hint checklist-selected-count';
-  actionsRow.append(selectAllBtn, selectNoneBtn, freeLabel, paidLabel, selectedCountEl);
+  actionsRow.append(selectAllBtn, selectNoneBtn, freeLabel, paidLabel, localLabel, selectedCountEl);
   const filterField = document.createElement('input');
   filterField.type = 'text';
   filterField.className = 'filter-search checklist-filter';
@@ -370,6 +427,14 @@ function buildModelPicker({ suggestions = [], canDiscover, discover }) {
   const statusEl = document.createElement('p');
   statusEl.className = 'hint hidden';
   wrapper.appendChild(statusEl);
+
+  // Only ever populated for a Custom connection's probe (server/models/
+  // probe.js returns `steps`; the plain per-provider discoverModels() never
+  // does) — empty and inert for every other provider's discovery.
+  const stepsWrap = document.createElement('div');
+  wrapper.appendChild(stepsWrap);
+  const detailWrap = document.createElement('div');
+  wrapper.appendChild(detailWrap);
 
   let checkboxes = [];
   let discoveredItems = []; // full {model, label, contextTokens, billing} objects, indexed alongside checkboxes
@@ -384,10 +449,11 @@ function buildModelPicker({ suggestions = [], canDiscover, discover }) {
     checklist.innerHTML = '';
     filterField.value = '';
     // A fresh discovery run starts with no billing filter applied — leaving
-    // Free/Paid checked across two different addresses would silently hide
-    // models the user has no reason to expect are being filtered.
+    // Free/Paid/Local checked across two different addresses would silently
+    // hide models the user has no reason to expect are being filtered.
     freeCb.checked = false;
     paidCb.checked = false;
+    localCb.checked = false;
     checkboxes = items.map((item) => {
       const row = document.createElement('label');
       row.className = 'check-row';
@@ -421,15 +487,19 @@ function buildModelPicker({ suggestions = [], canDiscover, discover }) {
   }
 
   // Hides a row unless it matches BOTH the free-text search and the billing
-  // checkboxes. Neither Free nor Paid checked means billing doesn't filter
-  // anything (today's plain-search behavior); one or both checked narrows
-  // to rows matching a checked value.
+  // checkboxes. None of Free/Paid/Local checked means billing doesn't
+  // filter anything (today's plain-search behavior); one or more checked
+  // narrows to rows matching any checked value.
   function applyFilters() {
     const q = filterField.value.trim().toLowerCase();
-    const billingOn = freeCb.checked || paidCb.checked;
+    const billingOn = freeCb.checked || paidCb.checked || localCb.checked;
     for (const row of checklist.children) {
       const matchesText = q === '' || row.dataset.search.includes(q);
-      const matchesBilling = !billingOn || (freeCb.checked && row.dataset.billing === 'free') || (paidCb.checked && row.dataset.billing === 'paid');
+      const matchesBilling =
+        !billingOn ||
+        (freeCb.checked && row.dataset.billing === 'free') ||
+        (paidCb.checked && row.dataset.billing === 'paid') ||
+        (localCb.checked && row.dataset.billing === 'local');
       row.classList.toggle('hidden', !(matchesText && matchesBilling));
     }
   }
@@ -437,6 +507,7 @@ function buildModelPicker({ suggestions = [], canDiscover, discover }) {
   filterField.addEventListener('input', applyFilters);
   freeCb.addEventListener('change', applyFilters);
   paidCb.addEventListener('change', applyFilters);
+  localCb.addEventListener('change', applyFilters);
   // One delegated listener covers every checkbox renderChecklist() ever
   // creates (they're rebuilt per discovery run) — a native `change` event
   // on an individual checkbox bubbles up to `checklist`.
@@ -464,14 +535,20 @@ function buildModelPicker({ suggestions = [], canDiscover, discover }) {
     discoverBtn.disabled = true;
     discoverBtn.textContent = 'Looking…';
     statusEl.classList.add('hidden');
+    stepsWrap.innerHTML = '';
+    detailWrap.innerHTML = '';
     try {
       const data = await discover();
+      const steps = probeStepsList(data.steps);
+      if (steps) stepsWrap.appendChild(steps);
       const items = data.models || [];
       fillSuggestions(items.map((m) => m.model));
       if (data.error) {
         statusEl.className = 'error';
         statusEl.textContent = data.error;
         statusEl.classList.remove('hidden');
+        const detail = technicalDetails(data.detail);
+        if (detail) detailWrap.appendChild(detail);
         renderChecklist([]);
       } else if (items.length) {
         renderChecklist(items);
@@ -537,8 +614,25 @@ function buildModelPicker({ suggestions = [], canDiscover, discover }) {
   return { wrapper, resolveSelection };
 }
 
-function buildAddConnectionModal(adapters, suggestions, onChange) {
-  let adapterField, labelField, baseUrlField, secretField, picker;
+function buildAddConnectionModal(providers, onChange) {
+  // `providers` is server/models/providers.js's PROVIDERS list — the user
+  // picks one of these five tiles (OpenAI/Anthropic/Gemini/Local server/
+  // Custom) instead of a wire-protocol dropdown. Replaces the old "Type"
+  // <select> (an adapter name like "openai-compatible") entirely — see the
+  // Provider System Refactor design note in CLAUDE.md for why.
+  let selectedId = providers[0]?.id;
+  let labelField, baseUrlField, secretField, picker, extraWrap;
+  let tileButtons = [];
+  // The last successful Custom probe's resolved shape, so the final submit
+  // can reuse it instead of probing the address all over again — a second,
+  // independent network round-trip to the user's own server for
+  // information already in hand, confirmed live to sometimes fail on its
+  // own (a real, working 115-model OmniRoute connection was rejected this
+  // way) even when the connection itself is fine. Keyed to the exact
+  // address+key it was resolved against — used at submit time only if
+  // neither has changed since; otherwise the server falls back to probing
+  // fresh, exactly as before this existed.
+  let resolvedCustom = null;
 
   return openModal({
     title: 'Add a model',
@@ -546,43 +640,114 @@ function buildAddConnectionModal(adapters, suggestions, onChange) {
     busyLabel: 'Testing…',
     size: 'wide',
     build(body) {
-      adapterField = fieldSelect(
-        'Type',
-        adapters.map((a) => [a.name, a.label])
-      );
-      body.appendChild(adapterField.wrapper);
+      const tileRow = document.createElement('div');
+      tileRow.className = 'connector-card-row';
+      tileButtons = providers.map((p) => {
+        const card = document.createElement('div');
+        card.className = 'connector-card';
+        card.tabIndex = 0;
+        card.setAttribute('role', 'button');
+        card.appendChild(iconTile({ content: p.icon, bg: p.iconBg }));
+        card.appendChild(Object.assign(document.createElement('span'), { className: 'connector-card-label', textContent: p.label }));
+        const select = () => {
+          selectedId = p.id;
+          for (const btn of tileButtons) btn.el.classList.toggle('selected', btn.id === p.id);
+          rebuildFields();
+        };
+        card.addEventListener('click', select);
+        card.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            select();
+          }
+        });
+        tileRow.appendChild(card);
+        return { id: p.id, el: card };
+      });
+      body.appendChild(tileRow);
 
       labelField = fieldInput('Name to show you', 'text', 'e.g. "My fast model"');
       body.appendChild(labelField.wrapper);
 
-      baseUrlField = fieldInput('Address (local/self-hosted servers only)', 'text', 'e.g. http://localhost:11434/v1');
+      baseUrlField = fieldInput('Address', 'text', 'e.g. http://localhost:11434/v1');
       body.appendChild(baseUrlField.wrapper);
 
-      secretField = fieldInput('API key (leave blank for local servers)', 'password', 'Paste key here…');
+      secretField = fieldInput('API key', 'password', 'Paste key here…');
       body.appendChild(secretField.wrapper);
 
       const pickerHolder = document.createElement('div');
       body.appendChild(pickerHolder);
 
+      function currentProvider() {
+        return providers.find((p) => p.id === selectedId) || providers[0];
+      }
+
+      function rebuildFields() {
+        const p = currentProvider();
+        if (!p) return;
+
+        baseUrlField.wrapper.classList.toggle('hidden', !p.urlEditable);
+        if (p.urlEditable) {
+          baseUrlField.input.placeholder = p.baseUrl || 'e.g. https://your-server/v1';
+        }
+        secretField.wrapper.querySelector('label').textContent =
+          p.keyRequired === false ? 'API key (usually not needed)' : p.keyRequired === true ? 'API key' : 'API key (optional)';
+        secretField.input.placeholder = p.keyHint || 'Paste key here…';
+        labelField.input.placeholder = `e.g. "${p.label}"`;
+
+        rebuildPicker();
+      }
+
       function rebuildPicker() {
+        const p = currentProvider();
         pickerHolder.innerHTML = '';
-        const adapter = adapterField.select.value;
         picker = buildModelPicker({
-          suggestions: suggestions[adapter] || [],
+          suggestions: p.suggestions || [],
           canDiscover: true,
-          discover: () =>
-            fetch('/api/connections/discover', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ adapter, baseUrl: baseUrlField.input.value.trim(), secret: secretField.input.value }),
-            }).then((r) => r.json()),
+          discover: () => {
+            const baseUrl = baseUrlField.input.value.trim();
+            const secret = secretField.input.value;
+            // Custom has no known adapter yet — the probe (server/models/
+            // probe.js) is what works that out, trying each wire shape in
+            // turn and reporting what it tried. Every other tile already
+            // knows its adapter+baseUrl, so it goes through the plain
+            // per-provider discovery route unchanged.
+            const url = p.id === 'custom' ? '/api/connections/probe' : '/api/connections/discover';
+            // Named payload, not `body` — this closure is nested inside
+            // build(body), and shadowing that parameter here would be
+            // confusing even though nothing inside this function needs it.
+            const payload =
+              p.id === 'custom'
+                ? { baseUrl, secret }
+                : { adapter: p.adapter, baseUrl: p.urlEditable ? baseUrl || p.baseUrl : p.baseUrl, secret };
+            // A fresh discovery run invalidates any earlier resolution
+            // outright — if this one fails, submit must not silently reuse
+            // a stale success from before the user changed something.
+            resolvedCustom = null;
+            return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+              .then((r) => r.json())
+              .then((data) => {
+                if (p.id === 'custom' && data.ok && data.adapter && typeof data.keyRequired === 'boolean') {
+                  resolvedCustom = { baseUrl, secret, adapter: data.adapter, baseUrlResolved: data.baseUrl, kind: data.kind, keyRequired: data.keyRequired };
+                }
+                return data;
+              });
+          },
         });
         pickerHolder.appendChild(picker.wrapper);
-        baseUrlField.wrapper.classList.toggle('hidden', adapter !== 'openai-compatible');
       }
-      adapterField.select.addEventListener('change', rebuildPicker);
+
       baseUrlField.input.addEventListener('change', rebuildPicker);
-      rebuildPicker();
+      tileButtons[0]?.el.classList.add('selected');
+      rebuildFields();
+
+      // Populated only on a failed final "Test and add" — separate from
+      // the picker's own stepsWrap/detailWrap (those cover a failed
+      // discovery run; a typed model name skips discovery entirely and
+      // hits this submit path directly, so a Custom probe failure needs
+      // somewhere to show its steps/detail here too).
+      extraWrap = document.createElement('div');
+      body.appendChild(extraWrap);
     },
     async onSubmit(api) {
       const selection = await picker.resolveSelection();
@@ -594,15 +759,30 @@ function buildAddConnectionModal(adapters, suggestions, onChange) {
         api.setError(selection.error);
         return null;
       }
+      extraWrap.innerHTML = '';
+      const currentBaseUrl = baseUrlField.input.value.trim();
+      const currentSecret = secretField.input.value;
+      // Only reused if neither the address nor the key has changed since
+      // that probe ran — otherwise this is stale and the server re-probes
+      // fresh on its own (the safe default, unchanged from before).
+      const stillValid =
+        selectedId === 'custom' && resolvedCustom && resolvedCustom.baseUrl === currentBaseUrl && resolvedCustom.secret === currentSecret;
       const data = await postJson('/api/connections', {
-        adapter: adapterField.select.value,
-        baseUrl: baseUrlField.input.value.trim() || undefined,
+        provider: selectedId,
+        baseUrl: currentBaseUrl || undefined,
         label: labelField.input.value.trim() || undefined,
-        secret: secretField.input.value || undefined,
+        secret: currentSecret || undefined,
         models: selection.models,
+        resolved: stillValid
+          ? { adapter: resolvedCustom.adapter, baseUrl: resolvedCustom.baseUrlResolved, kind: resolvedCustom.kind, keyRequired: resolvedCustom.keyRequired }
+          : undefined,
       });
       if (!data.ok) {
         api.setError(data.error || 'Could not add that model.');
+        const steps = probeStepsList(data.steps);
+        if (steps) extraWrap.appendChild(steps);
+        const detail = technicalDetails(data.detail);
+        if (detail) extraWrap.appendChild(detail);
         return null;
       }
       return data;
@@ -662,19 +842,32 @@ function buildAddModelsModal(connection, onChange) {
 }
 
 /** PATCH /api/connections/:id existed since connections shipped — nothing in the UI ever called it with more than the discovery/add flow's own initial values. Renaming a connection or fixing a typo'd address meant deleting and re-adding it (losing every model under it) until this. */
-function buildEditConnectionModal(connection, onChange) {
+function buildEditConnectionModal(connection, providers, onChange) {
   let labelField, baseUrlField, secretField;
+  // `connection.provider` is always present by now (publicConnection()
+  // backfills it via providerForLegacy() for anything saved before the
+  // provider catalog existed) — falls back to 'custom' only if somehow
+  // absent, so the Address field defaults to editable rather than
+  // silently locked.
+  const providerRow = providers.find((p) => p.id === connection.provider);
+  const urlEditable = providerRow ? providerRow.urlEditable : true;
   return openModal({
     title: `Edit "${connection.label}"`,
     submitLabel: 'Save',
     busyLabel: 'Saving…',
     build(body) {
+      const providerLine = document.createElement('p');
+      providerLine.className = 'hint';
+      providerLine.textContent = `Provider: ${providerRow?.label || 'Custom'}`;
+      body.appendChild(providerLine);
+
       labelField = fieldInput('Name to show you', 'text');
       labelField.input.value = connection.label || '';
       body.appendChild(labelField.wrapper);
 
       baseUrlField = fieldInput('Address', 'text', 'e.g. http://localhost:11434/v1');
       baseUrlField.input.value = connection.baseUrl || '';
+      baseUrlField.wrapper.classList.toggle('hidden', !urlEditable);
       body.appendChild(baseUrlField.wrapper);
 
       secretField = fieldInput(connection.hasSecret ? 'API key (leave blank to keep the current one)' : 'API key', 'password', 'Paste key here…');
@@ -705,7 +898,7 @@ function buildEditConnectionModal(connection, onChange) {
   });
 }
 
-function buildConnectionGroup(connection, models, health, onChange) {
+function buildConnectionGroup(connection, models, health, providers, onChange) {
   const group = document.createElement('div');
   group.className = 'connection-group';
 
@@ -743,7 +936,7 @@ function buildConnectionGroup(connection, models, health, onChange) {
   editConnBtn.type = 'button';
   editConnBtn.className = 'btn';
   editConnBtn.textContent = 'Edit';
-  editConnBtn.addEventListener('click', () => buildEditConnectionModal(connection, onChange));
+  editConnBtn.addEventListener('click', () => buildEditConnectionModal(connection, providers, onChange));
   const removeConnBtn = armedButton(
     'Remove connection',
     `Remove it and ${connection.modelCount} model${connection.modelCount === 1 ? '' : 's'}?`,
@@ -760,7 +953,7 @@ function buildConnectionGroup(connection, models, health, onChange) {
   return group;
 }
 
-function buildModelsCard(connections, models, health, onChange, filterState) {
+function buildModelsCard(connections, models, health, providers, onChange, filterState) {
   const card = sectionCard('Your models');
 
   if (!models.length) {
@@ -784,7 +977,7 @@ function buildModelsCard(connections, models, health, onChange, filterState) {
     const group = byConnection.get(connection.id);
     if (group && group.length) {
       anyVisible = true;
-      card.appendChild(buildConnectionGroup(connection, group, health, onChange));
+      card.appendChild(buildConnectionGroup(connection, group, health, providers, onChange));
     }
   }
 
@@ -839,6 +1032,7 @@ function buildFilterBar(filterState, onFilterChange, onRecheck) {
       { value: 'all', label: 'All' },
       { value: 'free', label: 'Free' },
       { value: 'paid', label: 'Paid' },
+      { value: 'local', label: 'Local' },
       { value: 'working', label: 'Working now' },
       { value: 'not_working', label: 'Not working' },
     ],
@@ -892,14 +1086,14 @@ function buildFilterBar(filterState, onFilterChange, onRecheck) {
 export async function render(container) {
   container.innerHTML = '';
 
-  const [modelsRes, prefsRes, adaptersRes] = await Promise.all([
+  const [modelsRes, prefsRes, providersRes] = await Promise.all([
     fetch('/api/models'),
     fetch('/api/prefs'),
-    fetch('/api/models/adapters'),
+    fetch('/api/models/providers'),
   ]);
   const { connections, models, health } = await modelsRes.json();
   const prefs = await prefsRes.json();
-  const { adapters, suggestions } = await adaptersRes.json();
+  const { providers } = await providersRes.json();
 
   const onChange = () => render(container);
 
@@ -912,7 +1106,7 @@ export async function render(container) {
   addBtn.type = 'button';
   addBtn.className = 'btn btn-primary';
   addBtn.textContent = '+ Add a model';
-  addBtn.addEventListener('click', () => buildAddConnectionModal(adapters, suggestions, onChange));
+  addBtn.addEventListener('click', () => buildAddConnectionModal(providers, onChange));
   container.appendChild(addBtn);
 
   const filterState = { query: '', status: 'all' };
@@ -924,7 +1118,7 @@ export async function render(container) {
     if (models.length) {
       modelsSection.appendChild(buildFilterBar(filterState, renderModelsSection, onChange));
     }
-    modelsSection.appendChild(buildModelsCard(connections, models, health, onChange, filterState));
+    modelsSection.appendChild(buildModelsCard(connections, models, health, providers, onChange, filterState));
   }
   renderModelsSection();
 }

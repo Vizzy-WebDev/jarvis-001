@@ -340,6 +340,30 @@ function pushFindingToConversation(record, finding, sessionId) {
   }
 }
 
+/**
+ * The failure twin of pushFindingToConversation() above — confirmed live
+ * gap this closes: a failed examine() used to only announce() over SSE (a
+ * DOM-only note, `app.js`'s handleJobProgress -> addSystemNote()), never
+ * persisted anywhere the model could see. On a free-tier account where
+ * quota exhaustion mid-background-job is the normal case, not an edge
+ * case, this meant asking "so what did that turn up?" got no honest
+ * answer — the model had no record anything was ever asked, let alone that
+ * it failed. Same shape as a successful finding, phrased as a failure.
+ */
+function pushFailureToConversation(record, request, error, sessionId) {
+  if (!record || !request) return;
+  const body = [
+    `(I tried to look into "${record.identity?.title || 'that'}" — they asked: "${request}"`,
+    `\nThat didn't work: ${error || 'something went wrong'}.`,
+    `\nReference id: ${record.id})`,
+  ].join('\n');
+  try {
+    conversation.pushAssistantText(sessionId || record.sessionId || 'main', body);
+  } catch (err) {
+    console.error(`[investigator] could not add failure note for "${record.id}" to the conversation:`, err);
+  }
+}
+
 function runInBackground(work) {
   Promise.resolve()
     .then(work)
@@ -369,6 +393,7 @@ export function examine(contentId, request, { sessionId } = {}) {
     }
 
     if (!outcome.ok) {
+      pushFailureToConversation(record, text, outcome.error, sessionId);
       announce(record, { status: 'failed', error: outcome.error });
       return;
     }

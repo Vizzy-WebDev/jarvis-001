@@ -255,16 +255,24 @@ described two different paragraphs ("Connector/tool permissions" vs.
 configured") that an earlier version had conflated into a single 3-way
 Always/Ask/Never control:
 
-- **Standing permission** (`config.toolPermissions: {[toolName]: 'blocked'}`,
-  set from the detail page's per-tool **Allowed/Not allowed toggle**) — is
-  Jarvis allowed to use this tool AT ALL. A key's absence means allowed (the
-  default for every newly-discovered tool). `'blocked'` filters the tool out
-  of `getToolDeclarations()`'s model-facing list completely — though it still
-  shows on the detail page, toggle included, so the user can change their
-  mind. A legacy `'never'` value reads the same as `'blocked'`; legacy
-  `'always'`/`'ask'` values simply read as allowed — that distinction no
-  longer exists as a concept, and there was no real saved data to migrate
-  (checked the user's actual `data/connectors.json` before removing it).
+- **Standing permission** (`config.toolPermissions: {[toolName]: 'blocked'|'ask'}`)
+  — is Jarvis allowed to use this tool AT ALL, and (separately) does an
+  otherwise-allowed call to it always pause to confirm. **Corrected — this
+  used to say the model was 2-state (Allowed/Not-allowed) with `'ask'` a
+  dead legacy value; that was stale even against this file's OWN later
+  section below, which documents `'ask'` as a real, current control. It is
+  genuinely 3 stored values, not 2**, confirmed directly in
+  `connectors/index.js`'s `getToolDeclarations()`: a key's absence means
+  allowed (the default for every newly-discovered tool); `'blocked'` (a
+  legacy `'never'` reads the same) filters the tool out of the model-facing
+  list completely — though it still shows on the detail page, toggle
+  included, so the user can change their mind; `'ask'` lets the tool
+  through but is carried alongside its declaration so the confirm
+  computation always honors it, same as a genuinely `risky` tool would.
+  Combined with the fully independent, automatic risk-based confirm below,
+  a tool's real behavior is one of **4 outcomes**: unreachable (blocked),
+  always confirms (ask, OR automatically risky regardless of this setting),
+  or usable with no extra confirmation (allowed and not risky).
 - **Runtime confirmation** — whether using an *allowed* tool pauses to
   confirm right now. Purely automatic, from `guard.js`'s
   `classifyActionRisk()` via `connectors/index.js`'s exported

@@ -37,12 +37,19 @@ const DEFAULT_CONFIG = {
   // same as it always required a place before it could ever say anything.
   weatherPlace: '', // '' = weather skipped
   headlines: false,
-  // Reserved, disabled by design: a real Google Calendar/Gmail connection is
-  // a separate sign-in flow, deliberately not built as part of this
-  // upgrade. These slots exist so those sections can drop in later without
-  // restructuring the briefing.
-  calendar: { enabled: false },
-  email: { enabled: false },
+  // Connector ids the user has explicitly picked to contribute to this
+  // briefing — empty by default, nothing automatic (see the Briefing
+  // screen's own picker, populated from GET /api/connectors). Replaces the
+  // old fixed, permanently-disabled `calendar`/`email` stubs: those assumed
+  // a real Calendar/Gmail connection was a separate, not-yet-built sign-in
+  // flow, but a real connector system already exists (a Google Calendar
+  // connector is a genuine, already-working example) — this is that
+  // generic mechanism instead of a special case for two specific services.
+  // briefing.js's composeBriefing() resolves each id to its real tool
+  // names via connectors/index.js's toolNamesForConnector() at run time, so
+  // a stale saved id (a since-removed connector) just contributes nothing
+  // rather than breaking the briefing.
+  connectors: [],
 };
 
 /**

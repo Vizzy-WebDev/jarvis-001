@@ -76,11 +76,20 @@ const VISION_HINTS = /vision|vl\b|llava|multimodal|pixtral|moondream/i;
  * True only for a genuinely local/self-hosted openai-compatible server
  * (Ollama, LM Studio, ...) — an adapter of 'openai-compatible' alone is NOT
  * enough, since that's also what OpenAI itself, OpenRouter, Groq, and
- * Together all go through by pointing baseUrl elsewhere. Reuses the exact
- * same host regex the adapter itself uses to decide whether a key is
- * required, so this can't silently drift out of sync with that decision.
+ * Together all go through by pointing baseUrl elsewhere.
+ *
+ * `kind` — the stored fact from the provider catalog / probe
+ * (server/models/providers.js, probe.js) — decides this outright when
+ * present ('local' or not), since it was captured once from an actual
+ * probe result rather than re-guessed from the URL every time. Only when
+ * `kind` is null/undefined (a connection saved before the provider catalog
+ * existed) does this fall back to the original host-regex guess, the exact
+ * same rule the adapter itself uses to decide whether a key is required —
+ * kept in sync with KEY_REQUIRED_HOSTS on purpose so the two never drift
+ * apart for a legacy connection.
  */
-function isLocalConnection(adapter, baseUrl) {
+function isLocalConnection(adapter, baseUrl, kind) {
+  if (kind) return kind === 'local';
   return adapter === 'openai-compatible' && Boolean(baseUrl) && !KEY_REQUIRED_HOSTS.test(baseUrl);
 }
 
@@ -91,7 +100,10 @@ function isLocalConnection(adapter, baseUrl) {
 // wire format distinguishes them.
 const AGGREGATOR_HOSTS = /openrouter\.ai|groq\.com|together\.(ai|xyz)/i;
 
-function isAggregatorConnection(adapter, baseUrl) {
+// `kind` overrides the host-regex guess the same way isLocalConnection()
+// does, for the same reason — see that function's comment.
+function isAggregatorConnection(adapter, baseUrl, kind) {
+  if (kind) return kind === 'gateway';
   return adapter === 'openai-compatible' && Boolean(baseUrl) && AGGREGATOR_HOSTS.test(baseUrl);
 }
 
@@ -105,23 +117,23 @@ function isAggregatorConnection(adapter, baseUrl) {
  * all claiming vision, `pickModel({need:{vision:true}})` ranked a music model
  * above Gemini and every image attachment failed before reaching a provider.
  */
-function assumesVision(adapter, model, baseUrl) {
+function assumesVision(adapter, model, baseUrl, kind) {
   if (VISION_HINTS.test(model || '')) return true;
-  return !isLocalConnection(adapter, baseUrl) && !isAggregatorConnection(adapter, baseUrl);
+  return !isLocalConnection(adapter, baseUrl, kind) && !isAggregatorConnection(adapter, baseUrl, kind);
 }
 
 function isOpenAIHost(baseUrl) {
   return !baseUrl || /openai\.com/i.test(baseUrl);
 }
 
-function guessFromName(adapter, model, baseUrl) {
-  const isLocal = isLocalConnection(adapter, baseUrl);
+function guessFromName(adapter, model, baseUrl, kind) {
+  const isLocal = isLocalConnection(adapter, baseUrl, kind);
   const fast = FAST_HINTS.test(model);
   const strong = QUALITY_HINTS.test(model);
   // See assumesVision() — router.js's `control` profile and ai.js's
   // meetsNeed() both filter on this, so an over-claimed flag doesn't just
   // waste an upload, it hides the model that could actually have done it.
-  const vision = assumesVision(adapter, model, baseUrl);
+  const vision = assumesVision(adapter, model, baseUrl, kind);
 
   return {
     label: model,
@@ -135,9 +147,17 @@ function guessFromName(adapter, model, baseUrl) {
   };
 }
 
-/** Best-effort defaults for a model: known models get curated values, anything else gets a name-based guess. `baseUrl` only matters for adapter 'openai-compatible' — it's what tells a local server (free) apart from a cloud one (paid) sharing the same adapter. */
-export function getCatalogDefaults(adapter, model, baseUrl) {
-  return KNOWN[model] || guessFromName(adapter, model, baseUrl);
+/**
+ * Best-effort defaults for a model: known models get curated values,
+ * anything else gets a name-based guess. `baseUrl` only matters for adapter
+ * 'openai-compatible' — it's what tells a local server (free) apart from a
+ * cloud one (paid) sharing the same adapter. `kind`, when the caller has
+ * it (registry.js's hydrate()/addModel() always do, from the connection),
+ * overrides the baseUrl-regex guess with the stored fact instead — see
+ * isLocalConnection()'s comment.
+ */
+export function getCatalogDefaults(adapter, model, baseUrl, kind) {
+  return KNOWN[model] || guessFromName(adapter, model, baseUrl, kind);
 }
 
 /**
@@ -158,7 +178,7 @@ export function getCatalogDefaults(adapter, model, baseUrl) {
  * round — guessing `false` would hide a capable model from Content Analysis
  * with no visible reason why.
  */
-export function withCapabilityDefaults(caps, adapter, model, baseUrl) {
+export function withCapabilityDefaults(caps, adapter, model, baseUrl, kind) {
   const ceiling = getCapabilities(adapter);
   const out = { ...(caps || {}) };
   for (const key of ['video', 'audio', 'vision', 'webSearch']) {
@@ -171,7 +191,7 @@ export function withCapabilityDefaults(caps, adapter, model, baseUrl) {
   //
   // This runs at read time (registry.js's hydrate calls it), so models saved
   // before this rule existed pick it up with no data migration.
-  if (!assumesVision(adapter, model, baseUrl)) {
+  if (!assumesVision(adapter, model, baseUrl, kind)) {
     if (caps?.video === undefined) out.video = false;
     if (caps?.vision === undefined) out.vision = false;
   }
@@ -200,9 +220,9 @@ export const BILLING = {
  * everything else since a self-hosted server is free by construction
  * regardless of what its model is named.
  */
-export function inferBilling(adapter, baseUrl, model) {
+export function inferBilling(adapter, baseUrl, model, kind) {
   if (!model) return 'unknown';
-  if (isLocalConnection(adapter, baseUrl)) return 'local';
+  if (isLocalConnection(adapter, baseUrl, kind)) return 'local';
   if (model.endsWith(':free')) return 'free';
 
   const rules = BILLING[adapter] || [];
@@ -213,9 +233,7 @@ export function inferBilling(adapter, baseUrl, model) {
   return 'unknown';
 }
 
-/** A short curated list to show as suggestions when adding a model, grouped by adapter. */
-export const SUGGESTIONS = {
-  gemini: ['gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3-pro'],
-  anthropic: ['claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5'],
-  'openai-compatible': ['gpt-5.6-luna', 'llama3.1', 'mistral'],
-};
+// Per-provider suggestion lists now live on each row in
+// server/models/providers.js (PROVIDERS[i].suggestions) — the user picks a
+// provider by name now, not an adapter, so the curated list has to key off
+// the same thing the UI shows. This used to live here, keyed by adapter.

@@ -28,33 +28,51 @@
 // this seam existed.
 
 import * as elevenlabs from './elevenlabs.js';
+import * as generic from './generic.js';
 import { getPrefs } from '../prefs.js';
 import * as externalServices from '../external-services.js';
 
-// One entry per real, working adapter — extend this (and nothing else) when
-// a new provider's real backend integration is actually built.
-const ADAPTERS = [elevenlabs];
+// One entry per real, working adapter. `generic.js` is a small, growing
+// registry of OTHER known providers' real connection details (Fish Audio,
+// and any future one) — no new code FILE needed per provider, just one new
+// entry in that file — listed last so a real, dedicated adapter
+// (elevenlabs.js) always wins the match for the company it's actually
+// built for; generic.js only recognizes names it actually knows about, so
+// there's no real collision risk either way.
+const ADAPTERS = [elevenlabs, generic];
 
 /** Every configured external service that a real adapter recognizes — for the voice-output picker. Browser speech is listed separately (client-only, see browser-speaker.js). */
 export function listProviders() {
   const services = externalServices.listServices();
-  return ADAPTERS.map((adapter) => {
-    const service = services.find((s) => adapter.matchesRef(s.ref));
-    if (!service) return null;
-    return { id: service.ref, label: service.label, configured: service.configured };
-  }).filter(Boolean);
+  // .flatMap + .filter here, not a .map + single .find() per adapter — a
+  // .find() would assume at most ONE configured service could ever match a
+  // given adapter, true for elevenlabs.js (one company) but wrong for
+  // generic.js, which can legitimately match several different
+  // user-configured custom providers (Fish Audio, and any other) at once.
+  return ADAPTERS.flatMap((adapter) =>
+    services
+      .filter((s) => adapter.matchesRef(s.ref))
+      .map((service) => ({ id: service.ref, label: service.label, configured: service.configured }))
+  );
 }
 
+/**
+ * Resolves both the adapter AND the exact ref that matched — needed because
+ * generic.js (unlike elevenlabs.js, built for exactly one company) can
+ * match MANY different configured services, each with its own endpoint, so
+ * knowing "which adapter" alone isn't enough to know which connection to
+ * actually use. Returns `{adapter, ref}`, both null if nothing matches.
+ */
 function resolveAdapter(id) {
-  if (id) return ADAPTERS.find((a) => a.matchesRef(id)) || null;
-  const pref = getPrefs().ttsProvider;
-  if (pref) return ADAPTERS.find((a) => a.matchesRef(pref)) || null;
-  return null;
+  const ref = id || getPrefs().ttsProvider;
+  if (!ref) return { adapter: null, ref: null };
+  const adapter = ADAPTERS.find((a) => a.matchesRef(ref));
+  return { adapter: adapter || null, ref };
 }
 
 /** True if the given (or the user's default) provider has what it needs to actually run. */
 export function isConfigured(id) {
-  const adapter = resolveAdapter(id);
+  const { adapter } = resolveAdapter(id);
   return adapter ? adapter.isConfigured() : false;
 }
 
@@ -63,19 +81,23 @@ export function isConfigured(id) {
  * order. `opts.provider` overrides the user's saved default for this one
  * call; `opts.voice` is passed straight through to the provider (each
  * provider's own voice-name space — no cross-provider mapping attempted).
+ * The resolved ref is threaded through as a third field alongside `voice` —
+ * elevenlabs.js's stream() simply doesn't destructure it (a harmless no-op
+ * for a single-company adapter); generic.js needs it to know which of
+ * potentially several configured endpoints this particular call means.
  */
 export async function* stream(text, { provider, voice } = {}) {
-  const adapter = resolveAdapter(provider);
+  const { adapter, ref } = resolveAdapter(provider);
   if (!adapter) {
     const err = new Error('No TTS provider is configured.');
     err.code = 'NO_API_KEY';
     throw err;
   }
-  yield* adapter.stream(text, { voice });
+  yield* adapter.stream(text, { voice, ref });
 }
 
-/** One live "test this key" function per adapter, dispatched by ref via matchesRef() — used by server.js's generic /api/external-services/:ref/test route. Returns null if no adapter recognizes this ref (that route already handles "no live test available" for that case). */
+/** One live "test this key" function per adapter, dispatched by ref via matchesRef() — used by server.js's generic /api/external-services/:ref/test route. Returns null if no adapter recognizes this ref (that route already handles "no live test available" for that case). The returned closure always passes `ref` through as testKey's second argument — elevenlabs.js's testKey(key) ignores it; generic.js's testKey(key, ref) needs it to find the right saved endpoint. */
 export function testerFor(ref) {
   const adapter = ADAPTERS.find((a) => a.matchesRef(ref));
-  return adapter ? adapter.testKey : null;
+  return adapter ? (key) => adapter.testKey(key, ref) : null;
 }

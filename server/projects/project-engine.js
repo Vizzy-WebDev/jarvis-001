@@ -92,6 +92,33 @@ function runInBackground(work) {
     .catch((err) => console.error('[project-engine] background job failed:', err));
 }
 
+/**
+ * Puts a finished (or failed) background step into the conversation itself
+ * — confirmed live gap this closes: research/plan/prompts only ever
+ * `announce()`d over SSE (a UI-only broadcast) and updated the project
+ * record, with nothing landing in the transcript either way. Every one of
+ * these tools' own doc comments already promises this ("the plan arrives
+ * as a document card in the conversation" — write_project_plan.js) — it
+ * just was never actually implemented. Matches content/investigator.js's
+ * pushFindingToConversation()'s shape: the full document goes into history
+ * (so a later "what did that say again?" works, and so the model can read
+ * it back), while the model's own SPOKEN reply is governed separately by
+ * each tool's `spoken_hint` — pushing to history is not the same as
+ * reciting it out loud.
+ */
+function pushStepToConversation(project, { step, ok, text, error }) {
+  if (!project) return;
+  const label = { research: 'the research', plan: 'the plan', prompts: 'the build prompt(s)' }[step] || 'that';
+  const body = ok
+    ? `(${project.title || project.idea} — ${label} is ready:\n\n${text}\n\nProject id: ${project.id})`
+    : `(${project.title || project.idea} — I tried to prepare ${label}, but it didn't work: ${error || 'something went wrong'}.\n\nProject id: ${project.id})`;
+  try {
+    conversation.pushAssistantText(project.sessionId || 'main', body);
+  } catch (err) {
+    console.error(`[project-engine] could not add ${step} update for "${project.id}" to the conversation:`, err);
+  }
+}
+
 // ---------- 1. start ----------
 
 /** Creates the project. No model call, no background work — this is a notepad opening, not a process starting. `target` is optional and only ever set here if the user already named their assistant unprompted; it can just as well be set later, when writePrompts is actually called. */
@@ -138,6 +165,7 @@ export function researchProject(id) {
     }
 
     const done = store.getProject(id);
+    pushStepToConversation(done, { step: 'research', ok: found.ok, text: found.answer, error: found.error });
     announce(done, {
       status: found.ok ? 'ready' : 'failed',
       step: 'research',
@@ -214,12 +242,14 @@ export function writePlan(id) {
 
     if (!written.ok) {
       const failed = store.updateProject(id, { error: `I couldn't write the plan. ${written.error}` });
+      pushStepToConversation(failed, { step: 'plan', ok: false, error: written.error });
       announce(failed, { status: 'failed', step: 'plan', error: written.error });
       return;
     }
 
     store.recordStep(id, 'plan', written.modelLabel);
     const done = store.updateProject(id, { plan: written.text, error: null });
+    pushStepToConversation(done, { step: 'plan', ok: true, text: done.plan });
     announce(done, { status: 'ready', step: 'plan', document: done.plan });
   });
 
@@ -281,6 +311,7 @@ export function writePrompts(id, target) {
 
     if (!written.ok) {
       const failed = store.updateProject(id, { error: `I couldn't write the build prompt. ${written.error}` });
+      pushStepToConversation(failed, { step: 'prompts', ok: false, error: written.error });
       announce(failed, { status: 'failed', step: 'prompts', error: written.error });
       return;
     }
@@ -292,6 +323,7 @@ export function writePrompts(id, target) {
 
     if (!prompts.length) {
       const failed = store.updateProject(id, { error: "I couldn't produce a usable prompt from that — the plan is still ready on its own." });
+      pushStepToConversation(failed, { step: 'prompts', ok: false, error: failed.error });
       announce(failed, { status: 'failed', step: 'prompts', error: failed.error, document: current.plan });
       return;
     }
@@ -301,6 +333,11 @@ export function writePrompts(id, target) {
       prompts,
       promptOrder: prompts.length > 1 ? String(written.data?.order || '').trim() || null : null,
       error: null,
+    });
+    pushStepToConversation(done, {
+      step: 'prompts',
+      ok: true,
+      text: prompts.map((p) => `Prompt ${p.n} — ${p.title}\n\n${p.text}`).join('\n\n---\n\n') + (done.promptOrder ? `\n\nRecommended order: ${done.promptOrder}` : ''),
     });
     announce(done, {
       status: 'ready',

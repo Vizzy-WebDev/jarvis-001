@@ -11,7 +11,7 @@
 // alternative.
 
 import { VoiceEngine } from './voice-engine.js';
-import { computeWaitMs, isCompleteThought, MicLevelMonitor } from '../turn-detector.js';
+import { computeWaitMs, isCompleteThought, MicLevelMonitor, SilenceWatcher } from '../turn-detector.js';
 import { AudioPlayer } from '../audio-player.js';
 import { BrowserSpeaker } from '../browser-speaker.js';
 import { REACTION_SOUNDS } from '../reaction-sounds.js';
@@ -52,10 +52,11 @@ export class PipelineEngine extends VoiceEngine {
     this.recognition = null;
     this.stream = null;
     this.micMonitor = null;
+    this.silenceWatcher = null; // SilenceWatcher — the real "has the user gone quiet" arm, created alongside micMonitor in start()
     this.active = false;
     this.pendingUtterance = '';
     this.pendingConfidence = null; // lowest confidence seen across this utterance's final chunks, for the voice-clarity guard
-    this.silenceTimer = null;
+    this.silenceTimer = null; // short one-off re-check timer used only inside _maybeFinalize() — see that method
     this.currentEventSource = null;
     this.speaker = null;
     this._isSpeaking = false;
@@ -170,6 +171,7 @@ export class PipelineEngine extends VoiceEngine {
 
     this.active = true;
     this.micMonitor = new MicLevelMonitor(this.stream);
+    this.silenceWatcher = new SilenceWatcher(this.micMonitor);
     this._startRecognition();
     this._setState('listening');
   }
@@ -178,6 +180,7 @@ export class PipelineEngine extends VoiceEngine {
     this.active = false;
     this.muted = false; // a freshly started/restarted session always begins unmuted
     clearTimeout(this.silenceTimer);
+    this.silenceWatcher?.cancel();
     clearTimeout(this._echoTailTimer);
     clearInterval(this._bargeTimer);
     this.pendingUtterance = '';
@@ -200,11 +203,13 @@ export class PipelineEngine extends VoiceEngine {
       this.micMonitor.close();
       this.micMonitor = null;
     }
+    this.silenceWatcher = null;
     this._setState('idle');
   }
 
   sendText(text, { attachments = [] } = {}) {
     clearTimeout(this.silenceTimer);
+    this.silenceWatcher?.cancel();
     this.pendingUtterance = '';
     // Typed text can't be misheard, so it's always full-confidence — the
     // voice-clarity guard only ever gates spoken input.
@@ -246,6 +251,7 @@ export class PipelineEngine extends VoiceEngine {
     // caused by Jarvis's own echo would clear the echo detector's buffer
     // (below) and then still send the echo as the next turn.
     clearTimeout(this.silenceTimer);
+    this.silenceWatcher?.cancel();
     this.pendingUtterance = '';
     this.pendingConfidence = null;
     if (resumeRecognition) this._resumeRecognition();
@@ -347,9 +353,14 @@ export class PipelineEngine extends VoiceEngine {
     // from whatever cadence Chrome happened to emit results at, which is not
     // reachable while speaking anyway now that recognition is suspended.
 
-    clearTimeout(this.silenceTimer);
+    // Arm/rearm the real-silence watcher (turn-detector.js's SilenceWatcher)
+    // rather than a plain timer keyed off "time since this event" — see that
+    // class's header comment for why. computeWaitMs() still picks the wait
+    // DURATION from how the sentence trails off; what changed is that the
+    // duration is now measured against genuine continuous mic silence
+    // instead of wall-clock time since Chrome's last emitted result.
     const waitMs = computeWaitMs(previewText);
-    this.silenceTimer = setTimeout(() => this._maybeFinalize(previewText), waitMs);
+    this.silenceWatcher.arm(waitMs, () => this._maybeFinalize(previewText));
   }
 
   /**

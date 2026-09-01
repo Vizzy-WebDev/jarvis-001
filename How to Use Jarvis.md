@@ -22,6 +22,7 @@ main chat:
   specific ability of Jarvis's
 - **Morning Briefing** — what your daily briefing includes
 - **Profile & Goals** — what Jarvis knows about you
+- **Self-Improvement** — what Jarvis has learned about how it works, and any changes waiting for your OK
 
 Click the **‹ back arrow** to return to the chat. Your browser's own Back button
 also works, since each screen has its own address.
@@ -179,7 +180,50 @@ morning briefing and its suggestions; they're never sent anywhere else.
 
 ---
 
-## 6. Planning something you want to build
+## 6. Jarvis learning from its own work
+
+Open the menu → **Self-Improvement** to see what Jarvis has picked up about how it
+works, from watching its own background jobs and scheduled tasks, from moments
+you've corrected it, or from things you've directly taught it — separate from
+**Profile & Goals** above, which is about you, not Jarvis.
+
+**Four tabs:**
+
+- **Suggestions** — anything waiting on your decision. A small, well-tested
+  behaviour change gets **Approve** / **Reject**. An idea that needs real code
+  (a new Skill, a code change) gets **"Generate a prompt for a coding
+  assistant"** instead — Jarvis never writes or changes its own code, so this
+  is how an idea like that actually goes anywhere: tell it which assistant
+  you're using (Claude Code, Cursor, ChatGPT, anything — just type the name),
+  and it writes a ready-to-paste brief, with a **Copy** button. If two of
+  Jarvis's own rules turn out to disagree with each other, that shows up here
+  too, so you can decide rather than Jarvis silently picking one.
+- **Changes** — everything Jarvis has actually applied, with a plain **Undo**
+  on each one. If you'd already changed that same thing yourself since, Undo
+  asks first rather than overwriting what you did.
+- **Learned** — the behaviour rules currently in effect, each with an on/off
+  switch (turning one off doesn't erase its history, it just stops applying),
+  plus a running list of smaller things Jarvis has noticed.
+- **Settings** — how much Jarvis may apply on its own without asking (default:
+  small, well-evidenced fixes apply automatically; everything else always
+  asks), and whether it's allowed to check outside sources like documentation
+  once a week. **Anything read from outside — docs, forums, the web — always
+  waits for your OK, no matter this setting**; only something learned directly
+  from Jarvis's own work can ever apply itself.
+
+Deliberately light on how often this runs, so it never competes with
+whatever else you're asking Jarvis to do — usually a couple of reviews a
+day at most, and it skips entirely on a quiet day with nothing new to look
+at. You can also just ask out loud: *"what have you learned recently?"* or
+*"undo that last change."*
+
+**One boundary that's always on, with no setting to change it:** Jarvis never
+comments on or draws conclusions about your feelings or your relationships
+here — only work, projects, study, finances, and travel.
+
+---
+
+## 7. Planning something you want to build
 
 This is for when you have an idea — a website, an app, a business, anything —
 and you want it turned into a real plan, plus a prompt you can paste into
@@ -230,7 +274,7 @@ background and tells you when it's done.
 
 ---
 
-## 7. Getting Jarvis to look at a video, article or file
+## 8. Getting Jarvis to look at a video, article or file
 
 Open the menu → **Content Analysis**, or just send Jarvis something while
 you're talking to it.
@@ -280,7 +324,7 @@ learned the first time.
 
 ---
 
-## 8. When Jarvis double-checks what it heard
+## 9. When Jarvis double-checks what it heard
 
 You'll notice three different levels of caution, on purpose:
 
@@ -312,6 +356,9 @@ You can adjust how trigger-happy that second layer is from Model Settings →
 | Change what's in your morning briefing | Menu → Morning Briefing |
 | Add weather/news/etc. to your briefing | Morning Briefing → Live info sources → + Add a source |
 | Tell Jarvis something to remember | Just ask Jarvis, or Menu → Profile & Goals |
+| See what Jarvis has learned about how it works | Just ask Jarvis, or Menu → Self-Improvement |
+| Undo something Jarvis changed about itself | Menu → Self-Improvement → Changes → Undo |
+| Turn a behaviour rule off without losing its history | Self-Improvement → Learned → the switch beside it |
 | Turn an idea into a plan and a prompt | Just tell Jarvis, or Menu → Planning → + Plan something |
 | Get the same plan aimed at a different AI | Planning → open the plan → "Rewrite it for:" |
 | Have Jarvis watch a video or read an article | Menu → Content Analysis, or send it a link while talking |

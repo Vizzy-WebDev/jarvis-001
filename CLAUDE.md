@@ -43,6 +43,18 @@ Verification is manual:
   it over asking the user to click through things themselves during development
 - Pure-logic modules (e.g. `turn-detector.js`) can be tested directly with a one-off
   `node --input-type=module -e "..."` script — no server needed
+- **To verify what a model actually DID, not what it said it did, read the real
+  `toolCalls`/`toolResults` payloads straight out of the `messages` table** (`db.js`,
+  read-only, via `node:sqlite`'s `DatabaseSync(path, {readOnly:true})` against
+  `data/jarvis.db` directly) — a model's own spoken/typed account of an action succeeding
+  or failing is not reliable evidence on its own. Confirmed live: a user's own paraphrase
+  of an exchange read exactly like a broken confirmation loop; the real stored payload
+  showed the tool had actually been called twice, with a real token, and had genuinely
+  succeeded — a completely different (and more serious) bug than the paraphrase
+  suggested. A `bindSession()`'d conversation persists every tool call/result verbatim in
+  `payload`, so this is always available for anything that happened in a real, saved
+  conversation — check this before trusting either the model's own narration or a user's
+  summary of it when diagnosing a tool-execution bug.
 
 **Testing must never touch the user's real `data/`/`.env`/port.** `store.js` and
 `config.js` both support `JARVIS_DATA_DIR`/`JARVIS_ENV_PATH` overrides, `server.js`
@@ -98,6 +110,12 @@ server/
   scheduler/         Tasks, recurrence, briefing (see "Scheduler + briefing")
   jobs/              Background Task Orchestration ("Jobs") — long-running work backgrounded from live
                      conversation, distinct from scheduler/ above (see "Background Task Orchestration")
+  improvement/       Self-Improvement — Jarvis reviewing its own work and applying what it learns to
+                     itself, distinct from memory/ above (facts about the USER) (see "Self-Improvement")
+  self/              Self-Model — Jarvis's own grounded, evidence-backed self-knowledge: what it is,
+                     what it can/can't actually do, what it's doing now and why, what's its own call
+                     to make. Reads Memory/Jobs/Self-Improvement/Personality rather than duplicating
+                     them (see "Self-Model")
   tools/             Auto-loaded executable capabilities (below) — get_weather, open_app, run_code, ...
   skills/            Folder Skills ONLY — SKILL.md instructions; skills/store/ holds install logic (see "Skills")
   capabilities.js    The composition seam: tools + folder Skills + connectors -> one declaration list,
@@ -131,8 +149,8 @@ public/              Front-end shell + screens + voice engines + the orb — see
   vendor/three/      Vendored three.js — the one deliberate front-end dependency
   settings.js        localStorage-backed UI prefs
 data/                (git-ignored) JSON persistence — models, connections, prefs, tasks, task-runs, briefing —
-                     plus jarvis.db (SQLite): Chat History + Memory + Jobs (see those sections). profile.json
-                     is gone, migrated into Memory.
+                     plus jarvis.db (SQLite): Chat History + Memory + Jobs + Self-Improvement + Self-Model
+                     (see those sections). profile.json is gone, migrated into Memory.
 ```
 
 ## Model system (server/adapters/ + server/models/)
@@ -425,6 +443,27 @@ that must still reach a `background:true` turn (which strips `meta` tools before
 `allowedTools` is even considered) but has no business appearing in a task/briefing
 picker.
 
+**A confirm token must be refused if redeemed in the SAME turn that minted it — enforced
+structurally, never left to a prompt instruction alone, and never overridable by the
+user's own explicit "skip confirming" request.** Found live in real production testing,
+not hypothetical, while testing the Self-Model subsystem below: giving a confirm-gated
+tool a real, schema-visible `confirm_token` argument (`getToolDeclarations()`'s
+`withConfirmToken()` — see the Gotchas entry on why that fix was needed at all) let a
+model, told by the user to skip asking, mint the token and immediately resend it in the
+SAME turn — completing an entire ask-and-answer round trip with zero real human reply in
+between. `models/runner.js`'s `runTurn()` now mints one `turnId` per call (stable across
+every step and candidate-model retry of that one turn, threaded into `invoke()`'s `ctx`
+exactly like `sessionId`); `consumePendingToken()` refuses a token whose `mintedTurnId`
+matches the redeeming call's own `ctx.turnId` — exactly as if the token were invalid, so
+the model just gets asked again, and only a genuinely later turn (a real new message)
+can complete it. Only enforced when both sides carry a real `turnId`; a caller outside
+the per-turn system (unattended `autoConfirm`/`onEscalate` callers never reach this code
+path at all) is unaffected. **The general standard this sets for any future confirm-gated
+action:** the user's own explicit, in-the-moment instruction to skip a confirmation must
+never be honored for anything effectful — a confirmation is a floor no instruction, even
+a direct one from the user, can lower. See `server/tools/CLAUDE.md`'s "Voice-clarity
+confirmation" section for the full investigation.
+
 ## Scheduler + briefing (`server/scheduler/*.js`)
 
 See `server/scheduler/CLAUDE.md` (loads automatically when working in that directory)
@@ -536,6 +575,199 @@ that file:
   no separate confirm-token machinery) is the only thing that ever actually starts it.
   Confirmed live: a `computer`-kind job sat inert with `startedAt: null` across multiple
   supervisor ticks until explicitly resumed — it was never once allowed to auto-start.
+
+## Self-Improvement (`server/improvement/*.js`)
+
+Jarvis reviewing its own completed work, extracting observations, turning a genuinely
+RECURRING one into a behaviour rule it applies to itself, and separately noticing
+patterns in the user's own work/projects/study/finances/travel. A different mechanism
+from Memory (`server/memory/`) — Memory learns durable facts ABOUT THE USER; this learns
+about Jarvis's OWN performance and, on a much narrower separate track, the user's
+non-personal activity patterns. See `server/improvement/CLAUDE.md` for the full
+module-by-module breakdown; the decisions that matter beyond that file:
+
+- **A layered chain, same shape as Jobs above, for the same reason.** `capture.js` (zero
+  model calls, ever) writes an outcome the instant a job/task finishes or a plainly-
+  worded correction fires — leaf-safe, callable from `models/runner.js`'s own turn loop
+  and `scheduler.js`'s own outcome hook with zero latency risk. `reflect.js` (one batched
+  call) turns a backlog of outcomes into individual lessons — observations, never a
+  behaviour change by themselves. `synthesize.js` (one rarer call) looks ACROSS the whole
+  active lesson set for something that genuinely recurred — a proposal is only ever
+  created once at least two lessons, backed by at least two DISTINCT underlying outcomes,
+  agree — and turns THAT into a proposal. `improvement-policy.js`'s `decide()` is the
+  single seam every path (auto-apply, the screen's Approve button, a conversational
+  `suggest_improvement` call) asks before anything real changes; `apply.js` is the only
+  thing that ever writes a live rule or flips a pref, and the only thing that ever undoes
+  one. This is what makes "detect a pattern, don't just patch a one-off mistake" real,
+  not aspirational — a single job failure structurally cannot become a permanent rule.
+- **The user's own settled requirement: only Jarvis's own directly-observed history may
+  ever auto-apply — anything read from outside always asks, no matter how solid it
+  looks.** `decide()`'s hard floors (none overridable by trust level): `kind` must be
+  `'rule'` or `'setting'` (a Skill/code/idea/conflict always asks); `sourceTier` must be
+  exactly 1; `conflictWith` must be unset. `synthesize.js` computes a rule proposal's
+  `sourceTier` from the WORST tier among its supporting lessons — never hardcoded to 1 —
+  specifically so a pattern that leans on even one outside-sourced lesson can't slip past
+  this floor by riding along with genuinely tier-1 evidence. Two further modules,
+  `improve-research.js` (tiers 2-4: official docs, communities, general web — reuses
+  `server/research.js`'s own free-web-then-model-search path rather than reimplementing
+  it, and requires a SECOND corroborating source before a lookup becomes a lesson at all)
+  and `life-patterns.js` (patterns in the user's own non-personal activity), both feed
+  this SAME pipeline — there is exactly one place a lesson becomes a proposal, never a
+  second path for outside-sourced material.
+- **Never proactively raises or infers about the user's emotional state or
+  relationships — enforced in code, not just by prompt instruction.**
+  `improvement/domains.js`'s `isExcludedDomain()` is applied on BOTH sides of
+  `life-patterns.js`: matching memories/messages are filtered out of the model's input
+  before the call, and any produced insight that still matches is dropped after.
+  Deliberately biased BROAD, the opposite asymmetry from `personality.js`'s distress/
+  serious-topic floors — there, a false positive only costs tone; here, a false negative
+  means content the user explicitly excluded reaches a model call, which is the actual
+  harm this module exists to prevent, so over-excluding costs nothing and is the safe
+  direction. Verified against the same class of false-positive check `personality.js`'s
+  own regexes needed: "I have a good relationship with this codebase" does not match.
+- **A real spend cap, not a hoped-for cadence.** `improvement-store.js`'s budget ledger
+  (`app_state`-backed, no new table) gives `reflect.js`+`synthesize.js` a combined daily
+  budget and `improve-research.js`+`life-patterns.js` a combined weekly budget, on top of
+  each module's OWN cadence floor (reflect: 4h, synthesize: 24h, both weekly modules:
+  7 days). Without both, a 15-minute background tick (96/day) checking a simple "≥5
+  unreviewed outcomes" count could fire on nearly every tick on a busy day. Confirmed
+  live during this build's own verification: 10 compressed ticks in a row produced
+  exactly 2 model calls, not 10.
+- **Undo refuses instead of clobbering.** `apply.js`'s `undoChange()` compares the LIVE
+  value against what the change actually set (`after`) before restoring `before` — if the
+  user changed it themselves since (muted the rule on the screen, edited the pref), undo
+  refuses with a plain "this changed since — restore anyway?" rather than silently
+  overwriting their own later decision; `force:true` proceeds only after that's been
+  shown to the user. An `undo` row is never itself undoable — bringing something back
+  means approving a fresh proposal, not reversing a reversal, which is what keeps the
+  append-only change log's `before`/`after` pair honest at every row. Verified live,
+  browser-tested end to end: externally muting an applied rule, then clicking Undo on its
+  Change row, produces the real confirm dialog, never a silent clobber.
+- **Never volunteered in chat, only notification + log** — the user's own explicit
+  choice. General-scope rules sit in `prompt.js`'s cacheable `stable` prefix (right after
+  `memorySection()`, ungated by `background` — a rule learned from a job's own failures
+  should apply to the NEXT job just as much as to a live conversation) with an explicit
+  instruction never to bring one up unprompted; task/job-kind-scoped rules live in
+  `volatile` via `opts.improvementScope` instead, since they vary per turn and would
+  otherwise poison the Anthropic cache prefix for every turn that doesn't share the same
+  scope. Auto-applied changes and pending-suggestion batches both surface via the
+  notification bell (`addNotification`) plus a screen refresh (`broadcast`) — never a
+  transcript system note. Verified live: the transcript stayed empty while the bell badge
+  incremented and showed the real change.
+- **Jarvis never edits its own code, structurally, not just by convention.** `apply.js`'s
+  own header comment states the invariant it exists to protect: this module writes only
+  SQLite rows and `prefs.js` keys, never a file under the repo source tree, and refuses
+  outright (`applyProposal()`) for any proposal kind other than `rule`/`setting`. For
+  anything needing real code (`kind:'skill'`/`'code'`), `implementation-prompt.js`
+  generates a ready-to-paste brief for whichever coding assistant the user names —
+  deliberately free text, never a hardcoded list — from a static, hand-written
+  architecture summary that never reads the actual repo. Generating that brief IS the
+  approval action for these two kinds on the screen, replacing the plain Approve button.
+- **The `#/improvement` screen** (`public/screens/improvement.js`, nav group `About You`,
+  beside Memory) is four tabs: Suggestions (pending — approve/reject, or for a `skill`/
+  `code` idea, generate the coding-assistant brief, plus a "Show rejected" bin), Changes
+  (the undo log, human-readable titles resolved from a change's own `after` snapshot
+  rather than a raw rule id), Learned (live rules plus recently-noticed lessons, each
+  with a "Show archived" toggle), Settings (the trust dial, the outside-research toggle,
+  the two budget-remaining counters). Every row is clickable, opening a detail view —
+  Rules are the one place text is directly editable, an edit riding the same undo
+  machinery a freshly-applied rule already uses. Archive/Restore/Delete permanently
+  (Rules/Lessons/Suggestions alike) deliberately reuse Memory's own proven archived-flag
+  pattern rather than a new "Recycle Bin" concept — a real technical reason, not just
+  consistency: a Rule's own Undo button in Changes depends on its row still existing, so
+  a genuine hard-delete must always go through archive first, never be reachable
+  directly from the live list. See `server/improvement/CLAUDE.md`'s own Phase 7 notes
+  for two real bugs this first live user test surfaced and fixed: a tool declaration's
+  own `description` is not enough to make the model actually call it without an explicit
+  `SYSTEM_INSTRUCTION` trigger paragraph (unlike every other subsystem, this one
+  shipped without one); and `reflect.js` was silently discarding real outcomes whenever
+  its one model call failed, serious on a roster that's routinely all rate-limited at
+  once.
+
+## Self-Model (`server/self/*.js`)
+
+Real, working self-knowledge — what Jarvis is, what it can and can't actually do, what
+it's doing right now and why, how it knows what it claims to know, what's genuinely its
+own call to make, how it specifically tends to fail, how it specifically works with the
+user, and whether it's still on track toward what it's actually trying to accomplish.
+Explicitly **not** an attempt at subjective experience or consciousness — that question
+stays out of scope. See `server/self/CLAUDE.md` for the module-by-module breakdown; the
+decisions that matter beyond that file:
+
+- **The one rule everything else here answers to: every claim Jarvis makes about itself
+  must be grounded in real evidence — a counter, a row, live state, or a real policy
+  module — never a plausible-sounding estimate.** Below a minimum attempt count
+  (`self-model.js`'s `MIN_ATTEMPTS_FOR_RATIO`, 5), a reliability check returns
+  `no_track_record`, never a premature ratio. A self-model that narrates fluently about
+  itself without this is worse than none — it's performed self-awareness rather than the
+  real thing, which is the exact failure this build exists to avoid.
+- **A layered read, same shape as Jobs' and Self-Improvement's own chains, for the same
+  reason.** `self-signals.js` (zero imports, pure) decides only WHEN the self-model is
+  worth consulting — five deterministic triggers, computed from plain data a caller
+  already gathered. `self-capture.js` (zero model calls) turns a live tool outcome into a
+  rolling reliability tally, and — only for a notable one — one more row in
+  Self-Improvement's existing `improvement_outcomes` pipeline (never a second pipeline).
+  `self-model.js` is the assembler: one builder function per dimension, dispatched by
+  `buildSelfModel({only: [...]})` — omitting `only` builds nothing at all, never a
+  default "everything."
+- **This reads Memory, Jobs, Self-Improvement, and Personality; it duplicates none of
+  them, and the user's own settled decision on this exact question was to keep it that
+  way.** Dimensions 3/7 ("how it behaves" / "how it fails") are a read-only VIEW over
+  `improvement-store.js`'s existing `improvement_lessons`/`improvement_rules` — this
+  directory owns none of that data. Dimension 4 ("doing now, and why") *reports*
+  Personality's own already-computed `readStyle()` result; it never decides tone itself
+  — Personality remains the sole owner of that decision, per the user's explicit
+  constraint. The two tables this build DOES own (`self_capability_stats`,
+  `self_goals` — `db.js` migration 9) deliberately hold no prose knowledge and no facts
+  about the user, which is what keeps them from being the "second memory-like store" the
+  build was told never to create.
+- **The authority ceiling is enforced by the import graph, not a prompt instruction —
+  the same technique `personality.js` uses to keep style from writing back to
+  substance.** Nothing under `server/self/` imports `capabilities.js`, `tools/index.js`,
+  `models/runner.js`, `scheduler/*`, or `control/session.js` — verified live, not just
+  read: `node -e "import('./server/tools/index.js')"` loads cleanly with `check_myself`
+  present, and a grep for those five paths across every file in the directory turns up
+  only doc-comment mentions, never a real `import`. A strong self-assessment can inform
+  how confident Jarvis SOUNDS about a claim's substance; it structurally cannot skip a
+  confirmation, an approval, or any boundary `memory-policy.js`/`improvement-policy.js`/
+  the confirm gate already enforces — there is no code path for it to travel through
+  even if a future edit tried. `self-model.js`'s own `whatsItsCall()` (dimension 6)
+  reads the REAL live values out of those policy modules (`memory-policy.js`'s
+  `THRESHOLDS`, `improvement-policy.js`'s `MIN_EVIDENCE_BY_TRUST`) rather than
+  paraphrasing them, so this can never quietly drift from what they actually enforce.
+- **Hybrid trigger design, same general shape as Jobs' active-supervision pattern but a
+  genuinely separate mechanism** — that one watches an external worker for a reason,
+  this watches Jarvis's own state for a reason. Passive by default; `self-signals.js`'s
+  five triggers (`authority`, `knownFailure`, `noTrackRecord`, `correction`,
+  `blockedOnBackground`) are computed fresh every step of `models/runner.js`'s own
+  tool-calling loop, cheap SQLite/state reads only — never a model call. **The push path
+  has a real, accepted limitation, worth understanding before extending it:**
+  `knownFailure`/`noTrackRecord` can only ever match a tool THIS turn has already called
+  in an EARLIER step (`usedToolNames`, accumulated across the loop) — there is no way to
+  warn about a tool before the model decides to call it for the first time, since
+  nothing here has foreknowledge of that decision. The **pull** path
+  (`check_myself`'s `can_do`/`failure_modes` dimensions) is what catches it proactively,
+  before any use at all — `prompt.js`'s own system-instruction paragraph tells the model
+  to check first rather than answer from impression whenever a claim about its own
+  reliability, authority, or current state is about to be made.
+- **`prompt.js` integration follows its existing stable/volatile split exactly.**
+  `selfSection()` (stable, cacheable, no DB read — the one hard governing rule) and
+  `selfFocusSection(signals)` (volatile, emitted only when a signal actually fired — a
+  signal to weigh, never a scripted line to repeat back, same discipline as
+  `floorsSection()`) are both deliberately **ungated by `background`**, same reasoning
+  `improvementSection()` already uses: a background Job's own turn benefits from
+  knowing it's blocked on something or heading into a known failure just as much as
+  live chat does. `correction` simply never fires there, since `noteCorrection()` itself
+  is gated on `!opts.background`.
+- **Two tools, both `core:true, meta:true`.** `check_myself` is the pull path (no
+  reliable search-intent text to find it by otherwise — "can you actually do this
+  reliably" doesn't map to a capability search the way "what time is it" maps to
+  "time"). `track_goal` is the write side of dimension 9 — records what Jarvis
+  understands a live conversation's actual goal to be, always reported back as *what it
+  recorded it understood*, never as a verified account of what the user meant; a job
+  already has its own durable `goal` column and never needs this.
+- **No screen.** Not part of the build's own request; the existing `#/improvement`
+  screen already surfaces the data this directory reads (rules, lessons).
 
 ## Computer control (`server/control/*.js`)
 
@@ -927,6 +1159,19 @@ prompt paragraph.
   `TypeError: fetch failed` with `.message` reduced to "Connection error."; the actual
   `ECONNREFUSED` is at `err.cause.cause.code`. `adapters/openai-compatible.js`'s
   `friendlyError()` walks the `.cause` chain rather than trusting `.message`.
+- **A tool contract communicated only as prose in the system prompt is not something a
+  model can actually satisfy — it needs a real, declared, schema-visible argument.**
+  Confirmed live: every confirm-gated tool's own `parameters` schema went unnoticed for a
+  long time with no `confirm_token` property at all; `prompt.js`'s `SYSTEM_INSTRUCTION`
+  told the model to resend one anyway, on trust. A model that sticks strictly to its own
+  declared function-calling schema (common on weaker/free-tier models, per the Model
+  system section's own note on `autoSelect` landing on whichever model is alive) had
+  nowhere to actually put it, so a real user "yes" could go nowhere.
+  `capabilities.js`'s `getToolDeclarations()` now injects it centrally
+  (`withConfirmToken()`) rather than relying on 15+ individual tool files to each declare
+  it themselves. The general lesson: if an instruction tells a model to send back a
+  specific argument on a later call, that argument needs to actually exist in the tool's
+  own declared schema — describing it in the surrounding prompt text is not enough.
 - **The user's own running instance can restart itself mid-session, independent of
   anything the current Claude session did** — observed twice in one session (port
   3000's PID changed with no kill issued against it), most likely a second concurrent

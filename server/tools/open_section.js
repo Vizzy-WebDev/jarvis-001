@@ -16,9 +16,10 @@ export default {
   core: true,
   description:
     'Open a section of the Jarvis app for the user, such as Model Settings, Skills, Connectors, Scheduled ' +
-    'Tasks, Morning Briefing, Notifications, or Profile & Goals. Use this when the user says ' +
-    '"open...", "show me...", or "go to..." a section. Planning and shared content are NOT sections — they ' +
-    'happen here in the conversation, so never try to open a page for them.',
+    'Tasks, Background Jobs, Morning Briefing, Notifications, Chat History, Memory, Self-Improvement, or ' +
+    'Profile & Goals. Use this when the user says "open...", "show me...", or "go to..." a section. Planning ' +
+    'and shared content are NOT sections — they happen here in the conversation, so never try to open a page ' +
+    'for them.',
   confirm: 'ifUnclear',
   parameters: {
     type: 'object',
@@ -27,8 +28,11 @@ export default {
         type: 'string',
         // Must stay in step with public/nav.js's SECTIONS — that list drives
         // the drawer and the router, and a section named here but missing
-        // there navigates the browser nowhere.
-        enum: ['home', 'notifications', 'models', 'skills', 'app-control', 'tasks', 'briefing', 'profile'],
+        // there navigates the browser nowhere. This enum had silently
+        // drifted before (missing chat-history/jobs/memory even though all
+        // three were real, working sections) — fixed here alongside adding
+        // 'improvement' rather than repeating that drift a fourth time.
+        enum: ['home', 'notifications', 'models', 'skills', 'app-control', 'tasks', 'jobs', 'briefing', 'chat-history', 'memory', 'improvement', 'profile'],
         description: 'Which section to open.',
       },
     },

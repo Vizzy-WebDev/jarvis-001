@@ -30,6 +30,17 @@ const COOLDOWNS_MS = {
   no_access: 6 * 60 * 60 * 1000,
   auth: 6 * 60 * 60 * 1000,
   other: 5 * 60 * 1000,
+  // A provider overload (503/"high demand") clears in seconds to minutes,
+  // not hours — see error-kind.js's 'transient' kind for the live example
+  // this was built from.
+  transient: 60 * 1000,
+  // A model that can never serve chat (wrong name, TTS/image/embedding-only
+  // model, no tool-calling route) will fail identically on every retry —
+  // this in-memory breaker's cooldown barely matters for it since
+  // router.js's availability-state exclusion (a separate, persisted signal)
+  // is what actually keeps it out of routing indefinitely; this just avoids
+  // hammering it every 5 minutes in the meantime.
+  unsupported: 6 * 60 * 60 * 1000,
 };
 
 export function isHealthy(modelId) {

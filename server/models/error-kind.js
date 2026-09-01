@@ -85,10 +85,53 @@ export const AVAILABILITY_STATE_FOR_KIND = {
   auth: 'auth',
   no_access: 'no_access',
   network: 'unreachable',
-  other: 'unreachable',
+  // 'other' used to alias straight to 'unreachable' — the same 6h cooldown
+  // as a genuinely dead connection, for an error nobody has actually
+  // classified. Given its own 'error' state (see router.js's
+  // AVAILABILITY_COOLDOWNS_MS) so an unrecognized failure gets a moderate
+  // cooldown, not the harshest one, purely because nothing else matched.
+  other: 'error',
+  // A provider-side overload (503 "high demand", "please try again later")
+  // is not the model's fault and typically clears in seconds — confirmed
+  // live: a real 503 from gemini-3.7-flash cleared on the very next
+  // individual call, seconds later. Before this classification existed it
+  // fell through to 'other' -> 'unreachable', a 6-hour ban for a transient
+  // condition (see router.js's AVAILABILITY_COOLDOWNS_MS for the short
+  // cooldown this state actually gets).
+  transient: 'busy',
+  // A model that genuinely cannot serve chat at all (wrong/retired model
+  // name, a TTS/image/embedding-only model handed a chat request, no
+  // endpoints support tool-calling) will fail identically forever — no
+  // cooldown will ever fix it. router.js excludes this state from routing
+  // outright rather than giving it a cooldown; only a manual Test/Check-all
+  // clears it, once the user has actually changed something.
+  unsupported: 'unsupported',
 };
 
-/** Classifies an error thrown by an adapter into 'quota' | 'no_access' | 'auth' | 'network' | 'other'. Never throws. */
+// Text patterns for a provider overload/transient-unavailability response —
+// distinct from a real outage (network) or a permanent rejection (auth/
+// no_access/unsupported). Deliberately narrow: only wording that describes
+// the PROVIDER'S OWN current state, never generic wording that could also
+// describe a permanent problem.
+const TRANSIENT_TEXT = /overloaded|high demand|temporarily unavailable|service unavailable|currently unavailable|try again later/;
+
+// Text patterns for a model that can never serve a chat/tool-calling
+// request, regardless of retrying — a wrong/retired model name, a
+// non-chat model (TTS/image/embedding) handed a chat request, or a
+// provider explicitly saying it has no route for this model at all.
+const UNSUPPORTED_TEXT = /no endpoints found|no allowed providers|not a valid model|model not found|unknown model|does not support tool use|does not support tools/;
+
+// A 400 is ambiguous — it can mean "this model can never handle any
+// request shaped like this" (unsupported) or "this specific request was
+// too big/malformed this one time" (context length, too many tokens — a
+// per-turn problem, not a per-model one). Only the former should ever get
+// classified as 'unsupported'; the context-length case must keep falling
+// through to 'other' so it isn't excluded from routing for every future
+// turn just because one long turn tripped it.
+const INVALID_ARGUMENT_TEXT = /invalid argument|invalid request/;
+const CONTEXT_LENGTH_TEXT = /context length|context window|too (many|long) tokens|maximum context|token limit/;
+
+/** Classifies an error thrown by an adapter into 'quota' | 'no_access' | 'auth' | 'network' | 'transient' | 'unsupported' | 'other'. Never throws. */
 export function classifyError(err) {
   try {
     if (findNetworkCode(err)) return 'network';
@@ -97,6 +140,8 @@ export function classifyError(err) {
     if (status === 429) return 'quota';
     if (status === 401) return 'auth';
     if (status === 403) return 'no_access';
+    if (status === 404) return 'unsupported';
+    if (status === 500 || status === 502 || status === 503 || status === 504 || status === 529) return 'transient';
 
     const text = findMessageText(err).toLowerCase();
     // "usage limit" is friendly-message.js's own rewritten wording for a
@@ -116,6 +161,25 @@ export function classifyError(err) {
     // e.g. openai-compatible's friendlyError() text "Couldn't reach that
     // address — is the local server running?".
     if (/couldn.?t reach|connection refused|timed? ?out|not reachable/.test(text)) return 'network';
+    if (TRANSIENT_TEXT.test(text)) return 'transient';
+    if (UNSUPPORTED_TEXT.test(text)) return 'unsupported';
+    // Live-confirmed shape: gemini-3.1-flash-tts-preview (a TTS-only model
+    // handed a chat request) throws exactly {"code":400,"message":"Request
+    // contains an invalid argument.","status":"INVALID_ARGUMENT"} from a
+    // live conversation turn — but a MANUAL Test/Check-all never sees that
+    // raw shape at all: it classifies from the adapter's own already-
+    // de-nested friendlyError() text (gemini.js's friendlyError() returns
+    // only `parsed.error.message`, discarding `parsed.error.code`), so
+    // `status` is always null on that path. Originally gated on
+    // `status === 400`, confirmed LIVE (via a real Check-all run against
+    // this exact model) to never fire there as a result — the model kept
+    // classifying as 'other' and being silently re-tried forever, spending
+    // real quota each time on something that will never work. The text
+    // pattern alone is specific enough (Gemini only uses this generic
+    // "invalid argument" wording for a structurally wrong request, never
+    // for an ordinary content problem) — the real safety valve is the
+    // context-length exclusion right below, not the status code.
+    if (INVALID_ARGUMENT_TEXT.test(text) && !CONTEXT_LENGTH_TEXT.test(text)) return 'unsupported';
 
     return 'other';
   } catch {

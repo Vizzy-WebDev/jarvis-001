@@ -7,13 +7,13 @@
 // file for BOTH stores: conversations are append-heavy and searched, which
 // a JSON file handles by rewriting the whole thing on every message and
 // linear-scanning every file to search; Memory needs real transactions for
-// its approve/reject/conflict-resolution writes and is the one store a
-// future self-improvement system will write into, where being able to
-// audit it precisely matters more than JSON's hand-editability. SQLite
-// gives real full-text search (FTS5) and atomic multi-row transactions for
-// free, with zero install — confirmed live on this machine (FTS5 + WAL
-// both work) before committing to this design. See server/memory/CLAUDE.md
-// for Memory's own module breakdown.
+// its approve/reject/conflict-resolution writes, where being able to audit
+// it precisely matters more than JSON's hand-editability. SQLite gives real
+// full-text search (FTS5) and atomic multi-row transactions for free, with
+// zero install — confirmed live on this machine (FTS5 + WAL both work)
+// before committing to this design. See server/memory/CLAUDE.md for
+// Memory's own module breakdown, server/jobs/CLAUDE.md for Jobs',
+// server/improvement/CLAUDE.md for Self-Improvement's.
 //
 // Leaf module: imports only node:sqlite and store.js's dataDir(). Nothing
 // under server/skills/ may reach the loader/runner through this file (see
@@ -23,7 +23,7 @@
 
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { dataDir, readJson } from './store.js';
+import { dataDir, readJson, writeJson } from './store.js';
 
 let db = null;
 
@@ -312,6 +312,244 @@ const MIGRATIONS = [
       const next = nextRole.get(row.conversation_id, row.seq);
       if (!next || next.role !== 'tool') del.run(row.id);
     }
+  },
+
+  // 7: Self-Improvement — Jarvis reviewing its own completed work, extracting
+  // lessons, and turning a recurring one into a behaviour rule it applies to
+  // itself. See root CLAUDE.md's "Self-Improvement" section for the full
+  // design; server/improvement/CLAUDE.md for the module breakdown.
+  //
+  // Five tables, same independence discipline migrations 2/4 already set:
+  // `improvement_outcomes` carries NO foreign key to `jobs` (a job can be
+  // deleted, a scheduled task's run history rolls off at 200 — see
+  // task-store.js's MAX_RUNS_KEPT — and a lesson's evidence must survive
+  // both; `source_ref` is a soft, nullable pointer, and every field a
+  // lesson might need is a deliberate COPY, not a join). `UNIQUE(source,
+  // source_ref)` plus INSERT OR IGNORE at the write site is what makes
+  // capture idempotent — orchestrator.js and worker.js both have real,
+  // confirmed-live paths that can emit a 'failed' status twice for the same
+  // job, and this table must never record that as two outcomes.
+  //
+  // `source_ref` and `entity_ref` are deliberately TWO different columns,
+  // not one — `source_ref` is the per-EVENT dedup key (a job's own id, or
+  // one scheduled RUN's own id), while `entity_ref` is the per-RECURRING-
+  // THING stable key (the same job's id again for a job — it never
+  // recurs — but a scheduled TASK's own saved id, not any one run's id, for
+  // a task outcome). Without this split, every run of the same recurring
+  // task gets a different source_ref, and reflect.js would have no stable
+  // key to group "this specific task tends to fail this way" under —
+  // exactly the gap `improvement-store.js`'s `task:<id>` scope needs to be
+  // real. Null for a correction/explicit outcome, which has no recurring
+  // entity to attach to.
+  //
+  // Lessons vs rules is the distinction that makes "detect a PATTERN, don't
+  // just patch a one-off mistake" real: a lesson is a recorded observation
+  // and never changes behaviour by itself; only a rule — derived from a
+  // lesson that recurred into a genuine pattern — ever reaches the system
+  // prompt (see improvement-store.js's activeRulesText(), injected by
+  // prompt.js's improvementSection()). That split is also what makes undo
+  // meaningful: a rule is a live behaviour change with exactly one place it
+  // takes effect, so undoing it is well-defined in a way "undo a lesson's
+  // influence" never could be.
+  (conn) => {
+    conn.exec(`
+      CREATE TABLE improvement_outcomes (
+        id          TEXT PRIMARY KEY,
+        source      TEXT NOT NULL,
+        source_ref  TEXT,
+        entity_ref  TEXT,
+        title       TEXT,
+        goal        TEXT,
+        kind        TEXT,
+        status      TEXT NOT NULL,
+        retries     INTEGER NOT NULL DEFAULT 0,
+        error       TEXT,
+        tool_summary TEXT,
+        escalations INTEGER NOT NULL DEFAULT 0,
+        reviewed_at TEXT,
+        created_at  TEXT NOT NULL,
+        UNIQUE(source, source_ref)
+      );
+      CREATE INDEX idx_improvement_outcomes_reviewed ON improvement_outcomes(reviewed_at);
+      CREATE INDEX idx_improvement_outcomes_entity ON improvement_outcomes(entity_ref);
+
+      CREATE TABLE improvement_lessons (
+        id          TEXT PRIMARY KEY,
+        kind        TEXT NOT NULL DEFAULT 'lesson',
+        text        TEXT NOT NULL,
+        scope       TEXT NOT NULL DEFAULT 'general',
+        evidence    TEXT,
+        confidence  REAL,
+        source_tier INTEGER NOT NULL DEFAULT 1,
+        source_url  TEXT,
+        status      TEXT NOT NULL DEFAULT 'active',
+        created_at  TEXT NOT NULL,
+        updated_at  TEXT NOT NULL
+      );
+      CREATE INDEX idx_improvement_lessons_status ON improvement_lessons(status);
+
+      CREATE TABLE improvement_proposals (
+        id                     TEXT PRIMARY KEY,
+        kind                   TEXT NOT NULL,
+        title                  TEXT NOT NULL,
+        rationale              TEXT,
+        helps_jarvis           TEXT,
+        helps_user             TEXT,
+        payload                TEXT,
+        evidence               TEXT,
+        source_tier            INTEGER NOT NULL DEFAULT 1,
+        source_url             TEXT,
+        verified               INTEGER NOT NULL DEFAULT 0,
+        batch_id               TEXT,
+        status                 TEXT NOT NULL DEFAULT 'pending',
+        conflict_with          TEXT,
+        implementation_prompt  TEXT,
+        implementation_target  TEXT,
+        created_at             TEXT NOT NULL,
+        resolved_at            TEXT
+      );
+      CREATE INDEX idx_improvement_proposals_status ON improvement_proposals(status);
+      CREATE INDEX idx_improvement_proposals_batch ON improvement_proposals(batch_id);
+
+      -- The LIVE directives injected into the system prompt
+      -- (improvement-store.js's activeRulesText(), prompt.js's
+      -- improvementSection()). active lets the user mute a rule without
+      -- unwinding its change history via undo. last_supported_at is
+      -- touched whenever a later reflection cycle finds fresh evidence for
+      -- the same rule, so a genuinely stale rule can eventually be told
+      -- apart from one still being reinforced.
+      CREATE TABLE improvement_rules (
+        id                 TEXT PRIMARY KEY,
+        text               TEXT NOT NULL,
+        scope              TEXT NOT NULL DEFAULT 'general',
+        active             INTEGER NOT NULL DEFAULT 1,
+        source_proposal_id TEXT,
+        last_supported_at  TEXT,
+        created_at         TEXT NOT NULL,
+        updated_at         TEXT NOT NULL
+      );
+      CREATE INDEX idx_improvement_rules_active ON improvement_rules(active);
+
+      -- The audit/undo log — append-only. Every applied change (a new rule,
+      -- a pref flipped) writes ONE row here carrying both before and
+      -- after; an undo writes its OWN row (kind:'undo') rather than
+      -- deleting or rewriting the original, so the log never lies about
+      -- what actually happened. Storing after (not just before, the
+      -- way memory_versions only ever needs the PRE-edit state) is what
+      -- lets undo refuse instead of clobbering: if the live value no longer
+      -- matches after, the user changed it themselves since, and a blind
+      -- restore would silently overwrite their own later decision.
+      CREATE TABLE improvement_changes (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind         TEXT NOT NULL,
+        target       TEXT NOT NULL,
+        before       TEXT,
+        after        TEXT,
+        reason       TEXT,
+        proposal_id  TEXT,
+        applied_at   TEXT NOT NULL,
+        undone_at    TEXT
+      );
+      CREATE INDEX idx_improvement_changes_target ON improvement_changes(target, applied_at);
+    `);
+  },
+
+  // 8: Self-Improvement screen — Archive/Restore/Delete for rules, mirroring
+  // Memory's own proven archived-flag pattern rather than inventing a
+  // second one. Additive only (a nullable column with no default-changing
+  // semantics for any existing row), per the same discipline migration 3
+  // used. Lessons and proposals already had the status values this needed
+  // (migration 7) — only rules needed a real schema change, since active/
+  // inactive (mute) and archived/not are deliberately two independent
+  // axes: archiving a rule always also deactivates it (see apply layer),
+  // but muting a rule was never meant to hide it from the list the way
+  // archiving does.
+  (conn) => {
+    conn.exec(`
+      ALTER TABLE improvement_rules ADD COLUMN archived_at TEXT;
+      CREATE INDEX idx_improvement_rules_archived ON improvement_rules(archived_at);
+    `);
+  },
+
+  // 9: Self-Model — Jarvis's own grounded, structured self-knowledge (root
+  // CLAUDE.md's "Self-Model" section; server/self/CLAUDE.md for the module
+  // breakdown). Two tables, deliberately holding NO prose knowledge and NO
+  // facts about the user — everything content-shaped keeps going through
+  // improvement_outcomes/improvement_lessons (migration 7) instead; this is
+  // what keeps this from being the "second memory-like store" the build
+  // explicitly forbids.
+  //
+  // `self_capability_stats` is a pure rolling tally, never a per-event log —
+  // deliberately NOT more rows in improvement_outcomes, since that table's
+  // own MAX_REVIEWED_OUTCOMES_KEPT prune (improvement-store.js) would
+  // silently age out old successes and skew every reliability ratio toward
+  // failure over time. `axis` is restricted to axes that already exist
+  // elsewhere in the system ('tool' | 'job_kind' | 'task_type') rather than
+  // inventing a new taxonomy, which would itself be an ungrounded claim.
+  //
+  // `self_goals` exists only for LIVE CONVERSATION — a job already has a
+  // durable `goal` column (migration 4) and never needs a second one. One
+  // active goal per (scope_kind, scope_ref); closing one never deletes it,
+  // so "what did I think this was for a few turns ago" stays answerable.
+  (conn) => {
+    conn.exec(`
+      CREATE TABLE self_capability_stats (
+        axis          TEXT NOT NULL,
+        key           TEXT NOT NULL,
+        attempts      INTEGER NOT NULL DEFAULT 0,
+        failures      INTEGER NOT NULL DEFAULT 0,
+        last_ok_at    TEXT,
+        last_failed_at TEXT,
+        updated_at    TEXT NOT NULL,
+        PRIMARY KEY (axis, key)
+      );
+
+      CREATE TABLE self_goals (
+        id           TEXT PRIMARY KEY,
+        scope_kind   TEXT NOT NULL,
+        scope_ref    TEXT NOT NULL,
+        goal_text    TEXT NOT NULL,
+        declared_at  TEXT NOT NULL,
+        status       TEXT NOT NULL DEFAULT 'active',
+        closed_at    TEXT
+      );
+      CREATE INDEX idx_self_goals_scope ON self_goals(scope_kind, scope_ref, status);
+    `);
+  },
+
+  // 10: One-time repair for a real, now-fixed bug in model availability
+  // classification (server/models/error-kind.js, root CLAUDE.md's Model
+  // system section). Before the 'transient'/'unsupported' split and
+  // router.js's per-state cooldown tiers existed, EVERY transient or
+  // otherwise-unclassified failure (a 503 "high demand", a plain
+  // unrecognized error) was recorded as 'unreachable' with a flat 6-hour
+  // ban. Confirmed live against a real user's roster: 22 enabled models
+  // sat banned this way, including 7 Gemini models that answered correctly
+  // the instant each was retried individually. A fresh failure is
+  // classified correctly from now on — this is the one-time cleanup of
+  // bans already written under the old rule, so they don't keep outliving
+  // the fix that stops new ones. Drops the `availability` object entirely
+  // from any enabled-or-not model whose state isn't 'working' (an
+  // 'unsupported' state is cleared too — harmless, since the very next real
+  // failure re-classifies it correctly; the point here is only to undo
+  // PAST misclassifications, not to protect the new 'unsupported' state,
+  // which has no time-based cooldown to accidentally shorten anyway). Same
+  // "runs exactly once, ever" guarantee PRAGMA user_version already gives
+  // every other step here — the one migration in this file that touches
+  // data/models.json (through store.js's readJson/writeJson, which honor
+  // JARVIS_DATA_DIR — never a hardcoded path) rather than this SQLite file,
+  // since availability lives in that JSON store, not this database.
+  (conn) => {
+    const data = readJson('models', null);
+    if (!data?.entries?.length) return;
+    let changed = false;
+    for (const entry of data.entries) {
+      if (entry.availability && entry.availability.state !== 'working') {
+        delete entry.availability;
+        changed = true;
+      }
+    }
+    if (changed) writeJson('models', data);
   },
 ];
 

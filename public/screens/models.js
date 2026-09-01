@@ -26,7 +26,85 @@ const AVAILABILITY_LABELS = {
   no_access: 'no access',
   auth: 'key rejected',
   unreachable: 'unreachable',
+  // Added alongside server/models/error-kind.js's 'transient'/'unsupported'
+  // split (see CLAUDE.md's Model system section) — 'other' used to alias
+  // straight to 'unreachable', so every unclassified failure read the same
+  // as a real network problem; it's now its own state.
+  error: 'recent error',
+  busy: 'provider busy',
+  unsupported: "can't be used for chat",
 };
+
+// Module-level, not created fresh inside render() — a full re-render (add a
+// model, edit a connection, enable/disable a model, "Check all models"
+// finishing, ...) used to build a BRAND NEW {query:'', status:'all'} every
+// single time, silently clearing whatever the user had just typed or
+// selected. Persists for the lifetime of the page now, same as any other
+// screen's own in-memory state.
+const filterState = { query: '', status: 'all' };
+
+// modelId -> { badge, model } — populated fresh every time buildModelsCard()
+// runs (the one place every visible row is built, from both a full render()
+// and a filter-only renderModelsSection() call). What applyHealthEvent()
+// below patches directly instead of the full container teardown
+// refreshIfActive('models') used to do on every single health transition —
+// confirmed live to lose the search box, filter, and scroll position, since
+// several transitions can fire in a row during one "Check all models" run.
+let modelBadgeRegistry = new Map();
+
+/** Formats health.js's getHealthStatus() retryInMs (present on the initial page load's snapshot; absent from a live model_health event, which carries no retry estimate of its own) into a real clock time, or null when there's nothing to show. */
+function formatRetryTime(retryInMs) {
+  if (!Number.isFinite(retryInMs) || retryInMs <= 0) return null;
+  return new Date(Date.now() + retryInMs).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+/**
+ * Paints one model's status badge — factored out of buildModelRow() so
+ * applyHealthEvent() can repaint just this element later without rebuilding
+ * the row (or the page) around it.
+ *
+ * `healthInfo` (server/models/health.js's in-memory breaker — a SEPARATE,
+ * shorter-lived signal from the persisted `m.availability` below) now WINS
+ * when present, instead of being silently discarded. Before this, a model
+ * benched by the breaker (e.g. right after a timed-out turn — see
+ * server/models/runner.js's Part B) still showed its last persisted
+ * 'working' availability here — confirmed live as the exact discrepancy
+ * behind "shows as available in Settings, but Jarvis says it can't."
+ */
+function paintBadge(badge, m, healthInfo) {
+  if (healthInfo) {
+    badge.className = 'badge bad';
+    const back = formatRetryTime(healthInfo.retryInMs);
+    badge.textContent = back ? `resting — back around ${back}` : 'resting after a recent problem';
+    return;
+  }
+  const state = m.availability?.state;
+  const specificLabel = state && state !== 'unknown' ? AVAILABILITY_LABELS[state] : null;
+  if (specificLabel) {
+    badge.className = `badge ${state === 'working' ? 'good' : 'bad'}`;
+    badge.textContent = specificLabel;
+  } else {
+    // No specific availability signal yet — fall back to the original ready logic.
+    badge.className = `badge ${m.ready ? 'good' : 'bad'}`;
+    badge.textContent = m.ready ? 'ready' : 'needs a key';
+  }
+}
+
+/**
+ * Patches one model's badge in place from a live `model_health` SSE event
+ * (server/models/health.js) — called by app.js's connectEvents() instead of
+ * a full refreshIfActive('models') re-render whenever this screen is the
+ * one currently showing. Returns false (never throws) when this model
+ * isn't currently rendered — not mounted at all, or filtered out of view
+ * right now — so the caller knows to fall back to a full refresh instead of
+ * silently doing nothing.
+ */
+export function applyHealthEvent({ modelId, state, reason }) {
+  const entry = modelBadgeRegistry.get(modelId);
+  if (!entry) return false;
+  paintBadge(entry.badge, entry.model, state === 'healthy' ? null : { reason });
+  return true;
+}
 
 const CAP_LABELS = { vision: 'Images', video: 'Video', audio: 'Audio', webSearch: 'Web search' };
 
@@ -112,6 +190,13 @@ function openModelDetail(m, connection) {
       }
       const checked = formatDateTime(m.availability?.checkedAt);
       if (checked) healthCard.appendChild(Object.assign(document.createElement('p'), { className: 'hint', textContent: `Last checked: ${checked}` }));
+      // The raw (redacted) provider error, when one was captured — see
+      // server.js's testAndRecord()/runner.js's recordAvailability() calls,
+      // both of which now persist this alongside the friendly `detail`
+      // sentence above (before this, every benched model showed the exact
+      // same generic sentence with nothing underneath it to diagnose from).
+      const technical = technicalDetails(m.availability?.technical);
+      if (technical) healthCard.appendChild(technical);
       body.appendChild(healthCard);
     },
     async onSubmit() {
@@ -265,16 +350,8 @@ function buildModelRow(m, healthInfo, onChange, connection) {
   main.appendChild(testResult);
 
   const badge = document.createElement('span');
-  const state = m.availability?.state;
-  const specificLabel = state && state !== 'unknown' ? AVAILABILITY_LABELS[state] : null;
-  if (specificLabel) {
-    badge.className = `badge ${state === 'working' ? 'good' : 'bad'}`;
-    badge.textContent = specificLabel;
-  } else {
-    // No specific availability signal yet — fall back to the original health/ready logic.
-    badge.className = `badge ${healthInfo ? 'bad' : m.ready ? 'good' : 'bad'}`;
-    badge.textContent = healthInfo ? 'temporarily unavailable' : m.ready ? 'ready' : 'needs a key';
-  }
+  paintBadge(badge, m, healthInfo);
+  modelBadgeRegistry.set(m.id, { badge, model: m });
   main.appendChild(badge);
   main.appendChild(buildBillingBadge(m, onChange));
 
@@ -287,9 +364,27 @@ function buildModelRow(m, healthInfo, onChange, connection) {
 
   const toggle = toggleSwitch({
     value: m.enabled,
+    // toggleSwitch() already flips its own knob/aria-state optimistically,
+    // before this even runs — a full onChange() (container.innerHTML=''
+    // plus three fetches plus a full rebuild) was pure overkill just to
+    // reflect a switch that's already visually correct, and was one of the
+    // two concrete flicker sources reported (the other being every
+    // automatic health transition, fixed above via applyHealthEvent()).
+    // `m.enabled` is patched in place on the in-memory model object so a
+    // LATER full re-render (adding a model, editing a connection, ...)
+    // still reflects it correctly — the one thing a full re-render would
+    // have caught that this doesn't is buildPrefsCard()'s "Pin a model for
+    // voice" dropdown showing "(not ready)"; that catches up on the next
+    // real re-render or page load, which is an acceptable trade for never
+    // flickering the whole screen over a single switch.
     onChange: async (next) => {
-      await postJson(`/api/models/${encodeURIComponent(m.id)}`, { enabled: next }, 'PATCH');
-      await onChange();
+      try {
+        await postJson(`/api/models/${encodeURIComponent(m.id)}`, { enabled: next }, 'PATCH');
+        m.enabled = next;
+      } catch (err) {
+        console.error('[models] could not save enabled state:', err);
+        toggle.setValue(!next); // the save failed — reflect reality, don't leave a lied-to switch
+      }
     },
   });
 
@@ -956,6 +1051,12 @@ function buildConnectionGroup(connection, models, health, providers, onChange) {
 function buildModelsCard(connections, models, health, providers, onChange, filterState) {
   const card = sectionCard('Your models');
 
+  // The one entry point every visible row is built from (buildModelRow()
+  // registers itself into this as it runs) — reset here so a stale entry
+  // from the PREVIOUS render never lingers if this model isn't rebuilt this
+  // time (e.g. it just got filtered out).
+  modelBadgeRegistry = new Map();
+
   if (!models.length) {
     card.appendChild(
       Object.assign(document.createElement('p'), { className: 'hint', textContent: 'No models added yet — add one above.' })
@@ -1005,12 +1106,104 @@ function buildModelsCard(connections, models, health, providers, onChange, filte
 }
 
 /**
+ * The "Check all models" confirmation dialog — shown BEFORE anything is
+ * checked, not after. The old button fired one real API request per
+ * enabled model, all at once, with no indication of the cost; confirmed
+ * live against the user's own roster that this both mass-benched working
+ * models (see paintBadge()'s own comment on the in-memory-breaker fix this
+ * pairs with) and burned roughly half a day's free-tier OpenRouter quota in
+ * one click. `GET /api/models/recheck/preview` (server.js) is read-only —
+ * it makes no model calls, only asks each connection's provider (where one
+ * is known to support it — today, OpenRouter's own key-status endpoint) how
+ * much free quota is left. Defaults to the cheap choice (only the models
+ * not currently marked 'working') — "check everything" is still one click
+ * away for a real from-scratch sweep, never removed.
+ */
+async function openRecheckModal(onDone) {
+  const preview = await fetch('/api/models/recheck/preview')
+    .then((r) => r.json())
+    .catch(() => null);
+
+  let scope = 'not_working';
+
+  const result = await openModal({
+    title: 'Check models',
+    submitLabel: 'Check now',
+    busyLabel: 'Checking…',
+    build(body) {
+      if (!preview || preview.error) {
+        body.appendChild(
+          Object.assign(document.createElement('p'), {
+            className: 'hint',
+            textContent: "Couldn't estimate the cost ahead of time — checking will still work.",
+          })
+        );
+      } else {
+        body.appendChild(
+          Object.assign(document.createElement('p'), {
+            className: 'hint',
+            textContent: `${preview.total} model${preview.total === 1 ? '' : 's'} enabled — ${preview.notWorking} currently ${
+              preview.notWorking === 1 ? "isn't" : "aren't"
+            } showing as working.`,
+          })
+        );
+        for (const c of preview.byConnection) {
+          const bits = [`${c.label}: ${c.count} model${c.count === 1 ? '' : 's'}`];
+          if (c.isFreeTier) bits.push('free-tier account, has a daily limit');
+          if (Number.isFinite(c.remaining)) bits.push(`${c.remaining} requests left today`);
+          body.appendChild(Object.assign(document.createElement('p'), { className: 'hint', textContent: bits.join(' — ') }));
+        }
+      }
+
+      const group = document.createElement('div');
+      const notWorkingLabel = document.createElement('label');
+      notWorkingLabel.className = 'settings-row';
+      const notWorkingRadio = document.createElement('input');
+      notWorkingRadio.type = 'radio';
+      notWorkingRadio.name = 'recheck-scope';
+      notWorkingRadio.value = 'not_working';
+      notWorkingRadio.checked = true;
+      notWorkingLabel.append(
+        notWorkingRadio,
+        document.createTextNode(
+          ` Check only the ones that aren't working${preview && !preview.error ? ` (${preview.notWorking})` : ''} — recommended`
+        )
+      );
+      const allLabel = document.createElement('label');
+      allLabel.className = 'settings-row';
+      const allRadio = document.createElement('input');
+      allRadio.type = 'radio';
+      allRadio.name = 'recheck-scope';
+      allRadio.value = 'all';
+      allLabel.append(allRadio, document.createTextNode(` Check everything${preview && !preview.error ? ` (${preview.total})` : ''}`));
+      group.append(notWorkingLabel, allLabel);
+      body.appendChild(group);
+
+      group.addEventListener('change', () => {
+        scope = group.querySelector('input[name="recheck-scope"]:checked')?.value || 'not_working';
+      });
+    },
+    async onSubmit(api) {
+      const data = await postJson('/api/models/recheck', { scope });
+      if (!data.ok) {
+        api.setError(data.error || 'Could not check models.');
+        return null;
+      }
+      return data;
+    },
+  });
+
+  if (result) onDone();
+}
+
+/**
  * The primary-view filter bar: a search box plus status segments (all /
- * free / paid / working / not-working), and the "Check all models" button
- * that hits the new POST /api/models/recheck route. `onFilterChange` re-runs
- * a local (no-fetch) re-render of just the models card; `onRecheck` runs
- * after a successful recheck and does a full page refresh so the new
- * availability/billing data shows up everywhere (badges, filter counts).
+ * free / paid / working / not-working), and the "Check all models" button,
+ * which now opens openRecheckModal() above instead of hitting
+ * /api/models/recheck directly. `onFilterChange` re-runs a local (no-fetch)
+ * re-render of just the models card; `onRecheck` runs after a successful
+ * check and does a full page refresh so the new availability/billing data
+ * shows up everywhere (badges, filter counts).
  */
 function buildFilterBar(filterState, onFilterChange, onRecheck) {
   const bar = document.createElement('div');
@@ -1050,35 +1243,8 @@ function buildFilterBar(filterState, onFilterChange, onRecheck) {
   recheckBtn.type = 'button';
   recheckBtn.className = 'btn';
   recheckBtn.textContent = 'Check all models';
+  recheckBtn.addEventListener('click', () => openRecheckModal(onRecheck));
   bar.appendChild(recheckBtn);
-
-  const status = document.createElement('p');
-  status.className = 'hint filter-bar-status hidden';
-  bar.appendChild(status);
-
-  recheckBtn.addEventListener('click', async () => {
-    recheckBtn.disabled = true;
-    recheckBtn.textContent = 'Checking…';
-    status.classList.add('hidden');
-    try {
-      const data = await postJson('/api/models/recheck', {});
-      if (!data.ok) {
-        status.className = 'error filter-bar-status';
-        status.textContent = data.error || 'Could not check models.';
-        status.classList.remove('hidden');
-        recheckBtn.disabled = false;
-        recheckBtn.textContent = 'Check all models';
-        return;
-      }
-      onRecheck();
-    } catch {
-      status.className = 'error filter-bar-status';
-      status.textContent = 'Could not reach the Jarvis server.';
-      status.classList.remove('hidden');
-      recheckBtn.disabled = false;
-      recheckBtn.textContent = 'Check all models';
-    }
-  });
 
   return bar;
 }
@@ -1109,16 +1275,32 @@ export async function render(container) {
   addBtn.addEventListener('click', () => buildAddConnectionModal(providers, onChange));
   container.appendChild(addBtn);
 
-  const filterState = { query: '', status: 'all' };
+  // filterState is module-level now (see its own declaration) — no longer
+  // created fresh here, which used to silently reset the search box and
+  // status filter on every single full re-render this function does.
   const modelsSection = document.createElement('div');
   container.appendChild(modelsSection);
 
-  function renderModelsSection() {
-    modelsSection.innerHTML = '';
-    if (models.length) {
-      modelsSection.appendChild(buildFilterBar(filterState, renderModelsSection, onChange));
-    }
-    modelsSection.appendChild(buildModelsCard(connections, models, health, providers, onChange, filterState));
+  // The filter bar (search box, status dropdown, "Check all models") is
+  // built exactly ONCE per full render() call — a real, separate bug from
+  // everything else fixed above, found while verifying it: `onFilterChange`
+  // used to be the SAME function that rebuilt the filter bar itself, so
+  // every single keystroke in the search box tore down and recreated its
+  // own `<input>` element out from under the user's own cursor. Confirmed
+  // live: after typing one character, `document.activeElement` was no
+  // longer the search box and the very next keystroke went nowhere —
+  // "gemini" only ever registered as "g". Only the models CARD below is
+  // rebuilt on a filter change now; the filter bar's own DOM nodes
+  // (including the search `<input>` a user may be actively typing into)
+  // are never touched by a filter change at all.
+  const cardWrap = document.createElement('div');
+  function renderCard() {
+    cardWrap.innerHTML = '';
+    cardWrap.appendChild(buildModelsCard(connections, models, health, providers, onChange, filterState));
   }
-  renderModelsSection();
+  if (models.length) {
+    modelsSection.appendChild(buildFilterBar(filterState, renderCard, onChange));
+  }
+  modelsSection.appendChild(cardWrap);
+  renderCard();
 }

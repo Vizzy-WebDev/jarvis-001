@@ -9,11 +9,13 @@ import { getAdapter } from '../adapters/index.js';
 import { getToolDeclarations, invoke } from '../capabilities.js';
 import * as conversation from '../conversation.js';
 import { getModel, updateModel } from './registry.js';
-import { profileTask, rankCandidates } from './router.js';
+import { profileTask, rankCandidates, explainExclusions } from './router.js';
 import { markUnhealthy, markHealthy } from './health.js';
 import { classifyError, AVAILABILITY_STATE_FOR_KIND } from './error-kind.js';
 import { friendlyMessage } from '../friendly-message.js';
 import { getPrefs } from '../prefs.js';
+import { redactSecrets } from './redact.js';
+import { getSecret } from '../config.js';
 // ai.js is the one place the "can this model actually do X" rule lives (it
 // gates the adapter ceiling AND the model's own caps). Reused rather than
 // reimplemented so a turn carrying an image and a one-off analysis job can
@@ -21,6 +23,9 @@ import { getPrefs } from '../prefs.js';
 // this file, so there's no cycle.
 import { meetsNeed } from '../ai.js';
 import { readStyle, clearSession as clearStyleSession, createReactionScanner, stripReactionMarkers } from '../personality.js';
+import { noteCorrection } from '../improvement/capture.js';
+import { computeTurnSignals } from '../self/self-model.js';
+import { recordToolOutcome } from '../self/self-capture.js';
 
 // Raised from 5 once installed folder Skills (server/skills-fs.js) arrived —
 // calling a Skill consumes one step just to fetch its instructions, leaving
@@ -42,6 +47,29 @@ const DEFAULT_MAX_TOOL_STEPS = 12;
 // minutes for an answer that was always going to fail anyway; the ranked
 // list behind the cap is still there for a genuinely quick retry.
 const MAX_FALLBACK_ATTEMPTS = 4;
+
+// No adapter's own SDK sets a request timeout (the OpenAI SDK defaults to
+// 10 minutes; the Gemini SDK has none at all) — so a model that accepts the
+// connection and then simply never responds was never penalized: the ONLY
+// thing that ever noticed was the front-end's own 45s "stuck" watchdog
+// (public/engines/voice-engine.js), which just closes the connection and
+// tells the user Jarvis "got stuck" — runner.js's own catch block treats
+// that closed connection as `opts.signal.aborted` (indistinguishable, before
+// this, from the user having sent a NEWER message) and returns silently,
+// recording nothing. The hung model kept its 'working' badge and its
+// sessionStickyModel lead, so it hung again on the very next turn. Confirmed
+// live: one real tool-enabled turn against a model the user's own settings
+// showed as 'working' produced zero output for over two minutes.
+//
+// FIRST_TOKEN_TIMEOUT_MS bounds how long ONE step (one adapter.stream()
+// call — a turn can have several, across tool-call round-trips) may go with
+// no event at all before it's abandoned. ATTEMPT_TIMEOUT_MS bounds the
+// WHOLE attempt against one candidate model (every step combined) — a model
+// that keeps trickling tool calls forever must still eventually be cut off.
+// Both are real failures now (see runOnEntry's own use of these), not a
+// silent, unrecorded return.
+const FIRST_TOKEN_TIMEOUT_MS = 20 * 1000;
+const ATTEMPT_TIMEOUT_MS = 120 * 1000;
 
 // Which model actually answered last, per session — the "sticky model"
 // mechanism (see preferredModelId below). In-memory only, same lifetime as
@@ -139,6 +167,63 @@ function noCapableModelReason(need) {
   return null;
 }
 
+// Plain-language labels for router.js's explainExclusions() reason keys —
+// the persisted-availability-state ones (quota/auth/no_access/busy/
+// unreachable/error/unsupported) deliberately use the same vocabulary the
+// Model Settings badges show (see public/screens/models.js's
+// AVAILABILITY_LABELS), so a spoken/written explanation and what the user
+// sees on the screen never disagree about what a state is called.
+const EXCLUSION_LABELS = {
+  disabled: 'switched off',
+  needs_key: 'missing a key',
+  recent_failure: 'resting after a recent problem',
+  no_tools: "can't use the tools this needs",
+  context_too_small: 'too small a context window for this',
+  quota: 'hit their usage limit',
+  auth: 'have a rejected key',
+  no_access: "don't have access on that key",
+  busy: 'the provider is temporarily busy',
+  unreachable: 'unreachable right now',
+  error: 'hit a recent error',
+  unsupported: "can't be used for chat at all",
+};
+
+function formatRetryEstimate(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const minutes = Math.round(ms / 60000);
+  if (minutes < 1) return 'less than a minute';
+  if (minutes === 1) return 'about a minute';
+  if (minutes < 60) return `about ${minutes} minutes`;
+  const hours = Math.round(minutes / 60);
+  return hours === 1 ? 'about an hour' : `about ${hours} hours`;
+}
+
+/**
+ * Builds a real "here's why nothing can answer" sentence from router.js's
+ * explainExclusions() — named counts and a real retry estimate, replacing
+ * the old one-size-fits-all sentence that named none of the actual reasons
+ * (see this file's CLAUDE.md-documented history: confirmed live against a
+ * roster where 47 of 62 models sat 'unreachable', the generic sentence gave
+ * the user nothing to act on beyond "add or fix a model").
+ */
+function explainNoCandidatesReason(task) {
+  const { total, counts, soonestRetryMs } = explainExclusions(task);
+  if (!total) {
+    return "There are no models set up yet — add one in Model Settings and I'll pick it up automatically.";
+  }
+  const parts = Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([key, n]) => `${n} ${EXCLUSION_LABELS[key] || key}`);
+  const retry = formatRetryEstimate(soonestRetryMs);
+  return (
+    `None of my ${total} models can handle this right now — ${parts.join(', ')}.` +
+    (retry
+      ? ` The soonest one should be back in ${retry}.`
+      : " Add or fix a model in Model Settings and I'll pick it up automatically.")
+  );
+}
+
 /**
  * The reason text shown to the user for a model failure — model_switch's
  * "reason" and the final paused message both go through this. Was: the
@@ -211,13 +296,31 @@ function shouldRecordAvailability(entry, nextState, allowStaleRewrite) {
   return !Number.isFinite(checkedAt) || Date.now() - checkedAt > AVAILABILITY_RECHECK_MS;
 }
 
-function recordAvailability(modelId, state, detail, { allowStaleRewrite = true } = {}) {
+// `technical` (optional) is the raw, redacted provider error text — same
+// field, same purpose as server.js's testAndRecord() writes for a manual
+// Test click, so an automatic turn failure leaves exactly as much real
+// detail behind as a manual one does (see Model Settings' own "Technical
+// details" line, which reads this). Before this, every model benched by a
+// live turn's own failure carried only the already-friendlied `detail`
+// sentence — the same generic wording for every failure of that kind, with
+// nothing underneath it to actually diagnose from.
+function recordAvailability(modelId, state, detail, { allowStaleRewrite = true, technical = undefined } = {}) {
   try {
     const entry = getModel(modelId);
     if (!entry || !shouldRecordAvailability(entry, state, allowStaleRewrite)) return;
-    updateModel(modelId, { availability: { state, checkedAt: new Date().toISOString(), detail } });
+    updateModel(modelId, { availability: { state, checkedAt: new Date().toISOString(), detail, technical } });
   } catch (err) {
     console.error(`[runner] failed to record availability for "${modelId}":`, err);
+  }
+}
+
+/** Redacts a model's own real secret out of raw adapter error text before it's persisted — mirrors server.js's testAndRecord() (see that function's own comment for why this needs the actual resolved key, not just the generic known-key-shape fallback redactSecrets() applies with no secret at all). */
+function technicalDetailFor(entry, err) {
+  try {
+    const secretValue = entry?.secretRef ? getSecret(entry.secretRef) : null;
+    return redactSecrets(err?.message, secretValue ? [secretValue] : []);
+  } catch {
+    return undefined;
   }
 }
 
@@ -245,17 +348,60 @@ async function* runOnEntry(sessionId, entry, opts) {
   // case) or one naming only already-core tools sees no change at all.
   const sessionUnlocked = getSessionUnlocked(sessionId);
   const unlocked = new Set([...sessionUnlocked, ...(Array.isArray(opts.allowedTools) ? opts.allowedTools : [])]);
+  // Self-Model — every distinct tool name THIS turn has already called, in
+  // an earlier step. computeTurnSignals() (server/self/self-model.js) reads
+  // this fresh each step below, so a known-failure/no-track-record warning
+  // can surface starting the step AFTER a tool's first use within this same
+  // turn — see that function's own doc comment for why it can't do better
+  // than that with no foreknowledge of what the model is about to call.
+  const usedToolNames = new Set();
 
+  // Bounds how long THIS attempt (against this one candidate model, across
+  // however many tool-call steps it takes) may run with no response before
+  // it's abandoned as a real failure — see FIRST_TOKEN_TIMEOUT_MS/
+  // ATTEMPT_TIMEOUT_MS's own comment for why this exists at all. A separate
+  // AbortController, not opts.signal directly, so our own timeout and a
+  // genuine external cancellation (a newer message superseding this turn —
+  // brain.js's per-session coordinator) can be told apart downstream: only
+  // `timedOut` below is set by OUR timers, so runTurn's catch can check
+  // `opts.signal?.aborted` (untouched by anything in here) to see whether
+  // the ORIGINAL signal was the one that fired.
+  const attemptController = new AbortController();
+  let timedOut = false;
+  const forwardExternalAbort = () => attemptController.abort();
+  if (opts.signal) {
+    if (opts.signal.aborted) attemptController.abort();
+    else opts.signal.addEventListener('abort', forwardExternalAbort, { once: true });
+  }
+  const attemptTimer = setTimeout(() => {
+    timedOut = true;
+    attemptController.abort();
+  }, ATTEMPT_TIMEOUT_MS);
+
+  try {
   for (let step = 0; step < maxSteps; step++) {
     // Checked at the top of every step (not just relied on via the adapter
     // call throwing) so a turn superseded by a newer message in the same
     // session (see brain.js's per-session coordinator) stops between steps
-    // too, not only while a request is actually in flight.
+    // too, not only while a request is actually in flight. Checks the
+    // ORIGINAL opts.signal, not attemptController — a real external
+    // supersede must still be recognized as such even if our own timeout
+    // happens to have fired in the same instant.
     if (opts.signal?.aborted) {
       throw Object.assign(new Error('Turn superseded by a newer message.'), { aborted: true });
     }
     const tools = toolsForTurn(opts, unlocked);
     const messages = conversation.getMessages(sessionId);
+    // Self-Model — cheap SQLite reads only, no model call. Recomputed every
+    // step (never cached across the loop) since usedToolNames grows as the
+    // turn's own tool calls happen — see root CLAUDE.md's Self-Model
+    // section for the trigger design this feeds prompt.js's
+    // selfFocusSection() with.
+    const selfSignals = computeTurnSignals({
+      sessionId,
+      correctionDetected: Boolean(opts.correctionDetected),
+      usedToolNames: [...usedToolNames],
+    });
     let text = '';
     let callEvent = null;
     let finalEvent = null;
@@ -269,7 +415,25 @@ async function* runOnEntry(sessionId, entry, opts) {
     // transcript or any voice as literal words.
     const reactionScanner = createReactionScanner();
 
-    for await (const ev of adapter.stream(entry, messages, { tools, lowConfidence: opts.lowConfidence, gapMs: opts.gapMs, background: opts.background, addressed: opts.addressed, style: opts.style, signal: opts.signal })) {
+    // Bounds how long THIS step alone may go with no event at all — a
+    // separate, shorter budget from the whole-attempt one above, since a
+    // hang can happen on any step (including a later tool-round-trip step),
+    // not just the very first request. Cleared the instant any event
+    // arrives, whatever its type.
+    let firstEventSeen = false;
+    const firstTokenTimer = setTimeout(() => {
+      if (!firstEventSeen) {
+        timedOut = true;
+        attemptController.abort();
+      }
+    }, FIRST_TOKEN_TIMEOUT_MS);
+
+    try {
+    for await (const ev of adapter.stream(entry, messages, { tools, lowConfidence: opts.lowConfidence, gapMs: opts.gapMs, background: opts.background, addressed: opts.addressed, style: opts.style, signal: attemptController.signal, improvementScope: opts.improvementScope, selfSignals })) {
+      if (!firstEventSeen) {
+        firstEventSeen = true;
+        clearTimeout(firstTokenTimer);
+      }
       if (ev.type === 'chunk') {
         for (const scanEv of reactionScanner.feed(ev.text)) {
           if (scanEv.type === 'text') {
@@ -284,6 +448,23 @@ async function* runOnEntry(sessionId, entry, opts) {
       } else if (ev.type === 'final') {
         finalEvent = ev;
       }
+    }
+    } catch (err) {
+      // Our own deadline fired (attemptController.abort() above), and this
+      // was NOT a genuine external supersede — tag it plainly so runTurn's
+      // catch treats it as a real failure ("this model never answered") and
+      // benches the model, rather than the abort's own generic error text
+      // (whatever shape a given SDK happens to throw on a signal abort)
+      // getting run through classifyError() and likely landing in 'other'.
+      // A genuine external abort (opts.signal.aborted) is left completely
+      // untouched here — it still propagates as whatever error it already
+      // is, exactly as before this existed.
+      if (timedOut && !opts.signal?.aborted) {
+        throw Object.assign(new Error('This model took too long to respond.'), { timedOut: true });
+      }
+      throw err;
+    } finally {
+      clearTimeout(firstTokenTimer);
     }
     // Anything still held back was never a real marker — just ordinary
     // text that happened to look like the start of one (e.g. "[[" used for
@@ -350,7 +531,27 @@ async function* runOnEntry(sessionId, entry, opts) {
               // its existing token-minting behavior exactly as before for
               // live chat and scheduled tasks alike.
               onEscalate: opts.onEscalate,
+              // Self-Model dimension 4 ("what's it doing now, and why") —
+              // check_myself.js reports Personality's OWN already-computed
+              // decision, never makes one itself; see self-model.js's header
+              // invariant.
+              style: opts.style,
+              // The same-turn confirm-token refusal — see this file's own
+              // turnId comment (runTurn()) and capabilities.js's
+              // consumePendingToken() for the full reasoning.
+              turnId: opts.turnId,
             });
+        // Self-Model capture — zero model calls, a rolling reliability
+        // tally plus (only for a notable outcome) one more
+        // improvement_outcomes row for Self-Improvement's existing
+        // pipeline. Never allowed to affect this turn if it throws — same
+        // discipline as noteCorrection() above.
+        try {
+          recordToolOutcome({ name: call.name, ok: result?.ok !== false, notAllowed, escalated: Boolean(result?.escalated) });
+        } catch (err) {
+          console.error('[runner] self-model capture failed:', err);
+        }
+        usedToolNames.add(call.name);
         // find_capability just ran — fold its matches into the set for the
         // NEXT step's tool list (see toolsForTurn's `unlocked` param above).
         // Not reachable on any other tool, since only find_capability.js
@@ -389,6 +590,10 @@ async function* runOnEntry(sessionId, entry, opts) {
     finalText = stripReactionMarkers(finalEvent?.text) ?? (text || "Sorry, I didn't quite catch that.");
     conversation.pushAssistantText(sessionId, finalText, { modelId: entry.id, raw: finalEvent?.raw });
     break;
+  }
+  } finally {
+    clearTimeout(attemptTimer);
+    opts.signal?.removeEventListener('abort', forwardExternalAbort);
   }
 
   if (finalText === null) {
@@ -451,7 +656,34 @@ export async function* runTurn(sessionId, userText, opts = {}) {
   // same pattern as gapMs above. Skipped when systemOverride is set (the control
   // loop's own instruction is a different task entirely — see prompt.js).
   const style = opts.systemOverride ? undefined : readStyle(sessionId, userText);
-  const situationOpts = { ...opts, gapMs: Number.isFinite(gapMs) ? gapMs : null, style };
+  // Self-Improvement correction capture — live conversation only (a
+  // scheduled task or a Job worker's own turn was never corrected by
+  // anyone; both set opts.background:true, the same signal jobsSection()
+  // and the style framework already gate on). No model call, cheap regex —
+  // safe to run unconditionally rather than threading a separate opt.
+  // Captured (not just fired-and-discarded) so the Self-Model's own
+  // 'correction' signal (server/self/self-signals.js) can reuse this exact
+  // regex match rather than re-running a second copy of
+  // CORRECTION_PATTERNS — see root CLAUDE.md's Self-Model section.
+  let correctionDetected = false;
+  if (!opts.background) {
+    try {
+      correctionDetected = Boolean(noteCorrection(sessionId, userText));
+    } catch (err) {
+      console.error('[runner] self-improvement correction capture failed:', err);
+    }
+  }
+  // One id per runTurn() call, stable across every step/model-switch this
+  // ONE turn takes — capabilities.js's consumePendingToken() uses this to
+  // refuse a confirm_token redeemed in the SAME turn that minted it, so a
+  // model can never complete an entire ask-and-answer confirm round trip
+  // with no real human reply in between. Found live, not hypothetical: see
+  // capabilities.js's own header comment on consumePendingToken() for the
+  // full investigation. Threaded through exactly like gapMs/style/
+  // correctionDetected above — one value, computed once, reused by every
+  // candidate model this turn tries.
+  const turnId = `turn${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  const situationOpts = { ...opts, gapMs: Number.isFinite(gapMs) ? gapMs : null, style, correctionDetected, turnId };
   // Debug-only signal (public/settings.js's toggle gates whether the UI shows it) —
   // never read by the model itself, purely for the user to confirm a floor actually
   // fired. Only yielded when something did, so the common case emits nothing extra.
@@ -469,11 +701,7 @@ export async function* runTurn(sessionId, userText, opts = {}) {
   if (allCandidates.length === 0) {
     yield {
       type: 'paused',
-      reason:
-        noCapableModelReason(opts.need) ||
-        "None of the models I have set up right now can handle this — they're either unavailable, " +
-          "missing a key, or not built for this kind of request. Add or fix a model in Model Settings " +
-          'and I\'ll pick it up automatically.',
+      reason: noCapableModelReason(opts.need) || explainNoCandidatesReason(task),
     };
     return;
   }
@@ -525,10 +753,34 @@ export async function* runTurn(sessionId, userText, opts = {}) {
       if (opts.signal?.aborted) return;
       failed = true;
       console.error(`[runner] model "${entry.id}" failed:`, err);
-      const kind = classifyError(err);
-      markUnhealthy(entry.id, err?.message || 'error', kind);
-      recordAvailability(entry.id, AVAILABILITY_STATE_FOR_KIND[kind] ?? 'unreachable', err?.message || 'error');
-      lastError = friendlyReason(entry.adapter, err);
+      if (err?.timedOut) {
+        // runOnEntry's own first-token/attempt deadline fired — a real
+        // failure (the model never responded in time), not a supersede, but
+        // ALSO not something classifyError() can read anything useful from
+        // (an abort's own error text carries no provider-specific signal).
+        // Tagged 'transient' -> 'busy': a short cooldown, since a hang is
+        // just as likely to be a momentary provider stall as anything
+        // permanent, and this is exactly the case that used to leave a
+        // hung model's 'working' badge (and its sticky-session lead)
+        // untouched forever — see FIRST_TOKEN_TIMEOUT_MS's own comment for
+        // the live repro this fixes.
+        markUnhealthy(entry.id, 'No response in time.', 'transient');
+        recordAvailability(entry.id, 'busy', 'No response in time.', { technical: 'The model never sent a response within the time limit.' });
+        lastError = 'That model took too long to respond.';
+      } else {
+        const kind = classifyError(err);
+        markUnhealthy(entry.id, err?.message || 'error', kind);
+        recordAvailability(entry.id, AVAILABILITY_STATE_FOR_KIND[kind] ?? 'unreachable', err?.message || 'error', {
+          technical: technicalDetailFor(entry, err),
+        });
+        lastError = friendlyReason(entry.adapter, err);
+      }
+      // A model that just failed must not keep leading the NEXT turn's
+      // ranking via sessionStickyModel — otherwise a once-good model that
+      // starts hanging/erroring keeps winning preferredModelId() forever,
+      // since stickiness outranks pure auto-ranking (see that function's
+      // own comment).
+      if (sessionStickyModel.get(sessionId) === entry.id) sessionStickyModel.delete(sessionId);
       previousId = entry.id;
       if (streamed) yield { type: 'restart' };
     }
@@ -545,18 +797,19 @@ export async function* runTurn(sessionId, userText, opts = {}) {
     }
   }
 
-  // Dropped the old trailing "Check Model Settings, or try again in a
-  // moment." — lastError is now always one of friendlyMessage()'s clean
-  // category sentences (see friendlyReason() above), and three of its four
-  // real categories already end with their own specific next step ("...
-  // switch models in Model Settings" etc.); appending the same generic
-  // advice again read redundant. Wording says "a few" rather than "every
-  // model I have available" since MAX_FALLBACK_ATTEMPTS means this is no
-  // longer literally the whole list — the ranked list itself, and the
-  // user's next turn, are unaffected by this turn giving up early.
+  // Every candidate this turn actually tried has, by now, had its own
+  // markUnhealthy/recordAvailability call run synchronously (see the catch
+  // block above) — so re-running explainExclusions() here reflects the
+  // roster INCLUDING what just failed, not a stale pre-turn snapshot.
+  // Wording says "a few" rather than "every model I have available" since
+  // MAX_FALLBACK_ATTEMPTS means this is no longer literally the whole list —
+  // the ranked list itself, and the user's next turn, are unaffected by
+  // this turn giving up early.
   yield {
     type: 'paused',
-    reason: `I tried a few models and none of them could finish that. Most recent problem: ${lastError || 'unknown error'}`,
+    reason:
+      `I tried a few models and none of them could finish that — most recent problem: ` +
+      `${lastError || 'unknown error'}. ${explainNoCandidatesReason(task)}`,
   };
 }
 

@@ -111,8 +111,51 @@ export function getToolDeclarations({ includeMeta = true, unlocked } = {}) {
   return visible.map((c) => ({
     name: c.name,
     description: c.description,
-    parameters: c.parameters,
+    parameters: c.confirm ? withConfirmToken(c.parameters) : c.parameters,
   }));
+}
+
+/**
+ * `confirm_token` was, until this fix, only ever mentioned as PROSE in
+ * prompt.js's SYSTEM_INSTRUCTION ("call the tool again with confirm_token
+ * set to the value you were given") — no individual capability's own
+ * `parameters` schema ever declared it as a real, visible argument, on
+ * ANY of the 15+ built-in confirm-gated tools OR a folder Skill's own
+ * pipeline-generated confirm (skills/index.js sets `confirm: 'always'`
+ * there too). A model that sticks to its own declared function-calling
+ * schema — confirmed live to be common on weaker/free-tier models (see
+ * root CLAUDE.md's Self-Model section) — had nowhere to actually put the
+ * token even after being told to send it back, so a genuine "yes" from the
+ * user could silently go nowhere: `consumePendingToken()` correctly found
+ * no token, `requiresConfirmation()` fired again, and the model looked
+ * stuck in an infinite confirmation loop it had no way out of. Verified
+ * live, isolated from any model-behavior question: the confirm/token
+ * machinery itself round-trips a real token perfectly once one is actually
+ * sent (see server/self/CLAUDE.md's investigation of this exact bug).
+ *
+ * Fixed HERE, once — the one place every capability's schema is actually
+ * built for a model to see — rather than in every individual tool file,
+ * which also wouldn't have reached a folder Skill's own generated confirm
+ * step. `confirm_token` is added as an OPTIONAL property only (never
+ * pushed into `required`) — a first call still shouldn't need it. Never
+ * mutates a tool's own shared `parameters` object; `cleanArgs` in `invoke()`
+ * below already stripped `confirm_token` out before a capability's `run()`
+ * ever sees its args, so this schema addition needs no matching change
+ * there.
+ */
+function withConfirmToken(parameters) {
+  const base = parameters && typeof parameters === 'object' ? parameters : { type: 'object', properties: {} };
+  return {
+    ...base,
+    properties: {
+      ...(base.properties || {}),
+      confirm_token: {
+        type: 'string',
+        description:
+          'Only set this when resending a call after the user has already said yes to a confirmation you asked for — the exact token you were given back then, nothing else.',
+      },
+    },
+  };
 }
 
 // Very small, deliberately conservative stemmer — normalizes a handful of
@@ -289,7 +332,7 @@ export function reservedSkillNames() {
 // single-use, capability-scoped, 5-minute TTL) is the whole proof of
 // consent now; nothing about the resent args is trusted or required.
 
-const pending = new Map(); // token -> { name, args, expiresAt }
+const pending = new Map(); // token -> { name, args, expiresAt, mintedTurnId }
 const CONFIRM_TTL_MS = 5 * 60 * 1000;
 
 function makeToken() {
@@ -316,8 +359,26 @@ function requiresConfirmation(capability, ctx) {
  * not a reusable key. Deliberately does NOT compare the resent arguments
  * against what was originally asked about — see this module's header
  * comment.
+ *
+ * **A token may only be redeemed in a LATER turn than the one that minted
+ * it — never the same one.** Found live, not hypothetical: a confirm-gated
+ * tool used to be structurally incapable of completing at all in one turn
+ * (no tool schema ever declared `confirm_token` — see getToolDeclarations()'s
+ * withConfirmToken()), which accidentally acted as a safety net. Fixing
+ * that schema gap removed the accident and exposed the real one underneath
+ * it: with `confirm_token` now a real, callable argument, a model told
+ * "skip asking me" could mint the token and immediately resend it in the
+ * SAME turn, completing the entire ask-and-answer round trip with no real
+ * human reply in between — confirmed live on a real free-tier model, real
+ * production data (server/tools/CLAUDE.md's "Voice-clarity confirmation"
+ * section records the investigation). The whole point of asking is a genuine pause for a
+ * genuine separate reply; nothing enforced that pause actually span two
+ * different turns. This is that enforcement. Only applied when BOTH sides
+ * carry a real `ctx.turnId` — a caller outside the per-turn system (neither
+ * side sets one) falls back to the original, turn-unaware behavior rather
+ * than being silently, incorrectly blocked.
  */
-function consumePendingToken(capability, rawArgs) {
+function consumePendingToken(capability, rawArgs, ctx) {
   const token = rawArgs?.confirm_token;
   if (!token) return null;
   const record = pending.get(token);
@@ -325,6 +386,12 @@ function consumePendingToken(capability, rawArgs) {
   pending.delete(token); // one-time use either way
   if (record.name !== capability.name) return null;
   if (Date.now() > record.expiresAt) return null;
+  if (record.mintedTurnId && ctx?.turnId && record.mintedTurnId === ctx.turnId) {
+    // Same turn that minted it — treated exactly like an invalid token:
+    // the caller falls through to minting a FRESH one and asking again,
+    // this time for real, in whatever turn actually replies.
+    return null;
+  }
   return record;
 }
 
@@ -338,13 +405,18 @@ function findCapability(name) {
 
 /**
  * Invokes a named capability with the given arguments. `ctx` (optional)
- * carries {sessionId, modelId, lowConfidence, autoConfirm}, plus
- * `reservedSkillNames` and `searchCapabilities` (this module's own
- * functions, injected below) — a tool file under server/tools/ can't import
- * either from this module directly (that's the seam that composes it; see
- * CLAUDE.md's circular-import invariant), so this is how create_skill.js
- * and find_capability.js get them without deadlocking the dynamic-import
- * loader at startup. Never throws.
+ * carries {sessionId, modelId, lowConfidence, autoConfirm, turnId} — `turnId`
+ * (models/runner.js's own per-runTurn()-call id) is what lets
+ * consumePendingToken() refuse a token redeemed in the same turn that
+ * minted it; a caller that never sets it just gets the original,
+ * turn-unaware behavior — plus
+ * `reservedSkillNames`, `searchCapabilities`, and `listCapabilities` (this
+ * module's own functions, injected below) — a tool file under server/tools/
+ * can't import any of them from this module directly (that's the seam that
+ * composes it; see CLAUDE.md's circular-import invariant), so this is how
+ * create_skill.js, find_capability.js, and check_myself.js (dimension 1's
+ * live capability count — see server/self/CLAUDE.md) get them without
+ * deadlocking the dynamic-import loader at startup. Never throws.
  */
 export async function invoke(name, args, ctx = {}) {
   const capability = findCapability(name);
@@ -357,12 +429,12 @@ export async function invoke(name, args, ctx = {}) {
 
   try {
     if (requiresConfirmation(capability, ctx)) {
-      const confirmed = consumePendingToken(capability, args || {});
+      const confirmed = consumePendingToken(capability, args || {}, ctx);
       if (confirmed) {
         // Run with the ORIGINAL args captured when confirmation was asked
         // for, not whatever the model just resent — see
         // consumePendingToken()'s doc comment for why.
-        return await capability.run(confirmed.args, { ...ctx, reservedSkillNames, searchCapabilities, invoke });
+        return await capability.run(confirmed.args, { ...ctx, reservedSkillNames, searchCapabilities, invoke, listCapabilities });
       }
       // The third confirm mode, alongside the interactive read-back below
       // and ctx.autoConfirm above: a background Job (server/jobs/worker.js)
@@ -379,7 +451,7 @@ export async function invoke(name, args, ctx = {}) {
         return { ok: false, escalated: true, error: 'Waiting on the owner to decide. Stop and report back — do not ask again this turn.' };
       }
       const token = makeToken();
-      pending.set(token, { name: capability.name, args: cleanArgs, expiresAt: Date.now() + CONFIRM_TTL_MS });
+      pending.set(token, { name: capability.name, args: cleanArgs, expiresAt: Date.now() + CONFIRM_TTL_MS, mintedTurnId: ctx?.turnId || null });
       // `await` here works whether summarize() is sync (every existing
       // capability) or async (control_computer.js generates its plan via a
       // real model call before it has anything to read back) — awaiting a
@@ -397,7 +469,7 @@ export async function invoke(name, args, ctx = {}) {
     // pipeline.js -> capabilities.js would be exactly the deadlock the
     // circular-import invariant forbids) — so it receives this same
     // function back through ctx instead.
-    return await capability.run(cleanArgs, { ...ctx, reservedSkillNames, searchCapabilities, invoke });
+    return await capability.run(cleanArgs, { ...ctx, reservedSkillNames, searchCapabilities, invoke, listCapabilities });
   } catch (err) {
     console.error(`[capabilities] "${name}" threw:`, err);
     return { ok: false, error: `Something went wrong running ${name}.` };

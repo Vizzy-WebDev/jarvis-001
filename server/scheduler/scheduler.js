@@ -16,6 +16,7 @@ import { getModel } from '../models/registry.js';
 import { broadcast } from '../events.js';
 import { addNotification } from '../notifications.js';
 import { checkpointFromText } from '../memory/memory-review.js';
+import { recordTaskOutcome } from '../improvement/capture.js';
 import { friendlyMessageFor } from '../friendly-message.js';
 import {
   listTasks,
@@ -44,7 +45,7 @@ function toIso(date) {
  * can say e.g. "ran using Claude Haiku — auto-switched from Gemini, no key
  * configured" instead of just a bare result.
  */
-async function runOneTurn(sessionId, text, { modelId = null, noTools = false, allowedTools = null } = {}) {
+async function runOneTurn(sessionId, text, { modelId = null, noTools = false, allowedTools = null, taskId = null } = {}) {
   let summary = '';
   let ok = true;
   let error = null;
@@ -59,6 +60,11 @@ async function runOneTurn(sessionId, text, { modelId = null, noTools = false, al
     autoConfirm: true,
     noTools,
     allowedTools,
+    // Self-Improvement scope for THIS task's own turn — see
+    // prompt.js's improvementScopedSection(). taskId is the SAVED task's
+    // own id, not the per-run session id, so a rule learned about one
+    // recurring task keeps applying across every future run of it.
+    improvementScope: taskId ? [`task:${taskId}`] : undefined,
   })) {
     if (ev.type === 'model_switch' && !switchedFrom) {
       switchedFrom = ev.from;
@@ -107,7 +113,7 @@ async function runSkillAction(task) {
     JSON.stringify(result, null, 2),
   ].join('\n');
 
-  return runOneTurn(`task:${task.id}:${Date.now()}`, prompt, { modelId, noTools: true });
+  return runOneTurn(`task:${task.id}:${Date.now()}`, prompt, { modelId, noTools: true, taskId: task.id });
 }
 
 async function runAction(task) {
@@ -152,6 +158,7 @@ async function runAction(task) {
     return runOneTurn(`task:${task.id}:${Date.now()}`, task.action.text, {
       modelId: task.action.modelId,
       allowedTools,
+      taskId: task.id,
     });
   }
 
@@ -198,6 +205,18 @@ export async function runTaskNow(id, { late = false } = {}) {
     notify: task.notify || 'always',
   });
   broadcast({ type: 'task_run', ...run });
+
+  // Self-Improvement capture — unlike the memory checkpoint below, this
+  // costs ZERO model calls (improvement/capture.js just writes a row), so
+  // it isn't narrowed to 'prompt' actions on success only: every run, every
+  // action type, ok or failed, is real signal about how this task performs
+  // over time. Synchronous and wrapped directly (not fire-and-forget) since
+  // there's no async work here to protect the reply's latency from.
+  try {
+    recordTaskOutcome(run, task);
+  } catch (err) {
+    console.error('[scheduler] self-improvement outcome capture failed:', err);
+  }
 
   // The "scheduled task completion" memory checkpoint (Stage 2) — scoped to
   // `prompt` actions only (free-text work through the model, the one action

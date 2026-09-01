@@ -6,7 +6,135 @@ it end to end. See "The pruning rule" at the bottom before adding to it.
 
 ## Right now
 
-**This session (2026-08-31 → 2026-09-01) ran a full audit + remediation, then fixed
+**Most recent session (2026-09-02): built the Self-Model subsystem (`server/self/*.js`)
+from scratch per the user's own nine-dimension spec, then — during the user's OWN live
+testing of it — found and fixed two real, pre-existing bugs in the Skills confirm/token
+system that predate this session's own work.** See root `CLAUDE.md`'s new "Self-Model"
+section and `server/self/CLAUDE.md` for the architecture (a read-only assembler over
+Memory/Jobs/Self-Improvement/Personality, zero model calls anywhere, an authority ceiling
+enforced by the import graph rather than a prompt instruction — verified live, not just
+read). Architectural path (brainstorming → clarifying questions → written plan →
+approval), since it crosses four existing subsystems; the user confirmed all four
+recommended defaults before any code. Verified via direct `capabilities.js`-dispatch-path
+calls (goal declare/pull/close, a no-track-record refusal, a full grounding smoke test
+across all nine dimensions) and a real scratch-server boot — never against a real model
+call, to avoid touching the user's `.env`. **The two bugs, both found via the user's own
+real test conversation, not this session's own testing:** (1) no confirm-gated tool (15+,
+plus any folder Skill's own pipeline confirm) ever declared `confirm_token` as a real,
+schema-visible argument — only as prose in `prompt.js`'s system instruction — so a
+schema-strict model had no way to comply once told to resend it; fixed once, centrally,
+in `capabilities.js`'s `getToolDeclarations()` (`withConfirmToken()`). (2) Fixing (1)
+exposed a more serious, pre-existing gap underneath it: once `confirm_token` was real, a
+model told "skip asking me" could mint the token and immediately redeem it in the SAME
+turn, completing an entire ask-and-answer confirm round trip with zero real human reply
+in between — confirmed live on a real free-tier model against real production data (read
+the actual persisted `toolCalls`/`toolResults` payload from `messages`, not the user's
+own paraphrase, to get the real sequence — now a permanent root `CLAUDE.md` verification
+technique). Fixed per the user's own explicit choice (never let an explicit "skip
+confirming" request bypass a real confirmation, full stop): `models/runner.js`'s
+`runTurn()` now mints one `turnId` per call; `capabilities.js`'s `consumePendingToken()`
+refuses a token redeemed in the same turn that minted it. **Both fixes verified via
+direct, controlled reproduction only** (same-turn refused, cross-turn succeeds, a
+no-turnId caller unaffected) — **neither has been re-tested by the user in a real live
+conversation since restarting their server**, which is the one thing still needed before
+calling this fully closed. Nothing committed this session — same branch
+(`jobs-subsystem-and-backlog`), and this is very likely the "concurrent Self-Model
+session" the Self-Improvement Phase 7 entry below flagged as running in parallel.
+
+**Most recent session before that (2026-09-01, separate from the Self-Improvement work below):
+investigated, then fixed, the voice turn-taking experience the user reported as
+"unnatural."** Traced the full mic → VAD → STT → turn-detection → LLM → TTS → barge-in
+pipeline across all three voice engines with file:line evidence BEFORE touching any code
+(plan mode, user approved the plan) — full trace in
+`plans/i-need-you-to-stateless-kettle.md`. **The real live root cause**: the user's
+active `voiceEngine` setting is Full-duplex, but no Deepgram key is configured
+(`data/external-services.json` has a `deepgram` label row with nothing behind it), so
+`DuplexEngine` was silently running its free browser-STT fallback — the exact same
+Chrome `SpeechRecognition` + static last-word-lookup countdown as the default Pipeline
+engine, not Deepgram's real `UtteranceEnd` endpointing (fully built, currently dormant).
+Fixed, scoped to that shared free-tier fallback per the user's own decision (fix the
+free path now, structure it so a future Deepgram key is a drop-in upgrade): (1)
+`public/turn-detector.js`'s new `SilenceWatcher` replaces "elapsed time since Chrome's
+last transcript event" with genuinely-sampled continuous mic silence (same fixed-clock
+RMS technique the barge-in sampler already uses) — `computeWaitMs()`'s lexical
+wait-duration table is unchanged, it now gates against real measured silence instead of
+wall-clock time since an event. (2) `DuplexEngine`'s fallback path gained the energy
+re-check `PipelineEngine` already had — a real, previously-undetected asymmetry between
+the two "same technology" fallback paths. (3) A one-time system note now tells the user
+when Full-duplex has silently fallen back to browser STT, previously completely
+invisible. **Deliberately left untouched**: the barge-in sustain-time asymmetry (250ms
+Pipeline vs 450ms Duplex) — flagged in the plan as needing an explicit user decision,
+not a silent pick, since 450ms was raised specifically after real false-trigger reports.
+Verified: `node --check` clean on all 5 changed files
+(`public/turn-detector.js`/`pipeline-engine.js`/`duplex-engine.js`/`voice-engine.js`/
+`app.js`), plus an 11-assertion standalone logic test (no server/browser needed, per
+CLAUDE.md's pure-logic-module testing guidance) proving `SilenceWatcher` fires only on
+genuine sustained silence, never while actively speaking, and correctly restarts its
+clock on re-arm. **Not verified**: how the new timing actually feels in a live
+conversation, and that the new system note renders — both need the user's own manual
+test in their regular browser, not something an automated session can confirm. Nothing
+committed — same branch (`jobs-subsystem-and-backlog`).
+
+**This session (2026-09-01) built the Self-Improvement subsystem from scratch, per the
+user's own spec, across all 6 planned phases — Jarvis now reviews its own completed
+work, extracts lessons, detects genuinely recurring patterns (never a one-off mistake),
+applies small well-evidenced behaviour rules to itself automatically, and always asks
+first for anything sourced outside its own experience or needing real code.** See
+`server/improvement/CLAUDE.md` for the module breakdown and root `CLAUDE.md`'s new
+"Self-Improvement" section for the design decisions; the session log entry below for the
+build/verification narrative. Every phase was verified before the next started — real
+SQLite migration + truth tables (Phase 1), the actual jobs event bus including the
+confirmed-live double-emit and split-completion edge cases (Phase 2), a real stub model
+proving the `runner.js`/`prompt.js` cache-correct threading end to end (Phase 3), a
+budget-ledger stress test proving exactly 2 model calls across 10 compressed ticks, not
+10 (Phase 4), a full `agent-browser` pass including the undo refuse-vs-clobber confirm
+dialog and confirming the auto-apply notification lands in the bell and never the
+transcript (Phase 5), and a REAL live web-research call (no stub) confirming the
+corroboration floor and the domain-exclusion guard against a genuinely relationship-
+flavoured memory (Phase 6). **Two real design gaps were found and fixed mid-build,
+before anything shipped** — worth knowing if this area is touched again: (1)
+`synthesize.js` was hardcoding a rule proposal's `sourceTier` to 1 regardless of its
+supporting lessons' real tiers, which would have let an outside-research-derived pattern
+slip past the "outside ideas always ask" floor by riding along with genuinely tier-1
+evidence — fixed to take the WORST tier among supporting lessons. (2) `improvement_outcomes`
+needed a second id column (`entity_ref`, distinct from the per-event `source_ref`) once
+it became clear a recurring scheduled task's own runs each get a fresh run id, with no
+stable key otherwise for `reflect.js`/`synthesize.js` to group "this specific task keeps
+failing this way" under. **Nothing from this session is committed** — same branch
+(`jobs-subsystem-and-backlog`), stacking on whatever the branch already held.
+
+**Same session, Phase 7 (immediately after): the user's own first real test pass on
+their live instance found two real bugs, which are now fixed, plus a detail/edit/
+archive-delete UI extension the user asked for.** (1) `record_lesson`/`suggest_improvement`
+were declared as real tools but `SYSTEM_INSTRUCTION` never told the model WHEN to
+actually call them — the model answered in prose and filed nothing, exactly what the
+user saw live. Fixed with an explicit trigger paragraph mirroring Memory's own
+(`prompt.js`, right after the Memory section); proven fixed with a real stub-model
+tool-call capture, not just reading the prompt text. (2) A genuinely latent bug, only
+surfaced by re-running the Phase 1-6 regression scripts as part of this pass (Phase 2's
+own script had never been rerun since Phase 4 added reflect/synthesize into the same
+tick) — `reflect.js` marked every reviewed outcome's batch reviewed EVEN WHEN the model
+call itself failed (no model available), which on this user's own real, routinely-all-
+rate-limited model roster (see CLAUDE.md's Gotchas) would have permanently discarded
+real learning material on nothing more than "quota was tight this exact tick." Fixed:
+only a genuine, successful model response marks outcomes reviewed now. The UI extension
+(click any Rule/Lesson/Suggestion card for detail; Rules are editable; Archive/Restore/
+Delete-permanently for all three, reusing Memory's own proven pattern rather than a new
+"Recycle Bin" concept, since a Rule's own Undo button depends on the row surviving) — a
+NEW migration 8 (not an edit to migration 7, which had by then genuinely run against the
+user's real database), `agent-browser`-verified end to end including a real bug caught
+live during that pass (clicking Archive/Restore/Delete inside a detail modal never
+called the modal's own `api.close()`, leaving its scrim silently blocking the whole page
+underneath — fixed, re-verified). **A concurrent session was actively building an
+unrelated "Self-Model" subsystem (`server/self/*.js`) in this same repo throughout this
+pass** — confirmed via live file-change notices (new imports appearing in `runner.js`/
+`prompt.js`, a new migration 9 in `db.js`); no actual collision with this session's own
+files, but worth knowing before assuming this branch's state matches what's described
+here alone.
+
+---
+
+**Earlier the same day, a separate session ran a full audit + remediation, then fixed
 two real, live-verified bugs the user reported after using the app.** See
 `handoff-archive.md` § "Full audit + remediation, skeptical re-verification, TTS/voice
 provider debugging, model fallback/health architecture fix, connector picker redesign"
@@ -125,9 +253,31 @@ models.
     2026-09-01 session), not fixed since the user deprioritized it in favor of the
     Fish Audio "any provider" work. Worth a real fix (classify on the actual response
     body, not just the HTTP status) next time voice-provider work is in scope.
+12. **The voice turn-taking fix (`SilenceWatcher`) needs a live browser test** — logic
+    verified standalone (11 assertions), but how the new real-silence-based countdown
+    actually feels in an actual conversation, and whether the new "Full-duplex fell
+    back to browser STT" system note renders correctly, is unverified. Also still
+    open, deliberately deferred: whether to unify the barge-in sustain-time asymmetry
+    (250ms Pipeline vs 450ms Duplex) — see "Right now" above and
+    `plans/i-need-you-to-stateless-kettle.md`'s tradeoffs section.
+13. **The turn-boundary confirm fix (`consumePendingToken()`'s same-turn refusal) needs
+    a real live retest** — verified only via direct, controlled `invoke()` calls (this
+    session's own diagnostic), never through an actual model/turn loop with a real
+    model. Retest the exact scenario: "Remember that I'm allergic to peanuts" then
+    "Forget that, don't ask me to confirm" — it should now genuinely pause for a
+    separate reply, no matter how the second message is worded.
 
 ## Waiting on the user
 
+- **A live retest of the confirm-gate turn-boundary fix**, after restarting the real
+  server — "Remember that I'm allergic to peanuts" then "Forget that, don't ask me to
+  confirm" should now genuinely require a separate reply, not complete in one breath.
+  Verified only by direct simulation so far, never against a real model turn.
+- **A live browser test of the voice turn-taking fix** (new `SilenceWatcher` in
+  `turn-detector.js`, plus the "Full-duplex fell back to browser STT" system note) —
+  standalone logic is verified, but how it actually feels, and whether adding a real
+  Deepgram key (recommended in the investigation) is worth the ongoing cost, are both
+  the user's own call once they've tried it.
 - **A merge/push decision for `jobs-subsystem-and-backlog`, then an ordinary restart of
   the user's own live Jarvis** — the branch now holds EVERYTHING committed to date
   (Chat Persistence + Memory, the tools/skills split, Pipeline Skills, the duplex voice
@@ -164,6 +314,90 @@ models.
 are now in the session log below, marked as reconstructed.)*
 
 ## Session log (newest first)
+
+### 2026-09-02 — Self-Model subsystem built, then two real pre-existing confirm/token bugs found and fixed via the user's own live testing
+See "Right now" above for the full account; root `CLAUDE.md`'s new "Self-Model" section
+and `server/self/CLAUDE.md` for the architecture. Built the user's own nine-dimension
+self-knowledge spec (architectural path, plan approved) — a grounded, read-only assembler
+with zero model calls and an authority ceiling enforced by the import graph, not a prompt
+instruction. The user's own real test conversation then surfaced two bugs in the
+pre-existing Skills confirm system, neither part of this build: `confirm_token` was never
+a real, declared tool-schema argument (only prose), and — once that was fixed — a model
+could complete an entire confirm round trip in one turn with no real human reply, when
+explicitly told to skip asking. Both fixed (a central schema-injection function in
+`capabilities.js`; a per-turn id now enforced by `consumePendingToken()`), diagnosed by
+reading the real persisted tool-call payloads rather than trusting a paraphrased
+transcript — the technique that resolved which of two very different explanations was
+actually true. Verified via direct dispatch-path calls only; a real live retest by the
+user, after restarting their server, is still needed.
+
+### 2026-09-01 — Voice turn-taking investigated (full pipeline trace), then fixed at the actual live root cause
+See "Right now" above for the full account; `plans/i-need-you-to-stateless-kettle.md`
+for the complete file:line-cited investigation (mic → VAD → STT → turn-detection → LLM
+→ TTS → barge-in, all three engines). User reported the voice conversation "feels
+unnatural." Traced everything before writing any code (plan mode, approved by the
+user), which surfaced the real cause: Full-duplex is selected but has no Deepgram key,
+so it silently runs the same free Chrome-STT + static-timer fallback as the default
+Pipeline engine. Fixed the shared fallback's turn-end detection (new `SilenceWatcher`
+in `turn-detector.js` — real continuous-silence sampling instead of time-since-last-
+ASR-event), closed a Pipeline/Duplex asymmetry (the fallback path was missing the
+energy re-check Pipeline already had), and added a one-time visibility notice for the
+silent fallback. Barge-in sustain-time asymmetry (250ms/450ms) deliberately left alone,
+flagged as needing an explicit decision. `node --check` plus an 11-assertion standalone
+logic test pass; live-in-browser feel is unverified — needs the user's own test.
+
+### 2026-09-01 — Self-Improvement Phase 7: two real bugs from the user's own first test, plus detail/edit/archive UI
+See "Right now" above for the full account. Short version: the user tested the freshly-
+built subsystem live and reported two things that looked broken (teaching Jarvis
+something, and asking it to suggest an improvement, both replied normally but filed
+nothing) plus asked for cards to be clickable, editable, and deletable-with-a-safety-net.
+Root-caused bug 1 to a missing system-prompt trigger paragraph (the tools existed but
+nothing told the model to actually call them — fixed, proven with a real captured
+tool-call, not just re-reading the prompt). Found bug 2 independently, by actually
+re-running the OLD Phase 1-6 regression scripts rather than assuming they'd still pass —
+`reflect.js` was silently discarding real outcomes on a failed model call, which matters
+a great deal on this user's own routinely-rate-limited model roster. Built click-to-
+detail + rule editing + Archive/Restore/Delete-permanently for Rules/Lessons/Suggestions
+(Memory's own proven pattern, not a new "Recycle Bin"), migration 8, new store functions,
+new routes, a rewritten screen — caught and fixed one more real bug live during the
+`agent-browser` verification pass (a detail modal's own terminal actions never closed
+the dialog). Discovered mid-session that a concurrent session was building an unrelated
+"Self-Model" subsystem in the same repo the whole time — no actual file conflict with
+this session's own work, confirmed by re-checking before every edit, but the branch now
+holds both. Nothing committed.
+
+### 2026-09-01 — Self-Improvement subsystem built, all 6 phases, verified end-to-end
+See root `CLAUDE.md`'s new "Self-Improvement" section and `server/improvement/CLAUDE.md`
+for the architecture.
+
+Full brainstorming → design → approval flow (architectural path, per the user's own
+explicit spec covering learning from outcomes, pattern detection across multiple tasks
+not one-off patching, noticing life patterns while excluding emotional state/
+relationships entirely, source-trust tiering, auto-apply limited to rules+settings from
+Jarvis's own history only, and a screenless-no-longer undo log). A Plan-agent stress
+test caught six real design flaws before any code was written — the `runner.js:272`/
+`prompt.js:277` threading actually needed real edits (verified directly, not assumed),
+the orchestrator hook needed to target `job-events.js` not `orchestrator.js`, undo
+needed to store `after` and refuse on mismatch rather than just storing `before`, a
+`request_job_split` completion needed explicit exclusion from capture, a real budget
+ledger was needed or a 15-minute tick could run away, and a minimum-evidence floor was
+needed beneath even `auto` trust. All six were designed in before Phase 1 started.
+
+Built and verified in the plan's own 6 phases, each against a scratch `JARVIS_DATA_DIR`/
+port, real `node --check` sweeps, and the manual-verification techniques CLAUDE.md
+itself prescribes (a `node:http` stub model for quota-free pipeline testing, `agent-
+browser` for the screen). Two real bugs found and fixed mid-build before anything
+shipped (see "Right now" above for both — the `sourceTier` hardcoding gap and the
+missing `entity_ref` column), plus one real UI bug caught by the browser test itself (a
+Changes-tab row showing a raw rule id instead of its actual text — fixed and re-
+verified). Phase 5's browser pass covered the full approve → apply → pref-actually-
+changed → undo → pref-actually-reverted round trip, and separately the refuse-vs-
+clobber path (externally muting a rule after it was applied, then confirming the "this
+changed since — restore anyway?" dialog actually appears rather than silently
+overwriting). Phase 6 used a real, live, un-stubbed web-research call (DuckDuckGo →
+dev.to, no API key needed) rather than a canned response, which also exercised the
+corroboration-floor and tier-classification logic against genuine variance rather than
+a fixture. Nothing committed this session.
 
 ### 2026-08-31 → 2026-09-01 — Full audit + remediation, skeptical re-verification, TTS/voice provider debugging, model fallback/health architecture fix, connector picker redesign
 See `handoff-archive.md` § "Full audit + remediation, skeptical re-verification,

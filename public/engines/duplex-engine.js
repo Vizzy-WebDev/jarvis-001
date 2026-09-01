@@ -71,7 +71,7 @@ import { VoiceEngine } from './voice-engine.js';
 import { MicStream } from '../voice/mic-stream.js';
 import { Playback } from '../voice/playback.js';
 import { MicLevelMonitor, BargeInDetector } from '../voice/vad.js';
-import { computeWaitMs } from '../turn-detector.js';
+import { computeWaitMs, SilenceWatcher } from '../turn-detector.js';
 import { BrowserSpeaker } from '../browser-speaker.js';
 import { REACTION_SOUNDS } from '../reaction-sounds.js';
 
@@ -129,7 +129,8 @@ export class DuplexEngine extends VoiceEngine {
     this.fallbackRecognition = null;
     this._fallbackSuspended = false;
     this._fallbackEchoTailTimer = null;
-    this._fallbackSilenceTimer = null;
+    this._fallbackSilenceTimer = null; // short one-off re-check timer used only inside _finalizeFallbackTurn() — see that method
+    this.fallbackSilenceWatcher = null; // SilenceWatcher (turn-detector.js) — real-silence arm for the fallback path, created alongside micMonitor in start()
 
     // Deepgram-mode self-echo prevention — see this file's header comment.
     // Frames stop being sent to Deepgram the instant Jarvis starts
@@ -223,6 +224,13 @@ export class DuplexEngine extends VoiceEngine {
 
     this.micMonitor = new MicLevelMonitor(this.mic.getRawStream());
     this.barge = new BargeInDetector(this.micMonitor);
+    // Only ever actually armed on the browser-fallback path (see
+    // _startBrowserFallback()) — Deepgram mode's turn-end signal is its own
+    // real UtteranceEnd, not this. Created unconditionally here (cheap, no
+    // timer running until arm() is first called) so it's available the
+    // instant _connectStt() resolves into fallback mode without an extra
+    // "which mode am I in" branch at construction time.
+    this.fallbackSilenceWatcher = new SilenceWatcher(this.micMonitor);
 
     this.active = true;
     const connected = await this._connectStt();
@@ -299,6 +307,7 @@ export class DuplexEngine extends VoiceEngine {
     }
     clearTimeout(this._fallbackEchoTailTimer);
     clearTimeout(this._fallbackSilenceTimer);
+    this.fallbackSilenceWatcher?.cancel();
     clearTimeout(this._echoBufferClearTimer);
     // Explicit reset — found during the state-machine audit that these
     // three flags previously had NO other way to clear except the two
@@ -312,6 +321,7 @@ export class DuplexEngine extends VoiceEngine {
     this._fallbackSuspended = false;
     this._speakingBuffer = '';
     if (this.barge) this.barge.stop();
+    this.fallbackSilenceWatcher = null;
     if (this.micMonitor) {
       this.micMonitor.close();
       this.micMonitor = null;
@@ -326,6 +336,8 @@ export class DuplexEngine extends VoiceEngine {
 
   sendText(text, { attachments = [] } = {}) {
     this._finalText = '';
+    clearTimeout(this._fallbackSilenceTimer);
+    this.fallbackSilenceWatcher?.cancel();
     this._send(String(text || '').trim(), { source: 'text', attachments });
   }
 
@@ -391,6 +403,19 @@ export class DuplexEngine extends VoiceEngine {
             // no STT running at all, forever. settle() on whatever it
             // actually reports instead, same as a denied-mic-permission
             // failure already does.
+            //
+            // `!silent` only — this fires once, from start()'s own
+            // top-level connect, never from _handleDeepgramDisconnect()'s
+            // bounded retry (which always passes silent:true and, by
+            // definition, only ever runs once a Deepgram session was
+            // already up). Full-duplex silently behaving exactly like the
+            // Any-model engine (same Chrome STT, same turn-detector.js
+            // timing) with no visible indication was a real, confirmed gap
+            // — the UI otherwise has no way to tell the user "you picked
+            // Full-duplex but there's no Deepgram key, so you're not
+            // actually getting its real-time endpointing or fast
+            // interrupts." See app.js's handling of this event.
+            if (!silent) this._emit('stt_fallback', { mode: 'browser' });
             this.ws = null;
             settle(this._startBrowserFallback());
           } else {
@@ -626,9 +651,14 @@ export class DuplexEngine extends VoiceEngine {
       const preview = `${this._finalText} ${interimText}`.trim();
       this._emit('transcript', { text: preview, final: false });
 
-      clearTimeout(this._fallbackSilenceTimer);
+      // Real-silence arm, same mechanism and reasoning as
+      // pipeline-engine.js's identical call — see SilenceWatcher's header
+      // comment in turn-detector.js. computeWaitMs() still picks the wait
+      // duration from how the sentence trails off; it's now measured
+      // against genuine continuous mic silence instead of wall-clock time
+      // since Chrome's last emitted result.
       const waitMs = computeWaitMs(preview);
-      this._fallbackSilenceTimer = setTimeout(() => this._finalizeFallbackTurn(preview), waitMs);
+      this.fallbackSilenceWatcher.arm(waitMs, () => this._finalizeFallbackTurn(preview));
     };
     rec.onerror = (event) => {
       if (event.error === 'no-speech' || event.error === 'aborted') return;
@@ -655,21 +685,40 @@ export class DuplexEngine extends VoiceEngine {
 
   _finalizeFallbackTurn(text) {
     if (this._isSpeaking || this._fallbackSuspended) return;
+
     const trimmed = text.trim();
-    this._finalText = '';
     if (!trimmed) {
+      this._finalText = '';
       // Same reasoning as the Deepgram path's identical empty-UtteranceEnd
       // case — nothing accumulated, don't leave state stuck at
       // 'hearing_speech' with nothing actually happening.
       if (this.state === 'hearing_speech') this._backToListening();
       return;
     }
+
+    // Still actually speaking (energy-wise) even though the watcher fired —
+    // same belt-and-braces re-check pipeline-engine.js's _maybeFinalize()
+    // already has on its identical path; this fallback path was previously
+    // missing it entirely (a real, confirmed gap — see turn-detector.js's
+    // SilenceWatcher and this project's CLAUDE.md notes on the two
+    // "same technology" fallback paths having diverged). Re-checked on a
+    // short fixed delay rather than reusing the SilenceWatcher instance,
+    // same shape as the pipeline path's identical re-check.
+    if (this.micMonitor?.isSpeaking()) {
+      clearTimeout(this._fallbackSilenceTimer);
+      this._fallbackSilenceTimer = setTimeout(() => this._finalizeFallbackTurn(text), 400);
+      return;
+    }
+
+    this._finalText = '';
     this._emit('transcript', { text: trimmed, final: true });
     this._send(trimmed, { source: 'voice' });
   }
 
   _suspendFallbackRecognition() {
     clearTimeout(this._fallbackEchoTailTimer);
+    clearTimeout(this._fallbackSilenceTimer);
+    this.fallbackSilenceWatcher?.cancel();
     this._fallbackSuspended = true;
     this._syncFallbackRecognitionState();
   }
@@ -1093,6 +1142,7 @@ export class DuplexEngine extends VoiceEngine {
       // A turn genuinely in progress when interrupted — its partial fallback
       // transcript state must not leak into the next one.
       clearTimeout(this._fallbackSilenceTimer);
+      this.fallbackSilenceWatcher?.cancel();
       this._finalText = '';
       this._resumeFallbackRecognition();
     }

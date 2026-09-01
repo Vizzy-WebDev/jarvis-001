@@ -118,12 +118,18 @@ async function driveOneTurn(jobId, sessionId, userText, allowedTools, kindByName
     });
   }
 
+  // Self-Improvement scope for THIS job's own turn — a rule learned
+  // specifically for this job kind (e.g. 'job_kind:research') is injected
+  // into volatile (see prompt.js's improvementScopedSection()), never
+  // stable, since a different job kind's own turn must never see it.
+  const scopeJob = jobStore.getJob(jobId);
   for await (const ev of runTurn(sessionId, userText, {
     source: 'text',
     background: true,
     autoConfirm: false,
     allowedTools,
     onEscalate,
+    improvementScope: scopeJob?.kind ? [`job_kind:${scopeJob.kind}`] : undefined,
   })) {
     jobStore.touchHeartbeat(jobId);
 

@@ -21,6 +21,20 @@ export function currentSectionId() {
   return SECTIONS.some((s) => s.id === hash) ? hash : 'home';
 }
 
+/**
+ * The already-loaded module for a section, or undefined if it was never
+ * navigated to this page load. For app.js's SSE dispatcher to hand a
+ * server-side event straight to a screen's own fine-grained patch function
+ * (e.g. models.js's applyHealthEvent()) when one exists, instead of always
+ * falling back to refreshIfActive()'s full "wipe and rebuild" re-render —
+ * see that function's own comment for why a full rebuild on every single
+ * health transition was found to lose the search box, filter, and scroll
+ * position.
+ */
+export function getScreenModule(sectionId) {
+  return screenModules.get(sectionId);
+}
+
 export async function navigate(sectionId, { pushHash = true } = {}) {
   const section = findSection(sectionId);
 

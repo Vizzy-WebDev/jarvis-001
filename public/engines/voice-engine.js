@@ -37,6 +37,10 @@
 //                    reaction-sounds.js and each speaker's enqueueClip()) rather than re-emitting
 //                    it further — app.js does not need to handle this event itself.
 //   'restart'       {}                 - clear any partial reply shown/spoken; a fresh one follows
+//   'stt_fallback'  { mode }           - DuplexEngine only: landed on the browser-STT fallback
+//                    (no Deepgram key configured) instead of real Deepgram endpointing/interrupts.
+//                    Fires once, from start()'s own connect — never from the silent bounded
+//                    reconnect retry. See duplex-engine.js's _connectStt() and app.js's handling.
 //   'paused'        { reason }         - no model could complete the turn; nothing was answered
 //   'done'          { text }          - the full reply, once finished
 //   'error'         { message }

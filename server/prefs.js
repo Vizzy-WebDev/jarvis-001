@@ -47,6 +47,26 @@ const DEFAULTS = {
   // to be tunable, never fixed in code, since the right number depends on
   // real usage and how heavy a "job" typically turns out to be.
   maxBackgroundJobs: 2,
+  // Self-Improvement (server/improvement/) — see server/improvement/CLAUDE.md.
+  // Master on/off switch; the cycle still runs when false only to keep
+  // capture cheap and current, but reflect/synthesize/research/life-pattern
+  // model calls are skipped entirely.
+  improvementEnabled: true,
+  // How much auto-applies without asking — same shape and same reasoning
+  // as memoryTrust above, but a hard floor lives in improvement-policy.js's
+  // decide() that NO trust level ever overrides: only a 'rule' or 'setting'
+  // proposal sourced from Jarvis's own task history (never docs/communities/
+  // web) can ever auto-apply, and only with enough independent evidence
+  // behind it. 'balanced' is the default here (not 'ask', unlike
+  // memoryTrust) per the user's own explicit choice — small, well-evidenced
+  // behaviour fixes are meant to just happen and be reported afterward.
+  improvementTrust: 'balanced', // 'ask' | 'balanced' | 'auto'
+  // Whether the weekly outside-research/life-pattern passes run at all —
+  // 'off' skips both, 'weekly' (default) runs the tier 2-4 research pass
+  // and the life-pattern pass on a real weekly budget (see
+  // improvement-store.js's WEEKLY_BUDGET). Never runs more often than
+  // weekly — the "light" budget the user chose has no faster setting.
+  improvementResearch: 'weekly', // 'off' | 'weekly'
 };
 
 export function getPrefs() {

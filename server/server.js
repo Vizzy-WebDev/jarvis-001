@@ -46,6 +46,7 @@ import { installFromUpload, replaceFromUpload, buildSkillZip } from './skills/st
 import {
   listModels,
   listConnections,
+  getConnection,
   addModels,
   updateModel,
   deleteModel,
@@ -57,6 +58,8 @@ import {
   discoverModels,
 } from './models/registry.js';
 import { probeEndpoint } from './models/probe.js';
+import { redactSecrets } from './models/redact.js';
+import { quotaStatusFor } from './models/quota.js';
 import { getPrefs, setPrefs } from './prefs.js';
 import {
   listTasks,
@@ -77,6 +80,7 @@ import {
   resumeStuckJob,
   cancelJob,
 } from './jobs/orchestrator.js';
+import { startImprovementCycle } from './improvement/cycle.js';
 import { showOverlay, hideOverlay, updateStep, isOverlayActive, currentOverlayStep } from './control/overlay-bridge.js';
 import { isIndicatorActive } from './control/observation-bridge.js';
 import { runControlSession, requestStop, confirmPendingAction, getSessionStatus } from './control/session.js';
@@ -105,7 +109,7 @@ import * as apiClient from './connectors/api-client.js';
 import * as cliClient from './connectors/cli-client.js';
 import { classifyToolRisk } from './connectors/index.js';
 import { resolveConnectorIcon, backfillConnectorIcons, isIconStale, resolveCatalogIcons, getCatalogIcon } from './connectors/icon-resolver.js';
-import { saveSecret, deleteSecret } from './config.js';
+import { saveSecret, deleteSecret, getSecret } from './config.js';
 import * as externalServices from './external-services.js';
 import {
   listEntries as listProfileEntries,
@@ -127,6 +131,31 @@ import {
   restoreMemory,
   deleteMemory,
 } from './memory/memory-store.js';
+import {
+  listUnreviewedOutcomes as listUnreviewedImprovementOutcomes,
+  listLessons as listImprovementLessons,
+  updateLessonStatus as updateImprovementLessonStatus,
+  deleteLesson as deleteImprovementLesson,
+  listProposals as listImprovementProposals,
+  getProposal as getImprovementProposal,
+  setProposalStatus as setImprovementProposalStatus,
+  restoreProposal as restoreImprovementProposal,
+  deleteProposal as deleteImprovementProposal,
+  listRules as listImprovementRules,
+  setRuleActive as setImprovementRuleActive,
+  updateRuleText as updateImprovementRuleText,
+  archiveRule as archiveImprovementRule,
+  restoreRule as restoreImprovementRule,
+  deleteRule as deleteImprovementRule,
+  getRule as getImprovementRule,
+  listChanges as listImprovementChanges,
+  recordChange as recordImprovementChange,
+  dailyBudgetRemaining as improvementDailyBudgetRemaining,
+  weeklyBudgetRemaining as improvementWeeklyBudgetRemaining,
+  lookupOutcomes as lookupImprovementOutcomes,
+} from './improvement/improvement-store.js';
+import { applyProposal as applyImprovementProposal, undoChange as undoImprovementChange } from './improvement/apply.js';
+import { generateImplementationPrompt } from './improvement/implementation-prompt.js';
 // The Planning Partner and Content Analysis have no routes of their own:
 // they had a screen each, and a screen each is what kept them apart. Both
 // are driven entirely from conversation (server/skills/*.js) and both write
@@ -476,7 +505,7 @@ async function testAndRecord(entry) {
   try {
     if (result.ok) {
       markHealthy(entry.id);
-      updateModel(entry.id, { availability: { state: 'working', checkedAt: new Date().toISOString(), detail: null } });
+      updateModel(entry.id, { availability: { state: 'working', checkedAt: new Date().toISOString(), detail: null, technical: null } });
     } else {
       // Classify the RAW error (result.detail) whenever it exists, not the
       // already-cleaned-up result.error — friendlyMessage() rewrites e.g. a
@@ -486,10 +515,29 @@ async function testAndRecord(entry) {
       // of 'quota' (30min). registry.js's testModelConnection() only sets
       // `detail` on the non-`friendly` branch (see its own comment), so
       // fall back to `result.error` when `detail` is absent.
-      const kind = classifyError({ message: result.detail || result.error });
+      const rawDetail = result.detail || result.error;
+      const kind = classifyError({ message: rawDetail });
       markUnhealthy(entry.id, result.error, kind);
+      // `detail` on the persisted availability was, before this, the
+      // already-friendlied sentence (e.g. "That connection didn't work.") —
+      // giving every benched model in the roster the exact same wording
+      // with nothing behind it (confirmed live: 22 of the user's own
+      // models all read identically). `technical` carries the actual raw
+      // provider text, redacted a second time here (registry.js's own
+      // testModelConnection() already redacts using whatever `secret` it
+      // was directly handed, which testAndRecord's saved-entry callers
+      // never have — this resolves the real key via secretRef so a saved
+      // model's raw error is redacted just as thoroughly as a not-yet-saved
+      // one's).
+      const secretValue = entry.secretRef ? getSecret(entry.secretRef) : null;
+      const technical = redactSecrets(rawDetail, secretValue ? [secretValue] : []);
       updateModel(entry.id, {
-        availability: { state: AVAILABILITY_STATE_FOR_KIND[kind] || 'unreachable', checkedAt: new Date().toISOString(), detail: result.error },
+        availability: {
+          state: AVAILABILITY_STATE_FOR_KIND[kind] || 'unreachable',
+          checkedAt: new Date().toISOString(),
+          detail: result.error,
+          technical,
+        },
       });
     }
   } catch (err) {
@@ -507,16 +555,77 @@ app.post('/api/models/:id/test', async (req, res) => {
   res.json(result);
 });
 
-// Probes every enabled model at once — powers the models screen's "Check all
-// models" button, so availability badges can be refreshed on demand instead
-// of only updating passively as real conversation turns happen to hit them.
+// A real request budget most connections here run on (both of the user's
+// live OpenRouter keys are free-tier, 50 requests/day) — the old unbounded
+// `Promise.all` fired every enabled model's test SIMULTANEOUSLY, confirmed
+// live to have mass-banned a real roster (all 10 enabled Gemini models
+// stamped 'unreachable' inside one 150ms window, 7 of them actually working
+// the moment each was retried individually) and to burn roughly half a
+// day's free OpenRouter quota in one click. Capped at 3 in flight — the
+// screen still refreshes in a reasonable time, but no longer as one
+// simultaneous burst.
+const RECHECK_CONCURRENCY = 3;
+
+/** Runs `worker` over `items`, at most `limit` in flight at once — a simple pull-based pool, not a library, since this is the only place in the app that needed one. */
+async function runPooled(items, worker, limit) {
+  let next = 0;
+  async function lane() {
+    while (next < items.length) {
+      const i = next++;
+      await worker(items[i], i).catch(() => null);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+}
+
+// Shows the real cost of "Check all models" BEFORE it runs — see
+// runPooled()'s own comment for why this exists at all. Read-only: makes no
+// model calls, only asks each connection's provider (where one is known to
+// support it) how much free quota is left.
+app.get('/api/models/recheck/preview', async (req, res) => {
+  try {
+    const enabled = listModels().filter((e) => e.enabled);
+    const notWorking = enabled.filter((e) => e.availability?.state !== 'working');
+    const connections = listConnections();
+    const byConnection = (
+      await Promise.all(
+        connections.map(async (c) => {
+          const count = enabled.filter((e) => e.connectionId === c.id).length;
+          if (!count) return null;
+          const status = await quotaStatusFor(c);
+          return {
+            id: c.id,
+            label: c.label,
+            count,
+            isFreeTier: status?.isFreeTier ?? null,
+            remaining: status?.remaining ?? null,
+          };
+        })
+      )
+    ).filter(Boolean);
+    res.json({ total: enabled.length, notWorking: notWorking.length, byConnection });
+  } catch (err) {
+    console.error('[models] recheck preview failed:', err);
+    res.status(500).json({ ok: false, error: friendlyMessage(err, 'Could not estimate the cost right now.') });
+  }
+});
+
+// Probes models to refresh availability badges — powers the models screen's
+// "Check all models" dialog, so badges can be refreshed on demand instead of
+// only updating passively as real conversation turns happen to hit them.
+// `scope: 'all'` checks every enabled model (the full cost shown by the
+// preview route above); anything else (including no body at all) checks
+// only the ones NOT currently marked 'working' — the cheap, default choice,
+// since a model already confirmed working needs no re-check to prove it.
 app.post('/api/models/recheck', async (req, res) => {
   try {
-    const entries = listModels().filter((e) => e.enabled);
-    await Promise.all(entries.map((entry) => testAndRecord(entry).catch(() => null)));
+    const scope = req.body?.scope === 'all' ? 'all' : 'not_working';
+    const enabled = listModels().filter((e) => e.enabled);
+    const entries = scope === 'all' ? enabled : enabled.filter((e) => e.availability?.state !== 'working');
+    await runPooled(entries, (entry) => testAndRecord(entry), RECHECK_CONCURRENCY);
     res.json({ ok: true, models: listModels().map(publicModel) });
   } catch (err) {
-    console.error('[models] recheck-all failed:', err);
+    console.error('[models] recheck failed:', err);
     res.status(500).json({ ok: false, error: friendlyMessage(err, 'Could not check models right now.') });
   }
 });
@@ -990,6 +1099,198 @@ app.post('/api/memories/:id/restore', (req, res) => {
 app.delete('/api/memories/:id', (req, res) => {
   deleteMemory(req.params.id);
   res.json({ ok: true });
+});
+
+// ---------- self-improvement (server/improvement/) ----------
+//
+// A pending 'rule'/'setting' proposal's approve button goes through
+// applyProposal() — the SAME function the auto-apply path calls once
+// improvement-policy.js's decide() says 'auto-apply' — so a human clicking
+// Approve and Jarvis auto-applying something itself can never produce a
+// different-looking result. Every route here is a direct, synchronous
+// write with no model call, same "instant, costs no quota" design as the
+// memory candidate routes above.
+
+app.get('/api/improvement/status', (req, res) => {
+  const prefs = getPrefs();
+  res.json({
+    enabled: prefs.improvementEnabled,
+    trust: prefs.improvementTrust,
+    research: prefs.improvementResearch,
+    dailyBudgetRemaining: improvementDailyBudgetRemaining(),
+    weeklyBudgetRemaining: improvementWeeklyBudgetRemaining(),
+    unreviewedOutcomes: listUnreviewedImprovementOutcomes().length,
+    pendingProposals: listImprovementProposals({ status: 'pending' }).length,
+  });
+});
+
+app.get('/api/improvement/proposals', (req, res) => {
+  const { status, batchId } = req.query;
+  res.json({ proposals: listImprovementProposals({ status: status || undefined, batchId: batchId || undefined }) });
+});
+
+app.post('/api/improvement/proposals/:id/approve', (req, res) => {
+  try {
+    const proposal = getImprovementProposal(req.params.id);
+    if (!proposal) return res.status(400).json({ ok: false, error: 'That suggestion no longer exists.' });
+    // 'skill'/'code'/'idea'/'conflict' have nothing here for apply.js to
+    // apply — approving one of those just marks it acknowledged; the real
+    // action (writing an implementation prompt, filing a rule by hand from
+    // an idea) happens elsewhere. Only 'rule'/'setting' actually change
+    // anything through this route.
+    if (proposal.kind === 'rule' || proposal.kind === 'setting') {
+      const result = applyImprovementProposal(req.params.id);
+      return res.json({ ok: true, applied: result });
+    }
+    const updated = setImprovementProposalStatus(req.params.id, 'applied');
+    res.json({ ok: true, proposal: updated });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Could not approve that suggestion.' });
+  }
+});
+
+// Turns an approved 'skill'/'code' idea into a ready-to-paste brief for
+// whichever coding assistant the user names (free text — never a fixed
+// list, see implementation-prompt.js). This IS the approval action for
+// these two kinds — Jarvis never writes the code itself, so generating the
+// brief and marking the idea acted-on happen together, one request.
+app.post('/api/improvement/proposals/:id/implementation-prompt', async (req, res) => {
+  try {
+    const result = await generateImplementationPrompt(req.params.id, { target: req.body?.target });
+    const proposal = setImprovementProposalStatus(req.params.id, 'applied');
+    res.json({ ok: true, ...result, proposal });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Could not generate a prompt right now.' });
+  }
+});
+
+app.post('/api/improvement/proposals/:id/reject', (req, res) => {
+  try {
+    const proposal = setImprovementProposalStatus(req.params.id, 'rejected');
+    res.json({ ok: true, proposal });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Could not reject that suggestion.' });
+  }
+});
+
+// The "Show rejected" view's own Restore/Delete permanently — same
+// archive-style safety net as Rules/Lessons below, applied to a rejected
+// suggestion instead of a one-way dismissal.
+app.post('/api/improvement/proposals/:id/restore', (req, res) => {
+  try {
+    const proposal = restoreImprovementProposal(req.params.id);
+    res.json({ ok: true, proposal });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Could not restore that suggestion.' });
+  }
+});
+
+app.delete('/api/improvement/proposals/:id', (req, res) => {
+  deleteImprovementProposal(req.params.id);
+  res.json({ ok: true });
+});
+
+// includeArchived=true is the "Show archived" toggle's own fetch — an
+// archived rule is otherwise hidden from every ordinary list, same as an
+// archived memory (see improvement-store.js's listRules()).
+app.get('/api/improvement/rules', (req, res) => {
+  res.json({ rules: listImprovementRules({ includeArchived: req.query.includeArchived === 'true' }) });
+});
+
+app.post('/api/improvement/rules/:id/toggle', (req, res) => {
+  try {
+    const rule = setImprovementRuleActive(req.params.id, Boolean(req.body?.active));
+    res.json({ ok: true, rule });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Could not update that rule.' });
+  }
+});
+
+// Editing a rule's own wording — records a real Change row so the edit
+// rides the SAME undo machinery a freshly-applied rule already uses
+// (improvement/apply.js's undoChange()), rather than a second, parallel
+// history mechanism. before/after both carry the full {text, scope,
+// active} shape apply.js already expects for a 'rule' change.
+app.patch('/api/improvement/rules/:id', (req, res) => {
+  try {
+    const before = getImprovementRule(req.params.id);
+    if (!before) return res.status(400).json({ ok: false, error: 'That rule no longer exists.' });
+    const rule = updateImprovementRuleText(req.params.id, req.body?.text);
+    recordImprovementChange({
+      kind: 'rule',
+      target: rule.id,
+      before: { text: before.text, scope: before.scope, active: before.active },
+      after: { text: rule.text, scope: rule.scope, active: rule.active },
+      reason: 'Edited on the Self-Improvement screen.',
+    });
+    res.json({ ok: true, rule });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Could not update that rule.' });
+  }
+});
+
+app.post('/api/improvement/rules/:id/archive', (req, res) => {
+  res.json({ ok: true, rule: archiveImprovementRule(req.params.id) });
+});
+
+app.post('/api/improvement/rules/:id/restore', (req, res) => {
+  res.json({ ok: true, rule: restoreImprovementRule(req.params.id) });
+});
+
+// Only ever meaningful from the archived view — see apply.js's
+// undoChange(), which now answers reason:'target_deleted' honestly for
+// any Change row that pointed at a rule removed this way.
+app.delete('/api/improvement/rules/:id', (req, res) => {
+  deleteImprovementRule(req.params.id);
+  res.json({ ok: true });
+});
+
+app.get('/api/improvement/lessons', (req, res) => {
+  res.json({ lessons: listImprovementLessons({ status: req.query.status || 'active' }) });
+});
+
+app.post('/api/improvement/lessons/:id/archive', (req, res) => {
+  res.json({ ok: true, lesson: updateImprovementLessonStatus(req.params.id, 'archived') });
+});
+
+app.post('/api/improvement/lessons/:id/restore', (req, res) => {
+  res.json({ ok: true, lesson: updateImprovementLessonStatus(req.params.id, 'active') });
+});
+
+app.delete('/api/improvement/lessons/:id', (req, res) => {
+  deleteImprovementLesson(req.params.id);
+  res.json({ ok: true });
+});
+
+// The screen's detail-view "Evidence (N)" expand — turns a rule/lesson/
+// proposal's evidence array (outcome ids) back into real summaries. A
+// POST, not a GET-with-query-string, since the id list can be long enough
+// to be awkward in a URL and this is a read with a body, not a write.
+app.post('/api/improvement/outcomes/lookup', (req, res) => {
+  res.json({ outcomes: lookupImprovementOutcomes(req.body?.ids) });
+});
+
+app.get('/api/improvement/changes', (req, res) => {
+  res.json({ changes: listImprovementChanges({}) });
+});
+
+// `force: true` only after the UI has already shown the user a "you
+// changed this since — restore anyway?" prompt and they confirmed — see
+// improvement/apply.js's undoChange() for the refuse-vs-clobber logic.
+// A refusal is a normal 200 response (`ok:false, reason:'changed_since'`),
+// not an error status — the caller asked a real question and got a real
+// answer, nothing went wrong.
+app.post('/api/improvement/changes/:id/undo', (req, res) => {
+  try {
+    const result = undoImprovementChange(req.params.id, { force: Boolean(req.body?.force) });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err?.message || 'Could not undo that change.' });
+  }
+});
+
+app.get('/api/improvement/outcomes', (req, res) => {
+  res.json({ outcomes: listUnreviewedImprovementOutcomes({ limit: 50 }) });
 });
 
 // ---------- attachments ----------
@@ -2114,6 +2415,13 @@ startScheduler();
 // "started only once the server can already broadcast" reasoning as the
 // scheduler above.
 startOrchestrator();
+
+// Self-Improvement's own background cycle — see server/improvement/CLAUDE.md.
+// Started last on purpose: it subscribes to the SAME jobs/job-events.js bus
+// startOrchestrator() above already primed, and its first tick sweeps for
+// any job orchestrator.js's own recoverOrphans() (called inside
+// startOrchestrator()) may have just classified 'orphaned'.
+startImprovementCycle();
 
 // Resumes any monitor still 'watching' from before the last restart —
 // without this a server restart would silently orphan an in-progress watch

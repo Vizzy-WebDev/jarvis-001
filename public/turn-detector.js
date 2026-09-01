@@ -172,3 +172,80 @@ export class MicLevelMonitor {
     this.audioContext.close();
   }
 }
+
+/**
+ * Drives the "has the user actually finished talking" decision off REAL,
+ * continuously-sampled mic silence rather than elapsed time since the last
+ * speech-recognition event — the gap this exists to close: the old
+ * pipeline-engine.js/duplex-engine.js pattern (`clearTimeout` + `setTimeout`
+ * on every `onresult`) measured "how long since Chrome last emitted a
+ * result," which is not the same thing as "how long has the room actually
+ * been quiet." A stretch of continued mouth noise, breath, or a phoneme gap
+ * that Chrome's recognizer doesn't happen to emit an interim result for
+ * could let that old timer elapse while the user was still audibly
+ * speaking. Sampling energy independently on a fixed clock (same technique
+ * already proven correct by the barge-in sampler in pipeline-engine.js/
+ * vad.js) fixes that without changing what `computeWaitMs()` decides — its
+ * per-utterance wait duration is still the thing being waited for, just
+ * measured against genuine silence instead of wall-clock time since an
+ * event.
+ *
+ * One instance lives for the whole listening session (created alongside
+ * MicLevelMonitor); `arm()` is called every place the old code called
+ * `clearTimeout(this.silenceTimer); this.silenceTimer = setTimeout(...)` —
+ * same call shape, same "call it again to restart the countdown" contract —
+ * so callers needed no restructuring beyond swapping the primitive.
+ */
+export class SilenceWatcher {
+  constructor(micMonitor, { sampleMs = 100, threshold = 0.02 } = {}) {
+    this.micMonitor = micMonitor;
+    this.sampleMs = sampleMs;
+    this.threshold = threshold;
+    this._timer = null;
+    this._quietSince = null;
+    this._waitMs = 0;
+    this._onFire = null;
+  }
+
+  /**
+   * (Re)arms the watcher: from this call onward, `onFire()` runs once the
+   * mic has read continuously below `threshold` for `waitMs`. Safe to call
+   * repeatedly (e.g. every `onresult`) — each call restarts the quiet clock,
+   * same as the old clearTimeout+setTimeout pattern it replaces, but the
+   * clock only ever advances while the mic is genuinely silent, so
+   * continuing to make sound (not just continuing to produce a new ASR
+   * result) keeps deferring it.
+   */
+  arm(waitMs, onFire) {
+    this._waitMs = waitMs;
+    this._onFire = onFire;
+    // Don't assume "already quiet" the instant this is (re)armed — the very
+    // next sample decides, same latency (at most one sampleMs tick) as the
+    // barge-in sampler's identical reasoning.
+    this._quietSince = null;
+    if (!this._timer) {
+      this._timer = setInterval(() => this._tick(), this.sampleMs);
+    }
+  }
+
+  _tick() {
+    if (!this.micMonitor) return;
+    if (this.micMonitor.isSpeaking(this.threshold)) {
+      this._quietSince = null;
+      return;
+    }
+    const now = performance.now();
+    if (this._quietSince === null) this._quietSince = now;
+    if (now - this._quietSince >= this._waitMs) {
+      this.cancel();
+      this._onFire?.();
+    }
+  }
+
+  /** Stops sampling entirely and clears any pending fire — call on interrupt/mute/teardown, same moments the old code called `clearTimeout(this.silenceTimer)`. */
+  cancel() {
+    clearInterval(this._timer);
+    this._timer = null;
+    this._quietSince = null;
+  }
+}

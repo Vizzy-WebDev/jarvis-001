@@ -7,7 +7,9 @@ import { approvedMemoriesText } from './memory/memory-store.js';
 import { listPendingOutbox } from './jobs/job-store.js';
 import { listConnectors } from './connectors/store.js';
 import { listUserSkills } from './skills/store/skill-files.js';
+import { activeRulesText } from './improvement/improvement-store.js';
 import { STYLE_FRAMEWORK, floorsSection } from './personality.js';
+import { anySignalFired } from './self/self-signals.js';
 
 export const SYSTEM_INSTRUCTION = `You are Jarvis — the user's own personal assistant, present with them day to day on their Windows PC, not a service they've opened a ticket with.
 
@@ -51,6 +53,17 @@ Memory — durable facts about the user, listed below under "What you remember a
 - Besides that, Jarvis also quietly notices things worth remembering on its own — some of it saved right away, some held in a card for the user to review, depending on their own setting — and you are never the one that decides which; you never need to mention this happening. If the user asks what's pending, use review_memories.
 - Call checkpoint_memories once when a piece of work or a topic has clearly wrapped up — never for a short reply, never announced, and never more than once for the same stretch of conversation.
 
+Self-Improvement — how Jarvis learns about its OWN work over time, separate from Memory above (which is about the user, not you). The user controls how much of this applies itself versus waits for their approval, and can see, edit, mute, or undo any of it on the Self-Improvement screen:
+- Use record_lesson ONLY when the user directly and plainly teaches you a lasting preference for how you should work — "next time, just...", "I always want...", "don't do that again", or wording that unmistakably means the same. Their teaching is the trigger, the same way an explicit request is the trigger for remember_about_me. A one-off request just for this moment ("keep it short this time") is NOT a lasting preference — only call it for something meant to hold going forward. Acknowledge them normally in your reply either way; the tool call is what actually files it, so always make the call when the trigger is real, never just say you will.
+- Use suggest_improvement when the user directly asks you to suggest or propose an improvement to how you work, or — rarely, never as a reflex — when you notice something genuinely concrete and specific worth proposing unprompted. Answering in your own words is not enough and files nothing; if the trigger is real, call the tool so it actually reaches the Self-Improvement screen.
+- Use review_improvements whenever the user asks what you've learned, changed, or have pending — always the real lookup, never an answer from vague self-conception.
+- Use undo_improvement when the user asks you to undo a specific self-improvement change they saw via review_improvements or the screen.
+
+Self-knowledge — your own accurate sense of what you are, what you can and can't actually do, what's genuinely your call to make versus the user's, and how you specifically know something, grounded in real evidence rather than guessed:
+- Use check_myself before making a claim about your own reliability at something, before explaining why you're currently doing something, before saying how you actually know a specific thing, or before deciding whether something is genuinely your call to make alone — never answer one of these from general impression. If it comes back with no real track record, say that plainly instead of estimating a number.
+- Use track_goal once a real goal for this conversation becomes clear, so you can notice on your own later if you've drifted from it — not for a quick one-off question, and never mention calling it.
+- A real track record can make you sound more confident about the substance of an answer. It can never be a reason to skip a confirmation, an approval, or a boundary a tool or policy already enforces on its own — check_myself informs your judgement, it never overrides someone else's.
+
 Past conversations — everything the user has ever said to you is stored and searchable, not just what's in front of you right now:
 - When they refer to something from an earlier conversation ("what did we decide about…", "you said last week…", "remind me what I told you about…"), use search_conversations before saying you don't remember or don't have access to it.
 - Results come back with the date they were said. Say WHEN something was said rather than stating an old answer as though it's still true right now — things change, and a March answer isn't automatically still today's answer.
@@ -82,6 +95,51 @@ function memorySection() {
   // apart from a current one, the same discipline search_conversations.js
   // already asks the model to apply to anything it recalls.
   return `\n\nWhat you remember about the user — durable notes gathered over time, some stated directly and some inferred and saved automatically. Weigh a note by how it reads and how long ago it was noted, the same way you would weigh something recalled from an old conversation:\n${text}`;
+}
+
+/**
+ * Behaviour rules Jarvis has learned about itself over time (see
+ * server/improvement/CLAUDE.md) — GENERAL-scope only, the ones safe to sit
+ * in the cacheable `stable` prefix below since they don't vary per turn.
+ * Deliberately ungated by `background`/`addressed`, unlike jobsSection()
+ * and STYLE_FRAMEWORK: a rule learned from a job's own failures should
+ * apply to the NEXT job just as much as to a live conversation — there is
+ * no "nobody's listening" exemption for behaviour that actually changes
+ * what gets done, only for things that only make sense spoken to the
+ * owner. The instruction not to volunteer these is explicit, not implied —
+ * a rule sitting in the prompt is otherwise something the model COULD
+ * mention unprompted, which is exactly what the user asked never to
+ * happen (notification + log only, never a chat interruption).
+ */
+function improvementSection() {
+  const text = activeRulesText({ scope: 'general' });
+  if (!text) return '';
+  return (
+    `\n\nBehaviour rules you've learned for yourself over time, from your own real experience doing things — ` +
+    `follow these quietly, the same way any other habit would just be part of how you already work. Never announce, ` +
+    `explain, or bring up one of these unprompted; only discuss them if the user directly asks what you've learned ` +
+    `or changed:\n${text}`
+  );
+}
+
+/**
+ * Task-scoped rules (e.g. 'job_kind:research', 'tool:run_code') — these DO
+ * vary per turn (a chat turn has no fixed toolset the way a Job or a
+ * scheduled task's own turn does), so they live in `volatile`, never
+ * `stable`: putting a scoped rule in the cached prefix would poison it for
+ * every OTHER turn that doesn't share the same scope. `scopes` is
+ * `opts.improvementScope`, an array of scope strings a Job worker or the
+ * scheduler passes in for its own turn; a live chat turn passes none.
+ */
+function improvementScopedSection(scopes) {
+  if (!Array.isArray(scopes) || !scopes.length) return '';
+  const parts = [];
+  for (const scope of scopes) {
+    const text = activeRulesText({ scope });
+    if (text) parts.push(text);
+  }
+  if (!parts.length) return '';
+  return `\n\nAdditional behaviour rules specific to this particular task, learned from your own experience — follow these quietly too:\n${parts.join('\n')}`;
 }
 
 /**
@@ -195,6 +253,62 @@ function jobsSection() {
   return `\n\nBackground work waiting on you:\n${lines.join('\n')}`;
 }
 
+/**
+ * The Self-Model's own governing floor (server/self/*.js — see root
+ * CLAUDE.md's "Self-Model" section) — deliberately terse and standalone,
+ * distinct from the "when to use check_myself/track_goal" tool-usage
+ * paragraph above in SYSTEM_INSTRUCTION. That paragraph says WHEN to check;
+ * this is the hard rule about what's allowed to be SAID without checking,
+ * same shape as STYLE_FRAMEWORK's own two unconditional hard rules
+ * (personality.js). No DB read, no per-turn variation — stays in `stable`.
+ */
+function selfSection() {
+  return "\n\nA hard rule about yourself specifically: never state a claim about your own reliability, current state, or how you know something without a real record behind it — check_myself is where that record actually lives. Where there is no record, say so plainly rather than estimating a confidence.";
+}
+
+/**
+ * Per-turn Self-Model signals (server/self/self-signals.js's
+ * detectSelfSignals(), computed fresh every step by
+ * models/runner.js — see that file's own comment on why per-step, not
+ * per-turn) — this IS the push half of the hybrid trigger design (root
+ * CLAUDE.md's Self-Model section): passive by default, surfaced here only
+ * when something concrete actually fired, never a running commentary.
+ * Deliberately terse, a signal to weigh, not a scripted line to repeat back
+ * — same discipline as personality.js's floorsSection(), which this is
+ * modeled on directly. Ungated by `background`, same reasoning
+ * improvementSection() already uses: a background Job's own turn benefits
+ * from knowing it's blocked on something or heading into a known failure
+ * just as much as a live conversation does — 'correction' simply never
+ * fires there, since noteCorrection() itself is gated on `!opts.background`.
+ */
+function selfFocusSection(signals) {
+  if (!anySignalFired(signals)) return '';
+  const lines = [];
+  if (signals.authority) {
+    lines.push(
+      "Something right now genuinely needs the owner's own decision, not yours to make alone — a background job is waiting on " +
+        'them, or a memory conflict is unresolved. Do not act past that boundary on your own judgement, however confident you are.'
+    );
+  }
+  if (signals.correction) {
+    lines.push('The user just corrected you this turn — that is real signal worth being straightforwardly honest about, not glossed over.');
+  }
+  if (signals.knownFailure) {
+    lines.push(
+      "You have a recorded pattern of getting this specific kind of thing wrong before — call check_myself with about:['failure_modes'] " +
+        'and the relevant scope before finishing, and factor what it says in.'
+    );
+  }
+  if (signals.noTrackRecord) {
+    lines.push('You have no recorded track record for something you just used this turn — say so plainly if asked how confident you are in it, rather than estimating.');
+  }
+  if (signals.blockedOnBackground) {
+    lines.push("A background job is currently running — factor that into whether you can answer something confidently right now, and mention it if it's actually relevant to what's being asked.");
+  }
+  if (!lines.length) return '';
+  return `\n\nRight now, about your own state:\n${lines.map((l) => `- ${l}`).join('\n')}`;
+}
+
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
 function timeOfDayBucket(hour) {
@@ -274,7 +388,7 @@ function situationSection({ gapMs } = {}) {
  * even once caching is wired in — this is why situationSection() moved to
  * the end instead of directly after SYSTEM_INSTRUCTION.
  */
-export function systemInstructionParts({ lowConfidence = false, systemOverride, gapMs, background = false, addressed = false, style } = {}) {
+export function systemInstructionParts({ lowConfidence = false, systemOverride, gapMs, background = false, addressed = false, style, improvementScope, selfSignals } = {}) {
   if (systemOverride) return { stable: systemOverride, volatile: '' };
   // jobsSection() is for the LIVE conversation only — a scheduled task's own
   // turn and a background Job's own worker turn (server/jobs/worker.js)
@@ -297,11 +411,15 @@ export function systemInstructionParts({ lowConfidence = false, systemOverride, 
     SYSTEM_INSTRUCTION +
     (hasAudience ? STYLE_FRAMEWORK : '') +
     memorySection() +
+    improvementSection() +
+    selfSection() +
     connectorsSection() +
     skillsSection() +
     (background ? '' : jobsSection());
   let volatile = situationSection({ gapMs });
   if (hasAudience) volatile += floorsSection(style);
+  volatile += improvementScopedSection(improvementScope);
+  volatile += selfFocusSection(selfSignals);
   if (lowConfidence) volatile += CLARIFY_DIRECTIVE;
   return { stable, volatile };
 }

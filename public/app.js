@@ -8,7 +8,7 @@ import { PipelineEngine } from './engines/pipeline-engine.js';
 import { LiveEngine } from './engines/live-engine.js';
 import { DuplexEngine } from './engines/duplex-engine.js';
 import { SECTIONS } from './nav.js';
-import { navigate, initRouter, currentSectionId, refreshIfActive } from './router.js';
+import { navigate, initRouter, currentSectionId, refreshIfActive, getScreenModule } from './router.js';
 import { createOrb } from './orb.js';
 import { Dictation } from './dictation.js';
 // Plans and verdicts are documents, not speech — they render here in the
@@ -886,6 +886,19 @@ function createEngine(type = getSetting('voiceEngine')) {
     // failed — clear it; a clean reply from the next model follows on the
     // same turn, not stitched onto this one.
     if (currentAssistantEl) currentAssistantEl.textContent = '';
+  });
+
+  // DuplexEngine only (see engines/voice-engine.js's event doc) — Full-duplex
+  // silently behaving exactly like the Any-model engine (same Chrome speech
+  // recognition, same turn-taking timing) whenever no Deepgram key is set was
+  // a real, confirmed gap: nothing told the user their pick wasn't actually
+  // in effect. Told plainly, same as 'model_switch', rather than left to
+  // guess why interrupts/pause handling don't feel like "real" Full-duplex.
+  e.on('stt_fallback', ({ mode }) => {
+    if (mode !== 'browser') return;
+    addSystemNote(
+      "Full-duplex has no Deepgram key set, so it's using your browser's built-in speech recognition instead — pause detection and interrupts won't be as precise. Add a Deepgram key in Settings for the real thing."
+    );
   });
 
   e.on('paused', ({ reason }) => {
@@ -1986,6 +1999,17 @@ function connectEvents() {
         // the Model Settings screen's badges are a point-in-time snapshot
         // otherwise, so this is what keeps one open there live instead of
         // requiring a reload/Test/Check-all to see the current state.
+        // Prefer the screen's own fine-grained patch (models.js's
+        // applyHealthEvent()) — a full refreshIfActive() re-render used to
+        // fire on every single transition (several in a row during "Check
+        // all models"), each one wiping the container and losing the
+        // search box, filter, and scroll position. Falls back to a full
+        // re-render only when the screen isn't mounted, or hasn't rendered
+        // this particular model (e.g. it's filtered out right now).
+        if (currentSectionId() === 'models') {
+          const mod = getScreenModule('models');
+          if (mod?.applyHealthEvent?.(data)) return;
+        }
         refreshIfActive('models');
         return;
       }
@@ -2063,6 +2087,16 @@ function connectEvents() {
         // Memory screen from showing a stale list if it saved while the
         // screen was already open.
         refreshIfActive('memory');
+        return;
+      }
+      if (data.type === 'improvement_applied' || data.type === 'improvement_proposals_ready') {
+        // Self-improvement auto-applied something, or a batch of
+        // suggestions landed (server/improvement/synthesize.js) — the
+        // notification bell already covers "tell the user it happened"
+        // (see this project's own explicit "notification + log, never a
+        // chat interruption" decision); this just keeps an open
+        // Self-Improvement screen from showing a stale list.
+        refreshIfActive('improvement');
         return;
       }
       // connector_status and task_run used to add a transcript system note

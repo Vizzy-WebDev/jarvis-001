@@ -5,7 +5,7 @@
 // go to server/models/runner.js's candidate list directly.
 
 import { listModels, isReady } from './registry.js';
-import { isHealthy } from './health.js';
+import { isHealthy, getHealthStatus } from './health.js';
 import { classifyTaskType, scoringLeanForType } from './task-types.js';
 
 // Mirrors health.js's COOLDOWNS_MS tiers, but keyed on the STATE persisted to
@@ -26,6 +26,9 @@ const AVAILABILITY_COOLDOWNS_MS = {
   quota: 30 * 60 * 1000,
   auth: 6 * 60 * 60 * 1000,
   no_access: 6 * 60 * 60 * 1000,
+  // A provider-side overload (503/"high demand") — confirmed live to clear
+  // within seconds, not hours. See error-kind.js's 'transient' kind.
+  busy: 2 * 60 * 1000,
   // Was 5 minutes — far shorter than health.js's in-memory breaker even
   // gives the SAME kind (network: 1min, other: 5min) despite this being the
   // cooldown for a state that's already been persisted across a restart, so
@@ -37,17 +40,33 @@ const AVAILABILITY_COOLDOWNS_MS = {
   // list on every single turn, each costing a full round-trip before the
   // runner could cross it off (see runner.js's MAX_FALLBACK_ATTEMPTS,
   // which bounds how many of them one turn will pay for, but does nothing
-  // for how often they're offered in the first place). 6 hours matches the
-  // auth/no_access tiers — a genuinely-fixed model (key added, name
-  // corrected) is still reachable via Model Settings' own "Check all" in
-  // the meantime, which re-probes directly rather than waiting on this.
-  unreachable: 6 * 60 * 60 * 1000,
+  // for how often they're offered in the first place). Shortened again from
+  // 6 hours to 10 minutes once 'unreachable' stopped being the dumping
+  // ground for every unclassified failure (see error-kind.js's 'other' ->
+  // 'error' split) — what's left in THIS bucket is a real network-layer
+  // failure (our own connection, DNS, a refused local server), which is
+  // usually a "this minute" problem, not a "this week" one. A
+  // genuinely-fixed model is still reachable via Model Settings' own
+  // "Check all" in the meantime, which re-probes directly rather than
+  // waiting on this.
+  unreachable: 10 * 60 * 1000,
+  // An unclassified failure ('other' in error-kind.js) — not confidently
+  // known to be transient, permanent, or auth-related. Deliberately NOT the
+  // harshest tier just because nothing else matched it; a genuine unknown
+  // deserves a moderate cooldown, not the same 6-hour ban auth/no_access get
+  // for a KNOWN-permanent problem.
+  error: 20 * 60 * 1000,
+  // Deliberately absent from this map: 'unsupported' has no cooldown at
+  // all — see passesAvailabilityCooldown()'s own check below, which excludes
+  // it outright rather than looking it up here. A model that can never
+  // serve chat doesn't get "better" after any amount of waiting.
 };
 
-/** False only for a model whose PERSISTED availability is a known-bad state and still inside its cooldown. A model never checked, or last seen 'working', always passes — this only ever narrows the field, never requires a state to be present. */
+/** False only for a model whose PERSISTED availability is a known-bad state and still inside its cooldown, OR a model marked structurally unable to serve this kind of request at all (no cooldown ever clears that one — see error-kind.js's 'unsupported' kind). A model never checked, or last seen 'working', always passes — this only ever narrows the field, never requires a state to be present. */
 function passesAvailabilityCooldown(entry) {
   const av = entry.availability;
   if (!av || av.state === 'working') return true;
+  if (av.state === 'unsupported') return false;
   const cooldown = AVAILABILITY_COOLDOWNS_MS[av.state];
   if (!cooldown) return true; // unknown state — don't invent a filter for it
   const checkedAt = av.checkedAt ? Date.parse(av.checkedAt) : 0;
@@ -97,16 +116,68 @@ export function controlTaskProfile() {
   return { source: 'text', background: false, complexity: 'reasoning', estimatedTokens: 0, needsTools: true, profile: 'control' };
 }
 
+// The one place a model gets excluded from routing, and WHY — hardFilter()
+// below and explainExclusions() (used to build a real "here's why nothing
+// can answer" message — see runner.js) both call this so the two can never
+// disagree about what's excluded. Returns null when the model passes every
+// check; otherwise a short reason key. Where the reason is a persisted
+// availability state (quota/auth/no_access/busy/unreachable/error/
+// unsupported), the key IS that state's own name, so a caller can turn it
+// into a human sentence with the same vocabulary the Model Settings badges
+// already use — never a second, drifting copy of that wording.
+function excludeReason(entry, task) {
+  if (!entry.enabled) return 'disabled';
+  if (!isReady(entry)) return 'needs_key';
+  // The in-memory breaker (health.js) is a SEPARATE signal from the
+  // persisted availability state below — it can fire on its own short
+  // cooldown even when availability.state still says 'working' (e.g. right
+  // after a timeout — see runner.js's Part B). Named distinctly so a
+  // "why can't you answer" message doesn't conflate the two.
+  if (!isHealthy(entry.id)) return 'recent_failure';
+  if (!passesAvailabilityCooldown(entry)) return entry.availability?.state || 'cooldown';
+  if (task.needsTools && !entry.caps?.tools) return 'no_tools';
+  if (task.estimatedTokens && entry.caps?.contextTokens && task.estimatedTokens > entry.caps.contextTokens) return 'context_too_small';
+  return null;
+}
+
 function hardFilter(entries, task) {
-  return entries.filter((e) => {
-    if (!e.enabled) return false;
-    if (!isReady(e)) return false;
-    if (!isHealthy(e.id)) return false;
-    if (!passesAvailabilityCooldown(e)) return false;
-    if (task.needsTools && !e.caps?.tools) return false;
-    if (task.estimatedTokens && e.caps?.contextTokens && task.estimatedTokens > e.caps.contextTokens) return false;
-    return true;
-  });
+  return entries.filter((e) => excludeReason(e, task) === null);
+}
+
+/**
+ * For a real "here's why nothing can answer" message (runner.js's empty-
+ * candidate and exhausted-fallback 'paused' events) instead of one generic
+ * sentence naming none of the actual reasons. Walks every model (not just
+ * enabled ones) through the exact same excludeReason() hardFilter() uses,
+ * so the counts can never drift from what actually got filtered. `soonestRetryMs`
+ * is the smallest known wait across every excluded model that has one (a
+ * cooldown or an in-memory breaker) — null if nothing excluded has a known
+ * expiry (e.g. everything is disabled, needs a key, or 'unsupported').
+ */
+export function explainExclusions(task) {
+  const all = listModels();
+  const counts = {};
+  let soonestRetryMs = null;
+  const considerRetry = (ms) => {
+    if (!Number.isFinite(ms) || ms <= 0) return;
+    if (soonestRetryMs === null || ms < soonestRetryMs) soonestRetryMs = ms;
+  };
+  const health = getHealthStatus(); // modelId -> { retryInMs, ... }
+
+  for (const entry of all) {
+    const reason = excludeReason(entry, task);
+    if (!reason) continue;
+    counts[reason] = (counts[reason] || 0) + 1;
+    if (reason === 'recent_failure') {
+      considerRetry(health[entry.id]?.retryInMs);
+      continue;
+    }
+    const cooldown = AVAILABILITY_COOLDOWNS_MS[reason];
+    const checkedAt = entry.availability?.checkedAt ? Date.parse(entry.availability.checkedAt) : NaN;
+    if (cooldown && Number.isFinite(checkedAt)) considerRetry(checkedAt + cooldown - Date.now());
+  }
+
+  return { total: all.length, counts, soonestRetryMs };
 }
 
 function scoreFor(entry, task, balance) {

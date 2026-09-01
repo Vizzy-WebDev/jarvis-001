@@ -37,6 +37,12 @@ export const SECTIONS = [
   // (server/memory/memory-store.js) has existed since Memory shipped; this
   // is its first screen.
   { id: 'memory', label: 'Memory', group: 'About You', module: './screens/memory.js' },
+  // What Jarvis has learned about its OWN performance and applied to itself
+  // — distinct from Memory above (facts about the USER). See root
+  // CLAUDE.md's "Self-Improvement" section. Grouped beside Memory since
+  // both are "what Jarvis has learned over time," just about different
+  // subjects.
+  { id: 'improvement', label: 'Self-Improvement', group: 'About You', module: './screens/improvement.js' },
 ];
 
 export function findSection(id) {

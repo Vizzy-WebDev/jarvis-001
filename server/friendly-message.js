@@ -23,6 +23,13 @@ const CATEGORY_MESSAGES = {
   auth: "That API key isn't valid — check it in Model Settings.",
   no_access: "This model isn't available on that account or key — check its permissions, or try a different model in Model Settings.",
   network: "Couldn't reach that model's server — check your connection (or, for a local model, that it's actually running).",
+  // Added alongside error-kind.js's 'transient'/'unsupported' split — before
+  // that existed, both fell through to 'other' and got the generic
+  // `fallback` sentence every call site supplies. Real sentences here mean
+  // a live turn's own failure (model_switch/paused reason, see runner.js's
+  // friendlyReason()) tells the user something true and specific instead.
+  transient: "That model's provider is temporarily overloaded — trying another.",
+  unsupported: "That model can't handle this kind of request — switch to a different one in Model Settings.",
 };
 
 /**

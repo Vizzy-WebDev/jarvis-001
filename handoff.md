@@ -39,8 +39,7 @@ Headline outcomes:
 **Everything accumulated since the last commit (`bfae8e5`) — this session's own work,
 plus the previous session's first-class Skills architecture and personality/reaction-
 sounds work, all still on `jobs-subsystem-and-backlog` — was committed at the user's
-explicit request once this session's work was confirmed working.** See the top of the
-session log below for the exact commit(s).
+explicit request once this session's work was confirmed working: `9ebb201`.**
 
 **Still open, not investigated further this session**: a background security review
 flagged two real SSRF findings — `server/server.js` and `server/tts/generic.js`'s
@@ -188,8 +187,8 @@ Schedule/Task and Morning Briefing — real toggle switches, always-on logos, a 
 list with a "View all" overlay, and a found-and-designed-around conflict with the app's
 single-modal-at-a-time component. Everything accumulated since the last commit
 (`bfae8e5`) — this session's own work plus the previous session's first-class Skills and
-personality/reaction-sounds work — was committed at the user's explicit request; see
-git log from this point for the exact commit.
+personality/reaction-sounds work — was committed at the user's explicit request as
+`9ebb201`.
 
 ### 2026-08-31 → 2026-09-01 — First-class Skills architecture built (live chat + Jobs + briefing), verified end-to-end, confirmed by the user live
 See `handoff-archive.md` § "First-class Skills architecture built (live chat + Jobs +

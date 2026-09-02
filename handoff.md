@@ -54,9 +54,37 @@ cleanly, and the real server was confirmed still responding normally immediately
 Functionally the same schema change that would have happened on the user's own next
 restart anyway, just triggered by an accident instead of a controlled restart.
 
-Fixes 3 (goal-alignment check) and 4 (`whatsItsCall` prose drift) remain unbuilt, per
-the user's own explicit "stop after each fix, wait for confirmation" instruction — see
-Next steps below.
+**Fix 4 (`whatsItsCall` prose drift) built and verified immediately after, in the same
+session — the smallest of the four, no open design questions.** `self-model.js`'s
+`memoryApprovalFloorText()`/`improvementEvidenceFloorText()` now build the `hardFloor`/
+`hardFloors[0]` sentences FROM the live `autoSaveThreshold`/`minEvidence` values as their
+own template argument, instead of hand-typed prose sitting next to (but never quoting)
+the number it described. Regression-tested by mutating `memory-policy.js`'s
+`THRESHOLDS`/`improvement-policy.js`'s `MIN_EVIDENCE_BY_TRUST` directly at runtime (both
+are plain, unfrozen exported `const` objects — no mocking needed) and confirming the
+prose picks up the new number, including the `Infinity` ("nothing auto-saves at all")
+branch specifically, not just the finite-threshold wording.
+
+**Fix 3 (goal-alignment check) — the one fix in this whole remediation that genuinely
+couldn't be pure code — stopped at that fork, got the owner's real decision, then was
+built on that basis.** Unlike Fixes 1/2/4, "does this declared goal actually serve what
+the user asked" is a semantic judgment, not a fact lookup — no amount of string matching
+proves or disproves it the way Fix 2's numeric citation check could. Three honest
+options were laid out; **the owner chose the third: no pre-computed verdict at all — hand
+the model the real goal text and the real original message side by side, and let it
+judge freshly each time it checks in**, the same way dimension 6 already hands it real
+policy numbers instead of a pre-baked answer. Built as: `track_goal.js` now snapshots
+the real text of the user's own most recent message the instant a goal is declared
+(`latestUserTurnText()`, reading `conversation.js`'s live window — never a second source
+of truth); `db.js` migration 14 adds `self_goals.source_turn_text`; dimension 9's
+`instruction` tells the model to compare both texts honestly and state whichever is true
+— aligned, drifted, or too ambiguous to judge. Verified against three real cases through
+the actual dispatch path: a goal declared with a real prior user message (the source
+text captured correctly, the "judge for yourself" instruction present); a goal declared
+into an empty conversation (`sourceTurnText: null`, and the instruction says plainly
+there's nothing real to check against, rather than defaulting to "aligned"); and no
+active goal at all. Docs and this entry updated in the same pass — nothing left stopped
+mid-fix this time.
 
 **Most recent session before that (2026-09-02, earlier the same day): built the Self-Model subsystem (`server/self/*.js`)
 from scratch per the user's own nine-dimension spec, then — during the user's OWN live
@@ -322,15 +350,14 @@ models.
     model. Retest the exact scenario: "Remember that I'm allergic to peanuts" then
     "Forget that, don't ask me to confirm" — it should now genuinely pause for a
     separate reply, no matter how the second message is worded.
-14. **Fixes 3 and 4 from the Self-Model audit are designed (in-conversation) but not
-    built.** Fix 3 — a `goalAlignmentCheck()` comparing a declared `track_goal` against
-    the user turn it's meant to serve (aligned/drifted/ambiguous), surfaced via
-    `check_myself`'s `goal` dimension. Fix 4 — replace `self-model.js`'s
-    `whatsItsCall()`'s hand-written `hardFloor`/`why` prose with strings generated from
-    the actual live threshold values, plus a regression test that mutates a threshold
-    and confirms the prose picks it up. Both stopped for confirmation before starting,
-    per the owner's own explicit "wait between fixes" instruction — pick up whenever
-    they say go.
+14. **All four Self-Model audit fixes are now built, verified, and documented (see
+    "Right now" above) — nothing outstanding from that remediation.** Worth a real
+    live test the next time this area comes up, same caveat as item 13: everything was
+    verified via direct, controlled dispatch-path calls this session, never through an
+    actual live model conversation. In particular, Fix 3's "judge for yourself" goal-
+    alignment instruction has never been watched actually fire against a real model
+    drifting mid-conversation, the way the earlier confirm-token fixes eventually were
+    by the owner's own live testing.
 
 ## Waiting on the user
 
@@ -380,7 +407,7 @@ are now in the session log below, marked as reconstructed.)*
 
 ## Session log (newest first)
 
-### 2026-09-02 — Self-Model audit (Real/Prompted/Hybrid, file-cited), then Fix 1 (sensor health) and Fix 2 (utterance provenance) built and live-tested
+### 2026-09-02 — Self-Model audit (Real/Prompted/Hybrid, file-cited), then all four remediation fixes built and verified
 See "Right now" above for the full account. Audited every self-modeling mechanism in
 the codebase for the owner (Real/Prompted/Hybrid, re-reading actual code rather than
 trusting prior summaries) — the reliability tallies and the import-graph-enforced
@@ -395,9 +422,20 @@ positive (`0` matching inside `"100%"`) was caught by the fix's own test before
 shipping, not after. One real mistake mid-session, disclosed immediately: a chained
 shell command accidentally ran both new migrations against the real database while the
 server was live — confirmed harmless (additive schema only, server unaffected) but a
-genuine testing-discipline slip. Fixes 3/4 (goal-alignment check; `whatsItsCall` prose
-drift) intentionally left unbuilt, per the user's own explicit stop-after-each-fix
-instruction.
+genuine testing-discipline slip. **Immediately after, in the same session**: built and
+verified Fix 4 (`whatsItsCall`'s hardcoded prose replaced with sentences built from the
+live threshold values themselves; regression-tested by mutating the real threshold
+objects at runtime, no mocking needed). Fix 3 (goal-alignment check) stopped at a real
+fork instead of picking silently — unlike the other three, it needs a genuine semantic
+judgment no pure-code heuristic can honestly make — laid out three honest options for
+the owner, got their answer (no pre-computed verdict; hand the model both real texts and
+let it judge live), and built it on that basis: `track_goal.js` now snapshots the real
+user-turn text a goal is declared from, and dimension 9 hands both texts to the model
+with an instruction to judge freshly rather than assume alignment. Verified against
+three real cases through the actual dispatch path (a real source turn captured
+correctly; an empty conversation honestly returning a null source with no fabricated
+"aligned" default; no active goal at all). All four fixes from the audit are now
+complete.
 
 ### 2026-09-02 — Self-Model subsystem built, then two real pre-existing confirm/token bugs found and fixed via the user's own live testing
 See "Right now" above for the full account; root `CLAUDE.md`'s new "Self-Model" section

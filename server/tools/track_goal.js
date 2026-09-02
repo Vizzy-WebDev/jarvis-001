@@ -11,10 +11,30 @@
 // recording an understanding has no outward effect of its own, so there's
 // nothing here for a read-back to protect.
 //
+// Fix 3 of the Self-Model audit remediation: every declared goal now also
+// snapshots the real text of the user's own most recent message at that
+// moment (conversation.js's live, in-memory window — the same one every
+// adapter already builds a turn from, so this is never a second source of
+// truth). This is NOT a computed judgment of whether the goal matches that
+// text — the owner's own explicit choice was to hand both real texts to
+// the model side by side and let it judge freshly each time it checks in
+// (self-model.js's trackGoal()), the same way dimension 6 already hands it
+// real policy numbers instead of a pre-baked verdict.
+//
 // core:true (no reliable search-intent text) + meta:true (only makes sense
 // in the live conversation whose goal is being tracked).
 
 import { declareGoal, closeGoal, getActiveGoal } from '../self/self-store.js';
+import { getMessages } from '../conversation.js';
+
+/** The real text of the most recent user message in this session, or null if none exists yet — never fabricated, never a placeholder. */
+function latestUserTurnText(sessionId) {
+  const messages = getMessages(sessionId);
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user' && messages[i].text) return messages[i].text;
+  }
+  return null;
+}
 
 export default {
   name: 'track_goal',
@@ -45,7 +65,8 @@ export default {
 
     const text = String(args?.goal || '').trim();
     if (!text) return { ok: false, error: 'Give a goal to record, or set close:true.' };
-    const goal = declareGoal({ scopeKind: 'conversation', scopeRef: ctx.sessionId, goalText: text });
+    const sourceTurnText = latestUserTurnText(ctx.sessionId);
+    const goal = declareGoal({ scopeKind: 'conversation', scopeRef: ctx.sessionId, goalText: text, sourceTurnText });
     return { ok: true, goalId: goal.id };
   },
 };

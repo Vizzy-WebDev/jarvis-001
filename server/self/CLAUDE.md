@@ -125,13 +125,35 @@ answer.
    "did the sentence match the data" that plain string matching can answer.
 6. **Its call to make** — reads the *actual live values* out of `memory-policy.js`'s
    `THRESHOLDS` and `improvement-policy.js`'s `MIN_EVIDENCE_BY_TRUST`/hard floors, so this
-   can never drift from what those modules really enforce.
+   can never drift from what those modules really enforce. **Fix 4 (audit remediation):**
+   the two numeric floors' own explanatory sentences (`memoryApprovalFloorText()`/
+   `improvementEvidenceFloorText()`, `self-model.js`) are now built FROM the live number
+   as their own template argument, not hand-typed nearby — the prose and the number it
+   describes are the same read, so they can't independently drift apart. Regression-
+   tested by mutating `THRESHOLDS`/`MIN_EVIDENCE_BY_TRUST` directly at runtime (both are
+   plain exported `const` objects, not frozen — no module-mocking needed) and confirming
+   the returned sentence picks up the new number. The three purely structural floors
+   (kind, source tier, no conflict) are untouched — none of them reference a live
+   number, so there was nothing for them to drift from.
 7. **How it fails** — scoped `improvement_lessons`, filtered to what's actually relevant.
 8. **Works with the user** — corrections/explicit-teaching outcome counts; reported as
    genuinely thin below the same 5-attempt floor as everything else.
 9. **Goal, on track** — `self_goals` for a live conversation (a job already has its own
    durable `goal` column — see `jobs/job-store.js`). Always reported as *what Jarvis
    recorded it understood*, never as a verified account of what the user meant.
+   **Fix 3 (audit remediation):** every declared goal now also snapshots the real text
+   of the user's own most recent message at declare time (`track_goal.js`'s
+   `latestUserTurnText()`, reading `conversation.js`'s live window — never a second
+   source of truth). Deliberately NOT a computed aligned/drifted/ambiguous verdict —
+   judging whether a goal actually matches a real request is a semantic question no
+   plain code can honestly answer, the same class of problem `self-verify.js` was
+   built to stay clear of. The owner's own explicit choice: hand the model both real
+   texts side by side and let it judge freshly each time it checks in, the same way
+   dimension 6 hands it real policy numbers instead of a pre-baked answer.
+   `sourceTurnText` is honestly `null` when nothing was captured (a goal declared
+   before this column existed, or no user message existed yet) — the dimension's own
+   `instruction` says so plainly rather than letting the model assume alignment it has
+   no real basis for.
 
 ## The trigger design — push vs. pull, and the real limitation of push
 
@@ -164,7 +186,11 @@ gated on `!opts.background`.
 `check_myself.js` (`core:true, meta:true` — the pull path; no reliable search-intent text
 to find it by otherwise) and `track_goal.js` (`core:true, meta:true` — records what
 Jarvis understands the current goal to be; no confirm gate, since recording an
-understanding has no outward effect of its own to protect).
+understanding has no outward effect of its own to protect). `track_goal.js` is the one
+tool file in this directory that imports `../conversation.js` directly (leaf-safe —
+`conversation.js` itself only imports `chat-store.js`) — it reads the live conversation
+window to snapshot the real user-turn text a goal is declared from (Fix 3, audit
+remediation).
 
 ## `capabilities.js`'s ctx injection
 

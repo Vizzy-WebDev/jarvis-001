@@ -110,6 +110,11 @@ server/
   scheduler/         Tasks, recurrence, briefing (see "Scheduler + briefing")
   jobs/              Background Task Orchestration ("Jobs") — long-running work backgrounded from live
                      conversation, distinct from scheduler/ above (see "Background Task Orchestration")
+  heartbeat/         Heartbeat + Trigger + Proactive Attention — Jarvis noticing things on its own,
+                     independent of any open conversation, and speaking up first when genuinely warranted.
+                     Generalizes Jobs' own Tier 1/2/3 Interruption Broker rather than duplicating it (see
+                     "Heartbeat"). Named for the user's own term; unrelated to jobs/job-store.js's
+                     `heartbeat_at` (worker-liveness tracking for one running job).
   improvement/       Self-Improvement — Jarvis reviewing its own work and applying what it learns to
                      itself, distinct from memory/ above (facts about the USER) (see "Self-Improvement")
   self/              Self-Model — Jarvis's own grounded, evidence-backed self-knowledge: what it is,
@@ -740,6 +745,39 @@ decisions that matter beyond that file:
   `"100%"` (`.includes('0')` is true for `"100%"`) — fixed with word-boundary-safe
   matching (`(?<!\d)0(?!\d)`), re-verified in both directions: a real citation is never
   missed, and a coincidental digit inside an unrelated longer number never falsely counts.
+- **Goal-alignment grounding — the one audit finding that genuinely could not be closed
+  with pure code, and this build stopped at that fork rather than faking a verdict.**
+  Whether a `track_goal`-declared goal actually still serves what the user asked is a
+  semantic judgment, not a fact lookup — no string match, however clever, proves or
+  disproves it the way `self-verify.js`'s numeric citation check could. Three honest
+  options existed (a small dedicated model call; a code-only keyword-overlap heuristic
+  that could only ever say "some overlap" or "not enough signal," never really prove
+  drift; or no pre-computed verdict at all). **The owner's own explicit choice: the
+  third.** `track_goal.js` now snapshots the real text of the user's own most recent
+  message the instant a goal is declared (`latestUserTurnText()`, reading
+  `conversation.js`'s live window — the same one every adapter already builds a turn
+  from, never a second source of truth); `db.js` migration 14 adds
+  `self_goals.source_turn_text` to hold it. Dimension 9's own `instruction` then hands
+  BOTH real texts to the model and tells it to judge freshly each time it checks in —
+  aligned, drifted, or the original request was too ambiguous to judge — the same way
+  dimension 6 already hands it real policy numbers instead of a pre-baked answer.
+  Honestly `null`, with an instruction that says so plainly, whenever no source was ever
+  captured — never a fabricated "aligned" default.
+- **The last audit finding, the smallest of the four fixes: dimension 6's own explanatory
+  prose could quietly drift from the live numbers sitting right beside it.**
+  `whatsItsCall()`'s `hardFloor` (memory) and the first entry of `hardFloors`
+  (self-improvement) used to be hand-typed sentences that never actually quoted
+  `autoSaveThreshold`/`minEvidence` — accurate the day they were written, with nothing
+  to catch it if a threshold ever changed later. `memoryApprovalFloorText()`/
+  `improvementEvidenceFloorText()` (`self-model.js`) build the sentence FROM the live
+  number as their own argument instead — the prose and the number are the same read now,
+  not two that happen to agree. Regression-tested by mutating `memory-policy.js`'s
+  `THRESHOLDS`/`improvement-policy.js`'s `MIN_EVIDENCE_BY_TRUST` directly at runtime
+  (plain exported `const` objects, not frozen) and confirming the sentence picks up the
+  new number — including the `Infinity` branch ("nothing auto-saves at all"), not just
+  the finite-threshold wording. The three purely structural floors (kind, source tier,
+  no conflict) were left untouched — none of them reference a live number, so there was
+  nothing there for prose to drift from.
 - **This reads Memory, Jobs, Self-Improvement, and Personality; it duplicates none of
   them, and the user's own settled decision on this exact question was to keep it that
   way.** Dimensions 3/7 ("how it behaves" / "how it fails") are a read-only VIEW over

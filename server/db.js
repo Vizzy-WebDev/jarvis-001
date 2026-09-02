@@ -621,6 +621,99 @@ const MIGRATIONS = [
       CREATE INDEX idx_self_model_citations_snapshot ON self_model_citations(snapshot_id);
     `);
   },
+
+  // 13: Heartbeat + Trigger + Proactive Attention (root CLAUDE.md's
+  // "Heartbeat" section; server/heartbeat/CLAUDE.md for the module
+  // breakdown) — a generic, per-item-scheduled background pulse plus an
+  // event-driven trigger path, both feeding the SAME urgency-decision step
+  // and the SAME Tier 1/2/3 Interruption Broker Jobs already built, rather
+  // than a second alert mechanism.
+  //
+  // `job_outbox` -> `outbox`: a real rebuild, not an ALTER, because SQLite
+  // cannot relax a NOT NULL foreign key in place. Before this, an outbox row
+  // could only ever belong to a job (`job_id TEXT NOT NULL REFERENCES
+  // jobs(id)`) — a Heartbeat/Trigger finding has no job behind it and could
+  // not be inserted at all. `job_id` is now nullable; `source` (default
+  // 'job', so every row that already exists reads correctly with no data
+  // rewrite beyond the copy itself) and `source_ref` are new — `source_ref`
+  // is the generic pointer a non-job source uses (e.g. a memory id), while
+  // `job_id` stays as its own real column (not folded into source_ref) so
+  // `job_id`'s own ON DELETE CASCADE keeps working unchanged for every
+  // existing Jobs call site. Every row that existed before this migration is
+  // copied over with `source='job', source_ref=job_id` — nothing is lost,
+  // nothing is reclassified. `job-store.js`'s own outbox functions become
+  // thin wrappers over the new home of this table
+  // (`server/heartbeat/outbox-store.js`) immediately after this migration
+  // lands, so every existing Jobs call site needs no changes at all.
+  //
+  // `heartbeat_schedule` is the persisted per-item due time reliability
+  // depends on — see root CLAUDE.md's Heartbeat section on why this must be
+  // real and not in-memory: a restart must resume from where each item
+  // actually stood, never reset every timer to zero and never fire
+  // everything overdue at once. `id` is deterministic
+  // (`source_id||':'||item_key`, built by schedule-store.js), which is what
+  // makes upserting an item's own schedule row a plain
+  // INSERT...ON CONFLICT(id) rather than a separate lookup-then-write.
+  // `check_state` is a free-form JSON scratch column, the same role
+  // `monitor_store.js`'s own `checkState` already plays for a monitor that
+  // needs to remember something between ticks (e.g. a parsed deadline, or
+  // "no deadline found, don't re-try until the text changes").
+  (conn) => {
+    conn.exec(`
+      CREATE TABLE outbox (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        source          TEXT NOT NULL DEFAULT 'job',
+        source_ref      TEXT,
+        job_id          TEXT REFERENCES jobs(id) ON DELETE CASCADE,
+        tier            INTEGER NOT NULL,
+        reason          TEXT NOT NULL DEFAULT 'permission',
+        summary         TEXT NOT NULL,
+        detail          TEXT,
+        confirm_payload TEXT,
+        created_at      TEXT NOT NULL,
+        delivered_at    TEXT
+      );
+      CREATE INDEX idx_outbox_pending ON outbox(delivered_at, tier);
+      CREATE INDEX idx_outbox_source_ref ON outbox(source, source_ref);
+
+      INSERT INTO outbox (id, source, source_ref, job_id, tier, reason, summary, detail, confirm_payload, created_at, delivered_at)
+      SELECT id, 'job', job_id, job_id, tier, reason, summary, detail, confirm_payload, created_at, delivered_at FROM job_outbox;
+
+      DROP TABLE job_outbox;
+
+      CREATE TABLE heartbeat_schedule (
+        id              TEXT PRIMARY KEY,
+        source_id       TEXT NOT NULL,
+        item_key        TEXT NOT NULL,
+        interval_ms     INTEGER NOT NULL,
+        next_due_at     TEXT NOT NULL,
+        last_checked_at TEXT,
+        running         INTEGER NOT NULL DEFAULT 0,
+        check_state     TEXT,
+        created_at      TEXT NOT NULL,
+        UNIQUE(source_id, item_key)
+      );
+      CREATE INDEX idx_heartbeat_schedule_due ON heartbeat_schedule(next_due_at);
+    `);
+  },
+
+  // 14: Goal-alignment grounding for the Self-Model (root CLAUDE.md's
+  // "Self-Model" section, Fix 3 of the audit remediation) — additive-only,
+  // same discipline as migration 5/10. `track_goal.js` now snapshots the
+  // real text of whatever the user's most recent message was at the moment
+  // a goal is declared, alongside the goal itself. Deliberately a raw TEXT
+  // snapshot, not a reference to a message id — the same "store the exact
+  // thing, don't trust a pointer to resolve later" discipline
+  // self_model_snapshots (migration 12) already uses, since the live
+  // in-memory conversation window trims old entries. This is NOT a
+  // computed alignment verdict — nothing in this codebase judges whether a
+  // goal actually matches the user's real intent; the owner's own explicit
+  // choice was to hand the model both real texts side by side and let it
+  // judge freshly each time, the same way dimension 6 already hands it
+  // real policy numbers instead of a pre-baked answer.
+  (conn) => {
+    conn.exec(`ALTER TABLE self_goals ADD COLUMN source_turn_text TEXT;`);
+  },
 ];
 
 function migrate(conn) {

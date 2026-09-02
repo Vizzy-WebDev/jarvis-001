@@ -200,14 +200,23 @@ function rowToGoal(row) {
     scopeKind: row.scope_kind, // 'conversation' | 'job' (jobs normally use job.goal directly — see header comment)
     scopeRef: row.scope_ref,
     goalText: row.goal_text,
+    // The real text of whatever the user's most recent message was at the
+    // moment this goal was declared (Fix 3 of the audit remediation) — a
+    // snapshot, not a resolved-later reference, same discipline
+    // self_model_snapshots already uses. Null for a goal declared before
+    // this column existed, or if no user message was found at declare
+    // time. Never a computed verdict about whether the goal MATCHES this
+    // text — that judgment is left to whoever reads both side by side; see
+    // self-model.js's trackGoal() and root CLAUDE.md's Self-Model section.
+    sourceTurnText: row.source_turn_text,
     declaredAt: row.declared_at,
     status: row.status, // 'active' | 'closed'
     closedAt: row.closed_at,
   };
 }
 
-/** Declares (or replaces) the active goal for one scope — closes any prior active goal for the same scope first, so scope_ref only ever has one active row at a time. */
-export function declareGoal({ scopeKind, scopeRef, goalText }) {
+/** Declares (or replaces) the active goal for one scope — closes any prior active goal for the same scope first, so scope_ref only ever has one active row at a time. `sourceTurnText` is the real snapshot text described above; optional (a caller with no real user-turn text on hand — e.g. a test — just gets a goal with no source recorded, never a fabricated one). */
+export function declareGoal({ scopeKind, scopeRef, goalText, sourceTurnText = null }) {
   const trimmed = String(goalText || '').trim();
   if (!scopeKind || !scopeRef || !trimmed) throw new Error('A goal needs a scope and some text.');
   const db = getDb();
@@ -217,8 +226,8 @@ export function declareGoal({ scopeKind, scopeRef, goalText }) {
   ).run(ts, scopeKind, scopeRef);
   const id = makeId('goal');
   db.prepare(
-    `INSERT INTO self_goals (id, scope_kind, scope_ref, goal_text, declared_at, status) VALUES (?, ?, ?, ?, ?, 'active')`
-  ).run(id, scopeKind, scopeRef, trimmed, ts);
+    `INSERT INTO self_goals (id, scope_kind, scope_ref, goal_text, source_turn_text, declared_at, status) VALUES (?, ?, ?, ?, ?, ?, 'active')`
+  ).run(id, scopeKind, scopeRef, trimmed, sourceTurnText ? String(sourceTurnText).trim() || null : null, ts);
   return getGoal(id);
 }
 

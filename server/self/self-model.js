@@ -222,6 +222,33 @@ function howItKnows({ memoryQuery } = {}) {
 // ---------- 6. What's actually its call to make ----------
 
 /**
+ * Fix 4 (Self-Model audit remediation) — this pair of sentences used to be
+ * typed once, by hand, sitting right next to (but never actually quoting)
+ * the live threshold value beside it: `autoSaveThreshold`/`minEvidence`
+ * could change (a different trust level, or the threshold itself edited in
+ * memory-policy.js/improvement-policy.js) with nothing catching that this
+ * prose still described the OLD number. Built as small template functions
+ * instead, taking the live value as their own argument, so the sentence
+ * and the number it describes can never disagree — they're the same read,
+ * not two. The three purely structural floors below (kind, source tier,
+ * no conflict) are untouched on purpose: none of them reference a live
+ * threshold, so there's nothing for them to drift from.
+ */
+function memoryApprovalFloorText(threshold, trustLevel) {
+  const thresholdSentence =
+    threshold === Infinity
+      ? `At the current '${trustLevel}' trust level, nothing auto-saves at all — every candidate always asks.`
+      : `At the current '${trustLevel}' trust level, a candidate needs a confidence score of at least ${threshold} to auto-save.`;
+  return `${thresholdSentence} A memory that conflicts with an existing one, or carries no usable confidence score at all, always requires approval regardless — no trust level overrides that specific floor.`;
+}
+
+function improvementEvidenceFloorText(minEvidence, trustLevel) {
+  return minEvidence === Infinity
+    ? `At the current '${trustLevel}' trust level, nothing auto-applies at all — every proposal always asks.`
+    : `At the current '${trustLevel}' trust level, a proposal also needs at least ${minEvidence} distinct supporting outcome${minEvidence === 1 ? '' : 's'} to auto-apply.`;
+}
+
+/**
  * Reads the REAL, live values out of the policy modules that actually gate
  * these decisions — never a paraphrase that could drift from the code. The
  * `why` lines are the one place this dimension explains reasoning rather
@@ -230,17 +257,20 @@ function howItKnows({ memoryQuery } = {}) {
  */
 function whatsItsCall() {
   const prefs = getPrefs();
+  const autoSaveThreshold = MEMORY_TRUST_THRESHOLDS[prefs.memoryTrust] ?? MEMORY_TRUST_THRESHOLDS.ask;
+  const minEvidence = IMPROVEMENT_MIN_EVIDENCE[prefs.improvementTrust] ?? IMPROVEMENT_MIN_EVIDENCE.ask;
   return {
     memoryApproval: {
       currentTrust: prefs.memoryTrust,
-      autoSaveThreshold: MEMORY_TRUST_THRESHOLDS[prefs.memoryTrust] ?? MEMORY_TRUST_THRESHOLDS.ask,
-      hardFloor: 'A memory that conflicts with an existing one, or carries no usable confidence score, always requires approval — no trust level overrides this.',
+      autoSaveThreshold,
+      hardFloor: memoryApprovalFloorText(autoSaveThreshold, prefs.memoryTrust),
       why: 'Resolving a conflict changes or duplicates something that already exists in the record of the user\'s own life — that is never done silently, at any trust level.',
     },
     selfImprovementApproval: {
       currentTrust: prefs.improvementTrust,
-      minEvidence: IMPROVEMENT_MIN_EVIDENCE[prefs.improvementTrust] ?? IMPROVEMENT_MIN_EVIDENCE.ask,
+      minEvidence,
       hardFloors: [
+        improvementEvidenceFloorText(minEvidence, prefs.improvementTrust),
         "must be a plain 'rule' or 'setting' — a Skill or code change always asks",
         'must come from tier 1 evidence (my own directly-observed history) — anything read from outside always asks',
         'must not conflict with an existing rule — a contradiction always needs a human',
@@ -293,13 +323,29 @@ function worksWithUser() {
 
 // ---------- 9. What it's trying to accomplish, and whether it's still on track ----------
 
+/**
+ * Fix 3 (Self-Model audit remediation) — deliberately NOT a computed
+ * aligned/drifted/ambiguous verdict. Judging whether a declared goal
+ * actually serves what the user asked is a semantic question, not a fact
+ * lookup — the same class of problem self-verify.js's own header comment
+ * says plain code can't honestly answer. The owner's explicit choice: hand
+ * the model BOTH real texts — the goal it declared, and the real source
+ * message it declared that goal from — and let it judge freshly each time,
+ * the same way dimension 6 already hands it real policy numbers instead of
+ * a pre-baked answer. `sourceTurnText` is null whenever no source was ever
+ * captured (a goal declared before this existed, or no user message was
+ * found at declare time) — the instruction says so plainly rather than
+ * letting the model assume alignment it has no real basis to claim.
+ */
 function trackGoal({ sessionId } = {}) {
   if (!sessionId) return { grounded: false, activeGoal: null };
   const goal = selfStore.getActiveGoal('conversation', sessionId);
   return {
     grounded: Boolean(goal),
-    activeGoal: goal ? { text: goal.goalText, declaredAt: goal.declaredAt } : null,
-    instruction: 'This is what I recorded I understood the goal to be, not a verified account of what the user actually wanted — say it that way.',
+    activeGoal: goal ? { text: goal.goalText, declaredAt: goal.declaredAt, sourceTurnText: goal.sourceTurnText || null } : null,
+    instruction: goal?.sourceTurnText
+      ? 'This is what I recorded I understood the goal to be, not a verified account of what the user actually wanted. Compare it honestly against sourceTurnText — the user\'s own real message this goal was declared from — and judge for yourself whether it still genuinely serves what they asked, whether it has drifted, or whether that original message was too ambiguous to judge either way. State whichever is true; never assume it is still on track just because it was once declared.'
+      : 'This is what I recorded I understood the goal to be, not a verified account of what the user actually wanted — say it that way. No source message was captured for this one, so there is nothing real to check it against; do not claim it is aligned or drifted without that.',
   };
 }
 

@@ -17,7 +17,7 @@
 // VIEW over improvement_lessons/improvement_rules; this file is the other
 // direction — new signal flowing IN, still through the one door.
 
-import { recordAttempt } from './self-store.js';
+import { recordAttempt, recordCaptureHealth } from './self-store.js';
 import { recordOutcome } from '../improvement/improvement-store.js';
 
 /**
@@ -36,10 +36,39 @@ import { recordOutcome } from '../improvement/improvement-store.js';
  * whole grounding, and it must never be skipped just because an outcome was
  * routine. Only a notable one ALSO becomes an improvement_outcomes row, so
  * reflect.js's own backlog stays signal, not a flood of ordinary successes.
+ *
+ * `recordAttempt()` is wrapped in its OWN local try/catch, not just left to
+ * whatever wrapper the caller happens to have — found in a real audit: it
+ * used to run unguarded here, so a throw from self-store.js's SQLite write
+ * propagated straight out, was only ever caught one level up in
+ * runner.js's own wrapper, and left NOTHING on record beyond a
+ * console.error — a broken recorder and a tool genuinely never used were
+ * indistinguishable from every self-model dimension reading
+ * self_capability_stats. Either branch now also logs to
+ * self-store.js's capture_health table (recordCaptureHealth) — the health
+ * of the SENSOR, not what it measures — surfaced via check_myself's
+ * can_do dimension (self-model.js's whatItCanDo()) so the model can tell
+ * "never used" apart from "recorder is broken" instead of silently
+ * assuming the recorder is fine.
  */
 export function recordToolOutcome({ name, ok, notAllowed = false, escalated = false, errorText = null }) {
   if (!name) return;
-  recordAttempt('tool', name, ok);
+
+  try {
+    recordAttempt('tool', name, ok);
+    recordCaptureHealth({ source: 'tool', name, ok: true });
+  } catch (err) {
+    console.error('[self-capture] recordAttempt failed — the capability tally itself did not update:', err);
+    try {
+      recordCaptureHealth({ source: 'tool', name, ok: false, errorMessage: err?.message || String(err) });
+    } catch (healthErr) {
+      // A health-log write failing must never cascade into anything else
+      // breaking — same discipline as every other capture-path guard in
+      // this file. If this specific line fails, the gap is genuinely
+      // unrecorded; there is nothing further down to fall back to.
+      console.error('[self-capture] recordCaptureHealth ALSO failed:', healthErr);
+    }
+  }
 
   const notable = ok === false || notAllowed || escalated;
   if (!notable) return;

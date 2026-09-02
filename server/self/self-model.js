@@ -128,13 +128,21 @@ function whatItCanDo({ about } = {}) {
   const tools = (about?.tools || []).map(reliabilityForTool);
   const jobKinds = (about?.jobKinds || []).map(reliabilityForJobKind);
   const taskTypes = (about?.taskTypes || []).map(reliabilityForTaskType);
+  // Always included, never gated behind `about` — knowing the sensor
+  // itself works is a precondition for trusting anything else this
+  // dimension reports, not one more optional fact among many.
+  const sensorHealth = selfStore.captureHealthSummary();
   return {
     tools,
     jobKinds,
     taskTypes,
+    sensorHealth,
     instruction:
       'Report confidence ONLY when verdict is has_track_record — state the real success rate and how many attempts it is ' +
-      'based on. For no_track_record, say plainly there is no track record yet; never estimate a number in its place.',
+      'based on. For no_track_record, say plainly there is no track record yet; never estimate a number in its place. ' +
+      "If sensorHealth.failures24h is greater than 0, say so plainly too — a no_track_record verdict elsewhere in this " +
+      'same response may mean the tool was never used, or may mean the recorder that would have noticed it was broken; ' +
+      'do not silently assume the recorder is fine.',
   };
 }
 
@@ -330,6 +338,65 @@ export function buildSelfModel({ only = [], ...ctx } = {}) {
 }
 
 export const DIMENSION_KEYS = Object.keys(DIMENSION_BUILDERS);
+
+// ---------- citable fields (utterance provenance) ----------
+//
+// Deliberately mechanical, not hand-mapped per dimension — a key-name
+// blocklist plus "only a raw number counts," so this stays correct even if
+// a dimension's own shape changes later. Free text, prose, and enum-like
+// strings ('has_track_record', 'auto', a tool name) are excluded on
+// purpose: checking whether a NUMBER reappears verbatim is plain string
+// matching; checking whether a SENTENCE means the same thing as a
+// paraphrased enum is exactly the free-form-prose problem this build was
+// told not to try to solve. See server/self/self-verify.js's
+// verifyCitation() for the actual check this feeds.
+const CITABLE_BLOCKLIST_KEYS = new Set([
+  'instruction', 'note', 'why', 'rationale', 'hardFloor', 'hardFloors',
+  'generalPrinciple', 'provenanceKinds', 'rule', 'computerControl',
+  'text', 'structure', 'matches', 'error', 'errorMessage',
+]);
+
+/** Reads a dot/bracket path (e.g. "can_do.tools[0].successRate") back out of a plain object — the exact inverse of the paths extractCitableFields() below builds, so a citation logged from one can always be resolved by the other. */
+export function getByPath(obj, path) {
+  const parts = String(path || '').match(/[^.[\]]+/g) || [];
+  let cur = obj;
+  for (const part of parts) {
+    if (cur == null) return undefined;
+    cur = cur[part];
+  }
+  return cur;
+}
+
+/**
+ * Every NUMERIC leaf in a self-model snapshot, as `{fieldName, value}` —
+ * `fieldName` is a path `getByPath()` can resolve back to the same value
+ * later, from a freshly-read copy of the same snapshot (never trusting a
+ * cached value). Recurses into plain objects and arrays; skips an entire
+ * subtree the instant it hits a blocklisted key, regardless of nesting
+ * depth, rather than hand-enumerating every dimension's own shape.
+ */
+export function extractCitableFields(snapshot, basePath = '') {
+  const out = [];
+  function walk(value, path) {
+    if (value == null) return;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      out.push({ fieldName: path, value });
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item, i) => walk(item, `${path}[${i}]`));
+      return;
+    }
+    if (typeof value === 'object') {
+      for (const [key, child] of Object.entries(value)) {
+        if (CITABLE_BLOCKLIST_KEYS.has(key)) continue;
+        walk(child, path ? `${path}.${key}` : key);
+      }
+    }
+  }
+  walk(snapshot, basePath);
+  return out;
+}
 
 // ---------- turn-level signal computation ----------
 

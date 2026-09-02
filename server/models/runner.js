@@ -540,6 +540,13 @@ async function* runOnEntry(sessionId, entry, opts) {
               // turnId comment (runTurn()) and capabilities.js's
               // consumePendingToken() for the full reasoning.
               turnId: opts.turnId,
+              // Utterance provenance (server/self/self-verify.js) —
+              // check_myself.js uses this exact id to link its own snapshot
+              // and citation rows back to the real tool_call entry
+              // persisted in chat-store.js's messages table, so a later
+              // verifyCitation() call can find the real reply that followed
+              // this specific call, not just any check_myself call ever.
+              toolCallId: call.id,
             });
         // Self-Model capture — zero model calls, a rolling reliability
         // tally plus (only for a notable outcome) one more

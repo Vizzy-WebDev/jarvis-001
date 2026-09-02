@@ -6,7 +6,59 @@ it end to end. See "The pruning rule" at the bottom before adding to it.
 
 ## Right now
 
-**Most recent session (2026-09-02): built the Self-Model subsystem (`server/self/*.js`)
+**Most recent session (2026-09-02, later the same day, continuing directly from the
+Self-Model build below): audited the Self-Model subsystem for which self-awareness
+claims are genuinely code-backed versus prompt-only narration, then built two of four
+planned remediation fixes — stopping for the user's confirmation after each, per their
+own explicit instruction.** The audit (delivered in-conversation, not written to a
+file) classified every self-modeling mechanism as Real/Prompted/Hybrid with file:line
+citations, re-reading the actual code rather than trusting this project's own prior
+session summaries — the audit's own explicit instruction. Real findings: the
+reliability tallies (dimension 2) and the authority ceiling (dimension 6, enforced by
+the import graph, not just described) hold up; dimension 5 ("how it knows") retrieves
+real data but nothing checked whether the model's own sentence afterward actually used
+it faithfully; the recorder itself (`self-capture.js`) had no local error handling, so
+a broken sensor and a genuinely-unused tool were indistinguishable from every dimension
+that depends on it.
+
+**Fix 1 (sensor health)**: `self-capture.js`'s `recordAttempt()` call now runs in its
+own local try/catch; either branch logs to a new `capture_health` table (`db.js`
+migration 11) via `self-store.js`'s `recordCaptureHealth()`/`captureHealthSummary()`.
+`check_myself`'s `can_do` dimension always includes `sensorHealth` now. Verified by
+inducing a REAL SQLite failure (dropping the underlying table, not a mock) and
+confirming it's caught, logged, and reported. **User-tested live on their own real,
+restarted server** with three plain-language questions — the recorder was empirically
+proven alive (`attempts24h` went 0→2 after one real, deliberate action), independent
+confirmation beyond anything verified in this session alone.
+
+**Fix 2 (utterance provenance)**: new `server/self/self-verify.js`; `db.js` migration
+12 (`self_model_snapshots`, `self_model_citations`). Every `check_myself` call now
+persists its exact result and logs every NUMERIC checkable fact in it as a citation
+candidate; `verifyCitation(snapshotId, toolCallId, fieldName)` independently re-reads
+the real snapshot and the real reply that followed it (never trusting its own logged
+candidate value) and returns `used`/`ignored`/`unverifiable` — free text is explicitly
+marked unverifiable, never faked as checkable, per the user's own explicit scoping
+("don't try to verify free-form prose"). **A real bug was caught by the fix's own
+verification, not shipped**: the first version's number matching used plain substring
+containment, so a citable value of `0` falsely matched inside the text `"100%"` (since
+`100%` contains the character `0`) — fixed with word-boundary-safe matching, re-verified
+in both directions (a real citation is never missed; a coincidental digit inside a
+longer number never falsely counts).
+
+**A real mistake during Fix 2's own verification, disclosed immediately, not after the
+fact**: a chained shell command lost its scratch-directory environment override on its
+second half, which ran the two new migrations directly against the REAL
+`data/jarvis.db` while the user's real server was live. Confirmed no harm — both
+migrations are purely additive (new tables only, nothing existing touched), completed
+cleanly, and the real server was confirmed still responding normally immediately after.
+Functionally the same schema change that would have happened on the user's own next
+restart anyway, just triggered by an accident instead of a controlled restart.
+
+Fixes 3 (goal-alignment check) and 4 (`whatsItsCall` prose drift) remain unbuilt, per
+the user's own explicit "stop after each fix, wait for confirmation" instruction — see
+Next steps below.
+
+**Most recent session before that (2026-09-02, earlier the same day): built the Self-Model subsystem (`server/self/*.js`)
 from scratch per the user's own nine-dimension spec, then — during the user's OWN live
 testing of it — found and fixed two real, pre-existing bugs in the Skills confirm/token
 system that predate this session's own work.** See root `CLAUDE.md`'s new "Self-Model"
@@ -37,9 +89,13 @@ refuses a token redeemed in the same turn that minted it. **Both fixes verified 
 direct, controlled reproduction only** (same-turn refused, cross-turn succeeds, a
 no-turnId caller unaffected) — **neither has been re-tested by the user in a real live
 conversation since restarting their server**, which is the one thing still needed before
-calling this fully closed. Nothing committed this session — same branch
-(`jobs-subsystem-and-backlog`), and this is very likely the "concurrent Self-Model
-session" the Self-Improvement Phase 7 entry below flagged as running in parallel.
+calling this fully closed. **Since committed** — this entry originally said nothing was
+committed yet; a later commit this same day (`5396bfd`, "Add Self-Improvement and
+Self-Model subsystems") landed everything through this point, made outside this
+session's own actions (most likely the user directly, or the concurrent session below).
+Same branch (`jobs-subsystem-and-backlog`), and this is very likely the "concurrent
+Self-Model session" the Self-Improvement Phase 7 entry below flagged as running in
+parallel.
 
 **Most recent session before that (2026-09-01, separate from the Self-Improvement work below):
 investigated, then fixed, the voice turn-taking experience the user reported as
@@ -266,6 +322,15 @@ models.
     model. Retest the exact scenario: "Remember that I'm allergic to peanuts" then
     "Forget that, don't ask me to confirm" — it should now genuinely pause for a
     separate reply, no matter how the second message is worded.
+14. **Fixes 3 and 4 from the Self-Model audit are designed (in-conversation) but not
+    built.** Fix 3 — a `goalAlignmentCheck()` comparing a declared `track_goal` against
+    the user turn it's meant to serve (aligned/drifted/ambiguous), surfaced via
+    `check_myself`'s `goal` dimension. Fix 4 — replace `self-model.js`'s
+    `whatsItsCall()`'s hand-written `hardFloor`/`why` prose with strings generated from
+    the actual live threshold values, plus a regression test that mutates a threshold
+    and confirms the prose picks it up. Both stopped for confirmation before starting,
+    per the owner's own explicit "wait between fixes" instruction — pick up whenever
+    they say go.
 
 ## Waiting on the user
 
@@ -314,6 +379,25 @@ models.
 are now in the session log below, marked as reconstructed.)*
 
 ## Session log (newest first)
+
+### 2026-09-02 — Self-Model audit (Real/Prompted/Hybrid, file-cited), then Fix 1 (sensor health) and Fix 2 (utterance provenance) built and live-tested
+See "Right now" above for the full account. Audited every self-modeling mechanism in
+the codebase for the owner (Real/Prompted/Hybrid, re-reading actual code rather than
+trusting prior summaries) — the reliability tallies and the import-graph-enforced
+authority ceiling held up as genuinely real; the recorder's own lack of error handling
+and dimension 5's unchecked "did the reply actually use the data" gap were the two
+highest-priority findings. Built Fix 1 (`capture_health` table, wrapped
+`recordAttempt()`, `sensorHealth` in `check_myself`) — verified against an induced REAL
+SQLite failure, then confirmed alive on the user's own real server via three live test
+questions. Built Fix 2 (`self_model_snapshots`/`self_model_citations`,
+`server/self/self-verify.js`'s `verifyCitation()`) — a real substring-matching false
+positive (`0` matching inside `"100%"`) was caught by the fix's own test before
+shipping, not after. One real mistake mid-session, disclosed immediately: a chained
+shell command accidentally ran both new migrations against the real database while the
+server was live — confirmed harmless (additive schema only, server unaffected) but a
+genuine testing-discipline slip. Fixes 3/4 (goal-alignment check; `whatsItsCall` prose
+drift) intentionally left unbuilt, per the user's own explicit stop-after-each-fix
+instruction.
 
 ### 2026-09-02 — Self-Model subsystem built, then two real pre-existing confirm/token bugs found and fixed via the user's own live testing
 See "Right now" above for the full account; root `CLAUDE.md`'s new "Self-Model" section

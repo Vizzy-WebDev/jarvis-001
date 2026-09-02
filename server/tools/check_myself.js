@@ -10,7 +10,8 @@
 // "time") + meta:true (a live-conversation-only check; a scheduled task or
 // a Job worker's own turn has no audience to explain itself to).
 
-import { buildSelfModel, DIMENSION_KEYS } from '../self/self-model.js';
+import { buildSelfModel, DIMENSION_KEYS, extractCitableFields } from '../self/self-model.js';
+import { saveSelfModelSnapshot, recordSelfModelCitation } from '../self/self-store.js';
 
 export default {
   name: 'check_myself',
@@ -56,6 +57,23 @@ export default {
       memoryQuery: args?.memoryQuery,
       scopesInPlay: args?.scopes,
     });
+
+    // Utterance provenance (root CLAUDE.md's Self-Model section,
+    // server/self/self-verify.js) — every real call is persisted, and every
+    // NUMERIC, checkable fact in it is logged as a citation candidate right
+    // now, before anyone knows whether the reply that follows will actually
+    // use it. Never blocks or fails the tool call itself if it throws — a
+    // provenance-logging failure must never break the underlying self-check
+    // the model actually asked for.
+    try {
+      const snapshotId = saveSelfModelSnapshot({ conversationId: ctx.sessionId, turnId: ctx.turnId, toolCallId: ctx.toolCallId, snapshot: self });
+      for (const { fieldName, value } of extractCitableFields(self)) {
+        recordSelfModelCitation({ snapshotId, toolCallId: ctx.toolCallId, fieldName, fieldValue: value });
+      }
+    } catch (err) {
+      console.error('[check_myself] provenance logging failed:', err);
+    }
+
     return { ok: true, self };
   },
 };

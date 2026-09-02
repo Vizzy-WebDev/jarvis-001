@@ -79,6 +79,119 @@ export function listStats({ axis } = {}) {
   return rows.map(rowToStat);
 }
 
+// ---------- capture health ----------
+//
+// Health of the CAPTURE MECHANISM itself, distinct from what it measures —
+// self_capability_stats answers "is this tool reliable"; this answers "is
+// the thing that RECORDS that reliable." Without this, a broken recorder
+// and a tool genuinely never used are indistinguishable from every
+// self-model dimension reading self_capability_stats (self-capture.js's
+// recordToolOutcome() calls recordCaptureHealth() on both the success and
+// the failure path of its own recordAttempt() call — see that file).
+
+// A capture_health row older than this is no longer useful for
+// captureHealthSummary()'s own 24h window and is pruned opportunistically —
+// same cheap-indexed-range-delete discipline as improvement-store.js's
+// pruneReviewedOutcomes(), just with a time cutoff instead of a row-count
+// cap, since this table's own read pattern is entirely time-windowed.
+const CAPTURE_HEALTH_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Logs one capture attempt's own outcome — `ok:true` on every successful write, `ok:false` (with `errorMessage`) when the write itself threw. Never throws itself; a caller (self-capture.js) already wraps this in its own try/catch, but an unrecognized `source` is silently accepted here rather than validated, since this is a health LOG, not a policy gate — losing a health signal to an over-strict check would defeat its own purpose. */
+export function recordCaptureHealth({ source, name = null, ok, errorMessage = null }) {
+  getDb()
+    .prepare('INSERT INTO capture_health (ts, source, name, ok, error_message) VALUES (?, ?, ?, ?, ?)')
+    .run(nowIso(), source, name, ok ? 1 : 0, ok ? null : errorMessage);
+}
+
+function pruneOldCaptureHealth() {
+  const cutoff = new Date(Date.now() - CAPTURE_HEALTH_RETENTION_MS).toISOString();
+  getDb().prepare('DELETE FROM capture_health WHERE ts < ?').run(cutoff);
+}
+
+/**
+ * The last 24h of capture health, for check_myself's `can_do` dimension to
+ * report alongside (never instead of) the reliability tallies it's built
+ * on — so the model can tell "no track record because it's never been
+ * used" apart from "no track record because the recorder itself is
+ * broken." Prunes opportunistically on each call (see above) — this is
+ * called far less often than recordCaptureHealth() itself (only when
+ * can_do is actually checked), so the prune cost is paid rarely, not per
+ * tool call.
+ */
+export function captureHealthSummary() {
+  pruneOldCaptureHealth();
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const totals = getDb()
+    .prepare('SELECT COUNT(*) AS attempts, SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END) AS failures FROM capture_health WHERE ts >= ?')
+    .get(since);
+  const lastFailure = getDb().prepare('SELECT ts, source FROM capture_health WHERE ok = 0 ORDER BY ts DESC LIMIT 1').get();
+  return {
+    attempts24h: totals?.attempts || 0,
+    failures24h: totals?.failures || 0,
+    lastFailureAt: lastFailure?.ts || null,
+    lastFailureSource: lastFailure?.source || null,
+  };
+}
+
+// ---------- self-model snapshots + citations ----------
+//
+// The write side of utterance provenance (root CLAUDE.md's "Self-Model"
+// section) — server/self/self-verify.js's verifyCitation() is the read
+// side that actually checks a claim, kept in a separate file since it also
+// needs chat-store.js (the real conversation text), which this leaf module
+// deliberately never imports.
+
+function rowToSnapshot(row) {
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    turnId: row.turn_id,
+    toolCallId: row.tool_call_id,
+    snapshot: JSON.parse(row.snapshot_json),
+    createdAt: row.created_at,
+  };
+}
+
+/** Persists exactly what one check_myself call returned — the durable record "verifyCitation()" later re-reads, so a claim can be checked long after the live conversation window has moved on. */
+export function saveSelfModelSnapshot({ conversationId, turnId = null, toolCallId = null, snapshot }) {
+  const db = getDb();
+  const id = makeId('snap');
+  db.prepare(
+    'INSERT INTO self_model_snapshots (id, conversation_id, turn_id, tool_call_id, snapshot_json, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(id, conversationId, turnId, toolCallId, JSON.stringify(snapshot), nowIso());
+  return id;
+}
+
+export function getSelfModelSnapshot(id) {
+  const row = getDb().prepare('SELECT * FROM self_model_snapshots WHERE id = ?').get(id);
+  return row ? rowToSnapshot(row) : null;
+}
+
+/** Finds a snapshot by the real tool_call id that produced it, for a forensic script that only has the conversation transcript to start from — never trusts a caller to already know the snapshot's own generated id. */
+export function getSnapshotByToolCallId(conversationId, toolCallId) {
+  const row = getDb()
+    .prepare('SELECT * FROM self_model_snapshots WHERE conversation_id = ? AND tool_call_id = ? ORDER BY created_at DESC LIMIT 1')
+    .get(conversationId, toolCallId);
+  return row ? rowToSnapshot(row) : null;
+}
+
+/** One candidate checkable fact from a snapshot — `fieldValue` is stored for a human skimming the raw table, but `verifyCitation()` never trusts it; it re-reads the snapshot itself instead, so this row going stale can never produce a wrong verdict. */
+export function recordSelfModelCitation({ snapshotId, toolCallId = null, fieldName, fieldValue }) {
+  const db = getDb();
+  const id = makeId('cite');
+  db.prepare(
+    'INSERT INTO self_model_citations (id, snapshot_id, tool_call_id, field_name, field_value, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(id, snapshotId, toolCallId, fieldName, String(fieldValue), nowIso());
+  return id;
+}
+
+export function listCitationsForSnapshot(snapshotId) {
+  return getDb()
+    .prepare('SELECT id, snapshot_id, tool_call_id, field_name, field_value, created_at FROM self_model_citations WHERE snapshot_id = ?')
+    .all(snapshotId)
+    .map((r) => ({ id: r.id, snapshotId: r.snapshot_id, toolCallId: r.tool_call_id, fieldName: r.field_name, fieldValue: r.field_value, createdAt: r.created_at }));
+}
+
 // ---------- goals ----------
 
 function rowToGoal(row) {

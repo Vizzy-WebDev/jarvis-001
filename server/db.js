@@ -551,6 +551,76 @@ const MIGRATIONS = [
     }
     if (changed) writeJson('models', data);
   },
+
+  // 11: Sensor health for the Self-Model's own capture mechanism (root
+  // CLAUDE.md's "Self-Model" section; server/self/CLAUDE.md) — a real audit
+  // gap this closes: before this, self-capture.js's recordAttempt() call ran
+  // with no local error handling, so a broken recorder and a tool genuinely
+  // never used looked identical to every dimension reading
+  // self_capability_stats. `ok` here means "did the CAPTURE WRITE itself
+  // succeed," a different axis from self_capability_stats.failures ("did the
+  // TOOL CALL fail") — every capture attempt logs one row here, success or
+  // failure, so captureHealthSummary()'s "attempts" count is meaningful.
+  // `source` mirrors self_capability_stats' own axis values ('tool' |
+  // 'job_kind'->'job' | 'task_type'->'task' for readability here) though
+  // only 'tool' is actually written today — no job/task capture call site
+  // exists yet, adding one is out of this fix's scope.
+  (conn) => {
+    conn.exec(`
+      CREATE TABLE capture_health (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts            TEXT NOT NULL,
+        source        TEXT NOT NULL,
+        name          TEXT,
+        ok            INTEGER NOT NULL,
+        error_message TEXT
+      );
+      CREATE INDEX idx_capture_health_ts ON capture_health(ts);
+    `);
+  },
+
+  // 12: Utterance provenance for the Self-Model (root CLAUDE.md's
+  // "Self-Model" section) — the audit's central finding was that
+  // check_myself retrieves real data, then the model builds a sentence on
+  // top of it with nothing checking the sentence used the data faithfully.
+  // This does NOT try to verify free-form prose (not solvable) — it verifies
+  // NUMERIC facts only, the one part of "did the reply match the data" that
+  // plain string matching can actually answer.
+  //
+  // `self_model_snapshots` — one row per check_myself call, the exact JSON
+  // it returned, so "what did it actually say back then" is answerable
+  // forever, not just for as long as the live conversation window holds it.
+  //
+  // `self_model_citations` — one row per NUMERIC, checkable fact a given
+  // snapshot contained (self-model.js's extractCitableFields()) — logged the
+  // moment the snapshot is taken, before anyone knows whether the reply that
+  // follows will actually use it. This is a candidate index, not a verdict:
+  // verifyCitation() (server/self/self-verify.js) is the actual check, and
+  // it never trusts this table's own field_value — it re-reads the snapshot
+  // fresh every time, so a citation row can never go stale and mislead.
+  (conn) => {
+    conn.exec(`
+      CREATE TABLE self_model_snapshots (
+        id              TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        turn_id         TEXT,
+        tool_call_id    TEXT,
+        snapshot_json   TEXT NOT NULL,
+        created_at      TEXT NOT NULL
+      );
+      CREATE INDEX idx_self_model_snapshots_conv ON self_model_snapshots(conversation_id);
+
+      CREATE TABLE self_model_citations (
+        id            TEXT PRIMARY KEY,
+        snapshot_id   TEXT NOT NULL REFERENCES self_model_snapshots(id) ON DELETE CASCADE,
+        tool_call_id  TEXT,
+        field_name    TEXT NOT NULL,
+        field_value   TEXT NOT NULL,
+        created_at    TEXT NOT NULL
+      );
+      CREATE INDEX idx_self_model_citations_snapshot ON self_model_citations(snapshot_id);
+    `);
+  },
 ];
 
 function migrate(conn) {

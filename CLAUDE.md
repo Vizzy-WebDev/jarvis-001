@@ -709,7 +709,37 @@ decisions that matter beyond that file:
   Self-Improvement's existing `improvement_outcomes` pipeline (never a second pipeline).
   `self-model.js` is the assembler: one builder function per dimension, dispatched by
   `buildSelfModel({only: [...]})` — omitting `only` builds nothing at all, never a
-  default "everything."
+  default "everything." **The recorder itself has a health check, found necessary by a
+  later audit, not designed in from the start.** `self-capture.js`'s `recordAttempt()`
+  call used to run with no local error handling — a genuine SQLite write failure
+  propagated straight out, caught only by `runner.js`'s own outer wrapper, logged and
+  nothing else; a broken recorder and a tool genuinely never used were indistinguishable
+  from every dimension reading `self_capability_stats`. Now wrapped locally, and either
+  branch (success or failure) logs to `db.js` migration 11's `capture_health` table —
+  `captureHealthSummary()` surfaces the last 24h's attempts/failures via `check_myself`'s
+  `can_do` dimension, always included, so a `no_track_record` verdict can be told apart
+  from "never used" versus "the recorder itself is broken."
+- **Utterance provenance — the same later audit's harder finding, and the one still-open
+  gap it explicitly could not close on its own: `check_myself` retrieves real data, then
+  a model builds a sentence on top of it, and nothing checked whether the sentence used
+  that data faithfully.** `server/self/self-verify.js`'s `verifyCitation(snapshotId,
+  toolCallId, fieldName)` closes this for exactly one narrow, machine-checkable slice —
+  NUMBERS, never free-form prose (deliberately out of scope; understanding whether a
+  sentence's MEANING matches isn't solvable this way, and this file never tries).
+  `db.js` migration 12 adds `self_model_snapshots` (the exact JSON every `check_myself`
+  call actually returned, persisted permanently) and `self_model_citations` (every
+  NUMERIC, checkable fact in a snapshot, logged as a citation candidate the instant the
+  snapshot is taken — before anyone knows whether the reply that follows will use it).
+  `verifyCitation()` never trusts a citation row's own stored value; it re-reads the
+  snapshot AND the real persisted reply fresh every time (via `chat-store.js`'s
+  `getMessages()`, correlating by the tool call's own id, never a new schema field on
+  `messages` itself), and returns `used` / `ignored` / `unverifiable` — a free-text field
+  is always `unverifiable`, on purpose, never guessed at. **A real bug this build's own
+  verification caught before shipping:** the first version of the number-matching used
+  plain substring containment, so a citable value of `0` falsely matched inside the text
+  `"100%"` (`.includes('0')` is true for `"100%"`) — fixed with word-boundary-safe
+  matching (`(?<!\d)0(?!\d)`), re-verified in both directions: a real citation is never
+  missed, and a coincidental digit inside an unrelated longer number never falsely counts.
 - **This reads Memory, Jobs, Self-Improvement, and Personality; it duplicates none of
   them, and the user's own settled decision on this exact question was to keep it that
   way.** Dimensions 3/7 ("how it behaves" / "how it fails") are a read-only VIEW over

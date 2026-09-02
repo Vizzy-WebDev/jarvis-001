@@ -27,17 +27,27 @@ answer.
 
 ## Modules
 
-- **`self-store.js`** — leaf (imports only `db.js`). The two new tables from `db.js`
-  migration 9: `self_capability_stats` (a rolling per-`(axis, key)` tally —
+- **`self-store.js`** — leaf (imports only `db.js`). Two tables from `db.js` migration
+  9: `self_capability_stats` (a rolling per-`(axis, key)` tally —
   `recordAttempt(axis, key, ok)` bumps it, `getStat`/`listStats` read it; a row that has
   never been written returns `null`, never a zeroed-out fake) and `self_goals` (one
   active row per `(scope_kind, scope_ref)` — `declareGoal()` closes any prior active goal
   for the same scope before inserting a new one, so there's never more than one active
-  goal per scope at a time; `closeGoal()`/`getActiveGoal()` round it out). Deliberately
-  holds **no prose knowledge and no facts about the user** — that's what keeps this from
-  being the "second memory-like store" the build was explicitly told never to create;
-  everything content-shaped keeps going through `improvement/improvement-store.js`'s
-  existing tables instead.
+  goal per scope at a time; `closeGoal()`/`getActiveGoal()` round it out). Plus one more
+  from migration 11: `capture_health` (`recordCaptureHealth()`/`captureHealthSummary()`)
+  — the health of the CAPTURE MECHANISM itself, a different axis from what
+  `self_capability_stats` measures; see `self-capture.js`'s own entry below. Two more
+  from migration 12: `self_model_snapshots` (`saveSelfModelSnapshot()`/
+  `getSelfModelSnapshot()`/`getSnapshotByToolCallId()` — the exact JSON a `check_myself`
+  call returned, kept permanently) and `self_model_citations`
+  (`recordSelfModelCitation()`/`listCitationsForSnapshot()` — one row per numeric,
+  checkable fact a snapshot contained, logged as a CANDIDATE the instant the snapshot is
+  taken, never as a confirmed verdict); see `self-verify.js`'s own entry below for the
+  actual check built on top of these two. All five deliberately hold **no prose
+  knowledge and no facts about the user** — that's what keeps this from being the
+  "second memory-like store" the build was explicitly told never to create; everything
+  content-shaped keeps going through `improvement/improvement-store.js`'s existing
+  tables instead.
 - **`self-signals.js`** — zero imports, pure. `detectSelfSignals()` takes only plain data
   a caller has already computed from real state (never touches a store itself) and
   returns which of five triggers fired: `authority`, `knownFailure`, `noTrackRecord`,
@@ -52,7 +62,14 @@ answer.
   failure, a refused-allowlist call, or an escalated confirm) also writes one more
   `improvement_outcomes` row (`source: 'turn'`) into Self-Improvement's *existing*
   pipeline — this file is the one place this build feeds that pipeline, and it feeds the
-  one door it already has, never a second one.
+  one door it already has, never a second one. **A real audit gap, closed:**
+  `recordAttempt()` used to run with no local error handling — a throw from
+  `self-store.js`'s SQLite write propagated straight out, caught only one level up in
+  `runner.js`'s own wrapper, left on record as nothing but a `console.error`. A broken
+  recorder and a tool genuinely never used looked identical to every dimension reading
+  `self_capability_stats`. Now wrapped in its own local `try/catch`, and either branch
+  logs to `self-store.js`'s `capture_health` table (`recordCaptureHealth()`) — the health
+  of the SENSOR, distinct from what it measures.
 - **`self-model.js`** — the assembler. Not a leaf (imports several stores), but every one
   of those is itself leaf or leaf-adjacent, which is what keeps this file safe for
   `server/tools/check_myself.js` to import directly. `buildSelfModel({ only, ... })`
@@ -63,6 +80,23 @@ answer.
   `computeTurnSignals()` is the live-data half of `detectSelfSignals()` — reads the real
   current state (active jobs, pending memory conflicts, active lesson/rule scopes, tool
   stats) and hands it to the pure function, keeping `self-signals.js` itself zero-import.
+  Also exports `extractCitableFields(snapshot)` and `getByPath(obj, path)` — the
+  mechanical, key-name-blocklist walker `check_myself.js` uses to find every NUMERIC
+  leaf in its own returned snapshot (see `self-verify.js` below for why only numbers).
+- **`self-verify.js`** — leaf-adjacent (imports `self-store.js` and `../chat-store.js`,
+  both leaves; `self-store.js` itself deliberately never imports `chat-store.js`, so
+  this is the one place the two meet). The actual utterance-provenance check:
+  `verifyCitation(snapshotId, toolCallId, fieldName)` re-reads the real snapshot AND the
+  real reply that followed it — via `chat-store.js`'s own `getMessages()`, correlating
+  by the tool call's own persisted id, never a new schema field on `messages` — and
+  returns `used` / `ignored` / `unverifiable`. Never trusts `self_model_citations`' own
+  stored `field_value`; always re-derives it fresh from the snapshot, so a stale
+  citation row can never produce a wrong verdict. Deliberately does NOT attempt to
+  verify free-form prose (not solvable) — a non-numeric field always returns
+  `unverifiable`, the honest outcome, never guessed at either way. Purely forensic today
+  — no tool exposes it to a model; it's meant for a one-off script the way earlier real
+  bugs in this project were diagnosed (root CLAUDE.md's "No automated test suite"
+  section).
 - **`CLAUDE.md`** — this file.
 
 ## Dimension grounding, one line each (see `self-model.js`'s own comments for the full detail)
@@ -73,13 +107,22 @@ answer.
 2. **What it can/can't do** — `self_capability_stats` for tools; `improvement-store.js`'s
    new `outcomeReliability()` aggregate for job kinds/task types (no rolling tally exists
    for those two axes in this build — see `self-store.js`'s header comment on why).
+   `sensorHealth` (`self-store.js`'s `captureHealthSummary()`, always included in this
+   dimension's response) reports the health of the RECORDER itself — a
+   `no_track_record` verdict elsewhere in the same response can now be told apart from
+   "never used" versus "the thing that would have noticed it was used is broken."
 3. **How it behaves** — a read-only VIEW over `improvement-store.js`'s `listRules()` —
    owns none of this data.
 4. **Doing now, and why** — active jobs, the goal declared for this session
    (`self_goals`), and Personality's *own already-computed* `readStyle()` result,
    reported, never re-decided (see the header invariant).
 5. **How it knows** — real memory `origin`/date on a text match, real provenance-kind
-   descriptions, otherwise labelled general knowledge — never invents a category.
+   descriptions, otherwise labelled general knowledge — never invents a category. Every
+   real `check_myself` call is also persisted (`self_model_snapshots`) with its
+   checkable NUMERIC facts logged as citation candidates — `self-verify.js`'s
+   `verifyCitation()` is the actual, independent check of whether a given call's own
+   reply used one, closing the audit's central finding for the one narrow slice of
+   "did the sentence match the data" that plain string matching can answer.
 6. **Its call to make** — reads the *actual live values* out of `memory-policy.js`'s
    `THRESHOLDS` and `improvement-policy.js`'s `MIN_EVIDENCE_BY_TRUST`/hard floors, so this
    can never drift from what those modules really enforce.
@@ -130,3 +173,11 @@ itself, injected into every capability's `ctx` — see that file's own header co
 also injects `listCapabilities` — the one piece of dimension 1's live counts
 (`self-model.js`'s `whatItIs()`) that can only come from `capabilities.js`, which this
 directory can never import directly.
+
+A separate, one-hop-earlier addition: `models/runner.js` itself now passes
+`toolCallId: call.id` into the `ctx` object it builds for every `invoke()` call (the
+same object `turnId`/`style` already ride in) — this is runner.js's own ctx, not
+something `capabilities.js` injects, since it needs the real tool call's own id from
+the adapter's own response, which only runner.js's per-step loop ever sees.
+`check_myself.js` uses this exact id to link its snapshot/citation rows back to the
+real, persisted `messages` row `self-verify.js`'s `verifyCitation()` later reads.

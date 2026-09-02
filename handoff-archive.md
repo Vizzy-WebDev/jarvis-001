@@ -18,6 +18,99 @@ in this file by name for incident history: root `CLAUDE.md` and
 
 ---
 
+### 2026-09-02 — Heartbeat + Trigger + Proactive Attention built from scratch, then live-tested by the user with two real fixes
+
+**Plan file**: `C:\Users\HP\.claude\plans\before-you-start-read-groovy-lecun.md`.
+
+Built the user's own spec for Jarvis noticing things on its own, independent of any open
+conversation, and speaking up first when genuinely warranted — without hardcoding what
+it watches or a fixed "emergency category" list, and without becoming a pest. See root
+`CLAUDE.md`'s new "Heartbeat + Trigger + Proactive Attention" section and
+`server/heartbeat/CLAUDE.md` for the full architecture; this entry is the build/testing
+narrative.
+
+**Architectural path** (brainstorming → clarifying questions → written plan →
+approval), since it crosses Jobs, Memory, Personality, and the front-end voice pipeline.
+Three fork questions resolved before any code: Tier 1 delivery when available should be
+**genuine unprompted speech** (not just "mention it next turn" — a real new channel,
+since nothing in the app could previously start a turn with no user message); Memory
+commitments should use a **deterministic date/time parser first**, a budgeted model call
+only for text a parser can't handle; availability should combine **tab-connected +
+recently-active** with a **secondary busy check** via the same window/process bridge
+Monitoring already uses, skippable only for a genuine emergency.
+
+**The one real dependency gap, surfaced before writing any code**: the existing Tier
+1/2/3 Interruption Broker (`job_outbox`) was schema-bound to Jobs (`job_id TEXT NOT
+NULL`) — a Heartbeat finding with no job behind it literally could not be inserted.
+Flagged to the user as a real migration on the live database before proceeding, not
+discovered mid-build.
+
+**Built**: `server/heartbeat/` — `schedule-store.js`/`outbox-store.js` (persisted
+per-item due times; the generalized broker, `db.js` migration 13 rebuilding
+`job_outbox` into a generic `outbox` table with `source`/`source_ref`, `job_id` still
+real and cascading — every existing Jobs call site needed zero changes, via thin
+wrappers in `jobs/job-store.js`), `sources/registry.js` (the entire plug-in surface,
+pure/zero-import), the two day-one sources (`jobs-source.js`, `commitments-source.js`
+with its own hand-written zero-dependency date parser, `date-parse.js`, plus a small
+per-source daily budget ledger, `budget.js`, separate from Self-Improvement's), the
+urgency-reasoning step (`decision.js` — one model call judging tier AND, only during
+quiet hours, the emergency bar, weighed against real approved-memory context rather than
+a hardcoded list), `quiet-hours.js`/`presence.js` (the two gates on live speech,
+deliberately separate functions since an emergency should skip only the busy dampener,
+not the reachability check), `speak.js` (the new proactive-speech channel — reuses
+`brain.js`'s `getActiveSessionId()` rather than reimplementing session resolution),
+`engine.js`/`triggers.js` (the tick and the event-driven reaction, both funneling into
+one `routeFinding()` — never two pipelines), one new tool (`acknowledge_notice`, the
+resolving action a heartbeat finding needs that Jobs' own `check_on_work`/
+`stop_working_on` don't apply to), a quiet-hours settings card on the Notifications
+screen, and a `proactive_message` client handler (`public/app.js`) that plays it through
+a standalone `AudioPlayer`/`BrowserSpeaker` instance and briefly reflects it on the orb.
+
+**Verification, before handing anything to the user**: full migration run against a
+real copy of the user's actual `jarvis.db` (12 real `job_outbox` rows), confirming every
+row survived intact under the new schema and the old table was genuinely dropped; a
+scratch server (isolated data dir/port, the user's real `.env` for a working model)
+confirming restart/burst behavior (25 seeded items split cleanly across two ticks, none
+double-processed), per-check error isolation (a deliberately broken source never stopped
+a healthy one in the same tick), and `decision.js`'s real reasoning against both an
+urgent and a mundane finding, in and out of quiet hours. **A real, live-caught dedup
+bug, found during this verification pass, not shipped**: a Tier 3 verdict never creates
+an outbox row (nothing to interrupt for), so the broker's own undelivered-row dedup had
+nothing to check against — a routine, correctly-Tier-3 job permission ask re-notified,
+with a fresh spent model call, every ~3 minutes, forever. Fixed by having a source track
+its own "already reported" memory via `heartbeat_schedule`'s `check_state` column (the
+same discipline `commitments-source.js` already used for its own approaching/overdue
+flags) — confirmed fixed by watching the notification count hold flat across multiple
+further tick cycles for the same still-unresolved job. Full proactive-speech path also
+confirmed live in an actual browser (`agent-browser`): a real unprompted assistant
+bubble appeared in the transcript with no message from the user, correctly worded, the
+outbox row correctly marked delivered — the one piece not independently confirmable in
+that environment was actual audible sound (a documented, expected limitation of
+automated/CDP browser testing, per this project's own prior "Real Vocal Laughter"
+entry), left for the user's own regular browser.
+
+**The user's own live testing, on their real restarted instance, found one more real
+issue this session's own scratch testing hadn't**: Test 1 (stays quiet) and Test 2
+(genuine urgency → real unprompted speech) both passed on the user's first attempt,
+screenshots confirmed — the quiet-hours card renders and saves correctly, and a bank-
+overdraft scenario produced a real, unprompted "Background work waiting on you" bubble.
+**Test 3 (emergency breaks through quiet hours) failed on the first live attempt**: the
+model's own urgency-judgment call reasoned "it's asking for permission rather than
+flagging an emergency" — fixating on the fact that a job's own outbox summary is always
+phrased as a polite "OK to start?" regardless of how urgent the underlying situation
+actually is, rather than the real stakes described. Fixed by adding an explicit
+instruction to `decision.js`'s prompt telling it to judge the real-world stakes, not the
+tone the finding happens to be phrased in — re-tested against the exact failing
+scenario, 5 times: the phrasing-fixation reasoning is gone from every run, though the
+emergency threshold specifically (a deliberately high bar, per the user's own spec)
+still lands inconsistently on a moderately-worded scenario without a hard number/
+deadline — a real, disclosed limitation of relying on a model for this judgment, not
+something claimed as fully solved. **Test 3 has not yet been re-run live by the user
+against the fixed prompt as of this entry** — see `handoff.md`'s "Waiting on the user."
+Nothing from this session is committed.
+
+---
+
 ### 2026-08-31 → 2026-09-01 — Full audit + remediation, skeptical re-verification, TTS/voice provider debugging, model fallback/health architecture fix, connector picker redesign
 
 **Plan files**: `C:\Users\HP\.claude\plans\i-want-you-to-structured-pretzel.md` (reused

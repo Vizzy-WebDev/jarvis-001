@@ -14,6 +14,11 @@ export function removeClient(res) {
   clients.delete(res);
 }
 
+/** How many browser tabs currently hold the SSE connection open — heartbeat/presence.js's first, cheapest availability signal ("is anyone even looking at this right now"). */
+export function clientCount() {
+  return clients.size;
+}
+
 export function broadcast(event) {
   const payload = `data: ${JSON.stringify(event)}\n\n`;
   for (const res of clients) {

@@ -4,7 +4,7 @@
 // updates every model.
 
 import { approvedMemoriesText } from './memory/memory-store.js';
-import { listPendingOutbox } from './jobs/job-store.js';
+import { listPending as listPendingOutbox } from './heartbeat/outbox-store.js';
 import { listConnectors } from './connectors/store.js';
 import { listUserSkills } from './skills/store/skill-files.js';
 import { activeRulesText } from './improvement/improvement-store.js';
@@ -234,6 +234,19 @@ function skillsSection() {
  * conversation history is what keeps it from repeating itself unnaturally
  * turn after turn once it genuinely has already said it.
  */
+/**
+ * Drains the generalized Interruption Broker (heartbeat/outbox-store.js) —
+ * NOT job-only any more despite the function's own name (kept to avoid
+ * rippling a rename across every comment that references it; see root
+ * CLAUDE.md's Heartbeat section for the generalization itself). A
+ * `source:'job'` row still resolves via check_on_work/stop_working_on, same
+ * as always. A `source:'heartbeat'` row (a Heartbeat/Trigger finding — see
+ * server/heartbeat/) has no such resolving action of its own, so
+ * acknowledge_notice is what marks it delivered once actually mentioned —
+ * without it, a heartbeat finding would sit in this section forever,
+ * relying purely on "don't repeat what you already said," the same
+ * accepted-soft edge Jobs' own tier1/2 rows already live with.
+ */
 function jobsSection() {
   const pending = listPendingOutbox({});
   if (!pending.length) return '';
@@ -242,14 +255,15 @@ function jobsSection() {
   const lines = [];
   if (tier1.length) {
     lines.push("These need the owner's attention now — mention them clearly at a natural point in this reply (never mid-sentence), in your own words:");
-    for (const p of tier1) lines.push(`- ${p.summary}`);
+    for (const p of tier1) lines.push(`- ${p.summary}${p.source === 'heartbeat' ? ` (notice_id: ${p.id})` : ''}`);
   }
   if (tier2.length) {
     lines.push("These are worth mentioning if there's a natural moment in this reply, but never force them in awkwardly or interrupt what the owner is actually saying for them:");
-    for (const p of tier2) lines.push(`- ${p.summary}`);
+    for (const p of tier2) lines.push(`- ${p.summary}${p.source === 'heartbeat' ? ` (notice_id: ${p.id})` : ''}`);
   }
   lines.push('If you already told the owner about one of these earlier in this same conversation and nothing has changed, do not repeat it again unless they ask.');
-  lines.push('To act on one, use check_on_work with its job_id and respond:"keep_going" (only once the owner has actually said to keep going, optionally with their own guidance on what to try instead) or stop_working_on to cancel it.');
+  lines.push('To act on a background Job one of these mentions, use check_on_work with its job_id and respond:"keep_going" (only once the owner has actually said to keep going, optionally with their own guidance) or stop_working_on to cancel it.');
+  lines.push('For one marked with a notice_id, there is nothing to act on beyond actually telling the owner — call acknowledge_notice with that notice_id right after you do, so it is not brought up again.');
   return `\n\nBackground work waiting on you:\n${lines.join('\n')}`;
 }
 

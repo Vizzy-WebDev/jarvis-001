@@ -5,9 +5,68 @@
 // (_notification-detail.js) — same in-page-swap pattern app-control.js and
 // skills.js already use for their own rows.
 
-import { sectionCard, armedButton, postJson } from './_helpers.js';
-import { segmented } from './_ui.js';
+import { sectionCard, fieldInput, armedButton, postJson } from './_helpers.js';
+import { segmented, toggleSwitch } from './_ui.js';
 import { render as renderNotificationDetail } from './_notification-detail.js';
+
+/**
+ * Quiet hours — the settings control for server/heartbeat/'s proactive
+ * contact window (see root CLAUDE.md's Heartbeat section). Lives on this
+ * screen since it's the closest existing home for "how Jarvis surfaces
+ * things to me" — a heartbeat/trigger finding always lands here (or the
+ * bell) regardless of tier, so this is where controlling it belongs too.
+ * Same sectionCard/postJson('/api/prefs', ...) pattern memory.js's own
+ * trust-dial card already uses.
+ */
+function buildQuietHoursCard(prefs, onChange) {
+  const card = sectionCard('Quiet hours');
+  const quietHours = prefs.quietHours || { enabled: true, start: '23:00', end: '08:00' };
+
+  const enabledRow = document.createElement('label');
+  enabledRow.className = 'settings-row';
+  enabledRow.appendChild(Object.assign(document.createElement('span'), { textContent: 'No proactive contact during this window' }));
+  const toggle = toggleSwitch({
+    value: quietHours.enabled,
+    onChange: async (on) => {
+      await postJson('/api/prefs', { quietHours: { ...quietHours, enabled: on } });
+      timesRow.classList.toggle('hidden', !on);
+      onChange?.();
+    },
+  });
+  enabledRow.appendChild(toggle.wrapper);
+  card.appendChild(enabledRow);
+
+  const timesRow = document.createElement('div');
+  timesRow.className = 'settings-row';
+  timesRow.classList.toggle('hidden', !quietHours.enabled);
+
+  const startField = fieldInput('From', 'time');
+  startField.input.value = quietHours.start;
+  const endField = fieldInput('Until', 'time');
+  endField.input.value = quietHours.end;
+
+  async function saveTimes() {
+    if (!startField.input.value || !endField.input.value) return;
+    await postJson('/api/prefs', { quietHours: { ...quietHours, start: startField.input.value, end: endField.input.value } });
+    onChange?.();
+  }
+  startField.input.addEventListener('change', saveTimes);
+  endField.input.addEventListener('change', saveTimes);
+
+  timesRow.append(startField.wrapper, endField.wrapper);
+  card.appendChild(timesRow);
+
+  card.appendChild(
+    Object.assign(document.createElement('p'), {
+      className: 'hint',
+      textContent:
+        'Only a genuine emergency — real money, irreversible harm, or a real safety issue — breaks through this window; ' +
+        'everything else still gets recorded here and mentioned the next time you start a conversation.',
+    })
+  );
+
+  return card;
+}
 
 // Set by public/notifications.js (the header bell popover) right before it
 // calls navigate('notifications') for a row with no action.section — the
@@ -82,9 +141,12 @@ function buildRow(n, { onOpen, onChange }) {
 export async function render(container) {
   container.innerHTML = '';
 
-  const res = await fetch('/api/notifications');
-  const { notifications } = await res.json();
+  const [notifRes, prefsRes] = await Promise.all([fetch('/api/notifications'), fetch('/api/prefs')]);
+  const { notifications } = await notifRes.json();
+  const prefs = await prefsRes.json();
   const onChange = () => render(container);
+
+  container.appendChild(buildQuietHoursCard(prefs, onChange));
 
   let filter = 'all'; // 'all' | 'unread'
 

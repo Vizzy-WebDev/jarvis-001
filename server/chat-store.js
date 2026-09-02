@@ -167,6 +167,14 @@ export function getMessages(id) {
   return rows.map(rowToMessage);
 }
 
+/** Just the timestamp of the most recent USER message in a conversation — a single indexed lookup, not a full transcript read. Used by heartbeat/presence.js to gauge how recently the user was actually active, without paying for getMessages()'s whole-conversation cost on every check. Returns null if the conversation has no user message (or doesn't exist). */
+export function getLastUserMessageAt(id) {
+  const row = getDb()
+    .prepare("SELECT created_at FROM messages WHERE conversation_id = ? AND role = 'user' ORDER BY seq DESC LIMIT 1")
+    .get(id);
+  return row?.created_at || null;
+}
+
 /**
  * Messages strictly after `afterSeq`, each carrying its own `seq` — used by
  * server/memory/memory-review.js so a checkpoint only ever analyses NEW

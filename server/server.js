@@ -81,6 +81,7 @@ import {
   cancelJob,
 } from './jobs/orchestrator.js';
 import { startImprovementCycle } from './improvement/cycle.js';
+import { startHeartbeat } from './heartbeat/index.js';
 import { showOverlay, hideOverlay, updateStep, isOverlayActive, currentOverlayStep } from './control/overlay-bridge.js';
 import { isIndicatorActive } from './control/observation-bridge.js';
 import { runControlSession, requestStop, confirmPendingAction, getSessionStatus } from './control/session.js';
@@ -2422,6 +2423,13 @@ startOrchestrator();
 // any job orchestrator.js's own recoverOrphans() (called inside
 // startOrchestrator()) may have just classified 'orphaned'.
 startImprovementCycle();
+
+// Heartbeat + Trigger + Proactive Attention (server/heartbeat/) — started
+// after the two above for the same reason improvement's own cycle is: its
+// triggers.js subscribes to the same jobs/job-events.js bus
+// startOrchestrator() already primed, and its own first tick can see
+// whatever startOrchestrator()'s orphan sweep just wrote.
+startHeartbeat();
 
 // Resumes any monitor still 'watching' from before the last restart —
 // without this a server restart would silently orphan an in-progress watch

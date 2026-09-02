@@ -581,6 +581,102 @@ that file:
   Confirmed live: a `computer`-kind job sat inert with `startedAt: null` across multiple
   supervisor ticks until explicitly resumed — it was never once allowed to auto-start.
 
+## Heartbeat + Trigger + Proactive Attention (`server/heartbeat/*.js`)
+
+Jarvis noticing things on its own — independent of any open conversation — and, when
+genuinely warranted, speaking up first. A different mechanism from the Scheduler (a task
+runs on a clock Jarvis has no judgment about) and from Jobs' own supervision (an
+orchestrator watching a worker it started) — this watches for CONDITIONS worth surfacing
+and decides whether they're worth interrupting for. See `server/heartbeat/CLAUDE.md`
+for the module-by-module breakdown; the decisions that matter beyond that file:
+
+- **Generic by construction, not by convention.** `sources/registry.js` is pure and zero-
+  import — the entire plug-in surface is `registerSource({id, defaultIntervalMs,
+  listItems(), check(itemKey)})`. The engine that ticks and the decision layer that
+  judges urgency know nothing about what a source actually watches. Day one plugs in
+  exactly two: `sources/jobs-source.js` (background Job status) and
+  `sources/commitments-source.js` (time-sensitive Memory commitments) — a third source
+  later is one `registerSource()` call, nothing about `engine.js`/`decision.js` changes.
+- **Frequency is per-item, persisted, and restart-safe — not a hoped-for property, a
+  real schema.** `heartbeat_schedule` (db.js migration 13) stores each item's own
+  `next_due_at`; a restart never resets it to zero and never re-checks everything at
+  once. `engine.js`'s tick processes whatever's due SEQUENTIALLY, capped per tick — the
+  cap plus sequential ordering is what turns a big catch-up backlog into several ticks
+  of steady work instead of one burst. Confirmed live: 25 items seeded simultaneously
+  split cleanly across two ticks (18 then 7) with none double-processed. A `running`
+  flag (cleared once, at startup only — `resetStaleRunning()`) prevents a still-running
+  check from being started a second time; a thrown error from a source's own
+  `listItems()`/`check()` is caught per-source/per-item and never stops another item's
+  processing in the same tick — confirmed live with a deliberately broken source
+  alongside a healthy one in the same tick.
+- **The Interruption Broker is the SAME one Jobs already built, genuinely reused, not a
+  parallel mechanism wearing a different name.** Jobs' original `job_outbox` table was
+  schema-bound to jobs (`job_id TEXT NOT NULL`); db.js migration 13 rebuilds it as a
+  generalized `outbox` table (`server/heartbeat/outbox-store.js`) with `source`/
+  `source_ref` alongside a still-real, still-cascading `job_id` column — every one of
+  Jobs' own existing call sites (`job-actions.js`, `worker.js`, `orchestrator.js`,
+  `server.js`'s job routes) needed zero changes, since `jobs/job-store.js`'s own outbox
+  functions became thin wrappers over the generalized store. Confirmed live: migrating a
+  real copy of the user's actual database preserved all 12 real `job_outbox` rows intact
+  under the new schema. `prompt.js`'s drain (kept under its original name, `jobsSection()`,
+  to avoid rippling a rename across every comment referencing it) now words a
+  `source:'heartbeat'` row differently and points it at a new tool, `acknowledge_notice`
+  — the one resolving action such a row needs that Jobs' own `check_on_work`/
+  `stop_working_on` don't apply to.
+- **A real, live-caught dedup bug, worth understanding before touching a source's
+  `check()`.** A Tier 3 verdict never creates an outbox row at all (nothing to
+  interrupt for), so the broker's own undelivered-row dedup has nothing to check
+  against for Tier 3 findings. Confirmed live: the first version of `jobs-source.js` had
+  no dedup of its own, and a routine, correctly-Tier-3-judged job permission ask
+  re-notified — with a fresh spent urgency-decision model call each time — every ~3
+  minutes, forever. The fix: a source whose underlying condition can stay true across
+  many ticks must track its OWN "already reported" memory via `heartbeat_schedule`'s
+  `check_state` column (returning `{finding, checkState}` from `check()`, read back via
+  `schedule-store.js`'s `getItem()`) — the same discipline `commitments-source.js`
+  already used for its own approaching/overdue flags. Verified live after the fix:
+  notification count held flat across multiple further tick cycles for the same
+  still-unresolved job, where it had climbed by one every cycle before.
+- **One urgency-reasoning step, used only for Heartbeat/Trigger findings — Jobs' own
+  tier assignment at its own call sites is untouched.** `decision.js`'s
+  `decideAttention()` weighs a finding against real, live context (approved memories,
+  via the same `approvedMemoriesText()` `prompt.js` already injects) rather than
+  matching a fixed "emergency category" list, per the user's own explicit requirement
+  that such a list breaks the moment their life or priorities change. One model call
+  answers both the tier (1/2/3) and — only when quiet hours are active — whether this
+  clears the emergency bar, to keep quota cost down. No model available, or an
+  unparseable reply, is never treated as Tier 1 or an emergency by default; it falls
+  back to Tier 3, a quiet record only — silence is the safe failure direction in both
+  places. Verified live against a real model: a genuine financial-harm finding correctly
+  came back Tier 1 (and, tested during quiet hours, a real stated emergency), citing an
+  actual approved memory about the user's finances in its own reasoning; a mundane
+  household reminder correctly came back Tier 3 in both cases.
+- **Quiet hours gate LIVE SPEECH only, never the record.** `prefs.quietHours`
+  (`{enabled, start, end}`, default on with a sensible night window — the one pref in
+  this project that isn't an opt-in dial, since a fresh install should never get
+  proactive contact overnight before the user has even seen the setting) is read by
+  `quiet-hours.js`. The notification and outbox row a finding produces are created
+  regardless of quiet hours — they only take effect once the user is already engaging,
+  at which point quiet hours has nothing left to protect; only whether `speak.js`
+  actually fires right now is gated. The bar for the emergency exception is explicit,
+  reasoned text from the SAME decision call, not a second mechanism — "when genuinely in
+  doubt, it is NOT an emergency" is stated directly in its own instructions.
+- **Availability is two separate checks, not one, because an emergency should skip only
+  one of them.** `presence.js`'s `isReachable()` (a tab connected AND the user recently
+  active) is the hard requirement for any live delivery — no plausible way to reach them
+  without it, emergency or not. `isBusy()` (a small, admittedly incomplete starting list
+  of call-app process names via the same `control/ps-bridge.js` window/process listing
+  `server/monitor/engine.js` already uses — a browser-tab call is not detectable this
+  way at all) is the secondary dampener the build spec describes, and is deliberately
+  skippable for a genuine emergency the same way quiet hours itself already is.
+- **Real proactive speech is a genuinely new channel, not a repurposed one.** Nothing in
+  the app could previously start a turn with no message from the user. `speak.js` pushes
+  a real assistant message onto the active session (reusing `brain.js`'s
+  `getActiveSessionId()` rather than reimplementing session resolution) and broadcasts a
+  `proactive_message` SSE event; `public/app.js` plays it through a standalone
+  `AudioPlayer`/`BrowserSpeaker` instance (never the shared voice-engine object, which
+  has no turn of its own to attach this to) and briefly reflects it on the orb. Honors
+  the existing "Speak replies" setting exactly as an ordinary reply would.
+
 ## Self-Improvement (`server/improvement/*.js`)
 
 Jarvis reviewing its own completed work, extracting observations, turning a genuinely

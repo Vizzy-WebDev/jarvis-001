@@ -7,6 +7,13 @@ import { getSetting, setSetting } from './settings.js';
 import { PipelineEngine } from './engines/pipeline-engine.js';
 import { LiveEngine } from './engines/live-engine.js';
 import { DuplexEngine } from './engines/duplex-engine.js';
+// Used ONLY for a proactive_message (server/heartbeat/) — a standalone,
+// one-shot speaker, deliberately never the shared `engine` below (that
+// object's state belongs to an interactive voice/text turn; a proactive
+// message has no turn behind it at all). Same voiceOutput/provider
+// selection logic createEngine() already uses for the real engine.
+import { AudioPlayer } from './audio-player.js';
+import { BrowserSpeaker } from './browser-speaker.js';
 import { SECTIONS } from './nav.js';
 import { navigate, initRouter, currentSectionId, refreshIfActive, getScreenModule } from './router.js';
 import { createOrb } from './orb.js';
@@ -37,6 +44,7 @@ let currentAssistantEl = null;
 let interimEl = null;
 let activeConfirmRow = null; // the Yes/No chips under a needs_confirmation reply, if any
 let activeMonitorId = null; // whichever monitor the amber "Watching for" bar currently represents, if any
+let proactiveSpeaker = null; // the standalone AudioPlayer/BrowserSpeaker currently voicing a proactive_message, if any — see speakProactiveText() below
 let turnStartTime = 0; // performance.now() when the current turn began, for the latency readout
 let latencyMeasured = false;
 let modelLabels = {}; // modelId -> label, for model_switch notices
@@ -791,6 +799,31 @@ function maybeShowLatency(state) {
   const el = document.getElementById('latency-badge');
   el.textContent = `Replied in ${ms}ms`;
   el.classList.remove('hidden');
+}
+
+// ---------- Proactive messages (server/heartbeat/) ----------
+
+/**
+ * Plays a Tier 1 proactive message out loud — a real, unprompted turn from
+ * Jarvis, not a reply to anything the user said. Deliberately a standalone
+ * one-shot speaker (same voiceOutput/provider selection createEngine()
+ * already uses), never the shared `engine`: that object's state and
+ * lifecycle belong to an actual interactive turn, and this has none.
+ * No-ops entirely if the user has "Speak replies" turned off — same
+ * reasoning that setting already implies for an ordinary reply.
+ */
+function speakProactiveText(text) {
+  if (!SPEECH_OUTPUT_SUPPORTED || !getSetting('speakReplies')) return;
+  const voiceOutput = getSetting('voiceOutput') || 'browser';
+  const restoreState = engine?.active ? engine.state : 'idle';
+  const onIdle = () => {
+    proactiveSpeaker = null;
+    setMicVisual(restoreState);
+  };
+  proactiveSpeaker = voiceOutput === 'browser' ? new BrowserSpeaker({ onIdle }) : new AudioPlayer({ onIdle, provider: voiceOutput });
+  setMicVisual('speaking');
+  proactiveSpeaker.pushText(text);
+  proactiveSpeaker.end();
 }
 
 // ---------- Engine wiring ----------
@@ -1994,6 +2027,17 @@ function connectEvents() {
         ingestNotification(data.notification);
         return;
       }
+      if (data.type === 'proactive_message') {
+        // A real, unprompted turn from Jarvis (server/heartbeat/speak.js) —
+        // already persisted server-side regardless of whether this tab is
+        // even open; this is just what makes it visible/audible live. The
+        // durable record already exists via the notification the same
+        // finding always produces first, so nothing is lost if this tab
+        // happens to be on a different screen.
+        if (currentSectionId() === 'home') addBubble('assistant', data.text);
+        speakProactiveText(data.text);
+        return;
+      }
       if (data.type === 'model_health') {
         // A model went unhealthy or recovered (server/models/health.js) —
         // the Model Settings screen's badges are a point-in-time snapshot
@@ -2148,6 +2192,7 @@ function setupOrb() {
     // has its own separate, real indicator instead (the composer button's
     // `.dictating` pulse, style.css).
     getLevel: () => {
+      if (proactiveSpeaker) return proactiveSpeaker.getOutputLevel?.() ?? 0;
       if (engine?.state === 'speaking') return engine.getOutputLevel?.() ?? 0;
       if (engine?.muted) return 0;
       return engine?.getMicLevel?.() ?? 0;

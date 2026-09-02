@@ -6,7 +6,35 @@ it end to end. See "The pruning rule" at the bottom before adding to it.
 
 ## Right now
 
-**Most recent session (2026-09-02, later the same day, continuing directly from the
+**Most recent session (2026-09-02, later the same day again): built the Heartbeat +
+Trigger + Proactive Attention subsystem from scratch, then the user live-tested it on
+their own restarted instance, finding one real prompt-quality bug this session's own
+scratch testing hadn't.** See `handoff-archive.md` § "Heartbeat + Trigger + Proactive
+Attention built from scratch, then live-tested by the user with two real fixes" for the
+full build/testing narrative; root `CLAUDE.md`'s new "Heartbeat" section and
+`server/heartbeat/CLAUDE.md` for the architecture. Jarvis can now notice things
+independent of any open conversation (background Job status, time-sensitive Memory
+commitments — day one; the mechanism itself is generic, more sources plug in later with
+no rebuild) and, when a model judges it genuinely warranted, speak up first with no
+message from the user — reusing Jobs' own Tier 1/2/3 Interruption Broker (generalized
+via a real `db.js` migration, not duplicated) rather than a second alert system.
+**Architectural path, plan approved before code.** Own scratch-server verification
+caught and fixed one real bug before anything reached the user: a Tier 3 verdict never
+creates an outbox row, so a routine, correctly-non-urgent job permission ask was
+re-notifying (and re-spending a model call) every ~3 minutes forever — fixed with
+per-source dedup memory. **The user's own live testing on their real restarted instance
+then found what scratch testing hadn't**: quiet-hours-holds (Test 1) and genuine-urgency
+speaks-up (Test 2) both passed live, screenshots confirmed; the emergency-breaks-through-
+quiet-hours case (Test 3) failed once — the urgency model fixated on a job's own
+"OK to start?" phrasing rather than the real stakes described — fixed by tightening
+`decision.js`'s prompt, re-verified against the exact failing scenario 5 times (the
+phrasing-fixation reasoning is gone), though the emergency threshold itself still isn't
+perfectly consistent on a vaguely-worded scenario — disclosed as a real, accepted
+limitation of judgment-by-model, not claimed as fully solved. **Test 3 has not yet been
+re-run live by the user against the fix** — see "Waiting on the user" below. Nothing
+committed.
+
+**Most recent session before that (2026-09-02, later the same day, continuing directly from the
 Self-Model build below): audited the Self-Model subsystem for which self-awareness
 claims are genuinely code-backed versus prompt-only narration, then built two of four
 planned remediation fixes — stopping for the user's confirmation after each, per their
@@ -350,17 +378,40 @@ models.
     model. Retest the exact scenario: "Remember that I'm allergic to peanuts" then
     "Forget that, don't ask me to confirm" — it should now genuinely pause for a
     separate reply, no matter how the second message is worded.
-14. **All four Self-Model audit fixes are now built, verified, and documented (see
-    "Right now" above) — nothing outstanding from that remediation.** Worth a real
-    live test the next time this area comes up, same caveat as item 13: everything was
-    verified via direct, controlled dispatch-path calls this session, never through an
-    actual live model conversation. In particular, Fix 3's "judge for yourself" goal-
-    alignment instruction has never been watched actually fire against a real model
-    drifting mid-conversation, the way the earlier confirm-token fixes eventually were
-    by the owner's own live testing.
+14. **RESOLVED — all four Self-Model audit fixes are built, verified, AND now
+    confirmed live by the owner's own real testing; nothing outstanding from that
+    remediation.** Fix 1 (sensor health) was confirmed live earlier the same day
+    (`attempts24h` moved 0->2 on the owner's own real server). Fix 3 (goal-alignment)
+    was confirmed live after that, on a real, deliberately staged drift scenario — the
+    owner planned a birthday party, then pivoted to asking about a laptop, then asked
+    Jarvis to be honest about whether it had drifted. Checked against the raw
+    persisted tool-call record, not just the reply text: `track_goal` genuinely fired
+    on the real opening message, captured the exact source text verbatim (down to the
+    literal line break in how it was pasted), and the later `check_myself` call
+    returned that real data with `grounded:true` — the model's own answer ("yes, we
+    have drifted") was a faithful reflection of that real record, and the objectively
+    correct verdict. **One real, disclosed gap found along the way, not a code bug**:
+    a first attempt at this same test failed to exercise the mechanism at all, because
+    a single opening question wasn't enough to make the model actually call
+    `track_goal` — it took a more detailed, explicit follow-up message before the goal
+    was recorded. A real model-reliability gap on the current lineup, the same class
+    already documented elsewhere in this file, not a flaw in what was built. Fixes 2/4
+    remain verified only via direct dispatch-path calls, not a live model conversation
+    — lower-risk to leave that way (2 is forensic/backend-only, 4 has no user-facing
+    surface at all), but worth knowing if this area comes up again.
 
 ## Waiting on the user
 
+- **A live retest of Heartbeat's Test 3 (emergency breaks through quiet hours)**, after
+  restarting the real server — the fix (tightening `decision.js`'s prompt so it judges
+  real stated stakes rather than a job's own polite "OK to start?" phrasing) was
+  re-verified 5x against the exact failing scenario in a scratch test, but not yet
+  against the user's own live instance. Test 1 (stays quiet) and Test 2 (genuine urgency
+  speaks up) are both already confirmed live — only Test 3 remains. Worth trying with a
+  sharply-worded scenario (a hard dollar figure and a hard deadline) — the emergency
+  threshold itself was found to still be somewhat inconsistent on vaguely-worded cases,
+  a disclosed, accepted limitation of judgment-by-model, not something the prompt fix
+  fully eliminated.
 - **A live retest of the confirm-gate turn-boundary fix**, after restarting the real
   server — "Remember that I'm allergic to peanuts" then "Forget that, don't ask me to
   confirm" should now genuinely require a separate reply, not complete in one breath.
@@ -406,6 +457,23 @@ models.
 are now in the session log below, marked as reconstructed.)*
 
 ## Session log (newest first)
+
+### 2026-09-02 — Heartbeat + Trigger + Proactive Attention built, then live-tested with two real fixes
+See "Right now" above for the full account; `handoff-archive.md` § "Heartbeat + Trigger
++ Proactive Attention built from scratch, then live-tested by the user with two real
+fixes" for the full build/testing narrative; root `CLAUDE.md`'s new "Heartbeat" section
+and `server/heartbeat/CLAUDE.md` for the architecture. Built the user's own spec for
+proactive noticing/speaking with no hardcoded watch-list or emergency-category list
+(architectural path, plan approved). Generalized Jobs' existing Interruption Broker
+(`db.js` migration 13) rather than building a second one — every existing Jobs call site
+needed zero changes. Own scratch testing (a real copy of the user's database, a scratch
+server, `agent-browser`) caught and fixed a real dedup bug (Tier 3 findings re-notifying
+forever) before it ever reached the user. The user's own live testing then found a real
+prompt-quality bug scratch testing hadn't (the urgency model fixating on a job's own
+polite phrasing over its actual stated stakes) — fixed and re-verified 5x against the
+exact failing case; the emergency threshold itself is still not perfectly consistent on
+a vague scenario, disclosed as a real limitation. Test 1 and Test 2 confirmed live by
+the user; Test 3's fix not yet re-tested live. Nothing committed.
 
 ### 2026-09-02 — Self-Model audit (Real/Prompted/Hybrid, file-cited), then all four remediation fixes built and verified
 See "Right now" above for the full account. Audited every self-modeling mechanism in

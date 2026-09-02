@@ -1,14 +1,23 @@
 // Background Task Orchestration ("Jobs") persistence — the durable truth for
-// every in-flight or finished background job, its write-ahead activity
-// trace, and its Tier 1/2/3 interruption outbox. Built on db.js's SQLite
-// connection, same as chat-store.js and memory/memory-store.js.
+// every in-flight or finished background job and its write-ahead activity
+// trace. Built on db.js's SQLite connection, same as chat-store.js and
+// memory/memory-store.js.
 //
-// Leaf module: imports only db.js (itself a leaf) — safe for server/tools/
-// (work_in_background.js, check_on_work.js, stop_working_on.js) to import
-// directly without tripping the loader/runner/scheduler circular-import
-// invariant in root CLAUDE.md.
+// The Tier 1/2/3 interruption outbox this file used to own directly now
+// lives in server/heartbeat/outbox-store.js — generalized (db.js migration
+// 13) so a Heartbeat/Trigger finding with no job behind it can use the same
+// broker instead of a second one (see root CLAUDE.md's Heartbeat section).
+// The four functions below are thin wrappers over that store with
+// `source:'job'`/`jobId` baked in, so every existing call site here keeps
+// its exact original signature and behavior.
+//
+// Leaf module: imports only db.js and heartbeat/outbox-store.js (itself a
+// leaf) — safe for server/tools/ (work_in_background.js, check_on_work.js,
+// stop_working_on.js) to import directly without tripping the
+// loader/runner/scheduler circular-import invariant in root CLAUDE.md.
 
 import { getDb } from '../db.js';
+import * as outboxStore from '../heartbeat/outbox-store.js';
 
 const DEFAULT_TAIL_SIZE = 8;
 
@@ -64,20 +73,6 @@ function rowToTrace(row) {
     // not every kind uses it the same way.
     detail: row.detail,
     createdAt: row.created_at,
-  };
-}
-
-function rowToOutbox(row) {
-  return {
-    id: row.id,
-    jobId: row.job_id,
-    tier: row.tier,
-    reason: row.reason, // 'permission' | 'stuck'
-    summary: row.summary,
-    detail: row.detail,
-    confirmPayload: row.confirm_payload ? JSON.parse(row.confirm_payload) : null,
-    createdAt: row.created_at,
-    deliveredAt: row.delivered_at,
   };
 }
 
@@ -253,45 +248,28 @@ export function getTraceTail(jobId, n = DEFAULT_TAIL_SIZE) {
  * Parks a Tier 1/2/3 decision — `reason: 'permission'` (a confirm-gated tool
  * call escalated via capabilities.js's ctx.onEscalate) or `reason: 'stuck'`
  * (a stall that survived its one recovery retry). `confirmPayload` carries
- * `{name, args}` for a 'permission' row; left null for 'stuck'.
+ * `{name, args}` for a 'permission' row; left null for 'stuck'. Thin wrapper
+ * over heartbeat/outbox-store.js's generalized addEntry() — see this file's
+ * header comment.
  */
 export function addOutboxEntry(jobId, { tier, reason = 'permission', summary, detail = null, confirmPayload = null }) {
-  if (!summary) throw new Error('An outbox entry needs a summary.');
-  const db = getDb();
-  const ts = nowIso();
-  const result = db
-    .prepare(
-      `INSERT INTO job_outbox (job_id, tier, reason, summary, detail, confirm_payload, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(jobId, tier, reason, summary, detail, confirmPayload ? JSON.stringify(confirmPayload) : null, ts);
-  return rowToOutbox(db.prepare('SELECT * FROM job_outbox WHERE id = ?').get(result.lastInsertRowid));
+  return outboxStore.addEntry({ source: 'job', sourceRef: jobId, jobId, tier, reason, summary, detail, confirmPayload });
 }
 
 /**
- * Everything not yet delivered, lowest tier (most urgent) first — what
- * prompt.js's jobsSection() drains on a turn the user already started.
- * `tier` optionally narrows to one tier (e.g. Tier 1 only, for a "must ask
- * now" check).
+ * Job-sourced outbox rows not yet delivered, lowest tier (most urgent)
+ * first. `tier` optionally narrows to one tier. Kept for anything that
+ * specifically wants a job-only view — prompt.js's own drain now reads
+ * heartbeat/outbox-store.js's listPending() directly, across every source.
  */
 export function listPendingOutbox({ tier } = {}) {
-  const clauses = ['delivered_at IS NULL'];
-  const params = [];
-  if (tier !== undefined) {
-    clauses.push('tier = ?');
-    params.push(tier);
-  }
-  const rows = getDb()
-    .prepare(`SELECT * FROM job_outbox WHERE ${clauses.join(' AND ')} ORDER BY tier ASC, created_at ASC`)
-    .all(...params);
-  return rows.map(rowToOutbox);
+  return outboxStore.listPending({ tier, source: 'job' });
 }
 
 export function getOutboxForJob(jobId) {
-  const rows = getDb().prepare('SELECT * FROM job_outbox WHERE job_id = ? ORDER BY created_at ASC').all(jobId);
-  return rows.map(rowToOutbox);
+  return outboxStore.getForJob(jobId);
 }
 
 export function markOutboxDelivered(id) {
-  getDb().prepare('UPDATE job_outbox SET delivered_at = ? WHERE id = ?').run(nowIso(), id);
+  outboxStore.markDelivered(id);
 }

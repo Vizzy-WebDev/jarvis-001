@@ -67,6 +67,17 @@ const DEFAULTS = {
   // improvement-store.js's WEEKLY_BUDGET). Never runs more often than
   // weekly — the "light" budget the user chose has no faster setting.
   improvementResearch: 'weekly', // 'off' | 'weekly'
+  // Heartbeat + Trigger + Proactive Attention (server/heartbeat/) — the
+  // fixed schedule the user sets for "no proactive contact." Only a
+  // genuine emergency (heartbeat/decision.js's own reasoned verdict, never
+  // a hardcoded category) breaks this — see root CLAUDE.md's Heartbeat
+  // section. `start`/`end` are 'HH:MM' 24h strings; a wrap past midnight
+  // (e.g. 23:00 -> 08:00) is handled by heartbeat/quiet-hours.js. Enabled
+  // by default with a sensible night window — unlike memoryTrust/
+  // improvementTrust, this isn't an opt-in dial: a brand-new install should
+  // never get proactive contact overnight before the user has had a chance
+  // to even see the setting.
+  quietHours: { enabled: true, start: '23:00', end: '08:00' },
 };
 
 export function getPrefs() {

@@ -368,6 +368,43 @@ export async function testModelConnection({ adapter, model, baseUrl, secret, sec
   return { ...result, error: friendlyMessage(result.error, "That connection didn't work."), detail: redactSecrets(result.error, [secret]) };
 }
 
+// Proves a connection is reachable by LISTING its models, rather than
+// running a live chat-completion against one arbitrary one — the honest
+// question for a multi-model add is "can this address serve models at
+// all," not "does this one specific downstream route happen to work."
+// Mirrors probe.js's own use of listModels() as connectivity proof for the
+// Custom tile (see probeEndpoint) — generalized here so createConnectionWithModels()
+// below can apply the SAME proof on any tile whenever more than one model
+// is being added, not just Custom. Confirmed live: a real, reachable
+// 115-model OmniRoute connection, added via the Local-server tile (whose
+// `if (provider === 'custom')` branch never touches this file's
+// `connectivityProven` fix), was rejected outright over exactly one broken
+// route (`aug/*`, a CLI-backed provider missing its binary) — the same
+// failure shape the Custom-only fix's own comment already described but
+// didn't cover here. Same error-shaping as testModelConnection()/
+// discoverModels() above: adapter's own friendlyError() for logging,
+// friendlyMessage() for the classified user-facing sentence, secrets
+// redacted from `detail`.
+async function verifyReachabilityViaListModels({ adapter, baseUrl, secret, keyRequired }) {
+  const mod = getAdapter(adapter);
+  const entry = { baseUrl, secretValue: secret !== undefined ? secret : undefined, keyRequired };
+  try {
+    const models = await mod.listModels(entry);
+    if (!models || !models.length) {
+      return { ok: false, error: 'That server was reached but has no models available.' };
+    }
+    return { ok: true };
+  } catch (err) {
+    const friendly = typeof mod.friendlyError === 'function' ? mod.friendlyError(err) : err?.message;
+    console.error(`[models] ${adapter} connectivity check failed (shown to user as a plain-language message): ${friendly}`);
+    return {
+      ok: false,
+      error: friendlyMessage(err, "That connection didn't work."),
+      detail: redactSecrets(typeof friendly === 'string' ? friendly : err?.message, [secret]),
+    };
+  }
+}
+
 /**
  * Normalizes whatever an adapter's listModels() handed back into a
  * consistent `{model, label, contextTokens, billing}` shape: a plain string
@@ -529,8 +566,23 @@ export async function createConnectionWithModels({ provider, adapter, baseUrl, l
   }
 
   if (!connectivityProven) {
-    const first = typeof modelList[0] === 'string' ? modelList[0] : modelList[0].model;
-    const test = await testModelConnection({ adapter: resolvedAdapter, model: first, baseUrl: resolvedBaseUrl, secret, keyRequired });
+    // A multi-model add can't be honestly validated by testing ONE
+    // arbitrary model (modelList[0], whatever a picker happened to sort
+    // first) — see verifyReachabilityViaListModels()'s own comment for why
+    // this matters and how it was found (a live OmniRoute connection added
+    // via the Local-server tile, not just Custom). Adding exactly one
+    // model keeps the original, more specific question: does THIS model
+    // actually work.
+    const test =
+      modelList.length > 1
+        ? await verifyReachabilityViaListModels({ adapter: resolvedAdapter, baseUrl: resolvedBaseUrl, secret, keyRequired })
+        : await testModelConnection({
+            adapter: resolvedAdapter,
+            model: typeof modelList[0] === 'string' ? modelList[0] : modelList[0].model,
+            baseUrl: resolvedBaseUrl,
+            secret,
+            keyRequired,
+          });
     if (!test.ok) return { ok: false, error: test.error, detail: test.detail, steps };
   }
 

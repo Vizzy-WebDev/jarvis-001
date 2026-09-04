@@ -1,146 +1,186 @@
-# Jarvis (v2)
+# Jarvis
 
-Your personal voice assistant. Talk to it — or type to it — in your browser, and it
-answers back, out loud, with real-time streaming replies. It can hold a conversation,
-do a few real things on your computer, and now works with your choice of AI model.
+A local, voice/text personal assistant. Node.js + Express server, plain ES-module
+front-end (no build step, no framework), and it only ever listens on
+`127.0.0.1` — nothing about it is reachable from anywhere else on your network.
 
-## Before the first run
+For plain-language usage instructions, see **[`How to Use Jarvis.md`](How%20to%20Use%20Jarvis.md)**.
+This file is the technical overview.
 
-You need one free thing: a Google Gemini API key. This lets Jarvis "think" (and speak,
-using Gemini's voices). It takes about a minute and doesn't need a credit card.
+## Requirements
 
-1. Go to **[aistudio.google.com/apikey](https://aistudio.google.com/apikey)**
-2. Sign in with your Google account
-3. Click **"Get API key"**, then **"Create API key"**
-4. Copy the long string of letters and numbers it gives you (you'll paste it into
-   Jarvis in a moment — no need to save it anywhere else)
+- **Node.js 24+** (Chat History and Memory use Node's built-in `node:sqlite` — no
+  separate database install).
+- **Windows.** Computer control, screen recording, and a few OS-level checks are
+  Windows-specific; the rest is cross-platform in principle but only tested here.
+- **Google Chrome or Microsoft Edge** for voice input (Firefox doesn't support the
+  Speech Recognition API Jarvis's default voice pipeline uses — typing still works
+  everywhere).
+- **ffmpeg** on `PATH`, only if you want screen recording (`take_screenshot` and
+  everything else works without it).
 
-## How to start Jarvis
+## Quick start
 
-1. Open the `Jarvis-001` folder
-2. Double-click **`Start Jarvis.bat`**
-3. Two things will happen:
-   - A window titled **"Jarvis"** opens and stays open. **Leave this open** the whole
-     time you're using Jarvis — closing it turns Jarvis off. You can minimize it.
-   - Your browser opens automatically to the Jarvis page.
-4. **The first time only**, Jarvis will ask you to paste in the API key from above.
-   Paste it and click "Save & Continue." After that, it remembers it — you won't be
-   asked again on future runs.
+```
+Start Jarvis.bat        # what you'd normally double-click: npm install (if needed),
+                         # launch, open your browser
+```
 
-That's it. You should see the Jarvis screen with a big microphone button and a text box.
+or, for development:
 
-## How to use it
+```
+npm install
+npm start
+```
 
-You can talk **or** type — whichever you prefer in the moment, even mid-conversation.
+The server listens on `127.0.0.1:3000`. The first run asks for a free Google Gemini
+API key (get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey))
+— that's the only hard requirement; Anthropic, OpenAI, a local model server, or any
+OpenAI-compatible gateway can all be added afterward from Model Settings.
 
-- **Type a message** and hit Send or Enter. Replies stream in as Jarvis "thinks," rather
-  than appearing all at once after a wait.
-- **Click the microphone button** (or press the **Space bar**) and start talking. By
-  default, Jarvis stays listening so you can talk freely and pause naturally — it's
-  smart about telling "you're thinking" pauses (like "um…") apart from "you're actually
-  done talking."
-- **Interrupt Jarvis** any time by just starting to talk again (or clicking the mic) —
-  it stops immediately and listens.
-- Your browser will ask for microphone permission the first time — click **Allow**.
+## What it can actually do
 
-### The gear icon (settings)
+- **Real-time conversation, by voice or text.** Two independent voice engines behind
+  one interface: an any-model pipeline (browser speech-to-text → whichever AI model
+  is active → server-side or browser TTS) and Gemini Live (near-instant, mid-word
+  interruptible, Gemini only). Adaptive turn-taking tells "still thinking" pauses
+  apart from "actually done talking."
+- **Any model, real fallback.** Connect Gemini, Claude, OpenAI, a local server
+  (Ollama/LM Studio), or any other OpenAI/Anthropic/Gemini-shaped gateway (OpenRouter,
+  Groq, Together, an in-house endpoint) via a generic Custom connection that probes
+  the address to work out what's actually on the other end. Auto-routing picks a
+  model per task and by real, measured cost, not just a name-based guess; a broken
+  model degrades gracefully with the conversation's context intact.
+- **Memory and Chat History.** Approved facts about you sit directly in every
+  conversation (no search needed); full conversation history persists across restarts
+  and is full-text searchable, including from inside a live conversation ("what did I
+  say about that last month?"). A trust dial controls how much Memory can save
+  without asking first — a genuine conflict with something already saved always asks,
+  at every trust level.
+- **Skills, and connected apps/services.** Folder-based Skills (house style,
+  templates, a process to follow) install from a `.zip` or a public GitHub repo link.
+  Separately, App Control connects real apps/services over MCP, API, or CLI, plus
+  Jarvis's own built-in ability to actually operate your desktop — click, type,
+  launch apps, read what's on screen — always with a spoken heads-up and your
+  explicit OK before it takes over.
+- **Screen capture.** Real screenshots and ffmpeg-recorded `.mp4` screen recordings
+  delivered straight into the conversation, plus a persistent Screen Sharing mode for
+  ongoing "look at what I'm doing" conversations.
+- **Real file generation.** Word, Excel, PowerPoint, and plain data/text files, built
+  for real and mechanically verified (re-opened through Jarvis's own document reader)
+  before being handed to you, served as a forced download.
+- **Automation that runs without you watching.** Scheduled Tasks (on a clock, always
+  read back and confirmed before saving), Background Jobs (long-running work
+  backgrounded from a live conversation, checkable and cancellable anytime, escalating
+  to you only when a real decision is needed), and a Morning Briefing assembled from
+  live sources you choose.
+- **Proactive attention, used sparingly.** Jarvis can notice something worth
+  surfacing on its own — a stalled background job, a time-sensitive commitment from
+  Memory — and speak up first, judged case-by-case against real context rather than a
+  fixed "always interrupt for this" list, and held back overnight by quiet hours
+  except for a genuine emergency.
+- **Self-improvement and self-knowledge.** Jarvis reviews its own completed work,
+  extracts lessons, and — only from its own directly-observed track record, never
+  from something merely read online — can turn a genuinely recurring one into a
+  behaviour rule, always undoable. Separately, it can give an honest, evidence-backed
+  answer to "can you actually do this reliably," "has anything gone wrong with you
+  lately," and "how much have I spent" (three separately-labelled numbers: measured,
+  provider-reported, calculated — never blended into a guess).
+- **Operational self-awareness.** Automatic self-diagnosis with real self-heal for a
+  handful of failure modes, live rolling CPU/reachability awareness ("can you handle a
+  heavy task right now"), and mechanical + semantic verification wired into artifact
+  creation, background Jobs, and scheduled-task outcomes.
 
-- **Speak replies out loud** — turn off if you'd rather just read replies silently.
-- **Microphone mode** — "Conversation" (talk freely, hands mostly off the mic button)
-  or "Push-to-talk" (click each time you want to speak, like v1).
-- **Jarvis's voice** — Gemini's more natural voices, or your Windows voice (instant,
-  offline, no setup).
-- **Voice engine** — see below; this is the big one.
-- **Extra-careful pause detection** — makes Jarvis double-check ambiguous pauses with
-  an extra step before replying. Slightly slower, occasionally more accurate. Off by
-  default.
-- **AI model** — switch which AI answers you (see "Using a different AI model" below).
+## Honest limits
 
-### Two ways Jarvis can talk to you
+- No wake word — you start it with a click or the Space bar.
+- No photographic/raster image generation — no adapter in use does this.
+- A generated `.pptx` slide deck is checked less thoroughly than `.docx`/`.xlsx` (its
+  master/theme chain can't be round-tripped the same way) — worth a look in real
+  PowerPoint before fully trusting one.
+- Runs only while its own server window is open; nothing scheduled fires into an
+  empty room while it's closed — it catches up, clearly marked "ran late," next time
+  you open it.
+- Semantic answer-verification is wired at three completion surfaces (artifacts, Job
+  completion, scheduled-task outcomes) but deliberately **not** into every live chat
+  answer — the costliest, most frequent surface on a routinely rate-limited model
+  roster, a disclosed cost/scope decision rather than an oversight.
 
-| | Any-model (default) | Gemini Live |
-|---|---|---|
-| Works with | Gemini, Claude, or OpenAI | Gemini only |
-| Feel | Fast, ~1 second to first words | Near-instant, mid-word interruptible |
-| Setup | Nothing extra | Nothing extra (still just your Gemini key) |
+## Configuration and data
 
-Try both from the gear icon and see which feels better to you — there's no wrong
-choice, and you can switch anytime.
+- **`.env`** (git-ignored) holds every API key/secret. It's written by
+  `server/config.js` — never hand-edit its format.
+- **`data/`** (git-ignored) holds JSON state (models, connections, prefs, tasks) plus
+  `jarvis.db`, a SQLite database (Chat History, Memory, Jobs, Self-Improvement,
+  Self-Model).
+- For an isolated test run, three env vars redirect everything: `JARVIS_DATA_DIR`,
+  `JARVIS_ENV_PATH`, and `PORT`. Your real `data/`, `.env`, and port 3000 are never
+  touched by a test unless you explicitly point at them.
 
-### Things you can try
+## Architecture
 
-- *"What time is it?"* or *"What's today's date?"*
-- *"Open YouTube"*, *"Open my email"*, *"Open GitHub"*
-- *"Open Notepad"*, *"Open Calculator"*, *"Open Paint"*, *"Open Spotify"*
-- *"Search for the weather in Lagos"*
-- *"Remind me to… um… call my brother"* — pause mid-sentence and see that it waits
-  for you rather than jumping in.
-- Or just talk normally — ask it questions, have a conversation. It remembers what
-  you've said earlier in the same session.
+```
+server/
+  server.js       Express app, all routes, binds 127.0.0.1 only
+  adapters/        One module per wire format: Anthropic, Gemini, OpenAI-compatible
+  models/          Connections/models registry, routing, health, execution
+  conversation.js  Neutral, model-agnostic transcript format
+  db.js            The one SQLite connection + migrations (Chat History, Memory, Jobs, ...)
+  chat-store.js    Conversation/message CRUD + full-text search
+  memory/          Memory Manager: extraction, approval policy, checkpoints
+  scheduler/       Scheduled Tasks, recurrence, briefing
+  jobs/            Background Task Orchestration ("Jobs")
+  heartbeat/       Proactive attention — noticing things, deciding whether to speak up
+  improvement/     Self-Improvement — Jarvis reviewing and adjusting its own behaviour
+  self/            Self-Model — grounded, evidence-backed self-knowledge
+  ops/             Self-diagnosis + self-heal, environment awareness, verification
+  cost/            Automatic spend/usage tracking, fed back into model routing
+  artifacts/       Real file generation (.docx/.xlsx/.pptx/...), verified on creation
+  control/         Computer control: perceive/decide/act loop, screen capture, safety
+  connectors/      MCP/API/CLI/browser/files app connectors
+  tools/           Auto-loaded executable capabilities (weather, open_app, run_code, ...)
+  skills/          Folder Skills (SKILL.md-based instructions) — install/store logic
+  capabilities.js  The composition seam: tools + Skills + connectors -> one invoke()
+  sandbox/         Isolated code execution backends
+  monitor/         "Watch for X, then act" background checks
+public/
+  app.js           UI shell, drawer/router, stream-event handling
+  nav.js           SECTIONS registry — the single source of truth for the drawer/router
+  screens/         One file per drawer section
+  engines/         PipelineEngine (any model) / LiveEngine (Gemini Live)
+  orb.js           The 3D orb (idle/listening/thinking/speaking)
+```
 
-## Using a different AI model
+See `CLAUDE.md` for the full module-by-module design record (this file is the
+condensed version); most subdirectories also carry their own `CLAUDE.md`.
 
-Jarvis works with Gemini out of the box (free, no card). If you'd rather use Claude
-or OpenAI instead:
+## No automated test suite — how to verify a change
 
-1. Open Settings (gear icon) → **AI model**
-2. Pick Claude or OpenAI from the dropdown
-3. Paste in an API key for that provider and click Save
+There's exactly one `npm` script (`start`). Verification is manual and deliberate:
 
-Once saved, that provider becomes active immediately, and you can switch back and
-forth anytime — each one remembers its own key. Note: Gemini Live (the faster voice
-option above) is Gemini-only regardless of which model is answering your messages.
+- `node --check <file>` across every changed file (also catches an accidental
+  `require()` inside an ES module).
+- Boot a real, throwaway instance — `JARVIS_DATA_DIR`/`JARVIS_ENV_PATH`/`PORT` pointed
+  at scratch values — via a background process, and confirm it starts cleanly, runs
+  its migrations, and loads every tool with no error.
+- `curl` against real routes directly.
+- Pure-logic modules can be exercised with a one-off `node --input-type=module -e
+  "..."` script, no server needed.
+- To verify what a model actually *did* (not what it claimed), read the real
+  `toolCalls`/`toolResults` straight out of the `messages` table in `data/jarvis.db`
+  (read-only) — a model's own narration of success/failure isn't reliable evidence on
+  its own.
 
-## Important: use Chrome or Edge
+## Security posture
 
-Voice input needs **Google Chrome** or **Microsoft Edge** — Firefox doesn't support
-it. If you're on Firefox, Jarvis still works fully by typing; only the microphone is
-unavailable.
+Binds `127.0.0.1` only. Secrets live in `.env`, never in `data/`. Any route serving
+content that could contain arbitrary text a model or user supplied (generated
+artifacts, uploads) forces `Content-Disposition: attachment`, `X-Content-Type-Options:
+nosniff`, and a sandboxing Content-Security-Policy — unconditionally, never behind an
+optional query flag.
 
-## When you're done
+## More
 
-Just close the **"Jarvis"** window (the one with the server running in it). Your
-browser tab can stay open or be closed — it won't do anything without that window.
-
-## If something goes wrong
-
-- **"Could not reach the Jarvis server"** — the "Jarvis" window got closed. Re-run
-  `Start Jarvis.bat`.
-- **Mic button does nothing / no permission prompt appeared** — click the padlock icon
-  in your browser's address bar, find "Microphone," and set it to Allow, then reload
-  the page.
-- **It rejects your API key** — double check you copied the whole key with no extra
-  spaces. You can always generate a new one at the same link above.
-- **"You exceeded your current quota" / "high demand"** — this is Google's side, not
-  a bug: either a temporary capacity issue (just retry in a minute) or the free tier's
-  daily limit. It resets on its own; the app will keep working once it does.
-- **Setup screen keeps appearing** — this means no key has been saved successfully yet;
-  just paste it in again.
-
-## What this version can and can't do
-
-**Can:** hold a real, low-latency conversation by voice or text, tell the time/date,
-open websites, open a handful of common Windows apps, run a web search, switch between
-AI models, and choose between two different voice-conversation engines.
-
-**Can't yet:** listen for a wake word like "Hey Jarvis" (you still start it with a
-click or Space), work offline, or remember past conversations after you close the
-server.
-
-## For later — how it's built (skip this if you're not curious)
-
-- The **server** (`server/`) is a small Node.js program. It only runs on your own PC
-  and isn't reachable by anyone else on your network.
-- The **interface** (`public/`) is a plain web page — no fancy build tools, so any
-  future edits are just "change the file, refresh the browser."
-- **Commands** live in `server/skills/` as small, separate files. Each new ability you
-  want later (e.g. "set a timer," "check the weather") is a new file in that folder —
-  nothing else needs to change.
-- **AI models** live in `server/providers/` (Gemini, Claude, OpenAI), all behind one
-  shared interface — `server/brain.js` just calls whichever is active.
-- **Voice conversation** has two independent engines behind one shared interface, in
-  `public/engines/`: `pipeline-engine.js` (any model, browser speech-to-text, Gemini or
-  Windows voice output) and `live-engine.js` (Gemini's own real-time voice API, proxied
-  through `server/live.js` so your API key never reaches the browser).
-- Turn-taking logic (deciding when you're actually done talking) is in
-  `public/turn-detector.js`.
+- **[`How to Use Jarvis.md`](How%20to%20Use%20Jarvis.md)** — for using it, no technical background needed.
+- **[`CLAUDE.md`](CLAUDE.md)** — the full architecture and design-decision record.
+- **[`handoff.md`](handoff.md)** — session-by-session build history.

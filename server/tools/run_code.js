@@ -20,6 +20,21 @@
 import path from 'node:path';
 import { runCode as runInSandbox } from '../sandbox/runner.js';
 import { getOrCreateSingleton } from '../connectors/store.js';
+import { saveArtifact, deleteArtifact, artifactFilePath, recordVerification } from '../artifacts/artifact-store.js';
+import { verifyFileOpens } from '../ops/verify.js';
+
+const MIME_BY_EXT = {
+  '.json': 'application/json',
+  '.csv': 'text/csv',
+  '.txt': 'text/plain',
+  '.md': 'text/markdown',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.pdf': 'application/pdf',
+  '.html': 'text/html',
+};
 
 const MAX_CODE_CHARS = 20_000;
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -50,7 +65,7 @@ export default {
   summarize(args) {
     return `Run this ${args.language} code${args.needsNetwork ? ' (it will reach the internet)' : ''}${args.folder ? ` with access to "${args.folder}"` : ''}: ${truncateForSummary(args.code)}`;
   },
-  async run(args) {
+  async run(args, ctx = {}) {
     const code = String(args.code || '');
     if (!code.trim()) return { ok: false, error: 'No code was given to run.' };
     if (code.length > MAX_CODE_CHARS) {
@@ -88,6 +103,32 @@ export default {
       allowPaths,
     });
 
+    // Output/Artifact generation (root CLAUDE.md's Operational Awareness
+    // item 3) — any real file the code itself wrote (restricted-backend.js's
+    // outputFiles, collected before its own throwaway temp dir was deleted)
+    // becomes a real, downloadable artifact rather than being lost with the
+    // temp folder. Each is mechanically verified the same way
+    // create_artifact.js verifies its own output — a broken file is never
+    // kept pretending to be a real deliverable.
+    const artifacts = [];
+    for (const f of result.outputFiles || []) {
+      let artifact;
+      try {
+        const mimeType = MIME_BY_EXT[path.extname(f.name).toLowerCase()] || 'application/octet-stream';
+        artifact = saveArtifact({ name: f.name, mimeType, content: f.content, sessionId: ctx.sessionId || null });
+      } catch (err) {
+        console.error('[run_code] saving a generated output file as an artifact failed:', err);
+        continue;
+      }
+      const check = verifyFileOpens(artifactFilePath(artifact.id));
+      if (!check.ok) {
+        deleteArtifact(artifact.id);
+        continue;
+      }
+      recordVerification(artifact.id, { verified: true, detail: null });
+      artifacts.push({ id: artifact.id, name: artifact.name, mimeType: artifact.mimeType, size: artifact.size, url: `/api/artifacts/${artifact.id}` });
+    }
+
     return {
       ok: result.ok,
       stdout: result.stdout,
@@ -97,6 +138,13 @@ export default {
       timedOut: result.timedOut || undefined,
       isolation: result.isolation,
       warnings: result.warnings,
+      artifacts: artifacts.length ? artifacts : undefined,
+      // Only rendered as a real file card when there's exactly one real
+      // output — a rare multi-file run still lists every artifact above
+      // (visible to the model, which can mention each), just without a
+      // dedicated card for each; see this file's own header comment for
+      // why that's an acceptable, disclosed scope limit rather than a bug.
+      ui_action: artifacts.length === 1 ? { type: 'artifact_created', ...artifacts[0] } : undefined,
     };
   },
 };

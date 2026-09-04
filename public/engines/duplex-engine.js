@@ -270,13 +270,20 @@ export class DuplexEngine extends VoiceEngine {
     const onIdle = () => {
       if (gen === this._speakerGen) this._onSpeechIdle();
     };
+    // onFailure — see pipeline-engine.js's identical wiring for the full
+    // reasoning. Emits 'tts_failure', not 'error' (that would clear the
+    // in-progress assistant bubble for a failure that isn't a whole-turn
+    // failure — only this reply's audio failed).
+    const onFailure = ({ provider }) => {
+      this._emit('tts_failure', { provider });
+    };
     // 'browser' is the one special value — anything else is a configured
     // TTS provider's ref, passed straight through to Playback, which
     // resolves its own voice server-side. Same convention
     // pipeline-engine.js's speaker creation uses.
     return this.voiceOutput === 'browser'
       ? new BrowserSpeaker({ onStart, onIdle })
-      : new Playback({ onStart, onIdle, provider: this.voiceOutput });
+      : new Playback({ onStart, onIdle, onFailure, provider: this.voiceOutput });
   }
 
   stop() {
@@ -816,7 +823,24 @@ export class DuplexEngine extends VoiceEngine {
         if (this.state !== 'speaking') this._armStuckWatchdog(() => this._recoverFromStuckState()); // forward progress, same reasoning as 'chunk'
         this._emit('tool_result', data);
       } else if (data.type === 'model_switch') {
+        // Same reasoning as 'chunk'/'tool_start'/'tool_result' above — a
+        // candidate model failing over to the next one is real forward
+        // progress on the server side, but this was the one event type that
+        // used to NOT re-arm the watchdog at all (its sibling 'restart'
+        // did) — walking a few failed candidates in server/models/runner.js
+        // (each with its own 20s "first token" budget) could silently burn
+        // past the 45s "stuck" timer with nothing telling the browser
+        // anything was still happening.
+        if (this.state !== 'speaking') this._armStuckWatchdog(() => this._recoverFromStuckState());
         this._emit('model_switch', data);
+      } else if (data.type === 'progress') {
+        // A real, typed "still working" heartbeat from the server (see
+        // server.js's /api/chat/stream) — covers the case where NEITHER a
+        // chunk, tool event, nor model_switch has happened in a while but
+        // the server is still genuinely working (e.g. mid-tool-call, or
+        // between two candidate models' first-token windows). No event of
+        // its own needed here — arming the watchdog again is the whole job.
+        if (this.state !== 'speaking') this._armStuckWatchdog(() => this._recoverFromStuckState());
       } else if (data.type === 'style_floors') {
         this._emit('style_floors', data);
       } else if (data.type === 'reaction') {

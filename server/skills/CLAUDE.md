@@ -30,8 +30,15 @@ connectors, and does not own the confirm gate.
 supporting files it needs — the same layout Claude Code and skills.sh use, so a folder
 from either drops in unchanged. Pure instructions and reference material, written by the
 user (in-app, or by "Have Jarvis write it" — one `askModel` call drafting a `SKILL.md`
-the user reviews before saving), or imported from a folder/`.zip` already on the user's
-PC — **never downloaded code that runs**. Each enabled one is merged into
+the user reviews before saving), imported from a folder/`.zip` already on the user's PC,
+or installed directly from a public GitHub repository link (`skill-zip.js`'s
+`installFromGithubRepo()` — resolves the repo's real default branch via a plain,
+unauthenticated GitHub API call, downloads its zipball, then reuses the exact same
+`installFromZip()`/`findSkillRoot()` path a local upload already goes through; GitHub's
+own zipball always wraps its contents in one top-level `owner-repo-<sha>/` folder, which
+`findSkillRoot()`'s existing wrapper-unwrapping already handles — its own comment already
+named this precise case before this feature existed). Same root-level SKILL.md/skill.toml
+restriction as a zip upload either way — **never downloaded code that runs**. Each enabled one is merged into
 `capabilities.js`'s `getToolDeclarations()`/`listCapabilities()`/`invoke()` as an
 ordinary zero-argument tool (`folderSkillToTool()`, `server/skills/index.js`); the
 declaration list only reads a folder's frontmatter (`listSkillFolders()` — cheap, no
@@ -75,3 +82,27 @@ call for that Skill then runs immediately with no further prompt. Both files liv
 `server/tools/` (they're built-in code, not Skill content) even though their whole job is
 to act on a Skill folder — see `server/tools/CLAUDE.md`'s note on the one-directional
 `server/tools/` -> `server/skills/store/` dependency this creates.
+
+## Gotchas
+
+- **`skill-zip.js`'s `runPowerShell()` was passing `-Command` several separate argv
+  entries instead of one command string — broke outright on any install path containing a
+  space, confirmed live on the user's own real machine (`...\CLAUDE PROJECT\Jarvis-001\...`)
+  via the new install-from-GitHub-repo feature, but affects Upload/Replace/Download too
+  since all three go through this one function.** `powershell.exe`'s own CLI parser takes
+  only the token immediately after `-Command` as the command name and re-interprets every
+  token after that as "CommandParameters" it reconstructs itself — this does NOT reliably
+  preserve a single argv item as one atomic value once it contains a space, so
+  `Expand-Archive -LiteralPath <path with a space> ...` failed with "A positional
+  parameter cannot be found that accepts argument '...zip'" — `-LiteralPath` itself was
+  never recognized as a flag once the path silently split apart. Fixed by building ONE
+  fully-formed command string ourselves (each value individually single-quoted, `'`
+  doubled per PowerShell's own escaping rule) and passing exactly one argv item after
+  `-Command` — this is parsed as one ordinary command line with no reinterpretation to go
+  wrong. **A real second bug in the first attempt at this same fix**: quoting the FIRST
+  token too (the cmdlet name itself, e.g. `'Expand-Archive'`) turns the whole line into a
+  plain string expression rather than a command invocation — a different parse failure
+  ("Unexpected token '-LiteralPath'..."), caught by re-verifying immediately rather than
+  trusting the first fix. The cmdlet name must stay bare; only the VALUE arguments after
+  it get quoted. Re-verified live, with a scratch data directory deliberately given a
+  space in its own path to reproduce the exact failure shape, then confirmed fixed.

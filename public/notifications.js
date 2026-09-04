@@ -173,7 +173,11 @@ function buildPanel(body, close) {
       rowBody.className = 'notif-row-body';
       const title = document.createElement('div');
       title.className = 'notif-row-title';
-      title.textContent = n.title;
+      // n.count > 1 means the server collapsed several repeats of this exact
+      // fault into one row (see server/notifications.js's addNotification())
+      // — shown so a still-ongoing problem reads as "happened 6 times," not
+      // as a single, possibly-stale-looking occurrence.
+      title.textContent = n.count > 1 ? `${n.title} ×${n.count}` : n.title;
       rowBody.appendChild(title);
       if (n.body) {
         const text = document.createElement('div');
@@ -239,19 +243,43 @@ function openPanel(anchor) {
 
 // ---------- ingest ----------
 
-/** Adds a record (from the initial GET, or a live SSE push) into local state, de-duped by id. Does NOT toast — callers decide that (a fresh push toasts, seeding history on load doesn't). */
+/**
+ * Adds a record (from the initial GET, or a live SSE push) into local state,
+ * de-duped by id. Does NOT toast — callers decide that (a fresh push toasts,
+ * seeding history on load doesn't). Returns 'new', 'updated', or false.
+ *
+ * A repeat of the SAME fault (see server/notifications.js's own dedup
+ * comment) arrives as a live push carrying an id already seen — the count
+ * bumped, `ts` refreshed — rather than a brand-new id. Before this, that
+ * push was silently dropped entirely (seenIds already had the id), so the
+ * bell's badge/panel kept showing the FIRST occurrence's stale count/time
+ * forever while the server-side count kept climbing underneath it.
+ */
 function ingestSilent(n) {
-  if (seenIds.has(n.id)) return false;
+  if (seenIds.has(n.id)) {
+    const existing = notifications.find((x) => x.id === n.id);
+    if (!existing) return false; // seen then since removed (delete/clear-all) — nothing to update
+    Object.assign(existing, n);
+    updateBadge();
+    return 'updated';
+  }
   seenIds.add(n.id);
   notifications.unshift(n);
   notifications.sort((a, b) => new Date(b.ts) - new Date(a.ts));
   updateBadge();
-  return true;
+  return 'new';
 }
 
-/** Called from app.js's SSE handler for a live 'notification' push — toasts it too, unlike the silent history seed. */
+/**
+ * Called from app.js's SSE handler for a live 'notification' push — toasts a
+ * genuinely NEW notification, same as before. A repeat collapsing into an
+ * existing row (see ingestSilent above) updates the badge/panel's count but
+ * deliberately doesn't pop another toast — spamming a fresh toast for every
+ * repeat of the exact fault this dedup exists to quiet down would defeat the
+ * point of collapsing it in the first place.
+ */
 export function ingest(n) {
-  if (ingestSilent(n)) showToast(n);
+  if (ingestSilent(n) === 'new') showToast(n);
 }
 
 /**

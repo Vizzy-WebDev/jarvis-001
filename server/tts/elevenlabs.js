@@ -127,6 +127,20 @@ export function isConfigured() {
   return ref ? Boolean(externalServices.getKey(ref)) : false;
 }
 
+/**
+ * The resolved `{ref, key}` for whichever configured service this adapter
+ * matched, or null if none is configured — cost/balances.js's own entry
+ * point for polling `/v1/user`, reusing the exact same ref-recognition
+ * findRef() already does rather than a second lookup with its own risk of
+ * disagreeing about which service is "the" ElevenLabs one.
+ */
+export function resolvedKey() {
+  const ref = findRef();
+  if (!ref) return null;
+  const key = externalServices.getKey(ref);
+  return key ? { ref, key } : null;
+}
+
 function parseErrorMessage(body, status) {
   try {
     const parsed = JSON.parse(body);

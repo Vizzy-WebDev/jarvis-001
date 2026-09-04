@@ -55,6 +55,37 @@ function client(entry) {
   return new OpenAI({ apiKey, baseURL: entry.baseUrl || undefined });
 }
 
+// A short JSON blob shaped like {"error":{"message":"...",...}} sometimes
+// arrives as ordinary chat-completion content instead of a real HTTP error —
+// confirmed live against the user's own gateway (an aggregator whose own
+// upstream pool had failed returned a 200 OK carrying this as the message
+// body: `{"error":{"message":"[429]: ... Rate limit exceeded...","type":
+// "rate_limit_error","code":"rate_limit_exceeded"}}`). Undetected, that text
+// streamed straight to the transcript and TTS as if it were a real reply,
+// and the turn was recorded as a healthy success — see stream()'s own
+// buffering below for how this is caught. Detected narrowly: only text that
+// actually parses as this exact shape counts, so a model legitimately asked
+// to produce JSON is never misread.
+function errorPayloadMessage(text) {
+  const trimmed = (text || '').trim();
+  if (!trimmed.startsWith('{')) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  const message = parsed?.error?.message;
+  return typeof message === 'string' && message ? message : null;
+}
+
+// How long a reply that STARTS with '{' is held back (not yet yielded as
+// chunks) before giving up on it being an error payload and streaming
+// normally from then on — real error blobs seen in practice are well under
+// this length; a model legitimately asked to produce longer JSON just
+// resumes streaming live past this point instead of appearing all at once.
+const ERROR_PAYLOAD_HOLD_CHARS = 500;
+
 function toolsForOpenAI(tools) {
   return (tools || []).map((t) => ({
     type: 'function',
@@ -129,6 +160,15 @@ export async function* stream(entry, messages, opts = {}) {
       messages: toMessages(messages, opts),
       tools,
       stream: true,
+      // Without this, an OpenAI-shaped stream emits no usage data at all —
+      // it isn't merely discarded the way the other two adapters' usage
+      // used to be, it's never requested. See root CLAUDE.md's Cost
+      // tracking section. A backend that doesn't recognize the option is
+      // expected to ignore an unknown field per the OpenAI-compatible
+      // convention every other caller here already relies on; if a given
+      // backend never sends the usage chunk anyway, usageMetadata below
+      // simply stays null and no usage event is emitted — never fabricated.
+      stream_options: { include_usage: true },
     },
     { signal: opts.signal }
   );
@@ -138,17 +178,65 @@ export async function* stream(entry, messages, opts = {}) {
   // arguments both arrive in pieces that must be concatenated until the
   // stream ends.
   const toolCallsByIndex = new Map();
+  let usage = null;
+
+  // See errorPayloadMessage()/ERROR_PAYLOAD_HOLD_CHARS above. `yieldedLength`
+  // is how much of `text` has already been sent out as a chunk; `holding` is
+  // true only while the reply so far could still plausibly be converging
+  // into a short error-shaped JSON blob; `holdDecided` becomes true the
+  // moment that's settled either way (first real character isn't '{', or
+  // it's grown past the hold length) so the decision is never re-litigated.
+  let yieldedLength = 0;
+  let holding = false;
+  let holdDecided = false;
+
+  /** Releases whatever's been accumulated-but-not-yet-yielded, in place. */
+  function* releaseHeld() {
+    const toYield = text.slice(yieldedLength);
+    if (toYield) yield { type: 'chunk', text: toYield };
+    yieldedLength = text.length;
+  }
 
   for await (const chunk of resp) {
+    // The final usage chunk (when the backend sends one) carries an EMPTY
+    // choices array — checked before the `!delta` skip below, or it would
+    // silently fall through unread, the exact bug this comment exists to
+    // prevent.
+    if (chunk.usage) usage = chunk.usage;
+
     const delta = chunk.choices?.[0]?.delta;
     if (!delta) continue;
 
     if (delta.content) {
       text += delta.content;
-      yield { type: 'chunk', text: delta.content };
+
+      if (!holdDecided) {
+        if (text.trimStart().startsWith('{')) {
+          holding = true;
+        } else if (text.trim() !== '') {
+          // First real character isn't '{' — this reply will never hold.
+          holdDecided = true;
+        }
+        // else: still all whitespace so far — wait for more before deciding.
+      }
+      if (holding && text.length - yieldedLength >= ERROR_PAYLOAD_HOLD_CHARS) {
+        // Held long enough without looking like a short error blob — give up holding.
+        holding = false;
+        holdDecided = true;
+      }
+
+      if (!holding) yield* releaseHeld();
     }
 
     if (delta.tool_calls) {
+      // A real tool call means this was never an error payload (a model
+      // can't legitimately emit both) — release anything still held, in its
+      // original position, before recording the tool-call delta.
+      if (holding) {
+        holding = false;
+        holdDecided = true;
+        yield* releaseHeld();
+      }
       for (const tc of delta.tool_calls) {
         const existing = toolCallsByIndex.get(tc.index) || { id: '', name: '', argsText: '' };
         if (tc.id) existing.id = tc.id;
@@ -157,6 +245,33 @@ export async function* stream(entry, messages, opts = {}) {
         toolCallsByIndex.set(tc.index, existing);
       }
     }
+  }
+
+  // Stream ended still holding — this is the real decision point for a
+  // short reply delivered all at once rather than trickled in over many
+  // chunks. A genuine error payload throws here instead of ever reaching
+  // the browser; anything else (including a model legitimately asked for
+  // short JSON) is released exactly as it would have been without holding.
+  if (holding) {
+    const message = errorPayloadMessage(text);
+    if (message) {
+      const err = new Error(message);
+      err.code = 'UPSTREAM_ERROR_PAYLOAD';
+      throw err;
+    }
+    yield* releaseHeld();
+  }
+
+  if (usage) {
+    yield {
+      type: 'usage',
+      unitKind: 'tokens',
+      unitsIn: usage.prompt_tokens ?? null,
+      unitsOut: usage.completion_tokens ?? null,
+      cachedIn: usage.prompt_tokens_details?.cached_tokens ?? null,
+      provider: entry.provider || 'openai-compatible',
+      model: entry.model,
+    };
   }
 
   if (toolCallsByIndex.size > 0) {
@@ -173,7 +288,21 @@ export async function* stream(entry, messages, opts = {}) {
     return;
   }
 
-  yield { type: 'final', text: text || "Sorry, I didn't quite catch that." };
+  // A genuinely empty final response is a real failure, not a fake success —
+  // let runner.js's existing failover machinery handle it (mark this model
+  // unhealthy, try the next candidate) exactly the way a timeout already
+  // does, instead of yielding a placeholder reply that gets shown/spoken as
+  // if it were real and marks this model healthy. Worded to naturally match
+  // friendly-message.js's own 'transient' text pattern ("try again later")
+  // since an empty response from an otherwise-reachable model is more often
+  // a momentary hiccup than a permanent problem.
+  if (!text) {
+    const err = new Error('The model returned an empty response — try again later.');
+    err.code = 'EMPTY_RESPONSE';
+    throw err;
+  }
+
+  yield { type: 'final', text };
 }
 
 export async function testConnection(entry) {

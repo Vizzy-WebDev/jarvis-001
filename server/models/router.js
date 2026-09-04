@@ -7,6 +7,7 @@
 import { listModels, isReady } from './registry.js';
 import { isHealthy, getHealthStatus } from './health.js';
 import { classifyTaskType, scoringLeanForType } from './task-types.js';
+import { observedCostTier } from '../cost/advisor.js';
 
 // Mirrors health.js's COOLDOWNS_MS tiers, but keyed on the STATE persisted to
 // disk (registry.js's `availability.state`, written by runner.js) rather
@@ -183,7 +184,13 @@ export function explainExclusions(task) {
 function scoreFor(entry, task, balance) {
   const speed = entry.tier?.speed ?? 3;
   const quality = entry.tier?.quality ?? 3;
-  const cost = entry.tier?.cost ?? 2;
+  // A real, measured price (cost/advisor.js's observedCostTier()) replaces
+  // the catalog's own name-regex guess when one is on record — same 0-4
+  // domain the guess already used, so every branch below is unaffected in
+  // shape; only which integer lands in `cost` can change. Falls back to the
+  // guess exactly as before when no real price is known yet. See root
+  // CLAUDE.md's Operational Awareness item 6.
+  const cost = observedCostTier(entry.provider || entry.adapter, entry.model) ?? entry.tier?.cost ?? 2;
 
   if (task.profile === 'control') {
     // Quality-weighted regardless of the balance dial — a wrong click costs

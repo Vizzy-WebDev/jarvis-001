@@ -7,17 +7,24 @@
 // lives in server/heartbeat/outbox-store.js — generalized (db.js migration
 // 13) so a Heartbeat/Trigger finding with no job behind it can use the same
 // broker instead of a second one (see root CLAUDE.md's Heartbeat section).
-// The four functions below are thin wrappers over that store with
-// `source:'job'`/`jobId` baked in, so every existing call site here keeps
-// its exact original signature and behavior.
+// The write-ahead trace this file used to own directly now lives in
+// server/ops/ops-trace.js — generalized (db.js migration 15) the exact same
+// way, so a self-diagnosis probe or verification check can log its own
+// intent/outcome pair without a second trace mechanism (see root CLAUDE.md's
+// "Operational Awareness" section). The seven functions below are thin
+// wrappers over those two stores with `source:'job'`/`jobId` baked in, so
+// every existing call site here keeps its exact original signature and
+// behavior.
 //
-// Leaf module: imports only db.js and heartbeat/outbox-store.js (itself a
-// leaf) — safe for server/tools/ (work_in_background.js, check_on_work.js,
-// stop_working_on.js) to import directly without tripping the
-// loader/runner/scheduler circular-import invariant in root CLAUDE.md.
+// Leaf module: imports only db.js, heartbeat/outbox-store.js, and
+// ops/ops-trace.js (all three leaves) — safe for server/tools/
+// (work_in_background.js, check_on_work.js, stop_working_on.js) to import
+// directly without tripping the loader/runner/scheduler circular-import
+// invariant in root CLAUDE.md.
 
 import { getDb } from '../db.js';
 import * as outboxStore from '../heartbeat/outbox-store.js';
+import * as traceStore from '../ops/ops-trace.js';
 
 const DEFAULT_TAIL_SIZE = 8;
 
@@ -55,24 +62,6 @@ function rowToJob(row) {
     startedAt: row.started_at,
     heartbeatAt: row.heartbeat_at,
     finishedAt: row.finished_at,
-  };
-}
-
-function rowToTrace(row) {
-  return {
-    id: row.id,
-    jobId: row.job_id,
-    seq: row.seq,
-    phase: row.phase, // 'intent' | 'outcome'
-    effect: row.effect, // 'read' | 'workspace' | 'external'
-    kind: row.kind, // 'tool' | 'decision' | 'source' | 'error' | 'note'
-    summary: row.summary,
-    // Free-form — a tool entry's caller JSON.stringifies {name, args} (intent)
-    // or {name, ok} (outcome) here; job-policy.js's diagnoseStall() is the
-    // one place that parses it back out. Never auto-decoded by the store —
-    // not every kind uses it the same way.
-    detail: row.detail,
-    createdAt: row.created_at,
   };
 }
 
@@ -198,38 +187,20 @@ export function deleteJob(id) {
 
 /**
  * Appends ONE trace row — the caller decides intent vs outcome and effect.
- * Same transactional next-seq pattern as chat-store.js's appendMessage(),
- * scoped to job_id instead of conversation_id. `detail` is an opaque string;
- * a caller recording a tool call passes `JSON.stringify({name, args})` for
- * an 'intent' row and `JSON.stringify({name, ok})` for its 'outcome' —
- * job-policy.js's diagnoseStall() is what parses it back out.
+ * Thin wrapper over ops/ops-trace.js's appendEntry() with `source:'job'`,
+ * `sourceRef:jobId`, `jobId` baked in — see this file's header comment.
+ * `detail` is an opaque string; a caller recording a tool call passes
+ * `JSON.stringify({name, args})` for an 'intent' row and
+ * `JSON.stringify({name, ok})` for its 'outcome' — job-policy.js's
+ * diagnoseStall() is what parses it back out.
  */
 export function appendTrace(jobId, { phase, effect, kind, summary, detail = null }) {
-  if (!phase || !effect || !kind || !summary) {
-    throw new Error('A trace entry needs phase, effect, kind, and summary.');
-  }
-  const db = getDb();
-  const ts = nowIso();
-  db.exec('BEGIN');
-  try {
-    const { seq: lastSeq } =
-      db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM job_trace WHERE job_id = ?').get(jobId) || { seq: 0 };
-    const nextSeq = lastSeq + 1;
-    db.prepare(
-      'INSERT INTO job_trace (job_id, seq, phase, effect, kind, summary, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(jobId, nextSeq, phase, effect, kind, summary, detail, ts);
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
-  return getTraceTail(jobId, 1)[0];
+  return traceStore.appendEntry({ source: 'job', sourceRef: jobId, jobId, phase, effect, kind, summary, detail });
 }
 
 /** The full trace for one job, oldest first — used for classifyRecovery() on an orphaned job. */
 export function getTrace(jobId) {
-  const rows = getDb().prepare('SELECT * FROM job_trace WHERE job_id = ? ORDER BY seq ASC').all(jobId);
-  return rows.map(rowToTrace);
+  return traceStore.getFull('job', jobId);
 }
 
 /**
@@ -238,10 +209,7 @@ export function getTrace(jobId) {
  * query, not a full-history read, on every tick for every running job.
  */
 export function getTraceTail(jobId, n = DEFAULT_TAIL_SIZE) {
-  const rows = getDb()
-    .prepare('SELECT * FROM job_trace WHERE job_id = ? ORDER BY seq DESC LIMIT ?')
-    .all(jobId, n);
-  return rows.reverse().map(rowToTrace);
+  return traceStore.getTail('job', jobId, n);
 }
 
 /**

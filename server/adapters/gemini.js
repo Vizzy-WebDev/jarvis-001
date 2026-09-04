@@ -130,6 +130,7 @@ export async function* stream(entry, messages, opts = {}) {
   const turnParts = [];
   const calls = [];
   let text = '';
+  let usageMetadata = null;
 
   for await (const chunk of genStream) {
     const chunkParts = chunk.candidates?.[0]?.content?.parts;
@@ -139,6 +140,23 @@ export async function* stream(entry, messages, opts = {}) {
       yield { type: 'chunk', text: chunk.text };
     }
     if (chunk.functionCalls?.length) calls.push(...chunk.functionCalls);
+    // usageMetadata carries CUMULATIVE totals on every chunk that has it —
+    // the last one seen is the real total for the whole turn, never summed.
+    // Present on every real GenerateContentResponse and never read before
+    // this — see root CLAUDE.md's Cost tracking section.
+    if (chunk.usageMetadata) usageMetadata = chunk.usageMetadata;
+  }
+
+  if (usageMetadata) {
+    yield {
+      type: 'usage',
+      unitKind: 'tokens',
+      unitsIn: usageMetadata.promptTokenCount ?? null,
+      unitsOut: usageMetadata.candidatesTokenCount ?? null,
+      cachedIn: usageMetadata.cachedContentTokenCount ?? null,
+      provider: 'gemini',
+      model: entry.model,
+    };
   }
 
   if (calls.length > 0) {
@@ -150,9 +168,21 @@ export async function* stream(entry, messages, opts = {}) {
     return;
   }
 
+  // A genuinely empty final response is a real failure, not a fake success —
+  // let runner.js's existing failover machinery handle it (mark this model
+  // unhealthy, try the next candidate) exactly the way a timeout already
+  // does, instead of yielding a placeholder reply that gets shown/spoken as
+  // if it were real and marks this model healthy. See
+  // openai-compatible.js's own stream() for the same fix and its reasoning.
+  if (!text) {
+    const err = new Error('The model returned an empty response — try again later.');
+    err.code = 'EMPTY_RESPONSE';
+    throw err;
+  }
+
   yield {
     type: 'final',
-    text: text || "Sorry, I didn't quite catch that.",
+    text,
     raw: { adapter: 'gemini', content: { role: 'model', parts: turnParts.length ? turnParts : [{ text }] } },
   };
 }

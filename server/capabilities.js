@@ -29,6 +29,7 @@
 import { rawTools, listTools, reservedToolNames } from './tools/index.js';
 import { listFolderSkillTools, getFolderSkillTool } from './skills/index.js';
 import { getToolDeclarations as getConnectorDeclarations, runConnectorTool } from './connectors/index.js';
+import { recordEvent as recordSecurityEvent } from './ops/diagnostics/checks/security/security-counters.js';
 
 // ---------- connector tools, wrapped to the same runnable shape as a built-in ----------
 //
@@ -389,7 +390,11 @@ function consumePendingToken(capability, rawArgs, ctx) {
   if (record.mintedTurnId && ctx?.turnId && record.mintedTurnId === ctx.turnId) {
     // Same turn that minted it — treated exactly like an invalid token:
     // the caller falls through to minting a FRESH one and asking again,
-    // this time for real, in whatever turn actually replies.
+    // this time for real, in whatever turn actually replies. Self-
+    // diagnosis's own security check watches for a SPIKE of this specific
+    // refusal — an attempted same-turn confirm-gate bypass, whatever its
+    // cause — via a leaf counter store with no import back to this file.
+    recordSecurityEvent('confirm_refusal');
     return null;
   }
   return record;

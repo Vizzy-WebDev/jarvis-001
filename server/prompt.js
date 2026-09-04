@@ -10,6 +10,7 @@ import { listUserSkills } from './skills/store/skill-files.js';
 import { activeRulesText } from './improvement/improvement-store.js';
 import { STYLE_FRAMEWORK, floorsSection } from './personality.js';
 import { anySignalFired } from './self/self-signals.js';
+import { isSharing } from './control/screen-share-state.js';
 
 export const SYSTEM_INSTRUCTION = `You are Jarvis — the user's own personal assistant, present with them day to day on their Windows PC, not a service they've opened a ticket with.
 
@@ -25,6 +26,7 @@ Rules for how you talk:
 - If a file tool fails because the folder isn't allowed yet, tell the user which folder you need and ask if it's okay — if they agree, call allow_folder for that exact folder, then retry what you were doing. Never call allow_folder without them clearly agreeing first.
 - If something the user wants doesn't have a matching tool visible to you right now, don't assume it's impossible — most of what Jarvis can do isn't shown to you by default, to keep replies fast. Before answering from your own knowledge instead, ask yourself whether this sounds like something Jarvis would plausibly be able to do: operating the computer, working with a connected app or service, continuing a project/content/Skill already in play, or anything else that isn't everyday conversation. If it does, call find_capability describing what's needed in plain words first. Only fall back to answering conversationally once that comes back empty, or for something genuinely outside anything Jarvis does.
 - Some tools ask for confirmation before they take effect (they'll come back with needs_confirmation: true and a summary). When that happens, read the summary back to the user in your own words and ask them to confirm — speak it as your own request, never as "the system wants to" or a tool needing something — and do not call the tool again until they say yes. If they say yes, call the tool again with confirm_token set to the value you were given — you don't need to reconstruct or resend the original arguments, only the token; it already carries what was confirmed. If they say no or ask you to change something, don't reuse that token — just do what they actually asked instead.
+- control_computer is different from every other confirm-gated tool in one respect: the SECOND call (the one carrying confirm_token, actually about to take over the mouse and keyboard) needs its own real heads-up right before it, not just the plan read-back you already gave on the first call. Lead that turn with a brief, natural line in your own voice — you're taking over now, hands off the keyboard and mouse for a bit — never a fixed canned sentence, and never skipped just because the plan was already approved.
 
 Shared content — investigating something the user gives you, all of it here in the conversation, never on a separate page:
 - When they share a link or a file you cannot already see, use share_content. On its own this only works out what the thing IS — it does not read, watch, or analyse it. If they didn't also say what they want, DO NOT choose for them: say plainly what it appears to be (its kind, and its length or size if useful) and ask what they'd like. Asking is the correct behaviour here, not a failure to be helpful. If they DID say what they want in the same breath, pass that straight through and it's looked into right away — no need to ask again.
@@ -33,6 +35,10 @@ Shared content — investigating something the user gives you, all of it here in
 - Use check_claim specifically when a claim's truth is in question — theirs, yours, or one from something they shared. It looks things up before it answers, so never pre-empt its verdict with a guess.
 - Use look_it_up for plain research with no verdict attached — how something works, what a tool or Skill does, typical costs, background — anything that calls for finding information rather than judging a claim.
 - Anything you've looked into stays in this conversation. Use it freely alongside a project you're planning — if something they shared bears on it, say so and use it without asking them to repeat it.
+
+Browsing — most lookups should never pop a visible browser window on the user's screen:
+- For a plain information lookup — reading a page, checking a fact, finding something out — use read_web_page, look_it_up, web_search's own results, or research_project. All of these work invisibly in the background; none of them show the user anything popping up.
+- Reach for browser_navigate/browser_click/browser_type (a REAL, VISIBLE browser window) only when the task genuinely needs clicking, typing, or filling something in on a real page — or the user explicitly asked to browse, or to open a site and look at it themselves. Don't reach for it just because a page is hard to read any other way; read_web_page already renders a JS-heavy page invisibly on its own if a plain fetch comes back too thin.
 
 Planning partner — helping the user turn a rough idea into a plan and a build prompt, entirely through ordinary conversation:
 - When they describe something they want to build, call start_project once, then just talk with them about it — the way you'd talk through anything else. Ask whatever's genuinely unclear, in your own words, one thing at a time, never as a list to work through. If they challenge a part of the idea, ask why something's needed, explore an alternative, or change their mind, simply respond to that in place — never file it as an answer to something else and never push the conversation back onto a track. There is no fixed set of questions to get through.
@@ -307,20 +313,75 @@ function selfFocusSection(signals) {
   if (signals.correction) {
     lines.push('The user just corrected you this turn — that is real signal worth being straightforwardly honest about, not glossed over.');
   }
+  // Reasoning integrity's "steer early" half (root CLAUDE.md's Operational
+  // Awareness item 1) — the REAL lesson text is embedded directly now,
+  // instead of only telling the model to go fetch it itself via a second
+  // check_myself round trip (which a weaker model may not reliably do — see
+  // root CLAUDE.md's Gotchas on prompt-adherence gaps on this exact
+  // roster). Falls back to the original "go check" instruction only if
+  // computeTurnSignals() didn't actually find real lesson text for the
+  // matched scope (signals.matchedLessons empty despite knownFailure firing
+  // — a genuinely possible mismatch, e.g. a rule matched but carries no
+  // lesson text of its own).
   if (signals.knownFailure) {
-    lines.push(
-      "You have a recorded pattern of getting this specific kind of thing wrong before — call check_myself with about:['failure_modes'] " +
-        'and the relevant scope before finishing, and factor what it says in.'
-    );
+    const lessons = signals.matchedLessons || [];
+    if (lessons.length) {
+      lines.push(
+        'You have a recorded pattern of getting this specific kind of thing wrong before — weigh this real evidence before finishing, ' +
+          `do not just restate it: ${lessons.map((l) => `"${l.text}"`).join('; ')}`
+      );
+    } else {
+      lines.push(
+        "You have a recorded pattern of getting this specific kind of thing wrong before — call check_myself with about:['failure_modes'] " +
+          'and the relevant scope before finishing, and factor what it says in.'
+      );
+    }
   }
   if (signals.noTrackRecord) {
-    lines.push('You have no recorded track record for something you just used this turn — say so plainly if asked how confident you are in it, rather than estimating.');
+    const keys = (signals.noTrackRecordKeys || []).map((k) => k.key);
+    lines.push(
+      keys.length
+        ? `You have no recorded track record for ${keys.join(', ')}, used this turn — say so plainly if asked how confident you are in it, rather than estimating.`
+        : 'You have no recorded track record for something you just used this turn — say so plainly if asked how confident you are in it, rather than estimating.'
+    );
+  }
+  // New: real reliability numbers for tools used THIS turn that have a
+  // NOTABLE history — at least one real recorded failure, not just "has
+  // enough data points." A perfectly clean track record is never surfaced
+  // here (nothing to steer away from, and it would just be noise on every
+  // routine tool call); self-signals.js's anySignalFired() fires this whole
+  // section on the same condition, so a turn using only reliable tools with
+  // no other signal never gets an empty/pointless bullet. Never a
+  // fabricated number for a tool below the grounding floor
+  // (reliabilityFromCounts()'s MIN_ATTEMPTS_FOR_RATIO, self-model.js) —
+  // `verdict === 'has_track_record'` already enforces that.
+  const notable = (signals.toolReliability || []).filter((r) => r.verdict === 'has_track_record' && r.failures > 0);
+  if (notable.length) {
+    lines.push(
+      'Real reliability record for what you used this turn: ' +
+        notable.map((r) => `${r.name} (${Math.round(r.successRate * 100)}% of ${r.attempts} attempts)`).join(', ') +
+        ' — factor this in rather than assuming.'
+    );
   }
   if (signals.blockedOnBackground) {
     lines.push("A background job is currently running — factor that into whether you can answer something confidently right now, and mention it if it's actually relevant to what's being asked.");
   }
   if (!lines.length) return '';
   return `\n\nRight now, about your own state:\n${lines.map((l) => `- ${l}`).join('\n')}`;
+}
+
+/**
+ * Screen Sharing's own volatile section — emitted only while the user (or
+ * their earlier voice instruction) has left it turned on (see
+ * control/screen-share-state.js). This is deliberately just a standing
+ * permission, never an instruction to actually describe anything right
+ * now — turning sharing on must never itself trigger an unprompted
+ * description, same "never speak unprompted" discipline Heartbeat and
+ * Monitoring already follow.
+ */
+function screenSharingSection() {
+  if (!isSharing()) return '';
+  return '\n\nScreen sharing is currently on — the user can ask about anything on their screen at any point without saying "look at my screen" first. Call look_at_screen fresh whenever such a question comes up; never reuse an old description.';
 }
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -434,6 +495,7 @@ export function systemInstructionParts({ lowConfidence = false, systemOverride, 
   if (hasAudience) volatile += floorsSection(style);
   volatile += improvementScopedSection(improvementScope);
   volatile += selfFocusSection(selfSignals);
+  if (hasAudience) volatile += screenSharingSection();
   if (lowConfidence) volatile += CLARIFY_DIRECTIVE;
   return { stable, volatile };
 }

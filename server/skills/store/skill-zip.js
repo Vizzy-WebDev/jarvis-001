@@ -55,9 +55,42 @@ function scratchDir() {
   return dir;
 }
 
+// A real, confirmed live bug: `-Command` followed by SEVERAL SEPARATE argv
+// entries (as this used to pass them: ['-Command', 'Expand-Archive',
+// '-LiteralPath', tmpZip, ...]) is not "one command with flags" the way it
+// looks — powershell.exe's own CLI parser takes only the token immediately
+// after `-Command` as the command name and re-interprets every token AFTER
+// that as trailing "CommandParameters" it reconstructs itself, which does
+// NOT reliably preserve a single argv item (like a path) as one atomic
+// value once it contains a space. This project's own folder path
+// (`...\CLAUDE PROJECT\Jarvis-001\...`) has exactly that space, and it
+// broke `Expand-Archive` outright: "A positional parameter cannot be found
+// that accepts argument '...zip'" — `-LiteralPath` itself was never
+// recognized as a flag once the path split apart. Confirmed live via the
+// new install-from-GitHub-repo feature (which reuses this same function
+// unchanged), but this affects every zip Upload/Replace on this exact class
+// of machine (any install path with a space in it) — not new, just newly
+// surfaced. Fixed by building ONE single, fully-formed command STRING
+// ourselves (each value individually single-quoted, embedded `'` doubled
+// per PowerShell's own escaping rule) and passing exactly one argv item
+// after `-Command` — powershell.exe then parses it as one ordinary command
+// line, the same as typing it at a prompt, with no trailing-parameter
+// reinterpretation to go wrong.
+function quotePwshArg(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
 function runPowerShell(args) {
   return new Promise((resolve, reject) => {
-    const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ...args], { stdio: ['ignore', 'ignore', 'pipe'] });
+    // The FIRST token is the cmdlet name itself (e.g. "Expand-Archive") and
+    // must stay bare — quoting it turns the whole line into a plain string
+    // expression instead of a command invocation, which is its own distinct
+    // parse failure ("Unexpected token '-LiteralPath'..."), confirmed live
+    // by this fix's own first attempt. Every token AFTER that is either a
+    // real flag (starts with '-', stays unquoted) or a value (quoted).
+    const [cmd, ...rest] = args;
+    const commandString = [cmd, ...rest.map((a) => (/^-/.test(a) ? a : quotePwshArg(a)))].join(' ');
+    const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', commandString], { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
     ps.stderr.on('data', (chunk) => { stderr += chunk; });
     ps.on('error', (err) => reject(new Error(err.message)));
@@ -118,6 +151,65 @@ async function installFromZip(buffer, reservedNames = new Set()) {
   } finally {
     cleanup();
   }
+}
+
+// Matches "github.com/<owner>/<repo>" with an optional leading scheme,
+// optional trailing slash/path/query, and an optional ".git" suffix — the
+// shapes a user is actually likely to paste (a browser address bar URL, a
+// git clone URL, or just "owner/repo" copied from somewhere).
+const GITHUB_URL_RE = /^(?:https?:\/\/)?(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:[/?#].*)?$/i;
+
+/** Pulls {owner, repo} out of whatever the user pasted, or null if it doesn't look like a GitHub repo link at all. */
+export function parseGithubRepoUrl(input) {
+  const match = GITHUB_URL_RE.exec(String(input || '').trim());
+  if (!match) return null;
+  return { owner: match[1], repo: match[2] };
+}
+
+/**
+ * Install — a brand-new skill fetched directly from a public GitHub
+ * repository link, per the user's own explicit choice of "a GitHub
+ * repository link" over "a direct file link." Two plain, unauthenticated
+ * `fetch()` calls, no new dependency: first the repo's own metadata (just to
+ * read its real default branch — never assumed to be "main"), then the
+ * zipball for that branch. GitHub's own zipball always wraps its contents in
+ * one top-level folder (`owner-repo-<sha>/`) — findSkillRoot() above already
+ * unwraps exactly this shape (its own comment describes this precise case),
+ * so no special-casing is needed here beyond reusing unpackToScratch(). A
+ * repository holding more than one Skill in subfolders isn't supported —
+ * same restriction installFromDirectory() already applies to a zip upload
+ * (SKILL.md/skill.toml must resolve at the root, never searched for deeper).
+ */
+export async function installFromGithubRepo(url, reservedNames = new Set()) {
+  const parsed = parseGithubRepoUrl(url);
+  if (!parsed) throw new Error('That doesn\'t look like a GitHub repository link — try something like "github.com/someone/some-skill".');
+  const { owner, repo } = parsed;
+
+  let defaultBranch;
+  try {
+    const metaRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, {
+      headers: { Accept: 'application/vnd.github+json' },
+    });
+    if (!metaRes.ok) {
+      throw new Error(metaRes.status === 404 ? "That repository doesn't exist, or isn't public." : `GitHub responded with ${metaRes.status}.`);
+    }
+    const meta = await metaRes.json();
+    defaultBranch = meta.default_branch;
+    if (!defaultBranch) throw new Error("Couldn't work out that repository's default branch.");
+  } catch (err) {
+    throw new Error(err?.message || 'Could not reach GitHub.');
+  }
+
+  let buffer;
+  try {
+    const zipRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/zipball/${defaultBranch}`);
+    if (!zipRes.ok) throw new Error(`GitHub responded with ${zipRes.status} while downloading the repository.`);
+    buffer = Buffer.from(await zipRes.arrayBuffer());
+  } catch (err) {
+    throw new Error(err?.message || 'Could not download that repository.');
+  }
+
+  return installFromZip(buffer, reservedNames);
 }
 
 /** Replace — swaps an existing skill's whole folder content for what's in a new `.zip`/`.skill`, same identity (folder name / enabled state) as before. */

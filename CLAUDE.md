@@ -84,6 +84,53 @@ string Node parses on its own. Keep a second, Windows-style variable
 (`C:/Users/...`, forward slashes are fine) for anything landing inside a JS string
 literal passed to `node -e`; use the POSIX one only for Bash's own commands.
 
+**A command-prefix env assignment (`VAR=val cmd`) is NOT available as `$VAR` inside
+that same command line's other arguments — confirmed live, the exact way it broke a
+real pre-merge validation run.** `SCRATCH_DATA="<path>" node -e "process.env.JARVIS_DATA_DIR
+= '$SCRATCH_DATA';"` looks like it should work but doesn't: `$SCRATCH_DATA` inside the
+`-e` string is expanded by the **outer shell**, before the prefix assignment is ever
+applied to the child process — and since `SCRATCH_DATA` was never a real shell
+variable (only a prefix meant for `node`'s own environment), it silently expands to
+an empty string. The result: `process.env.JARVIS_DATA_DIR = '';`, falsy, so
+`dataDir()` correctly — and dangerously — fell back to the real project `data/`
+directory exactly as designed, writing real test output into the user's actual data.
+This is different from setting `PORT`/`JARVIS_DATA_DIR` as real prefix env vars
+directly on `node server/server.js` itself (that works fine — the child reads its
+own `process.env` directly, no shell-side string interpolation involved). **The
+rule: never reference a bash variable via `$VAR` inside a `node -e` string when that
+variable was only ever a command-prefix assignment on the same line — either give it
+a real `export`/separate assignment first, or just write the literal path directly
+into the `-e` string.** Always `ls`/verify the actual scratch directory a write
+script claims to have written to, rather than trusting the script's own success
+output — that's what caught this one before it went further.
+
+## Pre-merge validation gate
+
+The closest thing this project has to a CI gate — run this (against a scratch
+instance, never the user's real port/data) before merging any branch into `main`,
+and report each result plainly rather than summarizing as "passed":
+
+1. **Syntax sweep** — `node --check` across every `.js` under `server/` and
+   `public/`, not just changed files (a concurrent session's edits count too). Zero
+   failures required.
+2. **Fresh-install boot** — start the real `server/server.js` in the background
+   (`run_in_background: true`, see above) with `JARVIS_DATA_DIR`/`JARVIS_ENV_PATH`
+   pointed at empty scratch paths and an unusual `PORT`. Must print `Jarvis is
+   running at http://127.0.0.1:<port>` with no unhandled exception.
+3. **Migrations + tool loader** — read the scratch `jarvis.db` read-only and confirm
+   `PRAGMA user_version` reached the current length of `db.js`'s `MIGRATIONS` array;
+   confirm the tool loader's startup log lists every file under `server/tools/`
+   (proves nothing new tripped the circular-import deadlock invariant above).
+4. **Route smoke test** — `curl` a real GET route (200), a route that takes an id
+   with a nonexistent one (a clean 404, not a crash).
+5. **Any recently-fixed security behavior** — re-confirm it live rather than by
+   reading the code, e.g. a served-content route's forced-download headers on a
+   plain request with no special query param.
+
+Teardown: stop the scratch server by the PID actually bound to the scratch port
+(`Get-NetTCPConnection -LocalPort <port>`, not a guess), delete the scratch
+directory, and confirm the user's real instance/port is unaffected.
+
 ## Structure
 
 ```
@@ -117,6 +164,20 @@ server/
                      `heartbeat_at` (worker-liveness tracking for one running job).
   improvement/       Self-Improvement — Jarvis reviewing its own work and applying what it learns to
                      itself, distinct from memory/ above (facts about the USER) (see "Self-Improvement")
+  ops/               Operational Awareness — self-diagnosis + self-heal, environment/system-load
+                     awareness, mechanical + semantic Verification (wired at artifact creation, Job
+                     completion, and scheduled-task outcomes — NOT yet consequential chat answers, a
+                     deliberate cost-scope decision), the generic activity trace both this and Jobs
+                     write into (see "Operational Awareness" and server/ops/CLAUDE.md's own status note)
+  cost/              Cost tracking — automatic spend/usage tracking across every paid service, plus
+                     feeding a real measured cost back into model routing (see "Operational Awareness"
+                     and server/cost/CLAUDE.md)
+  artifacts/         Output/Artifact generation — real files (docx/xlsx/pptx assembled for real,
+                     everything else written as given — pptx carries a narrower verification
+                     confidence than docx/xlsx, see its own CLAUDE.md), mechanically verified the
+                     instant they're created, served at GET /api/artifacts/:id with a real fixed
+                     stored-XSS finding behind it (see "Operational Awareness" and
+                     server/artifacts/CLAUDE.md)
   self/              Self-Model — Jarvis's own grounded, evidence-backed self-knowledge: what it is,
                      what it can/can't actually do, what it's doing now and why, what's its own call
                      to make. Reads Memory/Jobs/Self-Improvement/Personality rather than duplicating
@@ -402,9 +463,10 @@ This directory used to hold both — built-in tools AND folder Skills — under 
 "skill," which is what let a real capability get offered as an installable Skill in the
 UI three separate times before this split. It now holds ONLY folder Skills:
 `SKILL.md`-based instructions under `data/skills/<name>/`. File anatomy, the folder-Skill
-mechanics, and upload/replace/download are all in `server/skills/CLAUDE.md` (loads
-automatically when working in that directory). The one rule that stays here because it's
-cross-cutting:
+mechanics, and upload/replace/download — plus installing straight from a public GitHub
+repository link, the "install from a repository or marketplace" path — are all in
+`server/skills/CLAUDE.md` (loads automatically when working in that directory). The one
+rule that stays here because it's cross-cutting:
 
 **PERMANENT RULE — Jarvis's built-in tools (`server/tools/`, listed in the Structure
 block above) are not Skills and must NEVER appear as a Skill anywhere in the UI.** This
@@ -677,6 +739,206 @@ for the module-by-module breakdown; the decisions that matter beyond that file:
   has no turn of its own to attach this to) and briefly reflects it on the orb. Honors
   the existing "Speak replies" setting exactly as an ordinary reply would.
 
+## Operational Awareness (`server/ops/*.js`, `server/cost/*.js`, `server/artifacts/*.js`)
+
+Six capabilities, all sitting on top of the Heartbeat above rather than duplicating its
+scheduling/triggering, that together let Jarvis know whether it's actually WORKING —
+distinct from Self-Model (what Jarvis IS and can do) and Self-Improvement (what Jarvis
+has LEARNED from its own past work). **All six items have real, verified work; two
+narrower, disclosed gaps remain, each a deliberate scope decision, not an oversight** —
+see `server/ops/CLAUDE.md`'s own status note before assuming full coverage. Item 4
+(Verification)'s semantic half is wired at three of the four completion surfaces the
+original spec named (artifact creation, Job completion, scheduled-task outcomes) — NOT
+wired into consequential chat answers, the costliest and most frequent surface on a
+routinely rate-limited roster, a real cost-scope decision this build does not make
+unilaterally. Item 3 (artifacts) covers every format including `.pptx` now, but
+`.pptx` carries a genuinely narrower verification confidence than `.docx`/`.xlsx` — see
+`server/artifacts/CLAUDE.md`'s own writers section for why the one available
+verification technique (round-tripping through this project's own readers) can validate
+docx/xlsx fully but can't reach a PowerPoint deck's required slideMaster/theme chain;
+open a generated `.pptx` in real PowerPoint before trusting it the way docx/xlsx are
+trusted.
+
+- **A generic, sequenced write-ahead activity trace, generalized off Jobs' own
+  `job_trace` the exact same way `job_outbox` -> `outbox` was already generalized for
+  the Heartbeat above.** `server/ops/ops-trace.js` (db.js migration 15) is a real
+  rebuild, not an ALTER — SQLite can't relax a NOT NULL foreign key in place, and before
+  this a trace row could only ever belong to a job. `jobs/job-store.js`'s own
+  `appendTrace`/`getTrace`/`getTraceTail` are now thin wrappers over this file with
+  `source:'job'` baked in, so every existing Jobs call site needed zero changes —
+  verified against a real copy of the user's own database, all 156 pre-existing rows
+  survived intact. A non-job writer's sequence numbering (scoped by `source`+`sourceRef`)
+  is completely independent of any job's own numbering, confirmed live.
+- **Cost tracking is automatic — no manual logging, ever** — a model turn's token usage
+  is captured directly off data every adapter's own SDK response already carried and
+  simply never read before (`message.usage` on Anthropic's `finalMessage()`,
+  `usageMetadata` on every Gemini chunk, a `stream_options:{include_usage:true}` request
+  flag away on the shared OpenAI-compatible adapter). TTS/STT usage is captured at their
+  own call sites (character count, real connected seconds). **Three separately-labelled
+  numbers, per the owner's own explicit requirement, never blended**: MEASURED (what was
+  actually counted, always available), PROVIDER-REPORTED (a real balance straight from a
+  provider's own account API — ElevenLabs, OpenRouter — polled by a plain periodic timer,
+  deliberately NOT routed through the Heartbeat's own finding/decision machinery, since a
+  silent maintenance refresh has no finding for `decision.js` to spend a model call
+  judging), and CALCULATED (measured × a known price — `null`, never a guess, for
+  anything with no price on record). **Deliberately does not hardcode dollar figures for
+  this project's own cloud models** — the catalog names models ahead of any publicly
+  verifiable pricing this build could honestly stand behind; the one built-in price
+  asserted without an external source is that a local model costs $0. See
+  `server/cost/CLAUDE.md` for the full module breakdown.
+- **Cost-at-decision-time (item 6) turned out to be mostly already built.**
+  `models/router.js`'s `scoreFor()` already weighted `entry.tier.cost` in every scoring
+  branch (background work already the cost-heaviest, at `-2x`) — what was missing was
+  that `tier.cost` was always a 1-5 name-regex guess, never a measured fact.
+  `cost/advisor.js`'s `observedCostTier()` substitutes a real-price-derived value in the
+  exact same 0-4 domain the guess already used (never a new scale), which is what makes
+  it mathematically guaranteed to stay inside `scoreFor()`'s already-proven-safe bounds
+  rather than something that needed re-tuning.
+- **Environment awareness (item 5) is a live, rolling picture, not a single current-
+  instant read** — the owner's own explicit requirement to track load over TIME, not just
+  right now. `os.loadavg()` is deliberately never used (`[0,0,0]` unconditionally on
+  Windows, this project's own target platform); real CPU% comes from diffing two
+  `os.cpus()` snapshots' idle/total time across a 30s sampling interval. "Unusually high
+  or climbing" is defined against THIS machine's own rolling median plus a hard
+  sustained-duration requirement (5 continuous minutes) — verified against controlled
+  synthetic data that a single spike produces no finding while a genuine sustained climb
+  does, with the real numbers in the finding text. Reachability (models, connectors,
+  voice services) is a single read across three subsystems that already track their own
+  fact, never a new probe. Registered as a Heartbeat source with its own checkState
+  dedup — the same "don't re-notify for the same still-true condition on every tick"
+  discipline `jobs-source.js` already established. See `server/ops/CLAUDE.md`.
+- **Self-diagnosis (item 1) is nine real checks plus real self-heal, not a plan.**
+  `server/ops/diagnostics/` mirrors the Heartbeat's own `registerCheck({id, intervalMs,
+  probe(), remedy?()})` plug-in shape. Malfunction checks include a genuinely
+  synchronous (zero `await` between calls) Memory create-read-delete canary — structurally
+  unobservable to anything else, not merely unlikely to be seen, since nothing else in
+  Node's single-threaded event loop can interleave mid-call. Security checks are
+  detection-only, per the owner's own explicit scope (no `remedy()` on any of them):
+  a config/secret-file integrity check found and fixed a REAL bug in its own
+  verification — a first, time-window-based "was this explained by our own recent
+  write" heuristic let a later, unrelated external change slip through unflagged if it
+  landed inside the same window; fixed by comparing the actual content HASH the app
+  itself last wrote, not merely how recently. Self-heal reuses Jobs' own
+  retry-then-escalate shape genuinely, not a re-implementation: one remedy attempt per
+  NEW failure (never per tick), verified with both a synthetic self-healing check and a
+  synthetic remedy-fails-anyway check through the real dispatch path.
+- **Reasoning integrity (also item 1) is the owner's own "steer early, buffer only the
+  riskiest" — both halves built and verified through a real `runTurn()` call against a
+  stub model, not read through in isolation.** Steer-early extends the EXISTING
+  `selfFocusSection()` push path (`self/self-model.js`'s `computeTurnSignals()`) with
+  real evidence embedded directly — the actual matched-lesson text and real
+  attempts/failures numbers for tools already used this turn — instead of only telling
+  the model to go fetch it itself via a second `check_myself` call. Buffer-the-riskiest
+  is deliberately the narrowest possible slice: ONLY a step where a real matched failure
+  lesson fired (structurally only possible from a turn's SECOND step onward, after a
+  tool call already happened — an accepted limitation `self-signals.js` already
+  documents), text chunks held back instead of streamed live, released as one block
+  once the step completes. The check itself: was `check_myself` actually called this
+  turn? If yes, release silently. If no, still deliver the answer (never withheld) but
+  log a real `source:'verification'` trace row. **A genuinely risky transcript-injection
+  design (fabricating a tool call to force a real second model round) was considered and
+  deliberately rejected** — no way to verify it wouldn't corrupt raw round-trip fidelity
+  (Anthropic's `thought_signature`, Chat History replay) without live model testing this
+  build didn't have access to; the shipped design never touches the transcript at all.
+  Verified end to end: a stub model calling a tool with a real, matched failure history
+  then answering WITHOUT consulting `check_myself` produced exactly one buffered chunk
+  (proving the hold-back actually happened) and a real trace row; the same scenario WITH
+  a `check_myself` call in between produced zero trace rows and identical delivery.
+- **Verification (item 4) is real, mechanical AND semantic, and caught real bugs in its
+  own testing at every stage before shipping.** `server/ops/verify.js`'s
+  `verifyFileOpens()` re-reads a generated Office document through this project's OWN
+  independently-built reader (`documents/index.js`) — the same discipline that caught a
+  genuinely serious bug in the artifact writers themselves (see item 3 below). Wired at
+  artifact creation: a failure deletes the bad file immediately rather than leaving it
+  behind pretending to be real; a pass is meant to be RECORDED, and the first version
+  silently wasn't — every kept artifact's `verified` column stayed permanently null even
+  after a real check passed — found and fixed via this build's own direct-call testing.
+  `verifySemanticMatch()` (one budgeted model call — "does this genuinely answer what
+  was asked") is now wired at **Job completion** (`jobs/worker.js`'s
+  `turn.reportedDone` branch, genuinely reusing the SAME `canAutoRetry`/escalate shape
+  stall-detection already uses at the same call site, sharing the same `job.retries`
+  counter — never a second recovery mechanism) and **scheduled-task outcomes**
+  (`scheduler.js`'s `runTaskNow()`, for `prompt` actions — no existing retry loop there
+  to reuse, so a mismatch just flips the run's own `ok` and folds the reason into
+  `error`, its next scheduled occurrence already its natural retry cadence). Both
+  verified via a real stub model through the REAL production dispatch path
+  (`driveJob()`/`runTaskNow()` directly, real trace/outbox/run rows inspected after) —
+  retry-then-corrects, retry-then-escalates, and matches-immediately all confirmed
+  correct in both subsystems. **Deliberately NOT wired into consequential chat
+  answers** — the costliest, most frequent of the four named surfaces on a routinely
+  rate-limited roster; a real, disclosed, open item, not an oversight.
+- **Output/Artifact generation (item 3) produces real, openable files — verified by
+  actually catching a real cross-platform ZIP bug, not assumed to work because
+  `Compress-Archive` is a proven pattern elsewhere in this project.** `.docx`/`.xlsx`
+  writers (`server/artifacts/writers/`) are format-agnostic BY CONSTRUCTION — only these
+  two need real assembly, everything else is written as given bytes. **A genuinely
+  serious, live-caught bug**: both PowerShell's `Compress-Archive` (the exact pattern
+  `skills/store/skill-zip.js` already used successfully for packing a Skill folder) AND
+  even .NET's `[ZipFile]::CreateFromDirectory()` store every ZIP entry path with Windows
+  BACKSLASHES when the entry name comes from directory traversal on this platform —
+  silently invalid per the Open Packaging Conventions spec real Office requires (forward
+  slashes), confirmed to make a freshly-written `.docx` fail to open at all, in this
+  project's own reader AND (by the same spec violation) real Word. Fixed by building
+  each ZIP entry with an EXPLICIT, hand-constructed forward-slash name via
+  `ZipFile.Open()` + `CreateEntryFromFile()`, never derived from a filesystem path.
+  Re-verified after the fix by round-tripping real generated `.docx`/`.xlsx` files
+  through this project's own independently-built readers (`documents/docx.js`,
+  `documents/xlsx.js`) — the honest verification technique available with no real
+  Word/Excel to open a file in. **`.pptx` is now built too, on the same fixed
+  foundation** (the same forward-slash-entry-name fix, confirmed carried over
+  correctly), **but carries a genuinely narrower verification confidence, disclosed
+  rather than glossed over** — a real deck needs a slideMaster/slideLayout/theme chain
+  `documents/pptx.js`'s own reader never opens at all, so the round-trip technique that
+  fully validated docx/xlsx can only confirm slide order and text content are right,
+  not that the master/theme chain is real-PowerPoint-valid. See
+  `server/artifacts/CLAUDE.md` for the full account; open a generated `.pptx` in real
+  PowerPoint before trusting it the way docx/xlsx are trusted. **One honest capability
+  ceiling, stated in the tool's own description**: raster/photographic image generation
+  is not possible at all — no adapter does image generation, no image library exists in
+  this project's five-dependency budget. `run_code.js` now also captures a sandboxed
+  script's own generated output FILES (not just stdout/stderr) as real artifacts,
+  through the exact same mechanical-verify-then-keep-or-delete path — one honest
+  verification discipline, never a second one.
+- **Four new tools, all `core:true, meta:true`, read-only except `create_artifact`, no
+  confirm gate on any of them**: `check_spending` (item 2/6's conversational interface —
+  the owner's own explicit choice: data/tool layer for this version, no dashboard screen
+  until they've used it), `check_environment` (item 5's pull path — "can I actually do
+  this right now," distinct from `check_myself`'s "is Jarvis itself malfunctioning"),
+  `check_my_health` (item 1's pull path — "has anything gone wrong with you lately,"
+  distinct from both), and `create_artifact` (item 3's write path — no confirm gate of
+  its own; the "propose first" half of the hybrid creation model lives in a prompt
+  instruction, a conversational judgment call, not a token gate).
+- **Verified via multiple real fresh-install server boots, not just unit tests, at every
+  stage of this build, including its own follow-up pass closing two disclosed gaps.** A
+  completely empty `data/` directory booted against the real `server.js` migrated
+  cleanly through every migration up to `user_version 19`, with every new tool present
+  in `tools/index.js`'s own startup load log each time — proof none tripped the
+  loader/runner circular-import invariant. A stub HTTP server reproducing an
+  OpenAI-compatible streaming response's exact usage-chunk shape (empty `choices`, real
+  `usage` object) confirmed the cost adapter reads it correctly end to end; a separate
+  stub model, driven through a real `runTurn()` call, confirmed the reasoning-integrity
+  buffering mechanism end to end; a real `curl` against a live running server's own
+  `/api/artifacts/:id` route confirmed a generated file serves with the correct
+  `Content-Type` and exact byte content; a stub model driven through the real
+  `driveJob()`/`runTaskNow()` paths confirmed the verification-wired retry/escalate
+  logic in both Jobs and the Scheduler, with real trace/outbox/run rows inspected after
+  each scenario, not just the returned value.
+- **A real, background-review-caught stored-XSS finding in the artifacts route, found
+  and fixed the same session, after this subsystem's own initial "done" report.**
+  `GET /api/artifacts/:id` rendered a generated file INLINE (this app's own origin)
+  unless a `?download=1` query param was present — a plain link, an `<iframe>`, or a
+  manually typed URL never carried it, and `create_artifact.js` places no restriction on
+  what an `.svg`/`.html` file's own text content contains, so a crafted SVG's embedded
+  `<script>` would execute in-app. Fixed: `Content-Disposition: attachment` is now
+  unconditional, plus `X-Content-Type-Options: nosniff` and a sandboxing CSP header, plus
+  CR/LF stripped from the filename before it lands in a header value (a second,
+  independent finding folded into the same fix — an unsanitized filename could
+  otherwise inject extra response headers). Verified against the real exploit shape: a
+  real artifact holding a literal `<script>alert(1)</script>` payload, fetched via a
+  real running server with the exact previously-vulnerable plain GET, confirmed forced-
+  download headers; a separately crafted filename with a raw CRLF, fetched the same way,
+  confirmed no header injection occurred.
+
 ## Self-Improvement (`server/improvement/*.js`)
 
 Jarvis reviewing its own completed work, extracting observations, turning a genuinely
@@ -938,7 +1200,50 @@ decisions that matter beyond that file:
 Lets Jarvis actually operate the desktop — click, type, read windows, launch apps —
 toward a stated goal, via its own loop, independent of `models/runner.js`'s chat loop.
 See `server/control/CLAUDE.md` (loads automatically when working in that directory) for
-the module-by-module breakdown.
+the module-by-module breakdown. The items below are this build's own additions/decisions
+on top of the loop that already existed — refined against the owner's original spec, not
+a rebuild; see `server/control/CLAUDE.md`'s own intro for exactly what already matched.
+
+- **A real control session has been watched completing a task end-to-end and
+  independently verified against the real OS** (not just the loop's own claim) — this
+  closed a long-open item, and required fixing a real, confirmed, pre-existing bug along
+  the way (connector tool declarations leaking internal fields into Gemini's strict
+  schema — see `server/control/CLAUDE.md`'s Gotchas).
+- **Before it takes over, Jarvis now gives a real, in-character spoken heads-up** — a
+  `prompt.js` rule specifically for `control_computer`'s SECOND, confirmed call (never the
+  initial plan read-back): lead that turn with a brief, natural line letting the user know
+  it's taking over now and to keep hands off, in its own words, never a fixed sentence.
+- **Owner's decision: the browser Jarvis drives for real interaction stays its own
+  separate, isolated instance — it does NOT reuse the user's actual open Chrome window.**
+  Weighed directly against the user's own "reuse an already-open window" example and
+  chosen deliberately for reliability (a real Chrome tab's accessibility tree isn't
+  reliably readable the generic way; this connector's own CDP-based reading is what
+  actually works) — see `server/connectors/CLAUDE.md`'s `browser.js` entry for the
+  reasoning in full. The rule going forward: this visible window only opens when a task
+  genuinely needs to click/type/interact with a page, or the user explicitly asked to
+  browse — never for a plain lookup.
+- **Most information lookups no longer risk popping a visible browser window.**
+  `prompt.js` now steers a plain lookup toward `read_web_page`/`look_it_up`/the free
+  research path (all invisible); the browser connector is reserved as above. It also
+  gained a genuinely headless render mode (`renderPageHeadless()`) as `read_web_page`'s
+  own fallback for a JS-heavy page a plain fetch can't read — so even that case stays
+  invisible rather than falling back to a visible window.
+- **Owner's decision: Screen Sharing is a real, persistent ON/OFF mode, not a one-shot
+  glance.** (`server/control/screen-share-state.js`), distinct from `look_at_screen`'s
+  one-off glance and a `screen_looks_like` monitor's condition-based watch — a manual
+  header toggle and a spoken instruction ("share my screen with me"/"stop sharing") both
+  read and write the same state, so either one is always reflected by the other. Turning
+  it on never itself triggers a description — matches this project's existing "never
+  speak unprompted" discipline (Heartbeat, Monitoring).
+- **Owner's decision: real video via ffmpeg, not an animated GIF or the Windows Game Bar
+  shortcut.** `take_screenshot` delivers an actual image into the chat (not just a spoken
+  description, which is what `look_at_screen` already did); `start_screen_recording`/
+  `stop_screen_recording` produce a real, playable `.mp4` via ffmpeg
+  (`server/control/screen-recorder.js`, `gdigrab` desktop capture) and deliver it the same
+  way. **The general, reusable rule this introduced**: any tool can now deliver a real
+  image/video into the transcript by returning `ui_action:{type:'attachment', kind, url,
+  mimeType}` on its result — see `server/tools/CLAUDE.md`'s own entry on this pattern and
+  `public/CLAUDE.md`'s note on the front-end side of it.
 
 ## App Control connectors (`server/connectors/*.js`)
 
@@ -1347,3 +1652,62 @@ prompt paragraph.
   (`Get-Process -Id <pid> | Select StartTime`) against the file's mtime before
   concluding anything. It resolves itself the next time the user restarts normally; **never**
   restart it yourself to "fix" this (see the restart-caution note above).
+- **On Windows, a ZIP entry's own path must be built as an explicit, hand-constructed
+  forward-slash string — never derived from a filesystem directory traversal, even via
+  a `.zip`-writing approach that's already proven elsewhere in this project.** Found
+  building `server/artifacts/writers/` (real `.docx`/`.xlsx`/`.pptx` files): PowerShell's
+  `Compress-Archive` — the exact pattern `skills/store/skill-zip.js` already uses
+  successfully for packing a Skill folder — AND even .NET's own
+  `[System.IO.Compression.ZipFile]::CreateFromDirectory()` both write every entry path
+  with Windows BACKSLASHES when the entry name comes from walking a directory on this
+  platform. That's silently invalid per the Open Packaging Conventions spec real Office
+  formats require (forward slashes only) — confirmed to make a freshly-written `.docx`
+  fail to open in this project's own `documents/` reader outright, and by the same spec
+  violation, in real Word. The fix: open the zip with `[System.IO.Compression.ZipFile]::
+  Open()` and add each entry via `ZipFileExtensions.CreateEntryFromFile(zip, sourcePath,
+  entryName)` where `entryName` is a plain string this code builds itself (e.g.
+  `'ppt/slides/slide1.xml'`), never something derived from `path.join()`/directory
+  walking — see `server/artifacts/writers/office-zip.js`'s own header comment for the
+  full account. **The general lesson: "this exact zip-writing approach already works
+  elsewhere in the codebase" is not proof it produces spec-correct paths — verify by
+  actually reading the entry names back out of a real generated archive, not just by
+  confirming the file exists and has a `PK` signature.**
+- **Any route that serves back content a model (or a user) could have put arbitrary text
+  into must force `Content-Disposition: attachment`, unconditionally — never gated
+  behind a query param or any other condition a caller might simply omit.** A background
+  security review caught this as a real stored-XSS finding in
+  `GET /api/artifacts/:id`: it only forced a download when `?download=1` was present, so
+  a plain link, an `<iframe>`, or a manually typed URL rendered the file INLINE, in this
+  app's own origin — and since `create_artifact.js` places no restriction on what an
+  `.svg`/`.html` file's own text content contains (SVG genuinely executes an embedded
+  `<script>` when rendered inline by a browser), a crafted file could run script in-app.
+  Fixed by making the disposition header unconditional, adding
+  `X-Content-Type-Options: nosniff` and a sandboxing `Content-Security-Policy` as
+  defense in depth, and stripping CR/LF from the served filename before it lands in a
+  header value (an unsanitized filename could otherwise inject extra response headers —
+  a second, related finding folded into the same fix). **Apply this same discipline to
+  any FUTURE route that serves a file whose content isn't 100% Jarvis's own fixed,
+  hardcoded output** — a generated artifact, an uploaded file, anything a model wrote
+  the text of.
+- **`spawn('powershell.exe', ['-Command', ...args])` with `args` as SEVERAL separate
+  argv entries is not "one command with flags" — it silently breaks on any value
+  containing a space.** `powershell.exe`'s own CLI parser takes only the token
+  immediately after `-Command` as the command name and re-interprets every token after
+  that as "CommandParameters" it reconstructs itself, which does not reliably preserve a
+  single argv item as one atomic string once it contains a space. Confirmed live, a real
+  bug in `server/skills/store/skill-zip.js`'s `runPowerShell()`: this project's own
+  install path (`...\CLAUDE PROJECT\Jarvis-001\...`) has exactly that space, and
+  `Expand-Archive -LiteralPath <that path> ...` failed outright ("A positional parameter
+  cannot be found that accepts argument"). **The fix, and the rule for any future
+  PowerShell `spawn` call in this codebase**: build ONE fully-formed command STRING
+  yourself (each value individually single-quoted, embedded `'` doubled per PowerShell's
+  own escaping rule) and pass exactly one argv item after `-Command` — this is parsed as
+  one ordinary command line with no reinterpretation to go wrong. **A second, distinct
+  mistake in the first attempt at this exact fix, caught only by re-verifying
+  immediately**: quoting the very FIRST token too (the cmdlet name itself, e.g.
+  `'Expand-Archive'`) turns the whole line into a plain string expression rather than a
+  command invocation — a different parse failure ("Unexpected token '-LiteralPath'...").
+  The cmdlet name must stay bare; only the value arguments after it get quoted. See
+  `server/skills/CLAUDE.md`'s Gotchas for the full account, including how it was
+  re-verified (a scratch path deliberately given a space of its own, to reproduce the
+  exact failure shape before trusting the fix).

@@ -26,6 +26,8 @@ import { readStyle, clearSession as clearStyleSession, createReactionScanner, st
 import { noteCorrection } from '../improvement/capture.js';
 import { computeTurnSignals } from '../self/self-model.js';
 import { recordToolOutcome } from '../self/self-capture.js';
+import { recordModelUsage } from '../cost/record.js';
+import { appendEntry as appendOpsTrace } from '../ops/ops-trace.js';
 
 // Raised from 5 once installed folder Skills (server/skills-fs.js) arrived —
 // calling a Skill consumes one step just to fetch its instructions, leaving
@@ -70,6 +72,72 @@ const MAX_FALLBACK_ATTEMPTS = 4;
 // silent, unrecorded return.
 const FIRST_TOKEN_TIMEOUT_MS = 20 * 1000;
 const ATTEMPT_TIMEOUT_MS = 120 * 1000;
+
+// A single tool call (invoke(), below) has no timeout of its own — a
+// genuinely hung tool (a stuck browser automation, a wedged sandbox process)
+// could block a turn forever with no chunk/tool_start/tool_result ever
+// following. server.js's chat/stream now sends a periodic 'progress'
+// heartbeat specifically so the FRONT-END stuck watchdog doesn't fire on a
+// long-but-healthy tool call — which makes a real backstop HERE more
+// important, not less: without one, a heartbeat would mask a truly hung
+// tool instead of catching it. Generous on purpose (browser automation and
+// research can legitimately take a couple of minutes) — this is a last
+// resort, not a normal-case bound.
+const TOOL_CALL_TIMEOUT_MS = 180 * 1000;
+
+// A model (or a gateway proxying one) can enter a degenerate loop and just
+// keep repeating the same short phrase — nothing anywhere used to cap this.
+// `maxSteps`/DEFAULT_MAX_TOOL_STEPS only bounds tool-call ROUND TRIPS, a
+// completely different axis; a single step's own streamed text could run
+// forever. Confirmed live: real stored replies up to 287,575 characters,
+// one short phrase repeated over 1,200 times in a row, streamed in full to
+// both the transcript and TTS. Two independent backstops, checked on every
+// step's accumulated text as it streams (see runOnEntry's own use below):
+// a bounded repetition scan (cheap regardless of total reply length — it
+// only ever looks at the last REPEAT_WINDOW_CHARS) and a hard length
+// ceiling as an independent catch-all for a runaway that isn't simple
+// repetition. Both are generous — SYSTEM_INSTRUCTION already asks for
+// short, spoken-style replies by default — this is a last resort, not a
+// normal-case bound.
+const REPEAT_WINDOW_CHARS = 600; // how far back the repetition scan looks
+const REPEAT_MIN_UNIT_CHARS = 4; // shortest repeated phrase worth flagging
+const REPEAT_MAX_UNIT_CHARS = 80; // longest repeated phrase worth flagging
+const REPEAT_TRIP_COUNT = 6; // consecutive repeats of the same phrase before tripping
+const MAX_REPLY_CHARS = 20000; // hard ceiling, independent of the repetition scan
+
+/**
+ * True once the tail of `text` looks like a short phrase repeating itself
+ * many times in a row — the exact shape of every real runaway reply found
+ * live (e.g. "I want to" x1,240, "how many images" x486). Only looks at the
+ * last REPEAT_WINDOW_CHARS, so the cost per call stays bounded no matter how
+ * long the overall reply has grown — safe to call on every streamed chunk.
+ */
+function looksLikeRunawayRepetition(text) {
+  const recent = text.length > REPEAT_WINDOW_CHARS ? text.slice(-REPEAT_WINDOW_CHARS) : text;
+  if (recent.length < REPEAT_MIN_UNIT_CHARS * REPEAT_TRIP_COUNT) return false;
+  for (let unit = REPEAT_MIN_UNIT_CHARS; unit <= REPEAT_MAX_UNIT_CHARS; unit++) {
+    if (recent.length < unit * REPEAT_TRIP_COUNT) continue;
+    const tail = recent.slice(-unit);
+    if (!tail.trim()) continue; // an all-whitespace "unit" is meaningless
+    let repeats = 1;
+    let pos = recent.length - unit;
+    while (pos - unit >= 0 && recent.slice(pos - unit, pos) === tail) {
+      repeats++;
+      pos -= unit;
+      if (repeats >= REPEAT_TRIP_COUNT) return true;
+    }
+  }
+  return false;
+}
+
+/** Races a tool invoke() against TOOL_CALL_TIMEOUT_MS. Never throws — a timeout resolves to the same `{ok:false, error}` shape a real failed tool call already returns, so every caller downstream (self-model capture, the tool_result event, conversation history) needs no special case for this. */
+function invokeWithTimeout(name, args, ctx) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ ok: false, error: 'That took too long and was stopped.' }), TOOL_CALL_TIMEOUT_MS);
+  });
+  return Promise.race([invoke(name, args, ctx), timeout]).finally(() => clearTimeout(timer));
+}
 
 // Which model actually answered last, per session — the "sticky model"
 // mechanism (see preferredModelId below). In-memory only, same lifetime as
@@ -368,6 +436,12 @@ async function* runOnEntry(sessionId, entry, opts) {
   // the ORIGINAL signal was the one that fired.
   const attemptController = new AbortController();
   let timedOut = false;
+  // Set true only by looksLikeRunawayRepetition()/MAX_REPLY_CHARS below,
+  // never by anything else that might abort attemptController — same
+  // "tag it plainly so the catch block knows which of OUR triggers this
+  // was" discipline `timedOut` already established.
+  let runaway = false;
+  let runawayReason = '';
   const forwardExternalAbort = () => attemptController.abort();
   if (opts.signal) {
     if (opts.signal.aborted) attemptController.abort();
@@ -402,6 +476,17 @@ async function* runOnEntry(sessionId, entry, opts) {
       correctionDetected: Boolean(opts.correctionDetected),
       usedToolNames: [...usedToolNames],
     });
+    // Reasoning integrity's "buffer only the riskiest" half (root
+    // CLAUDE.md's Operational Awareness item 1) — the owner's own explicit
+    // choice, deliberately the narrowest possible slice: ONLY a step where
+    // a REAL matched failure-lesson fired for what this turn already did
+    // (selfSignals.knownFailure — which, per self-signals.js's own
+    // documented limitation, can only ever be true from the SECOND step of
+    // a turn onward, after at least one tool call already happened).
+    // Ordinary turns, and even a turn's own FIRST step, stream exactly as
+    // before — this never adds latency to the common case.
+    const shouldBuffer = Boolean(selfSignals.knownFailure);
+    const bufferedChunks = [];
     let text = '';
     let callEvent = null;
     let finalEvent = null;
@@ -429,6 +514,7 @@ async function* runOnEntry(sessionId, entry, opts) {
     }, FIRST_TOKEN_TIMEOUT_MS);
 
     try {
+    stepLoop:
     for await (const ev of adapter.stream(entry, messages, { tools, lowConfidence: opts.lowConfidence, gapMs: opts.gapMs, background: opts.background, addressed: opts.addressed, style: opts.style, signal: attemptController.signal, improvementScope: opts.improvementScope, selfSignals })) {
       if (!firstEventSeen) {
         firstEventSeen = true;
@@ -438,7 +524,43 @@ async function* runOnEntry(sessionId, entry, opts) {
         for (const scanEv of reactionScanner.feed(ev.text)) {
           if (scanEv.type === 'text') {
             text += scanEv.text;
-            yield { type: 'chunk', text: scanEv.text };
+            // Held back, not yielded, only for the narrow buffered slice —
+            // see shouldBuffer's own comment above. A reaction event
+            // (below) is never delayed by this even on a buffered step: a
+            // vocal reaction's own timing is a separate concern from text
+            // verification, and desyncing it from the text it reacted to
+            // would be its own new bug.
+            if (shouldBuffer) bufferedChunks.push(scanEv.text);
+            else yield { type: 'chunk', text: scanEv.text };
+            // Runaway/repetition guard — see looksLikeRunawayRepetition()'s
+            // own header comment. Checked on every chunk but bounded/cheap
+            // regardless of total reply length so far (the repetition scan
+            // only ever looks at the last REPEAT_WINDOW_CHARS). Aborting
+            // here reuses the SAME attemptController the timeouts already
+            // use, so whatever's already streamed is cleanly cut off and
+            // the catch block below (via `runaway`) benches this model and
+            // fails over exactly like a timeout does.
+            if (!runaway && (text.length > MAX_REPLY_CHARS || looksLikeRunawayRepetition(text))) {
+              runaway = true;
+              runawayReason = text.length > MAX_REPLY_CHARS
+                ? 'This model kept generating far past a normal reply length.'
+                : 'This model got stuck repeating itself.';
+              attemptController.abort();
+              // Found live, not assumed: aborting attemptController tears
+              // down the network connection, but does NOT reliably make
+              // every adapter's own `for await` loop actually THROW — the
+              // openai SDK's async iterator was observed simply ending
+              // cleanly on an aborted stream, same as a real [DONE], which
+              // let the adapter fall through to a normal 'final' yield with
+              // just the truncated (but still runaway-shaped) text — a
+              // "successful" completion that was never really valid, the
+              // exact same class of bug Fix 2 exists to prevent. Breaking
+              // out HERE and throwing explicitly right after the loop
+              // (below) makes this correct regardless of how any given
+              // adapter's own abort semantics behave, rather than depending
+              // on one.
+              break stepLoop;
+            }
           } else if (scanEv.type === 'reaction') {
             yield { type: 'reaction', kind: scanEv.kind };
           }
@@ -447,7 +569,28 @@ async function* runOnEntry(sessionId, entry, opts) {
         callEvent = ev;
       } else if (ev.type === 'final') {
         finalEvent = ev;
+      } else if (ev.type === 'usage') {
+        // Cost tracking — recorded per step, not just once per turn, so a
+        // multi-step tool-calling turn's real total is captured rather than
+        // only its last step. See root CLAUDE.md's Cost tracking section.
+        recordModelUsage({
+          provider: ev.provider || entry.adapter,
+          modelId: ev.model || entry.model,
+          unitsIn: ev.unitsIn,
+          unitsOut: ev.unitsOut,
+          cachedIn: ev.cachedIn,
+          sessionId,
+          background: Boolean(opts.background),
+        });
       }
+    }
+    // The runaway guard's own explicit `break stepLoop` above lands here —
+    // never rely on the adapter's own for-await loop having thrown (see
+    // that break's own comment for why it doesn't reliably). Thrown here
+    // instead, inside the same try block, so it's caught by the catch
+    // below exactly like any other failure.
+    if (runaway) {
+      throw Object.assign(new Error(runawayReason), { runawayOutput: true });
     }
     } catch (err) {
       // Our own deadline fired (attemptController.abort() above), and this
@@ -462,6 +605,15 @@ async function* runOnEntry(sessionId, entry, opts) {
       if (timedOut && !opts.signal?.aborted) {
         throw Object.assign(new Error('This model took too long to respond.'), { timedOut: true });
       }
+      // Same reasoning as the timedOut branch above, for the OTHER trigger
+      // that aborts attemptController ourselves — see
+      // looksLikeRunawayRepetition()'s own comment. Whatever was already
+      // streamed to the caller before this fired is cleaned up the exact
+      // same way a timeout's partial output already is (runTurn's own
+      // `if (streamed) yield { type: 'restart' }`, unchanged).
+      if (runaway && !opts.signal?.aborted) {
+        throw Object.assign(new Error(runawayReason), { runawayOutput: true });
+      }
       throw err;
     } finally {
       clearTimeout(firstTokenTimer);
@@ -471,7 +623,44 @@ async function* runOnEntry(sessionId, entry, opts) {
     // emphasis) — flush it as plain text now that the stream is done.
     for (const scanEv of reactionScanner.flush()) {
       text += scanEv.text;
-      yield { type: 'chunk', text: scanEv.text };
+      if (shouldBuffer) bufferedChunks.push(scanEv.text);
+      else yield { type: 'chunk', text: scanEv.text };
+    }
+
+    // Releasing the buffer, for the narrow slice that was ever held back.
+    // A tool-call step (callEvent truthy — this turn isn't over) just
+    // releases immediately, in original order, with no check: buffering
+    // only matters for a step that's actually about to become the
+    // delivered final answer, never an intermediate reasoning step.
+    if (shouldBuffer && callEvent) {
+      for (const t of bufferedChunks) yield { type: 'chunk', text: t };
+    }
+    // The real check, only for a step that's both buffered AND about to be
+    // the final delivered answer (no callEvent): did the model actually
+    // consult the real evidence selfFocusSection() already handed it
+    // (check_myself, any call this turn), or is it about to state a
+    // conclusion with a known failure pattern in play and never looked?
+    // Never withholds the answer either way — flags it, doesn't block it;
+    // see this build's own "Open risk" note on why a forced second model
+    // round was deliberately NOT built (root CLAUDE.md).
+    if (shouldBuffer && !callEvent) {
+      const consultedSelfModel = usedToolNames.has('check_myself');
+      if (!consultedSelfModel) {
+        try {
+          appendOpsTrace({
+            source: 'verification',
+            sourceRef: sessionId,
+            phase: 'outcome',
+            effect: 'read',
+            kind: 'reasoning',
+            summary: `A consequential answer followed a known failure pattern (${(selfSignals.matchedScopes || []).join(', ') || 'unspecified scope'}) with no check_myself call this turn to weigh it.`,
+            detail: JSON.stringify({ matchedLessons: selfSignals.matchedLessons || [] }),
+          });
+        } catch (err) {
+          console.error('[runner] reasoning-integrity trace failed:', err);
+        }
+      }
+      for (const t of bufferedChunks) yield { type: 'chunk', text: t };
     }
 
     if (callEvent) {
@@ -511,7 +700,7 @@ async function* runOnEntry(sessionId, entry, opts) {
         const notAllowed = Array.isArray(opts.allowedTools) && !opts.allowedTools.includes(call.name);
         const result = notAllowed
           ? { ok: false, error: 'That capability is not available for this task.' }
-          : await invoke(call.name, call.args, {
+          : await invokeWithTimeout(call.name, call.args, {
               sessionId,
               modelId: entry.id,
               lowConfidence: opts.lowConfidence,
@@ -774,6 +963,16 @@ export async function* runTurn(sessionId, userText, opts = {}) {
         markUnhealthy(entry.id, 'No response in time.', 'transient');
         recordAvailability(entry.id, 'busy', 'No response in time.', { technical: 'The model never sent a response within the time limit.' });
         lastError = 'That model took too long to respond.';
+      } else if (err?.runawayOutput) {
+        // runOnEntry's own repetition/length guard fired — same reasoning
+        // as the timedOut branch above: not something classifyError() can
+        // read a provider-specific signal from, and err.message is already
+        // the real, honest reason (see looksLikeRunawayRepetition()'s own
+        // comment). 'transient' -> a short cooldown: a model that loops
+        // once on one turn isn't necessarily broken for every future turn.
+        markUnhealthy(entry.id, err.message, 'transient');
+        recordAvailability(entry.id, 'busy', err.message, { technical: err.message });
+        lastError = err.message;
       } else {
         const kind = classifyError(err);
         markUnhealthy(entry.id, err?.message || 'error', kind);

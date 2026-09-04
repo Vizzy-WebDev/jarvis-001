@@ -163,6 +163,26 @@ export async function* stream(entry, messages, opts = {}) {
   // included) from the events we just streamed — the documented way to get
   // both live deltas and a complete final object from one request.
   const message = await s.finalMessage();
+
+  // message.usage was sitting on this same object the whole time and was
+  // never read — see root CLAUDE.md's Cost tracking section. Emitted before
+  // either terminal branch below so a tool-calling step's usage is captured
+  // too, not just a turn's final answer. cache_read_input_tokens is what
+  // makes the cache_control breakpoint above's actual payoff measurable for
+  // the first time.
+  if (message.usage) {
+    yield {
+      type: 'usage',
+      unitKind: 'tokens',
+      unitsIn: message.usage.input_tokens ?? null,
+      unitsOut: message.usage.output_tokens ?? null,
+      cachedIn: message.usage.cache_read_input_tokens ?? null,
+      cacheWriteIn: message.usage.cache_creation_input_tokens ?? null,
+      provider: 'anthropic',
+      model: entry.model,
+    };
+  }
+
   const toolUses = message.content.filter((b) => b.type === 'tool_use');
 
   if (message.stop_reason === 'tool_use' && toolUses.length > 0) {
@@ -185,9 +205,21 @@ export async function* stream(entry, messages, opts = {}) {
     .filter((b) => b.type === 'text')
     .map((b) => b.text)
     .join('');
+  // A genuinely empty final response is a real failure, not a fake success —
+  // let runner.js's existing failover machinery handle it (mark this model
+  // unhealthy, try the next candidate) exactly the way a timeout already
+  // does, instead of yielding a placeholder reply that gets shown/spoken as
+  // if it were real and marks this model healthy. See
+  // openai-compatible.js's own stream() for the same fix and its reasoning.
+  if (!text) {
+    const err = new Error('The model returned an empty response — try again later.');
+    err.code = 'EMPTY_RESPONSE';
+    throw err;
+  }
+
   yield {
     type: 'final',
-    text: text || "Sorry, I didn't quite catch that.",
+    text,
     raw: { adapter: 'anthropic', content: message.content },
   };
 }

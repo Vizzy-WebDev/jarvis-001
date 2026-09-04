@@ -49,8 +49,14 @@ function nextChunk(buffer) {
   return null;
 }
 
-/** Same retry-once-then-give-up contract as audio-player.js's fetchTts(), extended with `provider` (server/tts/index.js's registry). */
-async function fetchTts(text, { voice, provider }, attempt = 0) {
+/**
+ * Same retry-once-then-give-up contract as audio-player.js's fetchTts(),
+ * extended with `provider` (server/tts/index.js's registry). `onFailure(err)`
+ * fires once, only on the FINAL (post-retry) failure — see audio-player.js's
+ * identical parameter for the full reasoning (a dead/broken provider used to
+ * fail every chunk in total silence).
+ */
+async function fetchTts(text, { voice, provider }, onFailure, attempt = 0) {
   try {
     const res = await fetch('/api/tts', {
       method: 'POST',
@@ -63,17 +69,23 @@ async function fetchTts(text, { voice, provider }, attempt = 0) {
   } catch (err) {
     if (attempt === 0) {
       await new Promise((r) => setTimeout(r, TTS_RETRY_DELAY_MS));
-      return fetchTts(text, { voice, provider }, attempt + 1);
+      return fetchTts(text, { voice, provider }, onFailure, attempt + 1);
     }
     console.warn('[voice/playback] TTS request failed twice, skipping this chunk:', err);
+    try {
+      onFailure?.(err);
+    } catch (cbErr) {
+      console.error('[voice/playback] onFailure callback threw:', cbErr);
+    }
     return null;
   }
 }
 
 export class Playback {
-  constructor({ onStart, onIdle, voice, provider } = {}) {
+  constructor({ onStart, onIdle, onFailure, voice, provider } = {}) {
     this.onStart = onStart;
     this.onIdle = onIdle;
+    this.onFailure = onFailure;
     this.voice = voice;
     this.provider = provider;
     this.queue = []; // Promise<{url,blob,text}|null>
@@ -85,6 +97,7 @@ export class Playback {
     this.stopped = false;
     this._buffer = '';
     this._spokenText = ''; // reconstructed text of every chunk that has actually started playing
+    this._failureNotified = false; // at most once per reply — see audio-player.js's identical flag
   }
 
   /** For the orb — see audio-player.js's identical method for the full reasoning. */
@@ -112,8 +125,14 @@ export class Playback {
   _enqueue(text) {
     if (this.stopped || !text) return;
     this.pending++;
+    const provider = this.provider;
+    const notifyFailure = () => {
+      if (this._failureNotified) return;
+      this._failureNotified = true;
+      this.onFailure?.({ provider });
+    };
     this.queue.push(
-      fetchTts(text, { voice: this.voice, provider: this.provider }).then((r) => (r ? { ...r, text } : null))
+      fetchTts(text, { voice: this.voice, provider }, notifyFailure).then((r) => (r ? { ...r, text } : null))
     );
     if (!this.playing) this._advance();
   }
@@ -260,5 +279,6 @@ export class Playback {
     this.streamEnded = false;
     this._buffer = '';
     this._spokenText = '';
+    this._failureNotified = false;
   }
 }

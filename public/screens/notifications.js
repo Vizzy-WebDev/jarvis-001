@@ -100,7 +100,16 @@ function buildRow(n, { onOpen, onChange }) {
 
   const main = document.createElement('div');
   main.className = 'list-row-main';
-  main.appendChild(Object.assign(document.createElement('span'), { className: 'list-row-title', textContent: n.title }));
+  // n.count > 1 means the server collapsed several repeats of this exact
+  // fault into one row (see server/notifications.js's addNotification()) —
+  // shown so a still-recurring problem reads as "happened 6 times," not a
+  // single occurrence.
+  main.appendChild(
+    Object.assign(document.createElement('span'), {
+      className: 'list-row-title',
+      textContent: n.count > 1 ? `${n.title} ×${n.count}` : n.title,
+    })
+  );
   if (n.body) {
     main.appendChild(Object.assign(document.createElement('span'), { className: 'list-row-sub', textContent: n.body }));
   }

@@ -39,6 +39,9 @@ const DEFAULTS = {
   // deleted automatically, per the user's "keep recent ones, auto-delete"
   // choice. See control/screenshot-store.js (Stage 2) for where this is read.
   screenshotRetention: { maxCount: 50, maxAgeHours: 24 },
+  // Same idea, same discipline, for screen recordings — a much lower count
+  // than screenshots given how much larger a video file is.
+  recordingRetention: { maxCount: 10, maxAgeHours: 24 },
 };
 
 export function getSafetyConfig() {
@@ -53,6 +56,7 @@ export function getSafetyConfig() {
     blockedProcesses: saved.blockedProcesses ?? DEFAULTS.blockedProcesses,
     blockedUrlPatterns: saved.blockedUrlPatterns ?? DEFAULTS.blockedUrlPatterns,
     screenshotRetention: { ...DEFAULTS.screenshotRetention, ...(saved.screenshotRetention || {}) },
+    recordingRetention: { ...DEFAULTS.recordingRetention, ...(saved.recordingRetention || {}) },
   };
 }
 

@@ -215,6 +215,46 @@ function buildUploadModal(onChange) {
   });
 }
 
+// Install a Skill straight from a public GitHub repository — the user's own
+// explicit choice for "install from a repository or marketplace" (see root
+// CLAUDE.md's Skills section). One URL field; the server does the rest
+// (server/skills/store/skill-zip.js's installFromGithubRepo()). Same
+// SKILL.md/skill.toml-at-the-root restriction as a zip upload — stated
+// plainly here rather than discovered as a confusing failure.
+function buildGithubModal(onChange) {
+  let urlField;
+  return openModal({
+    title: 'Install from a GitHub link',
+    submitLabel: 'Install',
+    busyLabel: 'Installing…',
+    build(body) {
+      urlField = fieldInput('GitHub repository link', 'text', 'github.com/someone/some-skill');
+      body.appendChild(urlField.wrapper);
+      body.appendChild(
+        Object.assign(document.createElement('p'), {
+          className: 'hint',
+          textContent: 'The repository must be public, and its SKILL.md (or skill.toml) must sit at the top level — not inside a subfolder.',
+        })
+      );
+    },
+    async onSubmit(api) {
+      const url = urlField.input.value.trim();
+      if (!url) {
+        api.setError('Paste a GitHub repository link first.');
+        return null;
+      }
+      const data = await postJson('/api/skills/install-from-repo', { url });
+      if (!data.ok) {
+        api.setError(data.error || 'Could not install that repository.');
+        return null;
+      }
+      return data;
+    },
+  }).then((result) => {
+    if (result) onChange();
+  });
+}
+
 // Mirrors Claude's own "Create with Claude": not a separate screen, just a
 // shortcut into ordinary conversation. Closes this screen, focuses the
 // composer, and pre-fills a starter line — server/skills/create_skill.js is
@@ -236,6 +276,7 @@ function openAddMenu(anchor, onChange) {
         ['Create with Jarvis', startCreateWithJarvis],
         ['Write skill instructions', () => buildWriteModal(onChange)],
         ['Upload a skill', () => buildUploadModal(onChange)],
+        ['Install from a GitHub link', () => buildGithubModal(onChange)],
       ];
       for (const [label, action] of options) {
         const btn = document.createElement('button');

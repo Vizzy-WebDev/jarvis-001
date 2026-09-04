@@ -262,7 +262,8 @@ header h1 {
 
 #settings-toggle,
 #notifications-toggle,
-#new-chat-button {
+#new-chat-button,
+#screen-share-toggle {
   position: relative;
   background: none;
   border: none;
@@ -275,9 +276,17 @@ header h1 {
 
 #settings-toggle:hover,
 #notifications-toggle:hover,
-#new-chat-button:hover {
+#new-chat-button:hover,
+#screen-share-toggle:hover {
   color: var(--text);
   background: var(--panel);
+}
+
+/* Screen sharing turned on — same blue as the observation dot, so the two
+   read as the same concept ("Jarvis can see your screen") at a glance. */
+#screen-share-toggle.active {
+  color: #2d6ee6;
+  background: rgba(45, 110, 230, 0.15);
 }
 
 /* Unread count badge on the bell — see public/notifications.js. */
@@ -1075,6 +1084,18 @@ header h1 {
   max-height: 220px;
   border-radius: 10px;
   margin-bottom: 8px;
+}
+
+/* A screenshot or a finished screen recording Jarvis actually delivers into
+   the transcript (take_screenshot.js / stop_screen_recording.js) — larger
+   than the small user-attachment thumbnail above, since this IS the
+   deliverable being shown, not a shared-input preview. */
+.bubble .bubble-attachment {
+  display: block;
+  max-width: min(420px, 100%);
+  max-height: 420px;
+  border-radius: 10px;
+  margin-top: 8px;
 }
 
 /* Drop-anywhere target: the whole assistant screen highlights while a file

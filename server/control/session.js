@@ -666,8 +666,26 @@ export async function runControlSession(goal, planText) {
     // connector genuinely changing mid-session is rare enough not to be
     // worth the extra call, and every provider needs the identical `tools`
     // array on every turn regardless.
+    //
+    // connectors/index.js's getToolDeclarations() carries internal bookkeeping
+    // fields (connectorId, confirm) alongside {name, description, parameters}
+    // — capabilities.js's OWN getToolDeclarations() strips those before a
+    // model ever sees them (see its own doc comment: "model-facing, stripped
+    // to {name, description, parameters}"), but this loop was calling
+    // connectors/index.js directly, bypassing that stripping entirely.
+    // Confirmed live, a real bug predating this session's own work: Gemini's
+    // strict function-declaration schema rejects any unrecognized field
+    // outright (400 "Unknown name \"connectorId\"... Cannot find field"),
+    // which meant EVERY control-loop DECIDE call failed immediately the
+    // moment any connector was enabled — effectively always, since the
+    // browser/files singletons auto-register at server startup. `tools` (sent
+    // to the model) is now the stripped shape; `connectorDeclarations` (kept
+    // full, unstripped) is still what this loop's own dispatch below reads
+    // `.connectorId`/`.confirm` from — two different shapes for two different
+    // audiences, same split capabilities.js already draws for the chat path.
     const connectorDeclarations = getConnectorTools();
-    const tools = [...CONTROL_TOOLS, ...connectorDeclarations];
+    const modelFacingConnectorTools = connectorDeclarations.map((d) => ({ name: d.name, description: d.description, parameters: d.parameters }));
+    const tools = [...CONTROL_TOOLS, ...modelFacingConnectorTools];
 
     const messages = [
       {

@@ -123,6 +123,39 @@ evidence-backed self-knowledge, and the model's own record of what it understand
 live conversation's goal to be) — see `server/self/CLAUDE.md`; a job already has its own
 durable `goal` column (`jobs/job-store.js`) and never needs `track_goal`.
 
+**`ui_action` on a tool's result is the general, established way to make the browser DO
+something beyond showing text — never invent a second mechanism for this.**
+`models/runner.js`'s `tool_result` SSE event forwards `result?.ui_action` verbatim
+(nothing strips or transforms it), and `public/app.js`'s `tool_result` handler branches
+on `ui_action.type`. Existing types: `navigate` (`open_section.js` — jump to a section),
+`memory_review` (a pending-memories review card), `open_conversation` (an offer to open
+an old conversation). **`attachment`** (added for `take_screenshot.js`/
+`stop_screen_recording.js`) is the general way to deliver a real image or video INTO the
+transcript, not just describe it in words: return
+`ui_action:{type:'attachment', kind:'image'|'video', url, mimeType}` from `run()` — the
+`url` must be a real, already-servable route (e.g. `screenshot-store.js`'s files served
+at `/api/control/screenshots/:file`), never a data URI inlined into the result (SSE
+payload size). `public/app.js`'s `appendAttachment()` renders it into the turn's own
+current assistant bubble as a real `<img>`/`<video controls>`. Any future tool that needs
+to hand the user a real file this way should reuse this exact shape rather than adding a
+new `ui_action.type` — see `public/CLAUDE.md`'s note on the front-end side of this
+(the `bubbleHasContent()` fix an image-only reply needed, and why streamed text can never
+go back to `textContent +=` once an attachment might already be in the bubble).
+
+**`artifact_created`** (`create_artifact.js`/`run_code.js` — root CLAUDE.md's
+Operational Awareness item 3) is a genuine PEER to `attachment`, not a rename of it —
+the two solve different problems on purpose. `attachment` puts something the user
+should just SEE inline, right in the reply (a screenshot, a recording) — there's
+nothing to "open" beyond looking at it. `artifact_created` is for something the user
+should actually be able to DOWNLOAD and open in a real application (a `.docx`
+report, an `.xlsx` sheet, a `.pptx` deck, a diagram) — it renders as its own small card
+with a real download link, not inline media, via `addArtifactCard()`
+(`public/app.js`), fed by `ui_action:{type:'artifact_created', id, name, mimeType,
+size, url}`. `url` is always `/api/artifacts/:id` — see `server/artifacts/CLAUDE.md`
+for the store/route/verification chain behind it, including a real, fixed stored-XSS
+finding in that serving route worth reading before adding another route that serves
+model-generated content.
+
 **Check a tool result with `result.ok === false`, never `!result.ok`, when
 testing for failure** — `get_time` (and any tool with nothing to report
 beyond success) returns no `ok` field at all on success; a bare `!result.ok`

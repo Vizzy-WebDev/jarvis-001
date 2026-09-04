@@ -50,8 +50,17 @@ const TTS_RETRY_DELAY_MS = 400;
  * hand a SEPARATE copy of the same bytes to voice-envelope.js for the orb,
  * without the playback path itself changing at all (see that file's header
  * comment for why that separation matters).
+ *
+ * `onFailure(err)` fires once, only on the FINAL (post-retry) failure — never
+ * on the first attempt, which is expected to fail sometimes and recovers on
+ * its own. Before this existed, a dead/broken TTS provider (an expired key,
+ * an account out of credit) failed every single sentence silently: a
+ * console.warn nobody but a developer would ever see, and playback that just
+ * never started, with the settings panel and the rest of the UI looking
+ * completely normal. See app.js's createEngine() for where this is wired to
+ * a real, visible notification.
  */
-async function fetchTts(text, { voice, provider }, attempt = 0) {
+async function fetchTts(text, { voice, provider }, onFailure, attempt = 0) {
   try {
     const res = await fetch('/api/tts', {
       method: 'POST',
@@ -64,9 +73,14 @@ async function fetchTts(text, { voice, provider }, attempt = 0) {
   } catch (err) {
     if (attempt === 0) {
       await new Promise((r) => setTimeout(r, TTS_RETRY_DELAY_MS));
-      return fetchTts(text, { voice, provider }, attempt + 1);
+      return fetchTts(text, { voice, provider }, onFailure, attempt + 1);
     }
     console.warn('[audio-player] TTS request failed twice, skipping this sentence:', err);
+    try {
+      onFailure?.(err);
+    } catch (cbErr) {
+      console.error('[audio-player] onFailure callback threw:', cbErr);
+    }
     return null; // a missed sentence isn't worth breaking the rest of playback over
   }
 }
@@ -84,9 +98,10 @@ async function fetchTts(text, { voice, provider }, attempt = 0) {
 // voice-envelope.js), never touching this playback path.
 
 export class AudioPlayer {
-  constructor({ onStart, onIdle, voice, provider } = {}) {
+  constructor({ onStart, onIdle, onFailure, voice, provider } = {}) {
     this.onStart = onStart;
     this.onIdle = onIdle;
+    this.onFailure = onFailure;
     this.voice = voice;
     this.provider = provider;
     this.queue = []; // Promise<{url,blob}|null> — see fetchTts()'s doc comment
@@ -97,7 +112,11 @@ export class AudioPlayer {
     this.streamEnded = false;
     this.stopped = false;
     this._buffer = '';
-    // Whether this reply has had its opening clause/sentence flushed yet —
+    // Fired at most once per REPLY (reset in reset(), never per sentence) —
+    // several sentences in the same reply failing in a row (the likely case,
+    // since a broken provider fails every sentence, not just one) must not
+    // spam several identical notifications.
+    this._failureNotified = false;
     // see pushText()'s clause-boundary fallback. Reset per reply (here and
     // in reset() below), not per sentence: only the OPENING of a reply is
     // latency-sensitive, everything after it plays while the listener is
@@ -180,10 +199,15 @@ export class AudioPlayer {
   enqueueText(text, { voice = this.voice, provider = this.provider } = {}) {
     if (this.stopped || !text) return;
     this.pending++;
+    const notifyFailure = () => {
+      if (this._failureNotified) return;
+      this._failureNotified = true;
+      this.onFailure?.({ provider });
+    };
     // `text` rides along to _advance() (same shape voice/playback.js's
     // identical queue already carries) so the per-utterance watchdog below
     // can size its timeout to how long this sentence should actually take.
-    this.queue.push(fetchTts(text, { voice, provider }).then((r) => (r ? { ...r, text } : null)));
+    this.queue.push(fetchTts(text, { voice, provider }, notifyFailure).then((r) => (r ? { ...r, text } : null)));
     if (!this.playing) this._advance();
   }
 
@@ -302,5 +326,6 @@ export class AudioPlayer {
     this.streamEnded = false;
     this._buffer = '';
     this._firstFlushDone = false;
+    this._failureNotified = false;
   }
 }

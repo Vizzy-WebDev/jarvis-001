@@ -146,6 +146,12 @@ function hydrate(entry, byId) {
     secretRef: conn?.secretRef ?? entry.secretRef ?? null,
     keyRequired: conn?.keyRequired ?? undefined,
     kind,
+    // The connection's own provider id (server/models/providers.js — e.g.
+    // 'openai'/'groq'/'openrouter'), not previously hydrated onto a model
+    // entry at all. Needed once several distinct providers can share the
+    // same 'openai-compatible' adapter wire format but have genuinely
+    // different pricing — see server/cost/prices.js.
+    provider: conn?.provider ?? null,
     connectionLabel: conn?.label ?? null,
     caps: withCapabilityDefaults(entry.caps, adapter, entry.model, baseUrl, kind),
   };

@@ -17,6 +17,20 @@
   `connectors/index.js`'s `toolNamesForConnector()`, and ADDS those names to the task's
   normal core built-in set rather than restricting the task down to only them — empty
   (the default) means fully unrestricted, unchanged from before this picker existed.
+  **Verification (root CLAUDE.md's Operational Awareness item 4)** — for a `prompt`
+  action's result reporting `ok:true`, `runTaskNow()` runs `ops/verify.js`'s
+  `verifySemanticMatch({request: task.action.text, resultSummary: result.summary})`
+  before `recordRun()`. Only `prompt` actions get this — `message`/`briefing`/`skill`
+  results are mechanical or already structured, nothing free-form to mismatch. A
+  `matches:false` verdict flips `result.ok` to `false` and folds the reason into
+  `result.error`, letting the EXISTING `notify`/`recordRun` machinery treat it exactly
+  like any other failure — **no new recovery mechanism**, since a task's own next
+  scheduled occurrence already is its natural retry cadence (unlike Jobs, there's no
+  existing retry loop here to reuse or collide with). `checked:false` (no model
+  available) never flips a real success to a failure. Verified via a real stub model
+  through the real `runTaskNow()` path: a reply that doesn't answer the actual prompt
+  is correctly flagged `ok:false` with the real reason in `error` (the original reply
+  text stays in `summary`, never lost); a genuinely matching reply is untouched.
 - `briefing-config.js` / `briefing.js` — split for the same circular-import reason as
   task-store.js. Sections (greeting, date/time, upcoming tasks, goals, focus, custom)
   are fixed; weather/headlines are fixed, always-available native abilities, not a

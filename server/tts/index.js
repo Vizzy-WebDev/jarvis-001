@@ -31,6 +31,7 @@ import * as elevenlabs from './elevenlabs.js';
 import * as generic from './generic.js';
 import { getPrefs } from '../prefs.js';
 import * as externalServices from '../external-services.js';
+import { recordTtsUsage } from '../cost/record.js';
 
 // One entry per real, working adapter. `generic.js` is a small, growing
 // registry of OTHER known providers' real connection details (Fish Audio,
@@ -93,6 +94,11 @@ export async function* stream(text, { provider, voice } = {}) {
     err.code = 'NO_API_KEY';
     throw err;
   }
+  // Recorded once resolution succeeds and synthesis is genuinely about to
+  // be attempted — matches how most TTS providers actually bill (per
+  // character requested, not per chunk successfully consumed by our own
+  // playback). See root CLAUDE.md's Cost tracking section.
+  recordTtsUsage({ provider: ref, characters: String(text || '').length });
   yield* adapter.stream(text, { voice, ref });
 }
 

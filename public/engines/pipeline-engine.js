@@ -36,6 +36,15 @@ const BARGE_SAMPLE_MS = 100;
 const BARGE_SUSTAIN_MS = 250;
 const BARGE_FLOOR = 0.05;
 
+// How long a hands-free ("conversation mode") session can sit quietly in
+// 'listening' before dropping to a real 'idle' — mic stays fully open the
+// whole time; only the STATE (and the orb's honesty about it) changes. Same
+// constant/value as engines/duplex-engine.js's own HANDS_FREE_IDLE_MS, which
+// already has this fix — this engine (the DEFAULT one) never got it, so it
+// showed 'listening' indefinitely for as long as a session was active. See
+// _armIdleTimer()/_disarmIdleTimer() below.
+const HANDS_FREE_IDLE_MS = 30000;
+
 export class PipelineEngine extends VoiceEngine {
   constructor(opts = {}) {
     super();
@@ -64,6 +73,8 @@ export class PipelineEngine extends VoiceEngine {
     this._recSuspended = false; // true only while Jarvis's audio is actually playing + its echo tail
     this._echoTailTimer = null;
     this._bargeTimer = null; // fixed-rate mic-energy sampler while speaking
+    this._idleTimer = null; // real hands-free idle countdown — see HANDS_FREE_IDLE_MS
+    this._finalizeInFlight = false; // guards against _maybeFinalize() being entered twice for overlapping speech — see that method's own comment
 
     // Generation token for the current speaker (AudioPlayer/BrowserSpeaker)
     // — found necessary during a full state-machine audit: neither
@@ -174,11 +185,13 @@ export class PipelineEngine extends VoiceEngine {
     this.silenceWatcher = new SilenceWatcher(this.micMonitor);
     this._startRecognition();
     this._setState('listening');
+    this._armIdleTimer();
   }
 
   stop() {
     this.active = false;
     this.muted = false; // a freshly started/restarted session always begins unmuted
+    this._disarmIdleTimer();
     clearTimeout(this.silenceTimer);
     this.silenceWatcher?.cancel();
     clearTimeout(this._echoTailTimer);
@@ -254,10 +267,46 @@ export class PipelineEngine extends VoiceEngine {
     this.silenceWatcher?.cancel();
     this.pendingUtterance = '';
     this.pendingConfidence = null;
+    this._finalizeInFlight = false; // a barge-in or fresh turn starting mid-finalize must not leave this wedged on
     if (resumeRecognition) this._resumeRecognition();
     if (!keepListening) {
-      this._setState(this.active ? 'listening' : 'idle');
+      this._backToListening();
     }
+  }
+
+  /**
+   * The one place every "a turn just ended, go back to resting" transition
+   * lands — same helper duplex-engine.js already has. `active` false means
+   * the session was fully stopped (mic released) rather than merely quiet,
+   * so that still goes straight to 'idle' with no timer involved.
+   */
+  _backToListening() {
+    if (this.active) {
+      this._setState('listening');
+      this._armIdleTimer();
+    } else {
+      this._disarmIdleTimer();
+      this._setState('idle');
+    }
+  }
+
+  /** (Re)starts the hands-free quiet-period countdown — see HANDS_FREE_IDLE_MS. */
+  _armIdleTimer() {
+    clearTimeout(this._idleTimer);
+    this._idleTimer = setTimeout(() => {
+      // Only actually drop to idle if still genuinely resting in
+      // 'listening' — if something else happened in the meantime
+      // (thinking/speaking), this timer is stale and does nothing; the
+      // state change that caused that already disarmed it (see
+      // _onSpeechStart()/_send()), so reaching here with a mismatched state
+      // shouldn't normally happen, but the check costs nothing.
+      if (this.state === 'listening') this._setState('idle');
+    }, HANDS_FREE_IDLE_MS);
+  }
+
+  _disarmIdleTimer() {
+    clearTimeout(this._idleTimer);
+    this._idleTimer = null;
   }
 
   // ---------- speech recognition (continuous "conversation mode") ----------
@@ -323,6 +372,13 @@ export class PipelineEngine extends VoiceEngine {
     // Chrome's pipeline when stop() was called can still arrive once more —
     // belt and braces so it can never be treated as something the user said.
     if (this._recSuspended || this._isSpeaking || this.muted) return;
+
+    // Real listening activity — wake from a real hands-free idle if needed
+    // (mic was never actually off, only the displayed state was resting)
+    // and reset the quiet countdown. Same pattern as
+    // duplex-engine.js's _noteListeningActivity().
+    if (this.state === 'idle' && this.active) this._setState('listening');
+    this._armIdleTimer();
 
     let interimText = '';
     let finalText = '';
@@ -407,24 +463,48 @@ export class PipelineEngine extends VoiceEngine {
     const trimmed = text.trim();
     if (!trimmed) return;
 
+    // Real, confirmed race: this function has two independent entry points
+    // for overlapping speech — turn-detector.js's SilenceWatcher (re-armed
+    // fresh on every onresult) and this function's OWN retry timers just
+    // below. With no guard, two near-simultaneous triggers could each
+    // independently reach _send() for what was really the same utterance —
+    // confirmed live: 331 real cases of a user message with zero assistant
+    // reply before the next message, the clearest a near-identical
+    // utterance re-sent 318ms later. `_finalizeInFlight` is checked once,
+    // here, at the top of every entry — a second, independently-triggered
+    // call sees it already set and bails immediately rather than competing
+    // with the attempt already in progress. The two retry branches below
+    // are NOT blocked by this — they're the same logical attempt
+    // continuing — so each clears the flag itself right before its own
+    // scheduled re-entry, not on every early return.
+    if (this._finalizeInFlight) return;
+    this._finalizeInFlight = true;
+
     // Still actually speaking (energy-wise), even though recognition paused
     // between words — don't cut in. Only reachable once Jarvis has actually
     // stopped talking (guard above) — previously this could defer an echo
     // until the exact moment playback ended and then send it immediately.
     if (this.micMonitor?.isSpeaking()) {
-      this.silenceTimer = setTimeout(() => this._maybeFinalize(text), 400);
+      this.silenceTimer = setTimeout(() => {
+        this._finalizeInFlight = false; // this call's own continuation, not a new competing attempt
+        this._maybeFinalize(text);
+      }, 400);
       return;
     }
 
     if (this._looksLikeEcho(trimmed)) {
       this.pendingUtterance = '';
+      this._finalizeInFlight = false;
       return;
     }
 
     if (this.useAiTurnCheck) {
       const complete = await isCompleteThought(trimmed);
       if (!complete) {
-        this.silenceTimer = setTimeout(() => this._maybeFinalize(trimmed), 800);
+        this.silenceTimer = setTimeout(() => {
+          this._finalizeInFlight = false; // this call's own continuation, not a new competing attempt
+          this._maybeFinalize(trimmed);
+        }, 800);
         return;
       }
     }
@@ -432,6 +512,7 @@ export class PipelineEngine extends VoiceEngine {
     this.pendingUtterance = '';
     const confidence = this.pendingConfidence;
     this.pendingConfidence = null;
+    this._finalizeInFlight = false;
     this._emit('transcript', { text: trimmed, final: true });
     this._send(trimmed, { confidence, source: 'voice' });
   }
@@ -444,6 +525,7 @@ export class PipelineEngine extends VoiceEngine {
     // genuinely nothing to send.
     if (!text && !attachments.length) return;
     this.interrupt({ keepListening: true }); // clear anything left over from a previous turn
+    this._disarmIdleTimer(); // leaving the listening family — nothing left to time out until _backToListening() re-arms it
     this._setState('thinking');
     // Backstop against a hung-but-open EventSource (no chunk, no error, no
     // close — just silence) leaving the engine stuck in 'thinking' forever
@@ -476,10 +558,21 @@ export class PipelineEngine extends VoiceEngine {
     // voice) — anything else is a configured TTS provider's ref, passed
     // straight through to AudioPlayer, which resolves its own voice
     // server-side. Same convention duplex-engine.js's _makeSpeaker() uses.
+    // onFailure fires once per reply, only once EVERY retry for a sentence
+    // has already failed (see audio-player.js's fetchTts()) — before this
+    // existed, a broken/expired TTS provider just dropped every sentence in
+    // silence: a console.warn nobody but a developer would see, and Jarvis
+    // never actually speaking, with nothing in the UI to say why. Emits
+    // 'tts_failure', NOT 'error' — 'error' tells app.js the whole turn ended
+    // (it clears the in-progress assistant bubble), which this isn't: the
+    // reply itself is still generating/rendering fine, only its audio failed.
+    const onFailure = ({ provider }) => {
+      this._emit('tts_failure', { provider });
+    };
     this.speaker =
       this.voiceOutput === 'browser'
         ? new BrowserSpeaker({ onStart, onIdle })
-        : new AudioPlayer({ onStart, onIdle, provider: this.voiceOutput });
+        : new AudioPlayer({ onStart, onIdle, onFailure, provider: this.voiceOutput });
 
     const params = new URLSearchParams({ message: text, source: opts.source || 'voice' });
     if (typeof opts.confidence === 'number') params.set('confidence', String(opts.confidence));
@@ -521,7 +614,24 @@ export class PipelineEngine extends VoiceEngine {
         if (this.state !== 'speaking') this._armStuckWatchdog(() => this._recoverFromStuckState()); // forward progress, same reasoning as 'chunk'
         this._emit('tool_result', data);
       } else if (data.type === 'model_switch') {
+        // Same reasoning as 'chunk'/'tool_start'/'tool_result' above — a
+        // candidate model failing over to the next one is real forward
+        // progress on the server side, but this was the one event type that
+        // used to NOT re-arm the watchdog at all (its sibling 'restart'
+        // did) — walking a few failed candidates in server/models/runner.js
+        // (each with its own 20s "first token" budget) could silently burn
+        // past the 45s "stuck" timer with nothing telling the browser
+        // anything was still happening.
+        if (this.state !== 'speaking') this._armStuckWatchdog(() => this._recoverFromStuckState());
         this._emit('model_switch', data);
+      } else if (data.type === 'progress') {
+        // A real, typed "still working" heartbeat from the server (see
+        // server.js's /api/chat/stream) — covers the case where NEITHER a
+        // chunk, tool event, nor model_switch has happened in a while but
+        // the server is still genuinely working (e.g. mid-tool-call, or
+        // between two candidate models' first-token windows). No event of
+        // its own needed here — arming the watchdog again is the whole job.
+        if (this.state !== 'speaking') this._armStuckWatchdog(() => this._recoverFromStuckState());
       } else if (data.type === 'style_floors') {
         this._emit('style_floors', data);
       } else if (data.type === 'reaction') {
@@ -562,7 +672,7 @@ export class PipelineEngine extends VoiceEngine {
         // to _onSpeechIdle so the echo tail is still respected.
         if (!this._isSpeaking) this._resumeRecognition();
         this._emit('paused', { reason: data.reason });
-        this._setState(this.active ? 'listening' : 'idle');
+        this._backToListening();
       } else if (data.type === 'done') {
         this._disarmStuckWatchdog();
         this.speaker?.end();
@@ -580,7 +690,7 @@ export class PipelineEngine extends VoiceEngine {
         if (this.currentEventSource === es) this.currentEventSource = null;
         if (!this._isSpeaking) this._resumeRecognition(); // same reasoning as 'paused' above
         this._emit('error', { message: data.error, code: data.code });
-        this._setState(this.active ? 'listening' : 'idle');
+        this._backToListening();
       }
     };
 
@@ -592,12 +702,18 @@ export class PipelineEngine extends VoiceEngine {
         this.currentEventSource = null;
         if (!this._isSpeaking) this._resumeRecognition(); // same reasoning as 'paused' above
         this._emit('error', { message: 'Could not reach the Jarvis server.' });
-        this._setState(this.active ? 'listening' : 'idle');
+        this._backToListening();
       }
     };
   }
 
   _onSpeechStart() {
+    // Leaving the listening family entirely — nothing left to time out
+    // toward idle until _backToListening() re-arms it. Mostly redundant
+    // with _send()'s own disarm (thinking always precedes speaking), kept
+    // here too for the same defense-in-depth reason every other disarm
+    // point in this file is explicit rather than assumed.
+    this._disarmIdleTimer();
     // The 'thinking' hang backstop (see _send()) hands off to 'speaking's
     // own, better-scoped per-sentence watchdog now — see
     // audio-player.js/browser-speaker.js.
@@ -632,7 +748,7 @@ export class PipelineEngine extends VoiceEngine {
     this._speakingBuffer = '';
     clearInterval(this._bargeTimer);
     this._bargeTimer = null;
-    this._setState(this.active ? 'listening' : 'idle');
+    this._backToListening();
     // Recognition stays suspended a little longer than the audio itself —
     // see ECHO_TAIL_MS's definition for why. Also flushes anything the
     // (now-silenced) mic may have queued during that last stretch of

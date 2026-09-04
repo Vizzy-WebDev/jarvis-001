@@ -10,6 +10,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -29,6 +30,26 @@ function filePath(name) {
   return path.join(DATA_DIR, `${name}.json`);
 }
 
+// In-memory only, per-process, reset on restart — a THIS-PROCESS record of
+// "I legitimately wrote this exact content just now," never persisted.
+// This is what lets server/ops/diagnostics's config-integrity check tell
+// apart a change this app itself made through a real route from one that
+// happened some other way, without store.js needing to import anything at
+// all (this file is deliberately dependency-free — see its own header
+// comment). Records the WRITTEN CONTENT's own hash, not just a timestamp —
+// a time-window heuristic was tried first and found genuinely wrong during
+// this build's own verification: a legitimate write's timestamp stays
+// "recent" long enough to wrongly excuse a LATER, unrelated external
+// change that happens to land inside the same window. Comparing hashes
+// instead means a legitimate write only ever explains the exact content it
+// actually produced, no matter how much time has passed.
+const lastWrites = new Map();
+
+/** `{ts, hash}` (sha256 hex of the exact bytes) of THIS process's last writeJson() call for data/<name>.json — null if never, this process. */
+export function lastWriteAt(name) {
+  return lastWrites.get(name) || null;
+}
+
 /** Reads data/<name>.json, returning `fallback` if the file doesn't exist or is corrupt. */
 export function readJson(name, fallback) {
   try {
@@ -43,9 +64,11 @@ export function readJson(name, fallback) {
 export function writeJson(name, value) {
   ensureDataDir();
   const target = filePath(name);
+  const contents = JSON.stringify(value, null, 2);
   const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');
+  fs.writeFileSync(tmp, contents, 'utf8');
   fs.renameSync(tmp, target);
+  lastWrites.set(name, { ts: Date.now(), hash: crypto.createHash('sha256').update(contents).digest('hex') });
 }
 
 /** True if data/<name>.json exists on disk. */

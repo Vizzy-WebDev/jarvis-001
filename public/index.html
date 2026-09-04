@@ -27,6 +27,18 @@
               <path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z"/>
             </svg>
           </button>
+          <!-- Manual Screen Sharing toggle — the requirement's own explicit
+               ask: a way to turn Screen Sharing on/off directly, alongside
+               (not instead of) a voice instruction. Shares the exact same
+               server-side state (control/screen-share-state.js) a spoken
+               "share my screen with me"/"stop sharing" reaches, via
+               share_screen.js/stop_sharing_screen.js — either one is always
+               reflected here. See app.js's setupScreenShareToggle(). -->
+          <button id="screen-share-toggle" aria-label="Screen sharing" title="Screen sharing — click to turn on">
+            <svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor">
+              <path d="M20 3H4a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h5l-1 3h8l-1-3h5a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 13H4V5h16v11z"/>
+            </svg>
+          </button>
           <button id="notifications-toggle" aria-label="Notifications" title="Notifications">
             <svg viewBox="0 0 24 24" width="21" height="21" fill="currentColor">
               <path d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22zm7-6.2V11a7 7 0 0 0-5.5-6.84V3.5a1.5 1.5 0 0 0-3 0v.66A7 7 0 0 0 5 11v4.8L3 17.8V19h18v-1.2l-2-2z"/>

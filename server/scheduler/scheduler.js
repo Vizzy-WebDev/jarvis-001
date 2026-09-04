@@ -18,6 +18,7 @@ import { addNotification } from '../notifications.js';
 import { checkpointFromText } from '../memory/memory-review.js';
 import { recordTaskOutcome } from '../improvement/capture.js';
 import { friendlyMessageFor } from '../friendly-message.js';
+import { verifySemanticMatch } from '../ops/verify.js';
 import {
   listTasks,
   getTask,
@@ -182,6 +183,31 @@ export async function runTaskNow(id, { late = false } = {}) {
   } catch (err) {
     console.error(`[scheduler] task "${task.id}" threw:`, err);
     result = { ok: false, summary: '', error: friendlyMessageFor(err, 'This task', 'Something went wrong running this task.') };
+  }
+
+  // Verification (root CLAUDE.md's Operational Awareness item 4) — "did it
+  // run" and "does the result actually answer what was asked" are
+  // different questions. Only meaningful for a `prompt` action, the one
+  // type with real open-ended free text to check against a real request;
+  // `message`/`briefing`/`skill` results are mechanical or already
+  // structured, nothing free-form to mismatch. No new recovery mechanism —
+  // unlike Jobs, a scheduled task has no existing retry loop to reuse or
+  // collide with; its own NEXT scheduled occurrence already is its natural
+  // retry cadence, so a mismatch just flips `ok` to false and folds the
+  // reason into `error`, letting the EXISTING notify/recordRun machinery
+  // below treat it exactly like any other failure. `checked:false` (no
+  // model available) never flips a real success to a failure — silence
+  // stays the safe failure direction, same as everywhere else this build
+  // applies it.
+  if (task.action.type === 'prompt' && result.ok) {
+    const verdict = await verifySemanticMatch({ request: task.action.text, resultSummary: result.summary });
+    if (verdict.checked && verdict.matches === false) {
+      result = {
+        ...result,
+        ok: false,
+        error: `The result doesn't clearly match what was asked: ${verdict.reason || 'no reason given'}`,
+      };
+    }
   }
 
   updateTask(id, { lastRunAt: new Date().toISOString() });

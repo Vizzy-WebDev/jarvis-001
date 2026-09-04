@@ -50,17 +50,28 @@ for `resume_note`):
   append) of `conversation.getMessages(sessionId)` after every completed step — what
   lets a `resumable` job continue with its real prior context instead of restarting from
   `goal` alone. `resume_note` is the tool-to-tick handoff described above.
-- **`job_trace`** — the write-ahead activity log. `appendTrace()` takes `{phase: 'intent'
-  | 'outcome', effect: 'read' | 'workspace' | 'external', kind, summary, detail}` — a
-  caller writes an `intent` row BEFORE an effectful action runs and an `outcome` row
-  after, so a crash between the two still leaves the intent's `effect` on record. This
-  single fact is what lets `job-policy.js`'s `classifyRecovery()` derive an honest
-  resumability verdict instead of a job declaring one about itself.
-- **`job_outbox`** — the Tier 1/2 interruption queue `prompt.js`'s `jobsSection()`
-  drains. `reason: 'permission'` (a parked confirm-gate decision, or a fresh
-  `computer`-kind job asking to start) vs `'stuck'` (a stall/hang that survived its one
-  retry, or the model's own `report_job_stuck`) — same delivery/resume path either way,
-  just worded differently.
+- **The write-ahead activity log — table name is now `trace`, not `job_trace`.**
+  Generalized off the original `job_trace` (db.js migration 15, root CLAUDE.md's
+  "Operational Awareness" section) the exact same way `job_outbox` was already
+  generalized below — `jobs/job-store.js`'s own `appendTrace`/`getTrace`/`getTraceTail`
+  are thin wrappers over `server/ops/ops-trace.js` with `source:'job'` baked in, so
+  every call site in this directory is unaffected and still just calls `appendTrace()`
+  as always. `appendTrace()` takes `{phase: 'intent' | 'outcome', effect: 'read' |
+  'workspace' | 'external', kind, summary, detail}` — a caller writes an `intent` row
+  BEFORE an effectful action runs and an `outcome` row after, so a crash between the two
+  still leaves the intent's `effect` on record. This single fact is what lets
+  `job-policy.js`'s `classifyRecovery()` derive an honest resumability verdict instead of
+  a job declaring one about itself.
+- **The Tier 1/2/3 interruption queue — table name is now `outbox`, not `job_outbox`.**
+  Generalized in db.js migration 13 (root CLAUDE.md's "Heartbeat" section) so a
+  Heartbeat/Trigger finding with no job behind it could use the same broker — this
+  directory's own `addOutboxEntry`/`listPendingOutbox`/`getOutboxForJob`/
+  `markOutboxDelivered` (job-store.js) are thin wrappers over
+  `heartbeat/outbox-store.js` with `source:'job'` baked in, so every call site here is
+  unaffected. `prompt.js`'s `jobsSection()` drains it. `reason: 'permission'` (a parked
+  confirm-gate decision, or a fresh `computer`-kind job asking to start) vs `'stuck'` (a
+  stall/hang that survived its one retry, or the model's own `report_job_stuck`) — same
+  delivery/resume path either way, just worded differently.
 
 `RUNNING_STATUSES` (`queued`/`planning`/`running`) vs `RESOURCE_HOLDING_STATUSES` (those
 plus `awaiting_decision`) are deliberately two different lists, found necessary by live
@@ -101,6 +112,27 @@ OUTSIDE this loop changed it (a `stop_working_on` cancellation, or `driveOneTurn
 rather than overwriting it — the one point either kind of intervention CAN take effect,
 since an in-flight `runTurn` call has no cancellation token (same accepted limitation as
 `control/session.js`'s `raceAgainstStop`).
+
+**`turn.reportedDone` doesn't mean "done" by itself any more — Verification (root
+CLAUDE.md's Operational Awareness item 4) sits in front of it, reusing the SAME
+`canAutoRetry`/escalate shape `diagnoseStall`'s own retry branch already uses below, at
+the SAME call site, sharing the SAME `job.retries` counter — never a second recovery
+mechanism.** `ops/verify.js`'s `verifySemanticMatch({request: job.goal, resultSummary:
+turn.reportedDone})` spends one model call asking "does this genuinely answer the
+goal." A `matches:false` verdict with `canAutoRetry(job)` still true pauses instead of
+finishing — a trace row, `retries + 1`, a corrective nudge fed back as `nextText`, then
+`continue`s the loop for one more attempt; a `matches:false` verdict with the retry
+already spent escalates through the identical trace -> `awaiting_decision` ->
+`addOutboxEntry(tier:1, reason:'stuck')` -> `notify()` path stall-detection already
+uses. A job that already spent its one retry on a genuine stall gets no SECOND retry for
+a verification mismatch, and vice versa — exactly because both branches gate on the
+same counter. `checked:false` (no model available for the verification call itself)
+never blocks a real completion — silence is the safe failure direction, same as
+everywhere else this project applies it. **Verified via a real stub model through the
+real `driveJob()` path**, not just read: a job whose reported summary never matches its
+own goal retries once then escalates with real trace/outbox rows; a job that corrects
+itself on the retry finishes normally with `retries:1`; a job that matches immediately
+finishes with `retries:0` and no extra trace noise.
 
 **`onEscalate` no-ops once the job is already `awaiting_decision`.** A confirm-gated
 tool retried within the same `runTurn` call (before the outer loop gets a chance to

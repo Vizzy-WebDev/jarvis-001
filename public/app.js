@@ -69,6 +69,9 @@ const TOOL_LABELS = {
   remember_about_me: 'Noting that down…',
   open_section: 'Opening that…',
   control_computer: 'Controlling your computer…',
+  take_screenshot: 'Taking a screenshot…',
+  start_screen_recording: 'Starting a screen recording…',
+  stop_screen_recording: 'Finishing up the recording…',
   share_content: 'Taking a look…',
   examine_content: 'Looking into that…',
   check_claim: 'Checking that against sources…',
@@ -163,6 +166,11 @@ function scrollToBottom() {
   scroller.scrollTop = scroller.scrollHeight;
 }
 
+/** True once a bubble has anything worth keeping — real text, or a delivered image/video attachment (see the tool_result 'attachment' ui_action handler below). Plain `!el.textContent` alone would wrongly call an image-only reply "empty" and delete it, since an <img>/<video> contributes nothing to textContent. */
+function bubbleHasContent(el) {
+  return Boolean(el?.textContent || el?.querySelector('.bubble-attachment'));
+}
+
 function addBubble(role, text) {
   const el = document.createElement('div');
   el.className = `bubble ${role}`;
@@ -170,6 +178,26 @@ function addBubble(role, text) {
   document.getElementById('transcript').appendChild(el);
   scrollToBottom();
   return el;
+}
+
+/** Delivers a screenshot or finished recording INTO the transcript as a real image/video, not just a spoken description — see take_screenshot.js/stop_screen_recording.js's ui_action:{type:'attachment', ...}. Appended into the turn's own current assistant bubble (creating one if the tool result arrived before any reply text did) so it lands in the reply where it belongs, not as a separate system note. */
+function appendAttachment({ kind, url, mimeType }) {
+  if (!url) return;
+  if (!currentAssistantEl) currentAssistantEl = addBubble('assistant', '');
+  let el;
+  if (kind === 'video') {
+    el = document.createElement('video');
+    el.controls = true;
+    el.src = url;
+    if (mimeType) el.setAttribute('type', mimeType);
+  } else {
+    el = document.createElement('img');
+    el.src = url;
+    el.alt = 'Screenshot';
+  }
+  el.className = 'bubble-attachment';
+  currentAssistantEl.appendChild(el);
+  scrollToBottom();
 }
 
 /** A small centered notice (model switches, paused/failover notices, task-run pushes) — not part of the conversation. */
@@ -390,8 +418,38 @@ function setupObservationDot() {
     .then((res) => res.json())
     .then((data) => {
       if (data?.active) showObservationDot();
+      setScreenShareToggleState(Boolean(data?.sharing));
     })
     .catch(() => {});
+}
+
+// ---------- Screen Sharing toggle (persistent mode) — see server/control/
+// screen-share-state.js's own header comment for the full design: distinct
+// from the observation dot above (a transient "actively capturing right
+// now" signal). Turning this on doesn't itself trigger any description —
+// it just means a follow-up question about the screen doesn't need "look at
+// my screen" said first. Voice ("share my screen with me"/"stop sharing")
+// reaches the exact same server state, so this button always reflects
+// whichever one was used last. ----------
+
+function setScreenShareToggleState(sharing) {
+  const btn = document.getElementById('screen-share-toggle');
+  btn.classList.toggle('active', sharing);
+  btn.title = sharing ? 'Screen sharing is on — click to turn off' : 'Screen sharing — click to turn on';
+  btn.setAttribute('aria-pressed', String(sharing));
+}
+
+function setupScreenShareToggle() {
+  const btn = document.getElementById('screen-share-toggle');
+  btn.addEventListener('click', async () => {
+    const turningOn = !btn.classList.contains('active');
+    try {
+      await fetch(`/api/observation/share/${turningOn ? 'start' : 'stop'}`, { method: 'POST' });
+    } catch {
+      // The button still settles into the real state via the next
+      // screen_sharing_status SSE event either way.
+    }
+  });
 }
 
 /** Called right before a message (voice or text) is sent — renders the user's turn and a fresh reply bubble. */
@@ -471,6 +529,48 @@ function addDocumentCard(title, markdown, { badge, sources, copyText, copyLabel 
   // copyableBlock is a full-width box (its own <pre> plus button), so it goes
   // straight into the card rather than into the inline actions row.
   if (copyText) card.appendChild(copyableBlock(copyText, { label: copyLabel || 'Copy' }));
+
+  document.getElementById('transcript').appendChild(card);
+  scrollToBottom();
+  return card;
+}
+
+/**
+ * A real generated FILE in the transcript — server/tools/create_artifact.js's
+ * own ui_action, per root CLAUDE.md's Operational Awareness item 3 ("land
+ * somewhere I can actually find and open it — viewable in context, not just
+ * referenced in text"). Reuses the same `.doc-card`/`.doc-card-head` classes
+ * addDocumentCard() already established for visual consistency, but is its
+ * own function rather than one more special case bolted onto that one — a
+ * file card's own shape (a real download link, size, format) has nothing in
+ * common with a document card's (markdown body, sources, copy-to-clipboard).
+ */
+function addArtifactCard({ id, name, mimeType, size }) {
+  clearConfirmRow();
+  const card = document.createElement('div');
+  card.className = 'doc-card artifact-card';
+
+  const head = document.createElement('div');
+  head.className = 'doc-card-head';
+  head.appendChild(Object.assign(document.createElement('h3'), { textContent: name }));
+  card.appendChild(head);
+
+  const meta = document.createElement('p');
+  meta.className = 'hint';
+  const sizeLabel = size < 1024 ? `${size} B` : size < 1024 * 1024 ? `${(size / 1024).toFixed(1)} KB` : `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  meta.textContent = `${mimeType} · ${sizeLabel}`;
+  card.appendChild(meta);
+
+  const link = document.createElement('a');
+  // No `?download=1` param needed — the route always forces a real download
+  // now (a security fix: it used to render inline without this param,
+  // which meant an SVG/HTML artifact's own embedded script could execute
+  // in this app's own origin — see server.js's own comment on the route).
+  link.href = `/api/artifacts/${encodeURIComponent(id)}`;
+  link.download = name;
+  link.className = 'btn btn-primary';
+  link.textContent = `Download ${name}`;
+  card.appendChild(link);
 
   document.getElementById('transcript').appendChild(card);
   scrollToBottom();
@@ -858,7 +958,12 @@ function createEngine(type = getSetting('voiceEngine')) {
 
   e.on('chunk', ({ text }) => {
     if (!currentAssistantEl) currentAssistantEl = addBubble('assistant', '');
-    currentAssistantEl.textContent += text;
+    // A plain `textContent +=` rebuilds the WHOLE node as one text node —
+    // fine when the bubble only ever holds text, but it would silently wipe
+    // out an already-inserted image/video attachment (see the tool_result
+    // 'attachment' handler below) if any more text streams in afterward on
+    // the same turn. Appending a real text node instead only ever adds.
+    currentAssistantEl.appendChild(document.createTextNode(text));
     scrollToBottom();
   });
 
@@ -875,6 +980,18 @@ function createEngine(type = getSetting('voiceEngine')) {
     }
     if (data.ui_action?.type === 'open_conversation') {
       renderOpenConversationOffer(data.ui_action.conversationId, data.ui_action.title);
+    }
+    // A screenshot (take_screenshot.js) or a finished recording
+    // (stop_screen_recording.js) delivered as a real, visible attachment in
+    // the transcript — not just described in words. Same ui_action pattern
+    // every other tool_result side effect here already uses.
+    if (data.ui_action?.type === 'attachment') {
+      appendAttachment(data.ui_action);
+    }
+    // create_artifact.js's own ui_action — see addArtifactCard()'s own
+    // header comment.
+    if (data.ui_action?.type === 'artifact_created') {
+      addArtifactCard(data.ui_action);
     }
     if (data.needs_confirmation) {
       showConfirmRow(data.summary);
@@ -934,8 +1051,21 @@ function createEngine(type = getSetting('voiceEngine')) {
     );
   });
 
+  // See voice-engine.js's event doc for why this is its own event rather
+  // than 'error' — the reply itself succeeded, only its audio didn't.
+  // Confirmed live to be a real, previously-silent gap: an expired/out-of-
+  // credit TTS key made every reply mute with nothing in the UI to say why.
+  e.on('tts_failure', ({ provider }) => {
+    notify({
+      kind: 'voice',
+      level: 'warning',
+      title: `Jarvis's voice ("${provider}") isn't working right now, so this reply wasn't spoken.`,
+      body: 'Check its key in Settings, or switch to the Windows voice.',
+    });
+  });
+
   e.on('paused', ({ reason }) => {
-    if (currentAssistantEl && !currentAssistantEl.textContent) {
+    if (currentAssistantEl && !bubbleHasContent(currentAssistantEl)) {
       currentAssistantEl.remove();
     }
     currentAssistantEl = null;
@@ -948,14 +1078,14 @@ function createEngine(type = getSetting('voiceEngine')) {
   });
 
   e.on('done', () => {
-    if (currentAssistantEl && !currentAssistantEl.textContent) {
+    if (currentAssistantEl && !bubbleHasContent(currentAssistantEl)) {
       currentAssistantEl.remove();
     }
     currentAssistantEl = null;
   });
 
   e.on('error', ({ message, code }) => {
-    if (currentAssistantEl && !currentAssistantEl.textContent) {
+    if (currentAssistantEl && !bubbleHasContent(currentAssistantEl)) {
       currentAssistantEl.remove();
     }
     currentAssistantEl = null;
@@ -1491,13 +1621,21 @@ async function populateModelPicker() {
  */
 async function populateVoiceOutputOptions() {
   const select = document.getElementById('voice-output-select');
+  // provider.id -> whether it's actually usable (a real key saved) — the
+  // server already computes this (external-services.js's `configured`,
+  // surfaced through tts/index.js's listProviders()); this file used to just
+  // throw it away and list every service, working key or not, as an
+  // identical-looking option.
+  const configuredById = new Map();
   try {
     const res = await fetch('/api/tts/providers');
     const data = await res.json();
     for (const provider of data.providers || []) {
+      configuredById.set(provider.id, Boolean(provider.configured));
       const opt = document.createElement('option');
       opt.value = provider.id;
-      opt.textContent = `${provider.label} voice`;
+      opt.textContent = provider.configured ? `${provider.label} voice` : `${provider.label} voice (needs a key)`;
+      opt.disabled = !provider.configured;
       select.appendChild(opt);
     }
   } catch {
@@ -1505,8 +1643,16 @@ async function populateVoiceOutputOptions() {
   }
   if (select.disabled) return; // SPEECH_OUTPUT_SUPPORTED is false — already forced to 'browser', must not be overwritten
   const saved = getSetting('voiceOutput');
-  const stillExists = [...select.options].some((o) => o.value === saved);
-  select.value = stillExists ? saved : 'browser';
+  const savedOption = [...select.options].find((o) => o.value === saved);
+  // Two distinct ways `saved` can be unusable: the option is gone entirely
+  // (removed/renamed), or it's still listed but has no working key behind it
+  // (configuredById.get() false — this is the gap that let a reply go
+  // silently mute while the settings panel looked completely normal: the
+  // OLD code only ever checked "does this option still exist," never "does
+  // it actually have a key," so a provider that was ADDED with no key, or
+  // whose key was later removed, stayed selected and silently unusable).
+  const usable = Boolean(savedOption) && saved === 'browser' ? true : Boolean(savedOption) && configuredById.get(saved) === true;
+  select.value = saved === 'browser' || usable ? saved : 'browser';
   // Confirmed live bug this closes: this used to only correct the DISPLAYED
   // dropdown value, never the underlying saved setting — so if the
   // service `saved` pointed at got renamed/removed (e.g. re-added under a
@@ -1519,12 +1665,14 @@ async function populateVoiceOutputOptions() {
   // one-time, visible notice, closes both the real failure and the silence
   // about it — a service disappearing out from under you is worth knowing,
   // not something to quietly paper over.
-  if (!stillExists && saved && saved !== 'browser') {
+  if (!usable && saved && saved !== 'browser') {
     setSetting('voiceOutput', 'browser');
     notify({
       kind: 'system',
       level: 'warning',
-      title: `Your voice was set to a service ("${saved}") that isn't connected any more, so Jarvis switched back to the Windows voice. Reconnect it and pick it again in Settings if you want it back.`,
+      title: savedOption
+        ? `Your voice was set to "${saved}", which has no working key saved, so Jarvis switched back to the Windows voice. Add a working key in Settings and pick it again if you want it back.`
+        : `Your voice was set to a service ("${saved}") that isn't connected any more, so Jarvis switched back to the Windows voice. Reconnect it and pick it again in Settings if you want it back.`,
     });
   }
 }
@@ -2069,6 +2217,10 @@ function connectEvents() {
         else hideObservationDot();
         return;
       }
+      if (data.type === 'screen_sharing_status') {
+        setScreenShareToggleState(Boolean(data.sharing));
+        return;
+      }
       if (data.type === 'monitor_started') {
         showMonitorBanner(data.monitorId, data.description);
         return;
@@ -2384,6 +2536,7 @@ async function init() {
   setupControlBanner();
   setupMonitorBanner();
   setupObservationDot();
+  setupScreenShareToggle();
   await setupNotifications();
   await navigate(currentSectionId(), { pushHash: false });
   await loadActiveConversation();

@@ -70,7 +70,20 @@ export function detectSelfSignals({
 /** True if detectSelfSignals() found anything worth surfacing this turn — the single gate prompt.js's volatile section checks before spending any tokens on it. */
 export function anySignalFired(signals) {
   if (!signals) return false;
+  // toolReliability (attached by self-model.js's computeTurnSignals(), not
+  // computed here — this file stays zero-import either way, just checking
+  // whatever's already on the object) carrying a real recorded FAILURE for
+  // something used this turn is its own reason to surface — reasoning
+  // integrity's "steer early" half (root CLAUDE.md's Operational Awareness
+  // item 1). A clean track record never fires this; only genuine prior
+  // trouble does.
+  const hasNotableToolHistory = Array.isArray(signals.toolReliability) && signals.toolReliability.some((r) => r.failures > 0);
   return Boolean(
-    signals.authority || signals.knownFailure || signals.noTrackRecord || signals.correction || signals.blockedOnBackground
+    signals.authority ||
+      signals.knownFailure ||
+      signals.noTrackRecord ||
+      signals.correction ||
+      signals.blockedOnBackground ||
+      hasNotableToolHistory
   );
 }

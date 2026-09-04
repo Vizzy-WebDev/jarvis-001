@@ -21,6 +21,7 @@
 // turn/job regardless of prior state.
 
 import { broadcast } from '../events.js';
+import { recordEvent } from '../ops/diagnostics/checks/security/security-counters.js';
 
 const unhealthy = new Map(); // modelId -> { until: timestamp, reason, kind }
 
@@ -60,6 +61,13 @@ export function markUnhealthy(modelId, reason, kind = 'other') {
   // Only a genuinely new cooldown is news — a failure that just refreshes an
   // already-benched model's cooldown isn't a state change worth a push.
   if (wasHealthy) broadcast({ type: 'model_health', modelId, state: 'unhealthy', reason, kind });
+  // Self-diagnosis's own security check watches for a SPIKE of these, not
+  // one — a single expired key is routine, not a signal. Recorded on every
+  // real auth failure, not just a new one, since a spike's own definition
+  // needs every occurrence in the window. security-counters.js is a leaf
+  // with no import back to this file — see root CLAUDE.md's Operational
+  // Awareness section.
+  if (kind === 'auth') recordEvent('auth_failure');
 }
 
 export function markHealthy(modelId) {

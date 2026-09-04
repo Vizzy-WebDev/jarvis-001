@@ -160,3 +160,32 @@ when a fix clears/blocks something "just to be safe," check whether the
 thing being cleared could legitimately have been produced BEFORE the
 triggering condition, not just during or after it** — `pendingUtterance` at
 mute-time is always pre-mute content.
+
+## Delivering a real image/video into the transcript (`ui_action:{type:'attachment'}`)
+
+A tool result can put a real, visible image or video into the current reply, not just
+describe it in words — see `server/tools/CLAUDE.md`'s own entry on the `ui_action`
+convention for the server side (`take_screenshot.js`/`stop_screen_recording.js`).
+`app.js`'s `tool_result` handler calls `appendAttachment({kind, url, mimeType})`, which
+appends a real `<img>`/`<video controls>` (class `bubble-attachment`, `style.css`) into
+`currentAssistantEl` — creating one first if the attachment arrives before any reply text
+has streamed in yet.
+
+**Two real bugs this surfaced in the existing streaming-bubble code, both fixed as part
+of adding this — worth knowing before touching either path again:**
+- **`currentAssistantEl.textContent += text` in the `chunk` handler silently WIPES any
+  already-appended attachment element.** `.textContent`'s own setter replaces every
+  child with a single text node, even when read back and reassigned via `+=` — so if an
+  image landed first and then more reply text streamed in on the same turn (a completely
+  normal sequence: attachment now, a closing sentence after), the image vanished with no
+  error. Fixed by switching to `appendChild(document.createTextNode(text))`, which only
+  ever adds a sibling, never rebuilds the node.
+- **The three "if the bubble ended up empty, remove it" checks** (`paused`/`done`/`error`
+  handlers) used a bare `!currentAssistantEl.textContent`, which is true for an
+  image-only reply — an `<img>`/`<video>` contributes nothing to `textContent` — and
+  would delete a bubble that actually held a real, delivered attachment. Fixed with a
+  small shared `bubbleHasContent(el)` helper (`textContent` OR a `.bubble-attachment`
+  child) used by all three checks instead of the bare `textContent` test. **The general
+  lesson**: once a bubble can hold something other than plain text, every "is this
+  bubble empty" check anywhere in the file needs to agree on what "empty" means — a
+  narrower, ad-hoc check at just one call site drifts out of sync with the others.

@@ -9,6 +9,9 @@ import * as scheduleStore from './schedule-store.js';
 import { registerSource } from './sources/registry.js';
 import { source as jobsSource } from './sources/jobs-source.js';
 import { source as commitmentsSource } from './sources/commitments-source.js';
+import { source as environmentSource } from '../ops/environment/source.js';
+import { registerDiagnosticChecks } from '../ops/diagnostics/index.js';
+import { source as diagnosisSource } from '../ops/diagnostics/source.js';
 import { startTick } from './engine.js';
 import { startTriggers } from './triggers.js';
 
@@ -25,6 +28,17 @@ export function startHeartbeat() {
 
   registerSource(jobsSource);
   registerSource(commitmentsSource);
+  // Environment awareness (root CLAUDE.md's Operational Awareness item 5) —
+  // "is system load unusually high or climbing without a clear cause." Same
+  // registerSource() plug-in surface as the two above; see
+  // server/ops/environment/source.js for its own checkState dedup.
+  registerSource(environmentSource);
+  // Self-diagnosis (root CLAUDE.md's Operational Awareness item 1) — real
+  // checks registered first so the 'diagnosis' source has something to run
+  // on its very first tick; see server/ops/diagnostics/source.js for its
+  // own retry-then-escalate self-heal.
+  registerDiagnosticChecks();
+  registerSource(diagnosisSource);
 
   startTriggers();
   startTick();

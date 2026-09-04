@@ -17,12 +17,20 @@ import WebSocket from 'ws';
 import { dataDir } from '../store.js';
 
 const DEBUG_PORT = 9333; // fixed, dedicated to Jarvis's own browser connector — never the user's own Chrome's port
+// A second, separate port + profile for the headless renderer below
+// (renderPageHeadless) — deliberately never the same instance as the
+// visible connector above: a headless render is a short-lived, one-off
+// fetch-with-real-rendering used by read_web_page's own fallback, and must
+// never navigate away from a page the user might be mid-interacting with in
+// the visible browser, or contend with it over the same profile lock file.
+const HEADLESS_DEBUG_PORT = 9334;
 // Goes through store.js's dataDir() (JARVIS_DATA_DIR-aware) rather than a
 // path hardcoded relative to this file — see store.js's dataDir() doc
 // comment for the real bug that taught this.
 const PROFILE_DIR = path.join(dataDir(), 'browser-profile');
 const NAV_TIMEOUT_MS = 20 * 1000;
 const CMD_TIMEOUT_MS = 15 * 1000;
+const HEADLESS_NAV_TIMEOUT_MS = 15 * 1000; // a bit tighter — this is a fallback path, not worth a long hang
 
 // Common install locations — checked in order, first one that exists wins.
 // No registry lookup, no new dependency; falls back to plain "chrome" on
@@ -48,10 +56,10 @@ async function fetchJson(url) {
   return res.json();
 }
 
-async function waitForDevtools(retries = 30) {
+async function waitForDevtools(port, retries = 30) {
   for (let i = 0; i < retries; i++) {
     try {
-      return await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/version`);
+      return await fetchJson(`http://127.0.0.1:${port}/json/version`);
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 300));
     }
@@ -59,8 +67,8 @@ async function waitForDevtools(retries = 30) {
   throw new Error('The browser did not become ready in time.');
 }
 
-async function pickPageTarget() {
-  const targets = await fetchJson(`http://127.0.0.1:${DEBUG_PORT}/json/list`);
+async function pickPageTarget(port) {
+  const targets = await fetchJson(`http://127.0.0.1:${port}/json/list`);
   const page = targets.find((t) => t.type === 'page');
   if (!page) throw new Error('No browser tab is available to control.');
   return page;
@@ -106,82 +114,96 @@ function sendCdp(state, method, params, timeoutMs = CMD_TIMEOUT_MS) {
   });
 }
 
-/** Ensures a browser is running and connected, returning the shared CDP state. Launches once, reused for every subsequent call. */
+/**
+ * Launches a fresh Chrome/Edge process against `port`/`profileDir` and wires
+ * up a connected CDP `state` object — the shared bootstrap both the
+ * persistent visible connector (ensureBrowser, below) and the ephemeral
+ * headless renderer (renderPageHeadless, further below) build on, so the
+ * cold-start fragility fixes (the flat post-devtools pause, the bootstrap
+ * retry loop) only ever live in one place. `onClose` lets a caller (only the
+ * persistent singleton needs this) know when the connection drops so it can
+ * clear its own reference; the ephemeral caller tears its own state down
+ * explicitly instead and passes nothing.
+ */
+async function launchAndConnect({ port, profileDir, extraArgs = [], onClose }) {
+  const exe = findChromeExecutable();
+  const proc = spawn(
+    exe,
+    [`--remote-debugging-port=${port}`, `--user-data-dir=${profileDir}`, '--no-first-run', '--no-default-browser-check', ...extraArgs, 'about:blank'],
+    { detached: true, stdio: 'ignore', windowsHide: false }
+  );
+  proc.unref();
+  proc.on('error', (err) => {
+    console.error('[browser connector] failed to launch:', err.message);
+  });
+  await waitForDevtools(port);
+  // Confirmed by hand: Chrome's HTTP debug endpoint (waitForDevtools above)
+  // can start responding before its internal engine is fully warmed up — a
+  // CDP command sent within roughly the first second of the browser
+  // process's own life can go completely unanswered even on a freshly
+  // opened, healthy WebSocket, while the exact same command a second or two
+  // later works instantly. This fixed pause is the real fix; the retry loop
+  // around Page.enable/Runtime.enable below is defense in depth, not the
+  // primary mechanism.
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  const target = await pickPageTarget(port);
+  const ws = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    ws.once('open', resolve);
+    ws.once('error', reject);
+  });
+
+  const state = { proc, ws, pending: new Map(), nextId: 1 };
+  ws.on('message', (data) => {
+    let msg;
+    try {
+      msg = JSON.parse(data.toString());
+    } catch {
+      return;
+    }
+    if (msg.id === undefined) return; // an unsolicited CDP event — not something any call here awaits
+    const entry = state.pending.get(msg.id);
+    if (!entry) return;
+    state.pending.delete(msg.id);
+    clearTimeout(entry.timer);
+    if (msg.error) entry.reject(new Error(msg.error.message || 'The browser reported an error.'));
+    else entry.resolve(msg.result);
+  });
+  ws.on('close', () => {
+    for (const [, entry] of state.pending) {
+      clearTimeout(entry.timer);
+      entry.reject(new Error('The browser connection closed.'));
+    }
+    onClose?.();
+  });
+
+  await sendCdpBootstrap(state, 'Page.enable');
+  await sendCdpBootstrap(state, 'Runtime.enable');
+  return state;
+}
+
+/** Ensures a VISIBLE browser is running and connected, returning the shared CDP state. Launches once, reused for every subsequent call — this is Jarvis's own dedicated automation browser, used only when a task genuinely needs to click/type/interact with a real page. For a plain information lookup, prefer read_web_page (or, for a JS-heavy page it can't read, renderPageHeadless below) — neither ever pops a window. */
 export async function ensureBrowser() {
   if (browserState && browserState.ws.readyState === WebSocket.OPEN) return browserState;
-
   if (!browserState || browserState.proc.killed) {
-    const exe = findChromeExecutable();
-    const proc = spawn(
-      exe,
-      [
-        `--remote-debugging-port=${DEBUG_PORT}`,
-        `--user-data-dir=${PROFILE_DIR}`,
-        '--no-first-run',
-        '--no-default-browser-check',
-        'about:blank',
-      ],
-      { detached: true, stdio: 'ignore', windowsHide: false }
-    );
-    proc.unref();
-    proc.on('error', (err) => {
-      console.error('[browser connector] failed to launch:', err.message);
+    browserState = await launchAndConnect({
+      port: DEBUG_PORT,
+      profileDir: PROFILE_DIR,
+      onClose: () => {
+        browserState = null;
+      },
     });
-    await waitForDevtools();
-    // Confirmed by hand: Chrome's HTTP debug endpoint (waitForDevtools above)
-    // can start responding before its internal engine is fully warmed up —
-    // a CDP command sent within roughly the first second of the browser
-    // process's own life can go completely unanswered even on a freshly
-    // opened, healthy WebSocket, while the exact same command a second or
-    // two later works instantly. This fixed pause is the real fix; the
-    // retry loop around Page.enable/Runtime.enable below is defense in
-    // depth, not the primary mechanism.
-    await new Promise((resolve) => setTimeout(resolve, 1200));
-    const target = await pickPageTarget();
-    const ws = new WebSocket(target.webSocketDebuggerUrl);
-    await new Promise((resolve, reject) => {
-      ws.once('open', resolve);
-      ws.once('error', reject);
-    });
-
-    browserState = { proc, ws, pending: new Map(), nextId: 1 };
-    ws.on('message', (data) => {
-      let msg;
-      try {
-        msg = JSON.parse(data.toString());
-      } catch {
-        return;
-      }
-      if (msg.id === undefined) return; // an unsolicited CDP event — not something any call here awaits
-      const entry = browserState.pending.get(msg.id);
-      if (!entry) return;
-      browserState.pending.delete(msg.id);
-      clearTimeout(entry.timer);
-      if (msg.error) entry.reject(new Error(msg.error.message || 'The browser reported an error.'));
-      else entry.resolve(msg.result);
-    });
-    ws.on('close', () => {
-      for (const [, entry] of browserState.pending) {
-        clearTimeout(entry.timer);
-        entry.reject(new Error('The browser connection closed.'));
-      }
-      browserState = null;
-    });
-
-    await sendCdpBootstrap(browserState, 'Page.enable');
-    await sendCdpBootstrap(browserState, 'Runtime.enable');
   }
-
   return browserState;
 }
 
-export async function navigate(url) {
-  const state = await ensureBrowser();
+/** Navigates a given, already-connected `state` — the shared logic behind both navigate() (the visible connector) and renderPageHeadless() (below) below it. */
+async function navigateOn(state, url, timeoutMs = NAV_TIMEOUT_MS) {
   const navPromise = new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       state.ws.off('message', onMessage);
       reject(new Error('The page took too long to load.'));
-    }, NAV_TIMEOUT_MS);
+    }, timeoutMs);
     function onMessage(data) {
       let msg;
       try {
@@ -202,14 +224,21 @@ export async function navigate(url) {
   return { navigatedTo: url };
 }
 
-/** Runs a small JS expression in the page and returns its JSON-serializable result. Used for read/click/type instead of the Input domain's raw mouse/keyboard events — simpler and more reliable for ordinary page interaction. */
-async function evaluate(expression) {
-  const state = await ensureBrowser();
+export async function navigate(url) {
+  return navigateOn(await ensureBrowser(), url);
+}
+
+/** Runs a small JS expression in the page and returns its JSON-serializable result — the shared logic behind evaluate() (the visible connector) and renderPageHeadless() (below). Used for read/click/type instead of the Input domain's raw mouse/keyboard events — simpler and more reliable for ordinary page interaction. */
+async function evaluateOn(state, expression) {
   const result = await sendCdp(state, 'Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
   if (result.exceptionDetails) {
     throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'The page script failed.');
   }
   return result.result?.value;
+}
+
+async function evaluate(expression) {
+  return evaluateOn(await ensureBrowser(), expression);
 }
 
 export async function readPage() {
@@ -255,6 +284,53 @@ export async function typeIntoSelector(selector, text) {
   return { typed: text };
 }
 
+/**
+ * A short-lived, fully invisible (`--headless=new`, no window ever appears)
+ * Chrome instance used ONLY as read_web_page's own fallback — a plain
+ * `fetch()` gets nothing useful from a JS-rendered page (a real SPA with no
+ * server-rendered HTML), so this renders the page for real without ever
+ * popping a visible window, keeping "most lookups shouldn't show you a
+ * browser" true even for the pages a plain fetch can't read. Deliberately a
+ * SEPARATE process/port/profile from ensureBrowser()'s persistent visible
+ * one (see HEADLESS_DEBUG_PORT above) — this must never navigate the
+ * window the user might actually be looking at, and always launches, reads,
+ * and closes itself within one call, never left running between calls the
+ * way the visible connector is. Any failure (chrome not found, page never
+ * loads, script throws) surfaces as a thrown error — callers already know
+ * how to fall back from that (see read_web_page.js).
+ */
+export async function renderPageHeadless(url, { maxChars = 6000 } = {}) {
+  const profileDir = path.join(dataDir(), 'browser-profile-headless');
+  let state;
+  try {
+    state = await launchAndConnect({
+      port: HEADLESS_DEBUG_PORT,
+      profileDir,
+      extraArgs: ['--headless=new', '--disable-gpu'],
+    });
+    await navigateOn(state, url, HEADLESS_NAV_TIMEOUT_MS);
+    const [title, finalUrl, text] = await Promise.all([
+      evaluateOn(state, 'document.title'),
+      evaluateOn(state, 'location.href'),
+      evaluateOn(state, `document.body ? document.body.innerText.slice(0, ${Number(maxChars) || 6000}) : ""`),
+    ]);
+    return { title, url: finalUrl, text };
+  } finally {
+    if (state) {
+      try {
+        state.ws.close();
+      } catch {
+        // Fine either way.
+      }
+      try {
+        state.proc.kill();
+      } catch {
+        // Fine either way.
+      }
+    }
+  }
+}
+
 export function closeBrowser() {
   if (!browserState) return;
   try {
@@ -276,22 +352,25 @@ export function toolDeclarations() {
   return [
     {
       name: 'browser_navigate',
-      description: "Open a URL in Jarvis's own controlled browser window.",
+      description:
+        'Opens a URL in a REAL, VISIBLE browser window on the user\'s screen (Jarvis\'s own separate, isolated browser — never the user\'s real Chrome). ' +
+        'Only use this when the task genuinely needs clicking, typing, or filling something in on a real page, or the user explicitly asked to browse/open ' +
+        'a site to look at. For a plain information lookup, use read_web_page instead — it works invisibly in the background with no window popping up.',
       parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
     },
     {
       name: 'browser_read_page',
-      description: 'Read the current page\'s title, URL, and visible text.',
+      description: 'Read the current page\'s title, URL, and visible text, from the visible browser window opened by browser_navigate.',
       parameters: { type: 'object', properties: {}, required: [] },
     },
     {
       name: 'browser_click',
-      description: 'Click an element on the current page, given a CSS selector.',
+      description: 'Click an element on the current page in the visible browser window, given a CSS selector.',
       parameters: { type: 'object', properties: { selector: { type: 'string' } }, required: ['selector'] },
     },
     {
       name: 'browser_type',
-      description: 'Type text into an element on the current page, given a CSS selector.',
+      description: 'Type text into an element on the current page in the visible browser window, given a CSS selector.',
       parameters: {
         type: 'object',
         properties: { selector: { type: 'string' }, text: { type: 'string' } },

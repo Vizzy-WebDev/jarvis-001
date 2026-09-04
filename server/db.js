@@ -714,6 +714,195 @@ const MIGRATIONS = [
   (conn) => {
     conn.exec(`ALTER TABLE self_goals ADD COLUMN source_turn_text TEXT;`);
   },
+
+  // 15: Operational Awareness (root CLAUDE.md's "Operational Awareness"
+  // section; server/ops/CLAUDE.md for the module breakdown) — the
+  // foundation every other piece of that build writes onto: one generic,
+  // sequenced write-ahead activity trace, generalized off Jobs' own
+  // `job_trace` the exact same way migration 13 generalized `job_outbox` ->
+  // `outbox`. A real rebuild, not an ALTER, for the same reason as before:
+  // SQLite can't relax a NOT NULL foreign key in place, and before this a
+  // trace row could only ever belong to a job (`job_id TEXT NOT NULL
+  // REFERENCES jobs(id)`) — a self-diagnosis probe or a verification check
+  // has no job behind it and could not be recorded at all.
+  //
+  // `job_id` is now nullable; `source` (default 'job', so every row that
+  // already exists reads correctly with no data rewrite beyond the copy
+  // itself) and `source_ref` are new — `source_ref` is the generic pointer
+  // a non-job source uses to scope its own sequence counter (see
+  // ops-trace.js's appendEntry()), while `job_id` stays as its own real
+  // column so its own ON DELETE CASCADE keeps working unchanged for every
+  // existing Jobs call site. Every row that existed before this migration
+  // is copied over with `source='job', source_ref=job_id` — nothing lost,
+  // nothing reclassified. `job-store.js`'s own appendTrace/getTrace/
+  // getTraceTail become thin wrappers over the new home of this table
+  // (`server/ops/ops-trace.js`) immediately after this migration lands, so
+  // every existing Jobs call site needs no changes at all — same pattern
+  // migration 13 already proved on this exact database.
+  (conn) => {
+    conn.exec(`
+      CREATE TABLE trace (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        source     TEXT NOT NULL DEFAULT 'job',
+        source_ref TEXT,
+        job_id     TEXT REFERENCES jobs(id) ON DELETE CASCADE,
+        seq        INTEGER NOT NULL,
+        phase      TEXT NOT NULL,
+        effect     TEXT NOT NULL,
+        kind       TEXT NOT NULL,
+        summary    TEXT NOT NULL,
+        detail     TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_trace_source_ref ON trace(source, source_ref, seq);
+
+      INSERT INTO trace (id, source, source_ref, job_id, seq, phase, effect, kind, summary, detail, created_at)
+      SELECT id, 'job', job_id, job_id, seq, phase, effect, kind, summary, detail, created_at FROM job_trace;
+
+      DROP TABLE job_trace;
+    `);
+  },
+
+  // 16: Cost tracking (root CLAUDE.md's "Operational Awareness" section,
+  // item 2) — automatic, zero-manual-logging spend/usage tracking across
+  // every paid service Jarvis depends on. Three tables, deliberately kept
+  // separate rather than one blended "spend" number, per the owner's own
+  // explicit requirement: a MEASURED fact (what we actually counted), a
+  // PROVIDER-REPORTED fact (what the service itself says, where its API
+  // exposes one), and a CALCULATED one (measured × a known price) must
+  // never be conflated — server/cost/report.js always labels which kind a
+  // given number is, and never fabricates one that isn't available.
+  //
+  // `cost_events` — one row per real unit of usage (a model turn's token
+  // counts, a TTS call's character count, an STT call's seconds). `provider`
+  // + `model_id` (nullable — a non-model service like ElevenLabs/Deepgram
+  // has no model id) is the grouping key `report.js`'s "which model do I
+  // use most" reads. `session_id` is NOT a foreign key (same discipline
+  // migration 4 set for jobs.conversation_id) — a cost event must survive
+  // the conversation that generated it being deleted.
+  //
+  // `provider_balances` — the last real balance/quota reading this
+  // process actually received from a provider's own API (ElevenLabs
+  // GET /v1/user, OpenRouter GET /v1/key — see server/cost/balances.js).
+  // One row per provider ref, overwritten on each successful poll — a
+  // history of readings isn't needed, only the most recent honest one.
+  //
+  // `model_prices` — a per-(provider, model) price the user has explicitly
+  // set, or that was parsed from a provider's own real numeric pricing data
+  // (OpenRouter's `pricing` object — see adapters/openai-compatible.js's
+  // inferBillingFromPricing(), which used to parse this and throw it away).
+  // Absent for a model with no known price — report.js reports usage only
+  // for that model, never an invented dollar figure. `source` records which
+  // of the three the row came from, purely for transparency in the UI/tool
+  // output, never for behavior.
+  (conn) => {
+    conn.exec(`
+      CREATE TABLE cost_events (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts          TEXT NOT NULL,
+        provider    TEXT NOT NULL,
+        model_id    TEXT,
+        unit_kind   TEXT NOT NULL,
+        units_in    INTEGER,
+        units_out   INTEGER,
+        cached_in   INTEGER,
+        session_id  TEXT,
+        background  INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX idx_cost_events_ts ON cost_events(ts);
+      CREATE INDEX idx_cost_events_provider_model ON cost_events(provider, model_id);
+
+      CREATE TABLE provider_balances (
+        provider_ref TEXT PRIMARY KEY,
+        checked_at   TEXT NOT NULL,
+        detail_json  TEXT NOT NULL
+      );
+
+      CREATE TABLE model_prices (
+        provider   TEXT NOT NULL,
+        model_id   TEXT NOT NULL,
+        unit_kind  TEXT NOT NULL,
+        price_in   REAL,
+        price_out  REAL,
+        currency   TEXT NOT NULL DEFAULT 'USD',
+        source     TEXT NOT NULL DEFAULT 'built_in',
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (provider, model_id, unit_kind)
+      );
+    `);
+  },
+
+  // 17: Environment awareness (root CLAUDE.md's "Operational Awareness"
+  // section, item 5) — a live, ROLLING picture of the machine Jarvis runs
+  // on, not just a current-instant read. `env_samples` is what makes
+  // "unusually high or climbing" an honest claim rather than a guess:
+  // baseline.js compares a new reading against real recent history (a
+  // rolling median) and requires a SUSTAINED climb before flagging
+  // anything, exactly the same "don't fire on a single spike" discipline
+  // heartbeat/commitments-source.js's own checkState dedup already
+  // established for a different kind of noisy signal. Deliberately pruned
+  // by sampler.js to a rolling window (7 days) — this is an operational
+  // health signal, never a billing log, so unbounded retention was never
+  // the goal.
+  (conn) => {
+    conn.exec(`
+      CREATE TABLE env_samples (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts            TEXT NOT NULL,
+        cpu_pct       REAL,
+        mem_free_pct  REAL,
+        rss_bytes     INTEGER
+      );
+      CREATE INDEX idx_env_samples_ts ON env_samples(ts);
+    `);
+  },
+
+  // 18: Self-diagnosis (root CLAUDE.md's "Operational Awareness" section,
+  // item 1) — `ops_security_events` is the timestamped log the security
+  // checks' own spike detection reads (server/ops/diagnostics/checks/
+  // security/event-spikes.js): a real auth failure (models/health.js, on
+  // kind:'auth') or a same-turn confirm-gate bypass attempt
+  // (capabilities.js's consumePendingToken()). Timestamped rows, not a
+  // running total — a "spike," for a naturally rare discrete event, means
+  // "several in a short window," which a bare counter can't answer.
+  // Pruned to a rolling 24h window on every write (security-counters.js),
+  // same operational-signal-not-a-log posture as env_samples above.
+  (conn) => {
+    conn.exec(`
+      CREATE TABLE ops_security_events (
+        id   INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL,
+        ts   TEXT NOT NULL
+      );
+      CREATE INDEX idx_ops_security_events_kind_ts ON ops_security_events(kind, ts);
+    `);
+  },
+
+  // 19: Output/Artifact generation (root CLAUDE.md's "Operational
+  // Awareness" section, item 3) + Verification (item 4). `id` is the exact
+  // filename under data/artifacts/ (same "the id IS the filename" design
+  // uploads.js already proved — no separate index to keep in sync, still
+  // resolvable across a restart). `session_id` is NOT a foreign key, same
+  // discipline jobs.conversation_id already uses — an artifact must survive
+  // the conversation that produced it being deleted. `verified`/
+  // `verification_detail` are the mechanical-check result (server/ops's
+  // verify.js) — null until a check has actually run, never a default
+  // "true" implying something was checked when it wasn't.
+  (conn) => {
+    conn.exec(`
+      CREATE TABLE artifacts (
+        id                  TEXT PRIMARY KEY,
+        name                TEXT NOT NULL,
+        mime_type           TEXT NOT NULL,
+        size                INTEGER NOT NULL,
+        session_id          TEXT,
+        created_at          TEXT NOT NULL,
+        verified            INTEGER,
+        verification_detail TEXT
+      );
+      CREATE INDEX idx_artifacts_created ON artifacts(created_at);
+    `);
+  },
 ];
 
 function migrate(conn) {

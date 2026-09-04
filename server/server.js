@@ -42,7 +42,7 @@ import {
 } from './skills/store/skill-files.js';
 import { parseToml, validatePipeline } from './skills/store/skill-toml.js';
 import { confirmRequiringSteps } from './skills/pipeline.js';
-import { installFromUpload, replaceFromUpload, buildSkillZip } from './skills/store/skill-zip.js';
+import { installFromUpload, replaceFromUpload, buildSkillZip, installFromGithubRepo } from './skills/store/skill-zip.js';
 import {
   listModels,
   listConnections,
@@ -82,13 +82,18 @@ import {
 } from './jobs/orchestrator.js';
 import { startImprovementCycle } from './improvement/cycle.js';
 import { startHeartbeat } from './heartbeat/index.js';
+import { startPriceMaintenance } from './cost/prices.js';
+import { startBalancePolling } from './cost/balances.js';
+import { startSampling } from './ops/environment/sampler.js';
 import { showOverlay, hideOverlay, updateStep, isOverlayActive, currentOverlayStep } from './control/overlay-bridge.js';
 import { isIndicatorActive } from './control/observation-bridge.js';
+import { isSharing, startSharing, stopSharing } from './control/screen-share-state.js';
 import { runControlSession, requestStop, confirmPendingAction, getSessionStatus } from './control/session.js';
 import { monitorEvents, stopWatching, resumeActiveMonitors, stopAllVisionWatches } from './monitor/engine.js';
 import { listMonitors, getMonitor } from './monitor/monitor-store.js';
 import { sandboxStatus } from './sandbox/runner.js';
 import { listScreenshots, screenshotPath, clearScreenshots } from './control/screenshot-store.js';
+import { listRecordings, recordingPath, clearRecordings } from './control/recording-store.js';
 import {
   listConnectors,
   addConnector,
@@ -163,6 +168,7 @@ import { generateImplementationPrompt } from './improvement/implementation-promp
 // into the one transcript, so there is nothing left for a page to call.
 // Their engines and stores live under server/projects/ and server/content/.
 import { saveUpload } from './uploads.js';
+import { getArtifact, artifactFilePath, listArtifacts } from './artifacts/artifact-store.js';
 import { prepareForTurn, composeMessage } from './attachments.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -328,6 +334,20 @@ app.post('/api/skills/upload', express.raw({ type: '*/*', limit: '50mb' }), asyn
     // user should ever see. Logged, never shown.
     console.error('[skills] install failed (shown to user as a plain-language message):', err?.message || err);
     res.status(400).json({ ok: false, error: friendlyMessageFor(err, 'This skill install', 'Could not install that skill — check that the file is a valid .zip, .skill, or .md.') });
+  }
+});
+
+// Install from a public GitHub repository link — the user's own explicit
+// choice for "install a Skill from a repository or marketplace" over a
+// direct-file-link alternative. Reuses the exact same installer Upload does
+// once the repo's zipball is fetched (see skill-zip.js's installFromGithubRepo()).
+app.post('/api/skills/install-from-repo', async (req, res) => {
+  try {
+    const skill = await installFromGithubRepo(req.body?.url, reservedSkillNames());
+    res.json({ ok: true, skill });
+  } catch (err) {
+    console.error('[skills] GitHub install failed (shown to user as a plain-language message):', err?.message || err);
+    res.status(400).json({ ok: false, error: friendlyMessageFor(err, 'This skill install', err?.message || 'Could not install that repository as a Skill.') });
   }
 });
 
@@ -901,18 +921,33 @@ app.post('/api/monitors/:id/stop', (req, res) => {
 // the page opened) instead of waiting for the next observation_status SSE
 // event — same reasoning as /api/control/status and GET /api/monitors.
 app.get('/api/observation/status', (req, res) => {
-  res.json({ active: isIndicatorActive() });
+  res.json({ active: isIndicatorActive(), sharing: isSharing() });
+});
+
+// The manual Screen Sharing toggle (public/app.js) — a persistent on/off
+// mode, distinct from the transient per-call badge above (see
+// control/screen-share-state.js's own header comment for why). A voice
+// instruction reaches the exact same two functions via share_screen.js /
+// stop_sharing_screen.js, so the toggle and voice are always in sync.
+app.post('/api/observation/share/start', (req, res) => {
+  res.json(startSharing());
+});
+
+app.post('/api/observation/share/stop', (req, res) => {
+  res.json(stopSharing());
 });
 
 // The one action behind a click on the blue "Jarvis can see your screen"
 // badge (desktop badge and in-page dot alike — see control/observation-
 // bridge.js). The badge is a single yes/no signal, not a per-watch UI, so
-// this stops every currently-active screen_looks_like watch rather than
-// asking which one. A click while nothing is actually watching (e.g. mid a
-// brief look_at_screen glance) is a harmless no-op — there's nothing to stop
-// and nothing here throws for that case.
+// this stops every currently-active screen_looks_like watch AND persistent
+// Screen Sharing (if either is what's actually lighting the badge) rather
+// than asking which one. A click while nothing is actually active (e.g. mid
+// a brief look_at_screen glance) is a harmless no-op — there's nothing to
+// stop and nothing here throws for that case.
 app.post('/api/observation/stop', (req, res) => {
   const stopped = stopAllVisionWatches();
+  stopSharing();
   // Same broadcast the amber bar's own Stop button sends — a vision watch
   // stopped from the badge should clear that bar too, in any open tab.
   for (const monitor of stopped) {
@@ -1402,6 +1437,56 @@ app.get('/api/control/screenshots/:file', (req, res) => {
   const full = screenshotPath(req.params.file);
   if (!full) return res.status(404).json({ ok: false, error: 'Not found.' });
   res.sendFile(full);
+});
+
+app.get('/api/control/recordings', (req, res) => {
+  res.json({ recordings: listRecordings() });
+});
+
+// Output/Artifact generation (root CLAUDE.md's Operational Awareness item
+// 3) — same shape as the screenshots routes above: a store module owns
+// path validation (artifactFilePath()), this route just serves the file.
+// `download` sets Content-Disposition so a browser SAVES rather than tries
+// to render the file inline (matters for a real .docx/.xlsx, which a
+// browser has no native viewer for anyway).
+app.get('/api/artifacts', (req, res) => {
+  res.json({ artifacts: listArtifacts({ sessionId: req.query.sessionId || undefined }) });
+});
+
+// SECURITY: an artifact's content is generated by a model (create_artifact.js
+// has no restriction on what an .svg/.html-extensioned file's TEXT content
+// can contain, and SVG genuinely executes embedded <script> when rendered
+// inline by a browser) — this route must never let that content render as
+// live HTML/SVG in this app's own origin. `Content-Disposition: attachment`
+// is now UNCONDITIONAL (the old `?download=1` gate meant a plain, un-
+// parameterized GET — exactly what a link, an <iframe>, or a manually typed
+// URL produces — rendered the file inline instead, a real stored-XSS path a
+// background security review caught). `X-Content-Type-Options: nosniff`
+// and a sandboxing CSP are defense in depth on top of that, not the primary
+// fix. `record.name` is stripped of CR/LF before landing in a header value
+// — a filename carrying a raw newline could otherwise inject additional
+// response headers.
+app.get('/api/artifacts/:id', (req, res) => {
+  const full = artifactFilePath(req.params.id);
+  if (!full) return res.status(404).json({ ok: false, error: 'Not found.' });
+  const record = getArtifact(req.params.id);
+  const safeName = String(record.name || 'artifact').replace(/[\r\n"]/g, '_');
+  res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
+  res.setHeader('Content-Type', record.mimeType);
+  res.sendFile(full);
+});
+
+app.get('/api/control/recordings/:file', (req, res) => {
+  const full = recordingPath(req.params.file);
+  if (!full) return res.status(404).json({ ok: false, error: 'Not found.' });
+  res.sendFile(full);
+});
+
+app.delete('/api/control/recordings', (req, res) => {
+  clearRecordings();
+  res.json({ ok: true });
 });
 
 app.delete('/api/control/screenshots', (req, res) => {
@@ -2148,6 +2233,39 @@ app.get('/api/chat/stream', async (req, res) => {
 
   const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
 
+  // Real progress heartbeat — NOT an SSE comment/ping, an actual typed event
+  // both voice engines understand, because their own front-end "stuck"
+  // watchdog (public/engines/voice-engine.js's _armStuckWatchdog(), 45s) only
+  // re-arms on `chunk`/`tool_start`/`tool_result`/`restart`, and two entirely
+  // legitimate phases produce none of those: walking runner.js's model
+  // fallback chain (each candidate yields only `model_switch`, which the
+  // engines don't treat as progress either — see that fix) and a single long
+  // tool call, which has no event at all between `tool_start` and
+  // `tool_result`. Without this, the browser genuinely cannot tell "still
+  // working" from "the server died," and gives up with a false "Jarvis seems
+  // to have gotten stuck" the user sees as an error — confirmed live: 102 of
+  // 200 kept notifications were exactly that message, almost all of them a
+  // turn that was still legitimately in progress on the server. `phase` is
+  // just for a friendlier debug log; the client doesn't need to branch on it,
+  // only on the event existing at all.
+  let lastPhase = 'thinking';
+  let heartbeat = null;
+  const HEARTBEAT_MS = 10 * 1000;
+  const armHeartbeat = () => {
+    clearTimeout(heartbeat);
+    heartbeat = setTimeout(() => {
+      send({ type: 'progress', phase: lastPhase });
+      armHeartbeat();
+    }, HEARTBEAT_MS);
+  };
+  const sendAndArm = (event) => {
+    if (event.type === 'tool_start') lastPhase = 'tool';
+    else if (event.type === 'model_switch') lastPhase = 'model';
+    else if (event.type === 'chunk' || event.type === 'tool_result' || event.type === 'restart') lastPhase = 'thinking';
+    send(event);
+    armHeartbeat();
+  };
+
   // The client closes its EventSource before opening a new one for its next
   // message (see public/engines/pipeline-engine.js's _send()), and
   // brain.js's chatStream() coordinator already handles that case on its
@@ -2175,8 +2293,9 @@ app.get('/api/chat/stream', async (req, res) => {
       text = composeMessage(message, prepared) || 'I\'ve attached this.';
     }
 
+    armHeartbeat();
     for await (const event of chatStream(text, { source, lowConfidence, media, need })) {
-      send(event);
+      sendAndArm(event);
     }
   } catch (err) {
     if (err?.code === 'NO_API_KEY') {
@@ -2186,6 +2305,7 @@ app.get('/api/chat/stream', async (req, res) => {
       send({ type: 'error', error: 'I ran into a problem talking to the AI model. Check your internet connection and try again.' });
     }
   } finally {
+    clearTimeout(heartbeat);
     res.end();
   }
 });
@@ -2430,6 +2550,22 @@ startImprovementCycle();
 // startOrchestrator() already primed, and its own first tick can see
 // whatever startOrchestrator()'s orphan sweep just wrote.
 startHeartbeat();
+
+// Cost tracking (server/cost/) — seeds local-model $0 prices and starts the
+// two plain periodic maintenance timers (OpenRouter's real pricing,
+// provider account balances). Deliberately NOT routed through the
+// Heartbeat above — see balances.js/prices.js's own comments on why a
+// silent maintenance refresh has no "finding" for decision.js to spend a
+// model call judging. Order doesn't matter relative to the four start*()
+// calls above; this reads no state any of them writes.
+startPriceMaintenance();
+startBalancePolling();
+// Environment awareness (server/ops/environment/) — the rolling CPU/memory
+// history baseline.js's own anomaly check reads. Independent of the
+// Heartbeat source registered above; sampling must run regardless of
+// whether Heartbeat is even reachable, since check_environment.js's own
+// "right now" reading also depends on there being real recent history.
+startSampling();
 
 // Resumes any monitor still 'watching' from before the last restart —
 // without this a server restart would silently orphan an in-progress watch

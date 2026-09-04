@@ -74,15 +74,25 @@ export async function runCode({ language, code, files = [], timeoutMs = 10000, a
   const workDir = path.join(os.tmpdir(), runId);
   fs.mkdirSync(workDir, { recursive: true });
 
+  // Tracks every filename this run itself provided as INPUT, so the
+  // post-run directory diff below (see the `finally` block's read-before-
+  // delete step) can tell "a file the code just wrote" apart from a file
+  // that was already there before it ran — output/artifact generation
+  // (root CLAUDE.md's Operational Awareness item 3) reads what code
+  // genuinely produced, never what it merely received.
+  const inputNames = new Set();
+
   try {
     const mainFile = path.join(workDir, `main${runtime.ext}`);
     fs.writeFileSync(mainFile, code, 'utf8');
+    inputNames.add(path.basename(mainFile));
     for (const f of files) {
       if (!f?.name) continue;
       // No `..` segments or absolute paths — every extra file lands inside
       // this run's own throwaway folder, never escapes it.
       const safeName = path.basename(f.name);
       fs.writeFileSync(path.join(workDir, safeName), f.content ?? '', 'utf8');
+      inputNames.add(safeName);
     }
 
     const result = await new Promise((resolve) => {
@@ -122,6 +132,29 @@ export async function runCode({ language, code, files = [], timeoutMs = 10000, a
     const stdoutT = truncate(result.stdout || '');
     const stderrT = truncate(result.stderr || '');
 
+    // Output/Artifact generation (root CLAUDE.md's Operational Awareness
+    // item 3) — read BEFORE the `finally` block below deletes workDir, or
+    // there would be nothing left to read. Any file present now that
+    // wasn't part of the input is real code output, read back as a Buffer
+    // (binary-safe — a script's own output could be an image, not just
+    // text) for the caller (run_code.js) to turn into a real artifact.
+    // Capped generously but finitely — a script that floods its own
+    // directory with thousands of files is a real if unusual case, and
+    // this must never try to read all of them into memory at once.
+    const outputFiles = [];
+    try {
+      const MAX_OUTPUT_FILES = 20;
+      for (const entry of fs.readdirSync(workDir)) {
+        if (inputNames.has(entry)) continue;
+        const full = path.join(workDir, entry);
+        if (!fs.statSync(full).isFile()) continue;
+        if (outputFiles.length >= MAX_OUTPUT_FILES) break;
+        outputFiles.push({ name: entry, content: fs.readFileSync(full) });
+      }
+    } catch (err) {
+      console.error('[sandbox] reading generated output files failed:', err);
+    }
+
     return {
       ok: Boolean(result.ok),
       exitCode: result.exitCode ?? null,
@@ -131,6 +164,7 @@ export async function runCode({ language, code, files = [], timeoutMs = 10000, a
       error: result.error,
       timedOut: Boolean(result.timedOut),
       isolation: 'weak',
+      outputFiles,
       // Neither is actually enforced on this backend — reported honestly so
       // nothing upstream claims a guarantee this backend can't back up.
       // `allowPaths` isn't restricted at all (the child runs as the same

@@ -23,6 +23,7 @@
 
 import WebSocket from 'ws';
 import { getSecret } from '../config.js';
+import { recordSttUsage } from '../cost/record.js';
 
 const DEEPGRAM_URL = 'wss://api.deepgram.com/v1/listen';
 
@@ -84,8 +85,16 @@ export function connect({ onOpen, onTranscript, onUtteranceEnd, onSpeechStarted,
   // the app as a genuine failure notification for something the app itself
   // asked to happen.
   let closingIntentionally = false;
+  // Set only on a REAL open — a rejected handshake (bad key/params, caught
+  // by 'unexpected-response' below) never reaches this, so a failed
+  // connection attempt never gets billed a cost event for time it didn't
+  // actually use. See root CLAUDE.md's Cost tracking section.
+  let openedAt = null;
 
-  ws.on('open', () => onOpen?.());
+  ws.on('open', () => {
+    openedAt = Date.now();
+    onOpen?.();
+  });
 
   // See this file's header comment — a rejected upgrade (bad key, bad
   // params) surfaces here, never via 'error'.
@@ -151,7 +160,13 @@ export function connect({ onOpen, onTranscript, onUtteranceEnd, onSpeechStarted,
     if (closingIntentionally) return;
     onError?.(err);
   });
-  ws.on('close', (code, reason) => onClose?.(code, reason?.toString() || ''));
+  ws.on('close', (code, reason) => {
+    if (openedAt) {
+      const seconds = (Date.now() - openedAt) / 1000;
+      recordSttUsage({ provider: 'deepgram', seconds });
+    }
+    onClose?.(code, reason?.toString() || '');
+  });
 
   return {
     sendAudio(buffer) {

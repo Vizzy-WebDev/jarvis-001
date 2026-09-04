@@ -43,6 +43,13 @@
 //                    reconnect retry. See duplex-engine.js's _connectStt() and app.js's handling.
 //   'paused'        { reason }         - no model could complete the turn; nothing was answered
 //   'done'          { text }          - the full reply, once finished
+//   'tts_failure'   { provider }       - the configured server-side TTS provider failed to
+//                    produce audio for this reply (every retry exhausted — see
+//                    audio-player.js's/voice/playback.js's fetchTts()), e.g. an expired key
+//                    or an account out of credit. NOT 'error' on purpose — the reply itself
+//                    still generated/rendered fine, only its audio didn't; 'error' would tell
+//                    app.js the whole turn failed and clear the in-progress assistant bubble.
+//                    Fires at most once per reply. See app.js's handling of this event.
 //   'error'         { message }
 export class VoiceEngine {
   constructor() {

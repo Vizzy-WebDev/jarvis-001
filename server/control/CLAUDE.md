@@ -6,6 +6,17 @@ control session is long-running, carries screenshots, and must never be able to
 reschedule itself mid-click via a tool like `schedule_task`. It has its own loop and its
 own small fixed tool set.
 
+**A real control session has now been watched completing a task end-to-end
+(`launch_app` → `type` → verify → `report_done`), independently confirmed against
+the real OS afterward, not just trusting the loop's own claim** — a real Notepad
+window titled exactly as instructed genuinely existed once the session reported
+done. This closes what had been an open item since the loop was first built (no
+session had ever been observed reaching `report_done` unbroken). Finding it required
+fixing a real, confirmed, pre-existing bug along the way — see the Gotchas section's
+"connector tool declarations leaked internal fields into the model" entry — the loop
+had likely never worked with Gemini and any connector enabled (effectively always,
+since `browser`/`files` auto-register at startup) until that fix.
+
 - **`agent.ps1`** — the actual mouse/keyboard/screen primitives, as one long-lived
   PowerShell process (`ps-bridge.js` owns it) reading one JSON command per line on
   stdin, writing one JSON result per line on stdout. Commands: `windows`, `focus`,
@@ -75,9 +86,74 @@ own small fixed tool set.
   polled via `GetAsyncKeyState`, not `RegisterHotKey`), and moving your own mouse
   (cursor position is compared before every synthetic mouse action; a real move stops
   the session, it does not just pause it).
+- **`observation-bridge.js`** — the always-on-top blue "Jarvis can see your screen"
+  badge, reference-counted across independent callers (`look_at_screen.js`'s one-off
+  glance, a `screen_looks_like` monitor's ongoing watch, and now `screen-share-state.js`'s
+  persistent Screen Sharing mode below) — see its own header comment for the token
+  design. A spoken heads-up ("I'm taking over now, hands off the keyboard and mouse")
+  is a `prompt.js`-level instruction (the SECOND, confirmed `control_computer` call
+  specifically), not anything in this directory — it's ordinary reply text the model
+  generates for that turn, spoken exactly like any other reply.
+- **`screen-share-state.js`** — Screen Sharing as a persistent ON/OFF mode, deliberately
+  separate from `observation-bridge.js`'s own per-call token accounting: `look_at_screen`/a
+  monitor light the badge for exactly as long as one capture is happening; Screen Sharing
+  is a real mode the user (or a spoken "share my screen with me") turns on and leaves on.
+  Turning it on never itself triggers a description — nothing was asked yet — it only
+  arms the badge and tells the model, via a `prompt.js` volatile section gated on
+  `isSharing()`, that the next screen-related question doesn't need "look at my screen"
+  said first. `server.js`'s `/api/observation/share/start`/`/stop` back a real header
+  toggle (`public/app.js`'s `setupScreenShareToggle()`) AND the voice-facing
+  `share_screen.js`/`stop_sharing_screen.js` tools — either path updates the same state,
+  so the toggle always reflects a spoken instruction and vice versa, per the requirement
+  that the two work alongside each other. The existing dot-click `/api/observation/stop`
+  also stops sharing now, as one unified "stop whatever's making this badge lit" action.
+- **`screen-recorder.js`** / **`recording-store.js`** — real video screen recording via
+  ffmpeg (`gdigrab` desktop capture → `libx264`/`yuv420p`/`+faststart` for a file any
+  `<video>` element can actually play), resolved the same way `browser.js` resolves a
+  real Chrome (a couple of common install paths, then whatever the OS's own PATH
+  resolves) — never bundled, never a hard dependency; a plain-language explanation of
+  what ffmpeg is and how to add it is returned instead of a raw error when none is found.
+  Stopped gracefully via ffmpeg's own `q`-on-stdin convention (never killed outright,
+  which can leave a corrupt file) and force-killed only as a bounded last resort.
+  Genuinely independent of the perceive/act loop above — a recording keeps running
+  through an active control session. `recording-store.js` mirrors `screenshot-store.js`'s
+  save/list/prune-by-count-and-age shape, just for `.mp4`s, at a much lower default
+  retention count (`safety.js`'s `recordingRetention`) given the file size. Delivered into
+  the chat as a real, playable attachment — see `take_screenshot.js`'s own entry in
+  `server/tools/CLAUDE.md` for the shared `ui_action:{type:'attachment'}` delivery
+  mechanism both this and a screenshot use. **Verified live**: a real ~3-second recording
+  produced a genuinely valid, cleanly-decoding `.mp4` (confirmed with `ffmpeg -f null -`
+  reporting zero errors), not just a non-empty file.
 
 ## Gotchas
 
+- **Connector tool declarations merged into the control loop's own `tools` array carried
+  internal bookkeeping fields the model was never meant to see — Gemini's strict schema
+  validation rejected the whole request outright, every time.** `connectors/index.js`'s
+  `getToolDeclarations()` attaches `connectorId` (which connector a tool belongs to) and
+  `confirm` (risk level) directly onto each declaration — fields `capabilities.js`'s OWN
+  `getToolDeclarations()` strips before the normal chat path ever sees them (its own doc
+  comment: "model-facing, stripped to `{name, description, parameters}`"). `session.js`
+  called `connectors/index.js` directly, bypassing that stripping entirely. Confirmed
+  live: a real control-loop DECIDE call against Gemini failed with a 400 — "Unknown name
+  `\"connectorId\"` at `'tools[0].function_declarations[3]'`: Cannot find field" — the
+  instant ANY connector was enabled, which is effectively always (the `browser`/`files`
+  singletons auto-register at server startup). This most likely explains why no control
+  session had ever been observed reaching `report_done` before this fix — the loop's own
+  fallback across ranked candidate models doesn't help when the failure is a malformed
+  REQUEST, not a model being unavailable, and Gemini is a common default candidate.
+  Fixed by building a second, model-facing array
+  (`{name, description, parameters}` only) for what's actually sent to `adapter.stream()`,
+  while keeping the full, unstripped `connectorDeclarations` for this loop's own dispatch
+  (`.find()`, `.confirm`, `runConnectorTool()`) — the same two-shapes-for-two-audiences
+  split `capabilities.js` already draws for the ordinary chat path. Re-verified live after
+  the fix: the identical goal (open Notepad, type text) completed with `status:'done'`,
+  independently confirmed against the real, running Notepad window afterward — not
+  trusting the loop's own claim of success (per root `CLAUDE.md`'s testing discipline).
+  Anthropic/OpenAI-compatible tolerate unrecognized schema fields more permissively, which
+  is very likely why this went uncaught for as long as it did — whichever model happened
+  to be live when the loop was previously exercised was probably never Gemini specifically
+  with a connector enabled.
 - **A `type` action's own `RISKY_KEYWORDS` scan was matching ordinary typed
   sentences, not just dangerous ones.** `label` for a `type` action is the LITERAL text
   being typed — and that same everyday-language list (tuned for a tool/action's own

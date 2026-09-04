@@ -6,7 +6,179 @@ it end to end. See "The pruning rule" at the bottom before adding to it.
 
 ## Right now
 
-**Most recent session (2026-09-02, later the same day again): built the Heartbeat +
+**Most recent session (2026-09-04): landed everything below onto a real branch,
+pushed, and merged to `main` — nothing about this session builds new features, it
+gets the accumulated, previously-uncommitted work onto GitHub.** Everything the
+sessions below this one had left uncommitted (Operational Awareness's `server/ops/`,
+`server/cost/`, `server/artifacts/`; the Computer Control/Skills refinement's screen
+capture, Screen Sharing, the browser connector rework, the GitHub Skill-install
+path; and the OmniRoute fix's own commit `10eaa83`, already committed on this same
+branch) is now one further commit, `operational-awareness-and-computer-control`,
+branched off `jobs-subsystem-and-backlog`. Root `README.md` and `How to Use
+Jarvis.md` were both out of date against everything built across this whole run of
+sessions — `README.md` still described a `server/providers/` layout that no longer
+exists and claimed conversations don't survive a restart (Chat Persistence has
+shipped for a while); rewritten to match the real architecture and honest
+capability/limit list. `How to Use Jarvis.md` stopped at Self-Improvement with
+nothing on Memory, Chat History, Notifications, Background Jobs, proactive notices,
+App Control, computer control/screen capture, real file generation, or "ask Jarvis
+about itself" — all added, in the guide's existing voice.
+
+**Validated with a real gate before merging, all five checks passing** (recipe now
+in root `CLAUDE.md`'s "No automated test suite" section for reuse): `node --check`
+across every `.js` under `server/` and `public/` (zero failures); a fresh-install
+scratch boot (`JARVIS_DATA_DIR`/`JARVIS_ENV_PATH`/`PORT=58917`) printing a clean
+startup with no exception; the scratch `jarvis.db`'s live `PRAGMA user_version`
+reaching `19`, matching `db.js`'s own `MIGRATIONS` array length, and all 62 files
+under `server/tools/` (including all nine new ones) present in the tool loader's
+own startup log; a route smoke test (`/`, `/api/artifacts`, `/api/control/recordings`
+all 200; a nonexistent artifact id a clean 404, not a crash); and the stored-XSS
+fix re-confirmed live — a real artifact fetched with a plain GET (no `?download=1`)
+came back with unconditional `Content-Disposition: attachment`,
+`X-Content-Type-Options: nosniff`, and the sandboxing CSP. **`main` now carries
+everything through this session, on GitHub, for the first time** — it was 11
+commits behind before this.
+
+**A real incident during this session's own gate, worth recording so it isn't
+repeated:** the first attempt at the artifact/security check wrote two throwaway
+test files (and their DB rows) into the **real, live** `data/artifacts/` and
+`jarvis.db` instead of the scratch ones — not a Jarvis bug, a shell mistake in the
+verification script itself. `SCRATCH_DATA="<path>" node -e "...'$SCRATCH_DATA'..."`
+sets `SCRATCH_DATA` only in the child `node` process's own environment; `$SCRATCH_DATA`
+*inside* the same command line's `-e` string is expanded by the **outer shell**
+before that assignment ever applies, and since `SCRATCH_DATA` was never a real
+shell variable, it expanded to an empty string — so `dataDir()` correctly fell back
+to the real project `data/` dir exactly as designed, because it was quietly never
+told about the scratch path at all. (The scratch *server* boot itself was unaffected
+— `PORT`/`JARVIS_DATA_DIR` there were real prefix-env vars for the `node
+server/server.js` command itself, never re-expanded inside a nested string, which is
+the correct pattern.) Caught immediately by checking `ls data/artifacts` output
+rather than trusting the script's own success log; both stray files and both stray
+`artifacts` table rows were deleted (confirmed against the user's real DB read-only
+first, then a scoped `DELETE ... WHERE id LIKE 'mtmjp%'`, re-verified after — the
+table now holds exactly the same 4 genuine rows it had before), and the live
+instance (port 3000, PID unchanged throughout) was confirmed still healthy. **The
+general lesson for any future one-off `node -e` verification script that needs a
+scratch path baked into its own source string: write the literal path directly into
+the `-e` string (or use a real `export`), never a bare command-prefix assignment
+referenced via `$VAR` in the same command line** — that pattern only works for env
+vars a *child process* reads directly from its own environment (like `server.js`
+reading `process.env.PORT`), not for shell-side string interpolation into the
+script text itself.
+
+**Most recent session before that (2026-09-03): diagnosed, then fixed, a real "OmniRoute never
+connects" bug — via `/goal`, investigation-only first, code only after the owner
+approved.** Round 1 found the wire protocol was never the problem: OmniRoute's own
+`call_logs`/`app.log` (`C:\Users\HP\.omniroute\`) proved every past attempt reached it
+correctly and failed only because the tested model (`auggie/fable-5`) needs a local
+`auggie` CLI that isn't installed — and separately caught that the prior session's own
+"fix" (commit `9ebb201`'s `connectivityProven`) was committed AFTER OmniRoute had already
+shut down, so its "confirmed live" comment could not have tested the fix itself. Round 2,
+after the owner started OmniRoute and it still failed: found the real, current, live-
+reproduced bug — `createConnectionWithModels()` (`server/models/registry.js`) validated
+an entire multi-model connection with one live chat-completion call against
+`modelList[0]` alone; on a 115-model gateway, one broken route sorted first and rejected
+all 87 good ones. The earlier `connectivityProven` fix already existed for exactly this
+failure shape but only covered the `custom` provider tile, never `local` — the tile the
+owner actually used for a `localhost` address. Fixed by adding
+`verifyReachabilityViaListModels()`, used whenever more than one model is being added.
+**Verified live against the owner's real, running OmniRoute**, on a throwaway scratch
+instance (`JARVIS_DATA_DIR`/`JARVIS_ENV_PATH`/`PORT=58732`; real instance on port 3000,
+PID unchanged throughout): the exact 115-model payload from the failing screenshots now
+returns `ok:true, added:115, failed:0`; the same broken model added alone still correctly
+fails (the fix didn't just disable validation); a real non-`auggie` model answered a
+genuine chat turn, confirmed against **OmniRoute's own call log** showing a fresh
+`HTTP 200`, not just Jarvis's own claim. Owner then retried on their real instance and
+confirmed it connects. **Committed** (`10eaa83`, `jobs-subsystem-and-backlog`) — but only
+that one, isolated change: `registry.js` also carried an unrelated, uncommitted edit from
+the concurrent second session (a `hydrate()` change for `server/cost/prices.js`), so this
+was staged via a hand-built two-hunk patch (`git apply --cached`) rather than `git add`,
+leaving that other edit exactly as the other session left it, still uncommitted. Full
+diagnosis + verification trail: `C:\Users\HP\.claude\plans\agile-waddling-cocoa.md`.
+
+**Most recent session before that (2026-09-03): refined Computer Control / App Control / Skills
+against the owner's original spec — audited what already matched, built the real gaps,
+and found + fixed a genuine pre-existing bug in the control loop along the way.** Plan
+mode, approved before code; four architecture decisions confirmed with the owner first
+(browser stays isolated rather than reusing a real Chrome window; Screen Sharing is a
+persistent mode, not a one-shot glance; screen recording is real video via ffmpeg, not a
+GIF or the Windows Game Bar shortcut; Skills install from a GitHub repository link, not a
+generic marketplace). **The one real, high-value find**: `session.js`'s control loop was
+merging connector tool declarations straight from `connectors/index.js`, unstripped —
+carrying internal `connectorId`/`confirm` fields Gemini's strict schema rejects outright
+(400 "Unknown name"). This meant the loop had likely never worked with Gemini and any
+connector enabled, which is effectively always — see `server/control/CLAUDE.md`'s
+Gotchas for the full account. Fixed by building a second, model-facing declaration array
+for what's actually sent to the model, keeping the full one for this loop's own dispatch.
+**Verified live, not just claimed**: after the fix, a real control session (own scratch
+server + scratch data dir, real Gemini key, never the owner's live instance/port) opened
+Notepad and typed real text, reported done, and a real Notepad window with exactly that
+title was independently confirmed still open afterward — the first time this loop has
+ever been watched completing a task end-to-end. This closes `Next steps` item 7 below.
+Also built and live-verified: `take_screenshot`/screen recording (`server/control/
+screen-recorder.js`, ffmpeg `gdigrab` — a real ~3s recording produced a genuinely valid,
+cleanly-decoding `.mp4`) delivered into the transcript as a real image/video via a new
+shared `ui_action:{type:'attachment'}` mechanism; a persistent Screen Sharing mode
+(`server/control/screen-share-state.js`) with a real header toggle, kept in sync with a
+spoken instruction; a genuinely headless render fallback for `read_web_page` (a JS-heavy
+page a plain fetch can't read still never pops a window); Skills install-from-GitHub-repo
+(verified live against a real public repo, `anthropics/skills` — correctly downloaded,
+unzipped, and reported "no SKILL.md" since it's a monorepo, proving the whole pipeline
+end to end). One stale doc claim corrected, not a real bug: the control/monitor banner
+"overlap" the monitor CLAUDE.md described as broken already works correctly (checked the
+actual CSS/DOM — a sibling-selector rule already stacks them). **A second concurrent
+session was active on this same repo during this work** (per the existing "second Claude
+session" caution) — `check_my_health` appeared in the tool loader's own startup log as
+unfamiliar, unrelated work; nothing here conflicts with it, but worth knowing before
+assuming the tool roster matches only what's described in this entry. Nothing committed
+this session — same branch (`jobs-subsystem-and-backlog`).
+
+**Same session, immediately after: the owner's own live testing on their real, restarted
+instance found a second real, confirmed bug — GitHub Skill install crashed outright on
+this exact machine.** `skill-zip.js`'s `runPowerShell()` (Upload/Replace/Download/the new
+GitHub-install all go through it) built its PowerShell invocation as several separate
+argv entries after `-Command` instead of one command string — works fine on a path with
+no spaces, but `powershell.exe`'s own CLI parser reinterprets everything after `-Command`
+in a way that doesn't survive a space in the path, and this project's own folder
+(`...\CLAUDE PROJECT\Jarvis-001\...`) has exactly that space. Real error, from the
+owner's own screenshot: `Expand-Archive : A positional parameter cannot be found that
+accepts argument '...zip'`. Fixed by building one fully-formed, individually-quoted
+command string instead — see `server/skills/CLAUDE.md`'s new Gotchas entry for the full
+account, including a real second mistake in the first attempt at this fix (quoting the
+cmdlet name itself, not just its arguments) caught by re-verifying immediately rather
+than trusting the first pass. Re-verified against a scratch path deliberately given a
+space of its own, reproducing the exact failure shape, then confirmed fixed. **The
+owner's screenshot/recording/screen-sharing test reports from the same round turned out
+to be a false alarm, not a bug**: read directly from the owner's own real `data/jarvis.db`
+(read-only, per this file's own diagnostic convention) — the "I don't have a screenshot
+function" replies were timestamped BEFORE their Jarvis was last restarted, meaning the
+OLD code (predating this session's own new tools) answered, not the new one. Nothing in
+the database after the restart shows a failed attempt at either. **Not yet re-confirmed
+by the owner on their own real, freshly-restarted-and-hard-refreshed instance** — see
+"Waiting on the user" below.
+
+**Most recent session before that (2026-09-02 -> 2026-09-04, spanning `/council` ->
+`/loop` -> `/goal` in one continuous session): built and verified the six-item
+"Operational Awareness" spec — self-diagnosis + self-heal, cost tracking +
+cost-at-decision-time, environment awareness, reasoning integrity, artifact generation
+(`.docx`/`.xlsx`/`.pptx`), and verification.** See `handoff-archive.md` §
+"Operational Awareness subsystem built + verified across all six items, continued via
+`/loop` then `/goal`, plus a live-caught stored-XSS fix" for the full build/testing
+narrative (four real bugs caught by this build's own testing: a Windows ZIP
+path-separator bug that would have broken every generated Office file, a security check
+that let an unrelated change slip past its own detection, a "passed but never recorded"
+verification bug, and — found by a concurrent session, not this one — a broken
+`voice.js` diagnostic check); root `CLAUDE.md`'s "Operational Awareness" section,
+`server/ops/CLAUDE.md`, `server/cost/CLAUDE.md`, and `server/artifacts/CLAUDE.md` for
+the architecture, now current. Also fixed: a real stored-XSS finding a background
+security review caught in the artifacts route (unconditional `Content-Disposition:
+attachment` now, plus CR/LF filename sanitization), and a stale `server/jobs/CLAUDE.md`
+still describing already-generalized table names. **One real, disclosed gap
+remains — see "Next steps" below** (`.pptx`'s master/theme chain was never opened in
+real PowerPoint by this build) — everything else is built and verified. Nothing
+committed this session — same branch (`jobs-subsystem-and-backlog`).
+
+**Most recent session before that (2026-09-02, later the same day again): built the Heartbeat +
 Trigger + Proactive Attention subsystem from scratch, then the user live-tested it on
 their own restarted instance, finding one real prompt-quality bug this session's own
 scratch testing hadn't.** See `handoff-archive.md` § "Heartbeat + Trigger + Proactive
@@ -293,12 +465,31 @@ models.
 
 ## Next steps
 
-1. **`jobs-subsystem-and-backlog` now holds everything through this session's own work,
-   committed, but still not merged to `main` and not pushed.** Nothing blocks either —
-   merging/pushing weren't asked for, only committing was; worth confirming explicitly
-   rather than assumed next time it comes up. Either way, the user's live server needs
-   an ordinary restart to pick up ANY of this — none of it is live yet (same "don't
-   restart their instance yourself" caution as always).
+1. **Operational Awareness: all 6 items built and verified; one narrow, disclosed gap
+   remains, both from the original build and from the `/goal`-driven follow-up.**
+   See "Right now" above and `server/ops/CLAUDE.md`'s own status note. Verification
+   (item 4) is now wired at artifact creation, Job completion, AND scheduled-task
+   outcomes — **only consequential CHAT answers remain unwired**, a deliberate cost-scope
+   decision (the costliest, most frequent of the four surfaces, on a routinely
+   rate-limited roster), not something left half-built by accident. `.pptx` generation
+   IS now built, but disclosed as carrying a narrower verification confidence than
+   docx/xlsx — the master/theme/layout chain real PowerPoint needs was never opened in
+   real PowerPoint by this build; **open a generated `.pptx` in real PowerPoint as part
+   of your own test pass, specifically**, the one thing this build genuinely could not
+   verify itself. **The other piece needing the owner's own live judgment, not just more
+   building**: the reasoning-integrity buffer path's effect on how live chat/voice
+   actually feels — built and verified via a real stub-model `runTurn()` call, never
+   against a real live conversation. The front-end artifact file card (`public/app.js`)
+   also needs the owner's own browser check — built following established patterns, not
+   `agent-browser`-verified.
+2. **RESOLVED (2026-09-04) — `operational-awareness-and-computer-control` (branched
+   off `jobs-subsystem-and-backlog`) is committed, pushed, gate-validated, and
+   fast-forward merged into `main`, which is now pushed to GitHub for the first
+   time carrying all of it.** See "Right now" above for the exact gate results.
+   **Still true, and still worth confirming explicitly before assuming otherwise:**
+   the user's own live server needs an ordinary restart to pick up ANY of this —
+   nothing here is live on their running instance yet (same "don't restart their
+   instance yourself" caution as always).
 2. **Whether to build an adaptable `generic` worker is still an open design
    question**, raised by the user right after Jobs shipped — see CLAUDE.md's Jobs
    section. Not a bug, not blocking anything; worth surfacing early to whoever picks
@@ -335,11 +526,15 @@ models.
    rather than over-eagerly reaching for one on a stretch?). Worth a real conversational
    pass once there are enough installed Skills to make "correct pick among several" a
    meaningful test — right now there are only 4.
-7. **No AI-driven control session has ever reached `report_done` unbroken**
-   end to end (open → act → save → verify → done) — every primitive is
-   verified individually; the full happy path with the newer close/restore/
-   arrange actions and scratch-window auto-cleanup has not been watched to
-   completion.
+7. **RESOLVED (2026-09-03) — a real control session has now reached `report_done`
+   unbroken, watched, and independently verified against the real OS afterward.**
+   Required fixing a real, confirmed, pre-existing bug first (connector tool
+   declarations leaking internal fields into Gemini's strict schema — see this
+   session's own entry in "Right now" above and `server/control/CLAUDE.md`'s Gotchas).
+   The specific task verified: `launch_app` (Notepad) → `type` → verify → `report_done`,
+   with `cleanUpOwnScratch`'s unsaved-window protection also confirmed correctly leaving
+   the window open. Not yet separately watched: the newer close/restore/arrange actions
+   in the same live end-to-end shape, or a multi-window task spanning several apps.
 8. **Root `CLAUDE.md`'s Model system section still doesn't mention**
    `server/models/task-types.js` (task-aware routing), the `model_health` SSE
    event, or the `addModel()`/`discoverModels()` `(connectionId, model)`
@@ -402,6 +597,32 @@ models.
 
 ## Waiting on the user
 
+- **A live conversational test of the Operational Awareness build, after a restart** —
+  none of it is live on the owner's own running instance yet. Specifically worth trying:
+  "has anything gone wrong with you lately" (`check_my_health`), "how much have I
+  spent" (`check_spending`), "can you handle a heavy task right now"
+  (`check_environment`), and asking Jarvis to create a real file (a `.docx`/`.xlsx`
+  report, an SVG diagram, or a `.pptx` deck) to confirm the new file card actually
+  renders correctly in a real browser — built following established patterns but never
+  `agent-browser`- or live-browser-verified. **The `.pptx` case specifically needs
+  opening the real generated file in real PowerPoint** — this build's own one
+  verification technique (round-tripping through this project's own reader) structurally
+  cannot validate a deck's slideMaster/theme chain the way it validated docx/xlsx; this
+  is the one piece of the whole build that genuinely needed the owner's own environment
+  to check at all. The reasoning-integrity buffer path (a narrow slice of consequential
+  turns following a known tool-failure pattern lose live streaming, delivered as one
+  block instead) was only verified via a stub model through a real `runTurn()` call —
+  how it actually FEELS in a genuine conversation is the owner's own call, the one piece
+  of this whole build flagged as needing that from the start.
+- **A retest of `take_screenshot`/screen recording/Screen Sharing on the owner's own
+  real instance, after a FULL restart (not just a browser refresh) and a hard browser
+  refresh (Ctrl+Shift+R) to clear any cached old `app.js`.** The owner's own live testing
+  reported these as broken, but the real database showed the failing replies predate
+  their last restart — the new tools didn't exist yet at that point. Not yet re-confirmed
+  working on a genuinely fresh instance.
+- **A live retest of GitHub Skill install with a real Skill repository** (the fix was
+  verified against a real repo that correctly has no Skill in it, proving the pipeline
+  works — a real successful install end to end hasn't been separately watched).
 - **A live retest of Heartbeat's Test 3 (emergency breaks through quiet hours)**, after
   restarting the real server — the fix (tightening `decision.js`'s prompt so it judges
   real stated stakes rather than a job's own polite "OK to start?" phrasing) was
@@ -457,6 +678,39 @@ models.
 are now in the session log below, marked as reconstructed.)*
 
 ## Session log (newest first)
+
+### 2026-09-04 — Landed all accumulated uncommitted work: branch, commit, docs rewrite, gate, merge to `main`, pushed
+See "Right now" above for the full account. Branched `operational-awareness-and-
+computer-control` off `jobs-subsystem-and-backlog`; committed the entire working
+tree (Operational Awareness's three new subsystems, the Computer Control/Skills
+refinement, the OmniRoute fix, reaction-sound/voice-playback work, and every
+`CLAUDE.md` describing them) in one commit; rewrote `README.md` and extended `How
+to Use Jarvis.md` to cover everything that had shipped without user-facing docs;
+pushed the branch; ran the five-part validation gate from root `CLAUDE.md`, all
+passing; fast-forward merged to `main`; pushed `main`. One real incident along the
+way, caught and fixed within this same session — see "Right now"'s own paragraph on
+it: a shell mistake in the verification script (not a Jarvis bug) briefly wrote two
+throwaway test artifacts into the user's real `data/`, caught by checking actual
+`ls` output rather than trusting the script's own success log, cleaned up and
+re-verified against the real DB before continuing.
+
+### 2026-09-02 -> 2026-09-04 — Operational Awareness: all 6 items built + verified (/council -> /loop -> /goal), plus a live stored-XSS fix
+See "Right now" above for the compact account; `handoff-archive.md` § "Operational
+Awareness subsystem built + verified across all six items, continued via `/loop` then
+`/goal`, plus a live-caught stored-XSS fix" for the full build/testing narrative. Read
+back a six-item spec in the caller's own words before writing code, per explicit
+instruction; got four design-fork decisions up front; built and verified the whole
+spec across three autonomous continuations in one session (`/council` readback -> `/loop`
+for the first 3 of 6 items -> `/goal` closing the last 2 disclosed gaps), catching and
+fixing four real bugs along the way via its own testing (one found by a concurrent
+session, not this one) plus a background-review-caught stored-XSS finding in the new
+artifacts route. Concurrent-session note: touched only `server/ops/`, `server/cost/`,
+`server/artifacts/`, and a small number of shared integration points (`runner.js`,
+`prompt.js`, `self-model.js`, `self-signals.js`, `health.js`, `capabilities.js`,
+`store.js`, `config.js`, `heartbeat/index.js`, `server.js`, `app.js`) — no file
+conflicts with the other sessions also active in this repo across the same window
+(Heartbeat, Computer Control/Skills, the OmniRoute fix). One disclosed gap remains:
+`.pptx` generation was never opened in real PowerPoint by this build — see "Next steps."
 
 ### 2026-09-02 — Heartbeat + Trigger + Proactive Attention built, then live-tested with two real fixes
 See "Right now" above for the full account; `handoff-archive.md` § "Heartbeat + Trigger

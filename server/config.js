@@ -5,6 +5,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -46,11 +47,30 @@ function readEnvFile() {
   return parseEnvFile(fs.readFileSync(ENV_PATH, 'utf8'));
 }
 
+// In-memory only, per-process — same "this app legitimately wrote this
+// exact content just now" record store.js's own writeJson() keeps for
+// data/*.json, mirrored here for the one file that never goes through
+// store.js at all. See store.js's own comment on why this records a
+// content hash rather than just a timestamp.
+let envLastWrite = null;
+
+/** `{ts, hash}` of THIS process's last writeEnvFile() call — null if never, this process. */
+export function envLastWriteTime() {
+  return envLastWrite;
+}
+
+/** The resolved .env path itself — for a caller (server/ops/diagnostics's config-integrity check) that needs to watch the real file directly rather than going through this module's own read/write functions. */
+export function envFilePath() {
+  return ENV_PATH;
+}
+
 function writeEnvFile(values) {
   const lines = Object.entries(values)
     .filter(([, v]) => v)
     .map(([k, v]) => `${k}=${v}`);
-  fs.writeFileSync(ENV_PATH, lines.join('\n') + '\n', 'utf8');
+  const contents = lines.join('\n') + '\n';
+  fs.writeFileSync(ENV_PATH, contents, 'utf8');
+  envLastWrite = { ts: Date.now(), hash: crypto.createHash('sha256').update(contents).digest('hex') };
 }
 
 /** Returns the saved API key for a provider ('gemini' | 'anthropic' | 'openai'), or null. */

@@ -33,13 +33,28 @@ indistinguishable from any other capability to the model.
   against the allowlist BEFORE any `fs` call (never trust a relative path or a `..`
   segment). Tool names are NOT prefixed (`list_files`, `read_file`, ... — a singleton
   connector can't collide with another one of the same type).
-- **`browser.js`** — drives a real Chrome/Edge window over CDP via a plain WebSocket
-  (the already-installed `ws`), its own dedicated profile dir + fixed debug port 9333,
-  entirely separate from the user's normal browser. Click/type/read all go through
-  `Runtime.evaluate` running a small script in the page (see the Gotchas section below
-  for why the Input domain's raw event dispatch isn't used) rather than
-  driving it with the desktop mouse — reading a page's real text/DOM beats a screenshot
-  guess. Tool names also unprefixed (`browser_navigate`, `browser_click`, ...).
+- **`browser.js`** — drives a real, VISIBLE Chrome/Edge window over CDP via a plain
+  WebSocket (the already-installed `ws`), its own dedicated profile dir + fixed debug
+  port 9333, entirely separate from the user's normal browser — a deliberate choice, kept
+  even after the "reuse an already-open Chrome window" requirement was revisited: a real
+  Chrome tab's accessibility tree is not reliably populated for generic UI-Automation
+  reading the way this connector's own CDP `Runtime.evaluate` reads real DOM text, so
+  isolation was kept for reliability; the visible window only opens at all when a task
+  genuinely needs to click/type/interact with a page (see `prompt.js`'s "Browsing"
+  section and each tool's own tightened description — a plain lookup never reaches this
+  connector). Click/type/read all go through `Runtime.evaluate` running a small script in
+  the page (see the Gotchas section below for why the Input domain's raw event dispatch
+  isn't used) rather than driving it with the desktop mouse — reading a page's real
+  text/DOM beats a screenshot guess. Tool names also unprefixed (`browser_navigate`,
+  `browser_click`, ...). **`renderPageHeadless(url)`** is a second, genuinely separate
+  code path (own port 9334, own profile, `--headless=new`, never a visible window,
+  launched fresh and torn down per call rather than kept running) — `read_web_page.js`'s
+  own fallback when a plain `fetch()` comes back too thin to be real content (a
+  JS-rendered single-page app with no server-rendered HTML), so even a page a plain fetch
+  can't read stays invisible rather than falling back to the visible connector.
+  `launchAndConnect()`/`navigateOn()`/`evaluateOn()` are the shared bootstrap both this
+  and `ensureBrowser()` build on, so the cold-start fragility fixes (the flat post-devtools
+  pause, the bootstrap retry loop) live in exactly one place for both.
 - **`mcp-client.js`** — the **local/stdio** MCP transport: hand-written JSON-RPC 2.0
   over a spawned process's stdin/stdout (not the `@modelcontextprotocol/sdk` — see the
   no-new-dependencies rule), one persistent process per connector (same

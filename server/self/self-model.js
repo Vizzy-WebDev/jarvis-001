@@ -472,7 +472,7 @@ export function computeTurnSignals({ sessionId, correctionDetected = false, used
     const stat = selfStore.getStat('tool', name);
     return { axis: 'tool', key: name, attempts: stat?.attempts || 0 };
   });
-  return detectSelfSignals({
+  const signals = detectSelfSignals({
     activeJobs,
     pendingMemoryConflict,
     correctionDetected,
@@ -480,4 +480,34 @@ export function computeTurnSignals({ sessionId, correctionDetected = false, used
     activeLessonScopes,
     noTrackRecordChecks,
   });
+
+  // Reasoning integrity's "steer early" half (root CLAUDE.md's Operational
+  // Awareness item 1) — real evidence attached directly to what's already
+  // computed here, rather than only a flag telling the model to go fetch it
+  // itself via a second check_myself round trip. Purely additive fields —
+  // every existing consumer of this return value keeps working unchanged,
+  // reading only what it already knew about.
+  //
+  // Same MIN_ATTEMPTS_FOR_RATIO grounding floor as dimension 2's own
+  // reliabilityFromCounts() (reused directly, not re-derived) — a tool used
+  // once or twice this turn gets an honest attempts/failures count, never a
+  // misleadingly precise percentage from too little data.
+  signals.toolReliability = usedToolNames
+    .map((name) => {
+      const stat = selfStore.getStat('tool', name);
+      if (!stat || !stat.attempts) return null;
+      return { name, ...reliabilityFromCounts(stat.attempts, stat.failures) };
+    })
+    .filter(Boolean);
+
+  // The actual lesson TEXT for whatever failure scope(s) just matched —
+  // signals.knownFailure already tells prompt.js THAT a pattern matched;
+  // this is the real evidence behind it, the same query howItFails() (this
+  // file's own dimension 7 builder) already runs, so prompt.js never has to
+  // guess at what to say beyond "go check."
+  signals.matchedLessons = (signals.matchedScopes || []).flatMap((scope) =>
+    improvementStore.listLessons({ scope }).map((l) => ({ scope, text: l.text }))
+  );
+
+  return signals;
 }

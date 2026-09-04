@@ -18,6 +18,217 @@ in this file by name for incident history: root `CLAUDE.md` and
 
 ---
 
+### 2026-09-02 → 2026-09-04 — Operational Awareness subsystem built + verified across all six items, continued via `/loop` then `/goal`, plus a live-caught stored-XSS fix
+
+Read back a six-item "Operational Awareness" spec via `/council` in the caller's own
+words before writing any code, per the owner's explicit instruction — surfaced along the
+way that "Epistemic Model"/"Failure Model" (the owner's own terms) don't map 1:1 onto
+the real Self-Model dimension keys (`how_it_knows` is provenance, not confidence; there
+is no confidence score anywhere in the system) and that the Heartbeat this build was
+told to depend on was real but sitting uncommitted while its own migrations were already
+committed — flagged before writing anything. Got the owner's confirmation plus four
+design-fork decisions (steer-early-buffer-riskiest for reasoning integrity; all three
+cost-number kinds — measured/provider-reported/calculated — built together, clearly
+labelled, never blended; runtime-behaviour-only intrusion detection, no source-file
+hashing, so a concurrent Claude session editing `server/**` never trips it; verification
+spans every completion claim, not just artifacts). Root `CLAUDE.md`'s "Operational
+Awareness" section, `server/ops/CLAUDE.md`, `server/cost/CLAUDE.md`, and
+`server/artifacts/CLAUDE.md` hold the architecture; this entry is the build/testing
+narrative.
+
+**Phases 1–3 (foundation, cost, environment), verified against real data:**
+- **Foundation** — `server/ops/ops-trace.js` (db.js migration 15) generalizes Jobs' own
+  `job_trace` into a `trace` table the exact same way migration 13 already generalized
+  `job_outbox` → `outbox`, scoped by `source`+`source_ref` so a non-job writer's sequence
+  numbering never collides with a job's own. Verified against a REAL COPY of the user's
+  own database: all 156 pre-existing rows survived with correct `source`/`source_ref`,
+  `classifyRecovery()`/`diagnoseStall()` both still worked afterward.
+- **Cost tracking + cost-at-decision-time** (migration 16) — all three model adapters
+  now read token-usage data their own SDKs always carried and simply never read before
+  (`message.usage` on Anthropic's `finalMessage()`, `usageMetadata` on every Gemini
+  chunk, a `stream_options:{include_usage:true}` request flag away on the OpenAI-shaped
+  adapter — verified via a real stub HTTP server reproducing the exact usage-chunk shape,
+  including the empty-`choices` final chunk that the pre-existing `if (!delta) continue`
+  would have silently skipped). Three separately-labelled numbers per the owner's
+  explicit requirement, enforced structurally by three separate tables
+  (`cost_events`/`provider_balances`/`model_prices`), never blended. Deliberately does
+  NOT hardcode dollar prices for this project's own cloud models (the catalog names
+  models — `claude-opus-5`, `gemini-3.6-flash` — ahead of any publicly verifiable
+  pricing this build could honestly stand behind); the one built-in price asserted
+  without an external source is that a local model costs $0.
+  `cost/advisor.js`'s `observedCostTier()` feeds a real-price-derived value into
+  `router.js`'s existing `scoreFor()` in the SAME 0-4 domain the old name-regex guess
+  already used, which is what makes it mathematically guaranteed to stay inside the
+  already-proven-safe scoring bounds.
+- **Environment awareness** (migration 17) — real CPU% from diffing two `os.cpus()`
+  snapshots' idle/total time (never `os.loadavg()`, which is `[0,0,0]` unconditionally
+  on Windows); a real busy-loop test confirmed the reading genuinely moves. "Unusually
+  high or climbing" checked against controlled synthetic data: a single 90%-CPU spike
+  surrounded by an otherwise-normal hour produces no finding; a genuine 6-minute
+  sustained climb correctly fires with the real median and current value in the text.
+
+**Phase 4 (self-diagnosis + self-heal, migration 18) — nine real checks, real
+retry-then-escalate, one real bug caught in its own verification:**
+`server/ops/diagnostics/registry.js` mirrors the Heartbeat's own `registerCheck()`
+plug-in shape exactly. Malfunction checks: a Memory canary that's fully SYNCHRONOUS
+(zero `await` between create/read/delete) — structurally unobservable to anything else
+in Node's single-threaded event loop, not merely unlikely to be seen; database
+`PRAGMA integrity_check`; jobs/scheduler liveness (a queued job or overdue task that
+COULD run right now but hasn't — correctly does NOT flag one legitimately blocked on
+capacity); `capture-health.js` reusing `self-store.js`'s own summary rather than
+re-deriving it; `voice.js` (server-side reachability only). Security checks are
+detection-only per the owner's explicit scope, none with a `remedy()`:
+`config-integrity.js` watches `.env`/`connections.json`/`external-services.json`/
+`connectors.json` for a change with no matching in-app write. **A real bug caught by
+this check's OWN verification, not shipped**: a first, time-window-based "was this
+explained by our own recent write" heuristic let a LATER, unrelated external change
+slip through unflagged if it landed inside the same window — confirmed live by
+`writeJson()`-ing a real change, then immediately overwriting the same file externally
+(raw `fs`, bypassing `store.js`), and finding the external change went undetected.
+Fixed by comparing the actual CONTENT HASH the app itself last wrote
+(`store.js`'s `lastWriteAt()`/`config.js`'s `envLastWriteTime()`, both in-memory,
+per-process) rather than a timestamp; re-verified with the same reproduction, now
+correctly flagged. `event-spikes.js` (auth-failure/confirm-bypass spikes) and
+`listeners.js` (a new local TCP port via `Get-NetTCPConnection`, never `netstat` text
+parsing) round out the security checks. Self-heal reuses Jobs' own retry-then-escalate
+shape genuinely (`checkState.lastOutcome` instead of a numeric counter, but the same
+one-attempt-per-new-failure discipline) — verified with a synthetic self-healing check
+AND a synthetic remedy-fails-anyway check through the real dispatch path, both branches
+producing the correct real `ops_trace` rows.
+
+**Phase 5 (reasoning integrity, the owner's own "steer early, buffer only the
+riskiest") — both halves verified through a real `runTurn()` call against a stub
+model:** Steer-early extends the EXISTING `selfFocusSection()` push path
+(`self/self-model.js`'s `computeTurnSignals()`) with real evidence embedded directly —
+the actual matched-lesson text and real attempts/failures numbers for tools already
+used this turn — instead of only telling the model to go fetch it itself via a second
+`check_myself` call; also extended `self-signals.js`'s `anySignalFired()` so a tool
+with a real notable failure history surfaces even when no OTHER signal happened to fire,
+verified with a real negative control (a perfectly clean tool produces zero extra
+noise). Buffer-the-riskiest is deliberately the narrowest possible slice: only a step
+where a real matched failure lesson fired (structurally only possible from a turn's
+SECOND step onward, after a tool call already happened — an accepted limitation
+`self-signals.js` already documents) holds its text chunks back instead of streaming
+them live, releasing as one block once the step completes. The check: was
+`check_myself` actually called this turn? Yes → release silently. No → still deliver
+the answer (never withheld) but log a real `source:'verification'` trace row. **A
+genuinely riskier transcript-injection design (fabricating a tool call to force a real
+second model round) was considered and deliberately rejected** — no way to verify it
+wouldn't corrupt raw round-trip fidelity (Anthropic's `thought_signature`, Chat History
+replay) without live model testing this build didn't have access to; the shipped design
+never touches the transcript at all. Verified end to end via a real stub model driven
+through a real `runTurn()` call: a turn that calls a tool with a real matched failure
+history then answers WITHOUT consulting `check_myself` produced exactly ONE buffered
+chunk (proving the hold-back genuinely happened, not just claimed) and a real trace
+row; the identical scenario WITH a `check_myself` call in between produced zero trace
+rows and identical delivery.
+
+**Phase 6 (artifacts + verification, migration 19) — a real, live-caught ZIP bug that
+would have affected every generated Office file, caught by the verification technique
+itself:** `server/artifacts/artifact-store.js` mirrors `uploads.js`'s own proven
+id-is-the-filename design. `docx.js`/`xlsx.js` writers verified by round-tripping real
+generated output through this project's OWN independently-built readers
+(`documents/docx.js`, `documents/xlsx.js`) — the honest verification technique
+available with no real Word/Excel to open a file in. **The bug this caught**: both
+PowerShell's `Compress-Archive` (the exact pattern `skills/store/skill-zip.js` already
+used successfully for packing a Skill folder) AND even .NET's own
+`[ZipFile]::CreateFromDirectory()` store every ZIP entry path with Windows BACKSLASHES
+when the entry name comes from directory traversal on this platform — silently invalid
+per the Open Packaging Conventions spec real Office requires, confirmed to make a
+freshly-written `.docx` fail to open at all. Fixed by building each entry via
+`ZipFile.Open()` + `CreateEntryFromFile(zip, sourcePath, entryName)` with an EXPLICIT,
+hand-constructed forward-slash `entryName`, never derived from a filesystem path;
+re-verified after the fix with the same round-trip, now succeeding. `verify.js`'s
+mechanical checks (`verifyFileOpens()`) are wired at artifact creation — a failure
+deletes the bad file immediately; **a real bug in the PASS path was also caught by this
+build's own testing**: the first version checked but never RECORDED a passing result,
+leaving every kept artifact's `verified` column permanently null even after a real
+check succeeded — fixed, re-verified. `run_code.js`'s sandbox backend
+(`restricted-backend.js`) now snapshots input filenames before a run and captures any
+NEW file left behind as a real output artifact, through the exact same
+verify-then-keep-or-delete path. One honest capability ceiling stated in the tool's own
+description: raster/photographic image generation is not possible at all. Four new
+tools: `check_spending`, `check_environment`, `check_my_health`, `create_artifact`.
+
+**A real fresh-install server boot at every phase, not just unit tests** — a completely
+empty `data/` directory booted against the real `server.js` migrated cleanly through
+every migration (up through `user_version 19`), with every new tool present in
+`tools/index.js`'s own startup load log each time, proving none tripped the
+loader/runner circular-import invariant.
+
+**Immediately after this build's own "done" report, a background security review
+caught a real stored-XSS finding, fixed the same session**: `GET /api/artifacts/:id`
+rendered a generated file INLINE (this app's own origin) unless a `?download=1` query
+param was present — a plain link, an `<iframe>`, or a manually typed URL never carried
+it, and `create_artifact.js` places no restriction on what an `.svg`/`.html` file's own
+text content contains, so a crafted SVG's embedded `<script>` would execute in-app.
+Fixed: `Content-Disposition: attachment` is now unconditional, plus
+`X-Content-Type-Options: nosniff` and a sandboxing CSP header, plus CR/LF stripped from
+the served filename before it lands in a header value (a second, independent finding —
+an unsanitized filename could otherwise inject extra response headers — folded into the
+same fix). **Verified against the real exploit shape, not just reasoned about**: a real
+artifact holding a literal `<script>alert(1)</script>` payload, fetched via a real
+running server with the exact previously-vulnerable plain GET, confirmed forced-download
+headers now present; a separately crafted filename containing a raw CRLF, fetched the
+same way, confirmed no header injection occurred.
+
+**Continued via `/goal` in the same session, closing both of the two remaining
+disclosed gaps:**
+- **`.pptx` writing** (`server/artifacts/writers/pptx.js`) — built on the same fixed
+  forward-slash ZIP foundation, verified by round-tripping a real generated deck through
+  `documents/pptx.js`'s own reader (correct slide order, correct title/body text, all 15
+  entries forward-slash — the fix carried over correctly). **Carries a genuinely
+  narrower verification confidence than docx/xlsx, disclosed rather than glossed over**:
+  a real deck needs a slideMaster/slideLayout/theme chain `documents/pptx.js`'s own
+  reader never opens at all, so the round-trip technique that fully validated docx/xlsx
+  can only confirm slide order/text, not that the master/theme chain is real-PowerPoint-
+  valid — that part is written from real OOXML schema knowledge, in good faith, but has
+  not been opened in real PowerPoint by this build. Left as an explicit, standing ask for
+  the owner's own test pass.
+- **Verification wired into two more completion surfaces.** Job completion
+  (`jobs/worker.js`'s `turn.reportedDone` branch) genuinely reuses the SAME
+  `canAutoRetry`/escalate shape stall-detection already uses at the same call site,
+  sharing the same `job.retries` counter — never a second recovery mechanism. Scheduled
+  task outcomes (`scheduler.js`'s `runTaskNow()`, `prompt` actions only) had no existing
+  retry loop to reuse, so a mismatch just flips the run's own `ok`/`error`, its own next
+  scheduled occurrence being its natural retry cadence. **Both verified via a real stub
+  model through the ACTUAL production dispatch path** (`driveJob()`/`runTaskNow()`
+  directly, never an isolated unit test): a job whose own summary never matches its goal
+  retries once then escalates with real trace/outbox rows; a job that corrects itself on
+  the retry finishes normally with `retries:1`; a job that matches immediately finishes
+  with `retries:0` and no extra trace noise; the scheduler's own mismatch/match cases
+  produced the identical correct pattern via real `task-runs.json` rows. Deliberately
+  still NOT wired into consequential chat answers — the costliest, most frequent of the
+  four named completion surfaces on a routinely rate-limited roster, a real cost-scope
+  decision this build does not make unilaterally.
+- **A real bug found by a concurrent session working in this same repo, not this
+  session's own testing, fixed along the way**: `diagnostics/checks/voice.js`'s first
+  version called `tts.isConfigured()` with no argument, which resolves via a pref
+  (`prefs.ttsProvider`) nothing in this codebase ever writes — structurally unable to
+  ever pass regardless of what the user actually had configured, confirmed live
+  reporting "no TTS provider configured" on every tick even with a real, working voice
+  service saved. Fixed to read `tts.listProviders().some(p => p.configured)` instead.
+
+Full `node --check` sweep across the whole `server/` tree and `public/app.js` clean at
+every stage. Nothing committed this session — same branch (`jobs-subsystem-and-backlog`).
+
+### Where else to find things
+
+- **Root `CLAUDE.md`'s "Operational Awareness" section** — the architecture and every
+  design decision, judgment call, and disclosed gap, kept current (unlike this entry,
+  which is a point-in-time narrative).
+- **`server/ops/CLAUDE.md`** — self-diagnosis, reasoning integrity, environment
+  awareness, and `verify.js`'s own module breakdown, including its own status note on
+  exactly which completion surfaces verification is and isn't wired into.
+- **`server/cost/CLAUDE.md`** / **`server/artifacts/CLAUDE.md`** — the sibling module
+  breakdowns for cost tracking and artifact generation respectively.
+- **Two new Gotchas entries in root `CLAUDE.md`** worth knowing before touching either
+  area again: the Windows ZIP forward-slash entry-name requirement, and the
+  unconditional-`Content-Disposition:attachment` rule for any route serving
+  model-or-user-generated content.
+
+---
+
 ### 2026-09-02 — Heartbeat + Trigger + Proactive Attention built from scratch, then live-tested by the user with two real fixes
 
 **Plan file**: `C:\Users\HP\.claude\plans\before-you-start-read-groovy-lecun.md`.

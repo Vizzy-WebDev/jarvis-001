@@ -25,6 +25,7 @@ import { diagnoseStall, stepBudgetExceeded, canAutoRetry, STEP_BUDGET_BY_KIND, D
 import { classifyToolEffect } from './tool-effects.js';
 import { addNotification } from '../notifications.js';
 import { preparePlan, runControlSession } from '../control/session.js';
+import { verifySemanticMatch } from '../ops/verify.js';
 
 function nowIso() {
   return new Date().toISOString();
@@ -352,6 +353,51 @@ export async function driveJob(jobId, { allowedTools, kindByName, resumeText } =
     }
 
     if (turn.reportedDone) {
+      // Verification (root CLAUDE.md's Operational Awareness item 4) — "did
+      // it finish" and "is it actually right" are different questions.
+      // Reuses the EXACT SAME canAutoRetry/escalate shape diagnoseStall's
+      // own retry branch already uses below, at the SAME call site, sharing
+      // the SAME job.retries counter — never a second recovery mechanism. A
+      // job that already spent its one retry on a stall gets no extra
+      // retry for a verification mismatch, and vice versa.
+      const verdict = await verifySemanticMatch({ request: job.goal, resultSummary: turn.reportedDone });
+      if (verdict.checked && verdict.matches === false) {
+        const current = jobStore.getJob(jobId);
+        if (canAutoRetry(current)) {
+          jobStore.appendTrace(jobId, {
+            phase: 'outcome',
+            effect: 'read',
+            kind: 'decision',
+            summary: `Reported done, but its own summary doesn't clearly match the goal (${verdict.reason || 'no reason given'}) — pausing to reconsider. This is the one automatic recovery attempt.`,
+          });
+          jobStore.updateJob(jobId, { retries: current.retries + 1 });
+          nextText =
+            `Before finishing: your own summary doesn't clearly match the actual goal ("${job.goal}") — ` +
+            `${verdict.reason || 'reconsider whether this is genuinely complete'}. If it really is done, call ` +
+            'report_job_done again with a summary that makes the connection to the goal clear. If it genuinely ' +
+            "isn't done yet, keep working instead.";
+          continue;
+        }
+        // Already spent the one retry (on this or an earlier stall) — the
+        // SAME escalate move the stall branch below makes.
+        jobStore.appendTrace(jobId, {
+          phase: 'outcome',
+          effect: 'read',
+          kind: 'decision',
+          summary: `Reported done again, but verification still doesn't match the goal (${verdict.reason || 'no reason given'}) after one reconsideration — escalating.`,
+        });
+        setStatus(jobId, { status: 'awaiting_decision' });
+        jobStore.addOutboxEntry(jobId, {
+          tier: 1,
+          reason: 'stuck',
+          summary: `"${job.title}" reported done, but I'm not confident the result actually matches the goal — ${verdict.reason || 'want to double check with you'}. Keep it as done anyway, or should I keep working?`,
+        });
+        notify(job, 'warning', `"${job.title}" may need a second look`, verdict.reason || 'The result may not fully match the goal.');
+        return;
+      }
+      // checked:false (no model available) never blocks a real completion —
+      // silence stays the safe failure direction, same as everywhere else
+      // this build applies it.
       setStatus(jobId, { status: 'done', result: turn.reportedDone, finishedAt: nowIso() });
       notify(job, 'success', `"${job.title}" is done`, turn.reportedDone);
       return;

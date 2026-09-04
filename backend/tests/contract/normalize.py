@@ -49,8 +49,11 @@ VOLATILE_KEYS = {
     "createdAt", "updatedAt", "created_at", "updated_at", "recordedAt",
     "startedAt", "finishedAt", "checkedAt", "addedAt", "changedAt", "at", "ts",
     "lastRunAt", "nextRunAt", "lastSeenAt", "since", "timestamp",
-    # ids minted per request
+    # ids minted per request. Normalising a value here hides its SHAPE as well
+    # as its value, so anything whose format is itself part of the contract is
+    # additionally pinned by a dedicated test — see test_id_formats.py.
     "id", "conversationId", "conversation_id", "runId", "jobId", "sessionId",
+    "activeId",
     # host-specific facts that differ between the recording machine and the
     # replaying one, and are not part of the API's shape
     "uptime", "pid", "port", "cwd", "platform", "hostname", "version",

@@ -1,0 +1,31 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/status",
+    "query": "",
+    "headers": {
+      "host": "127.0.0.1:39118",
+      "user-agent": "curl/8.5.0",
+      "accept": "*/*"
+    },
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "contentType": "application/json; charset=utf-8",
+    "headers": {
+      "x-powered-by": "Express",
+      "content-type": "application/json; charset=utf-8",
+      "content-length": "20",
+      "etag": "W/\"14-avMwF19DO35Oi2Fb5CktvlYVcuc\"",
+      "date": "Fri, 04 Sep 2026 15:34:19 GMT",
+      "connection": "keep-alive",
+      "keep-alive": "timeout=5"
+    },
+    "kind": "json",
+    "body": {
+      "configured": false
+    }
+  },
+  "recordedAt": "2026-09-04T15:34:19.961Z"
+}

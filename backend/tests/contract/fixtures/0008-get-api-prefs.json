@@ -1,0 +1,50 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/prefs",
+    "query": "",
+    "headers": {
+      "host": "127.0.0.1:39118",
+      "connection": "keep-alive",
+      "accept": "*/*",
+      "accept-language": "*",
+      "sec-fetch-mode": "cors",
+      "user-agent": "node",
+      "accept-encoding": "gzip, deflate"
+    },
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "contentType": "application/json; charset=utf-8",
+    "headers": {
+      "x-powered-by": "Express",
+      "content-type": "application/json; charset=utf-8",
+      "content-length": "321",
+      "etag": "W/\"141-34uJW6mmckeuVIdzcjlb0ZbywZE\"",
+      "date": "Fri, 04 Sep 2026 15:34:20 GMT",
+      "connection": "keep-alive",
+      "keep-alive": "timeout=5"
+    },
+    "kind": "json",
+    "body": {
+      "autoSelect": true,
+      "balance": "balanced",
+      "manualModelId": null,
+      "clarifySensitivity": "balanced",
+      "voiceModelId": null,
+      "ttsProvider": null,
+      "memoryTrust": "ask",
+      "maxBackgroundJobs": 2,
+      "improvementEnabled": true,
+      "improvementTrust": "balanced",
+      "improvementResearch": "weekly",
+      "quietHours": {
+        "enabled": true,
+        "start": "23:00",
+        "end": "08:00"
+      }
+    }
+  },
+  "recordedAt": "2026-09-04T15:34:20.104Z"
+}

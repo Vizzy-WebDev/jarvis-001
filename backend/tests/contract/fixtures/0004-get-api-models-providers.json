@@ -1,0 +1,114 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/models/providers",
+    "query": "",
+    "headers": {
+      "host": "127.0.0.1:39118",
+      "connection": "keep-alive",
+      "accept": "*/*",
+      "accept-language": "*",
+      "sec-fetch-mode": "cors",
+      "user-agent": "node",
+      "accept-encoding": "gzip, deflate"
+    },
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "contentType": "application/json; charset=utf-8",
+    "headers": {
+      "x-powered-by": "Express",
+      "content-type": "application/json; charset=utf-8",
+      "content-length": "1368",
+      "etag": "W/\"558-ljXBxyq0U0EnXoKbTrqApLmrtR4\"",
+      "date": "Fri, 04 Sep 2026 15:34:20 GMT",
+      "connection": "keep-alive",
+      "keep-alive": "timeout=5"
+    },
+    "kind": "json",
+    "body": {
+      "providers": [
+        {
+          "id": "openai",
+          "label": "OpenAI",
+          "icon": "🤖",
+          "iconBg": "#10A37F",
+          "adapter": "openai-compatible",
+          "baseUrl": "https://api.openai.com/v1",
+          "urlEditable": false,
+          "keyRequired": true,
+          "kind": "first-party",
+          "suggestions": [
+            "gpt-5.6-luna"
+          ],
+          "keyHint": "<redacted>"
+        },
+        {
+          "id": "anthropic",
+          "label": "Anthropic",
+          "icon": "✳️",
+          "iconBg": "#D97757",
+          "adapter": "anthropic",
+          "baseUrl": null,
+          "urlEditable": false,
+          "keyRequired": true,
+          "kind": "first-party",
+          "suggestions": [
+            "claude-haiku-4-5",
+            "claude-sonnet-5",
+            "claude-opus-5"
+          ],
+          "keyHint": "<redacted>"
+        },
+        {
+          "id": "gemini",
+          "label": "Gemini",
+          "icon": "✨",
+          "iconBg": "#4285F4",
+          "adapter": "gemini",
+          "baseUrl": null,
+          "urlEditable": false,
+          "keyRequired": true,
+          "kind": "first-party",
+          "suggestions": [
+            "gemini-3.5-flash",
+            "gemini-3.6-flash",
+            "gemini-3-pro"
+          ],
+          "keyHint": "<redacted>"
+        },
+        {
+          "id": "local",
+          "label": "Local server",
+          "icon": "💻",
+          "iconBg": "#4B5563",
+          "adapter": "openai-compatible",
+          "baseUrl": "http://localhost:11434/v1",
+          "urlEditable": true,
+          "keyRequired": false,
+          "kind": "local",
+          "suggestions": [
+            "llama3.1",
+            "mistral"
+          ],
+          "keyHint": "<redacted>"
+        },
+        {
+          "id": "custom",
+          "label": "Custom",
+          "icon": "🔧",
+          "iconBg": "#6B7280",
+          "adapter": null,
+          "baseUrl": null,
+          "urlEditable": true,
+          "keyRequired": null,
+          "kind": null,
+          "suggestions": [],
+          "keyHint": "<redacted>"
+        }
+      ]
+    }
+  },
+  "recordedAt": "2026-09-04T15:34:20.090Z"
+}

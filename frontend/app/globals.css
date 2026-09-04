@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Only what genuinely cannot be a utility class lives here.
+   public/style.css is 3,275 lines and is being replaced screen by screen as each
+   one is ported; nothing is copied over wholesale. */
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply bg-surface text-ink antialiased;
+}

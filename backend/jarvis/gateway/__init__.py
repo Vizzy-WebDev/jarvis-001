@@ -9,3 +9,23 @@ all, so a model that fails during computer control is never benched.
 
 This package exists so that logic lives once.
 """
+
+from . import availability, catalog, connections, error_kind, probe, providers, registry, routing
+from .client import Gateway, NoModelAvailable
+from .routing import Task, build_candidates, explain_exclusions
+
+__all__ = [
+    "Gateway",
+    "NoModelAvailable",
+    "Task",
+    "availability",
+    "build_candidates",
+    "catalog",
+    "connections",
+    "error_kind",
+    "explain_exclusions",
+    "probe",
+    "providers",
+    "registry",
+    "routing",
+]

@@ -53,8 +53,24 @@ class StepComplete:
     raw: dict[str, Any] | None = None
 
 
-#: What a model client yields, in order: any number of chunks, then one step.
-ModelEvent = TextChunk | StepComplete
+@dataclass(frozen=True)
+class ModelSwitched:
+    """A candidate failed and the next one is taking over.
+
+    Emitted by the gateway, not by an adapter. The orchestrator passes it
+    through so a switch is never silent: a reply that changes course with no
+    explanation is worse than the failure, and a turn that quietly took three
+    attempts looks identical to one that took none.
+    """
+
+    to_model: str
+    reason: str
+    from_model: str | None = None
+
+
+#: What a model client yields, in order: any number of chunks (possibly
+#: interrupted by a switch), then exactly one completed step.
+ModelEvent = TextChunk | StepComplete | ModelSwitched
 
 
 @runtime_checkable

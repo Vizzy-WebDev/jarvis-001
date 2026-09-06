@@ -43,7 +43,7 @@ from ..intent import Intent, Route, classify
 from ..policy import Autonomy, CallContext, Surface
 from ..policy.decide import Grant
 from .context import AssembledContext, ContextAssembler, WindowContext
-from .model_port import ModelClient, StepComplete, TextChunk, ToolCall
+from .model_port import ModelClient, ModelSwitched, StepComplete, TextChunk, ToolCall
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +87,16 @@ class ApprovalRequired:
 
 
 @dataclass(frozen=True)
+class Switched:
+    """A model failed mid-reply and another took over — said out loud, because a
+    reply that changes course with no explanation is worse than the failure."""
+
+    to_model: str
+    reason: str
+    from_model: str | None = None
+
+
+@dataclass(frozen=True)
 class Interrupted:
     spoken_text: str
 
@@ -102,7 +112,7 @@ class Done:
     steps: int
 
 
-TurnEvent = Routed | Chunk | ToolRan | ApprovalRequired | Interrupted | Failed | Done
+TurnEvent = Routed | Chunk | ToolRan | ApprovalRequired | Switched | Interrupted | Failed | Done
 
 
 @dataclass(frozen=True)
@@ -296,6 +306,8 @@ class Orchestrator:
                         if event.text:
                             spoken_so_far.append(event.text)
                             yield Chunk(event.text)
+                    elif isinstance(event, ModelSwitched):
+                        yield Switched(event.to_model, event.reason, event.from_model)
                     elif isinstance(event, StepComplete):
                         completed = event
             except Exception as err:  # noqa: BLE001 — provider errors are expected

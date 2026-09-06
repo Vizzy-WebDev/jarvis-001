@@ -75,9 +75,11 @@ def test_the_only_extra_objects_are_this_builds_own(scratch, tmp_path):
         "approvals", "idx_approvals_status", "idx_approvals_session",
         "idx_approvals_operation",
         "permission_grants", "idx_grants_capability",
+        "operations", "idx_operations_session",
         # SQLite creates these itself for a TEXT PRIMARY KEY. Listed rather than
         # filtered out, so the assertion stays exact.
         "sqlite_autoindex_approvals_1", "sqlite_autoindex_permission_grants_1",
+        "sqlite_autoindex_operations_1",
     }
     assert (ours - theirs) == expected_extra
 

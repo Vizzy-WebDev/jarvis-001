@@ -29,6 +29,8 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
           operation_id  TEXT NOT NULL,
           capability    TEXT NOT NULL,
           args          TEXT,
+          -- Argument names to hide whenever this row is displayed or published.
+          redact_args   TEXT,
           risk          TEXT NOT NULL,
           session_id    TEXT NOT NULL,
           -- The turn that ASKED. An approval may never be resolved and executed
@@ -63,6 +65,31 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
           note        TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_grants_capability ON permission_grants(capability);
+        """
+    ],
+
+    # 21: Completed operations (§49).
+    #
+    # "If a request is accidentally processed twice — 'Create reminder for 9 AM' —
+    # do not create two reminders simply because of a retry." An operation id is
+    # recorded the moment a capability finishes, so a second delivery returns the
+    # first result instead of running the side effect again. Persisted rather
+    # than in-memory so a duplicate that arrives after a restart is still caught.
+    21: [
+        """
+        CREATE TABLE IF NOT EXISTS operations (
+          operation_id TEXT PRIMARY KEY,
+          capability   TEXT NOT NULL,
+          session_id   TEXT,
+          outcome      TEXT NOT NULL,
+          ok           INTEGER NOT NULL,
+          result       TEXT,
+          error        TEXT,
+          attempts     INTEGER NOT NULL DEFAULT 1,
+          duration_ms  INTEGER,
+          completed_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_operations_session ON operations(session_id);
         """
     ],
 }

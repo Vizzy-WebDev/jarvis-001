@@ -96,14 +96,35 @@ def test_the_same_operation_asked_twice_asks_once():
     assert len(ap.pending("s1")) == 1
 
 
-def test_secrets_are_redacted_before_being_stored():
-    """§25: never log secrets, and which arguments are secret is the
-    capability's declaration, not each call site's problem."""
+def test_secrets_are_redacted_on_the_way_out_not_on_the_way_in():
+    """§25: never log secrets. Redaction applies to what is DISPLAYED.
+
+    The stored row keeps the real arguments because approving must execute
+    exactly what was described — capturing them at request time is what stops the
+    model altering an argument between asking and running. An earlier version of
+    this redacted before storing, which meant approving a capability with a
+    secret argument would have executed it with the literal string "<redacted>".
+    """
     s = spec("connect_service", risk=Risk.MEDIUM, redact_args=frozenset({"api_key"}))
     a = ap.request(s, {"api_key": "sk-realsecret", "name": "svc"}, ctx(), "r")
-    assert a.args["api_key"] == "<redacted>"
-    assert a.args["name"] == "svc"
-    assert "sk-realsecret" not in str(ap.get(a.id).args)
+
+    assert a.safe_args["api_key"] == "<redacted>"      # what may be shown
+    assert a.safe_args["name"] == "svc"
+    assert a.args["api_key"] == "sk-realsecret"        # what will be executed
+
+    reloaded = ap.get(a.id)
+    assert reloaded.safe_args["api_key"] == "<redacted>"
+    assert reloaded.args["api_key"] == "sk-realsecret"
+
+
+def test_a_published_approval_event_never_carries_the_secret():
+    eb = EventBus()
+    seen = []
+    eb.subscribe(EventType.APPROVAL_REQUESTED, seen.append)
+    s = spec("connect_service", risk=Risk.MEDIUM, redact_args=frozenset({"api_key"}))
+    ap.request(s, {"api_key": "sk-realsecret"}, ctx(), "r", event_bus=eb)
+    assert "sk-realsecret" not in str(seen[0].payload)
+    assert seen[0].payload["args"]["api_key"] == "<redacted>"
 
 
 def test_stale_approvals_time_out_rather_than_lingering():

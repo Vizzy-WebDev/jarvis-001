@@ -67,17 +67,37 @@ class Approval:
     resolved_at: str | None = None
     resolved_by: str | None = None
 
+    #: Argument names to hide whenever this approval is shown or published.
+    redact_args: frozenset[str] = frozenset()
+
     @property
     def is_pending(self) -> bool:
         return self.status is Resolution.PENDING
 
+    @property
+    def safe_args(self) -> dict[str, Any]:
+        """What may be displayed, logged or published. Never `args` directly."""
+        return redact(self.args, self.redact_args)
 
-def _redact(args: dict[str, Any], spec: CapabilitySpec) -> dict[str, Any]:
+
+def redact(args: dict[str, Any], redact_args: Iterable[str]) -> dict[str, Any]:
     """§25: never log secrets. Which arguments are secret is declared by the
-    capability, so no call site has to know."""
-    if not spec.redact_args:
+    capability, so no call site has to know.
+
+    Applied on the way OUT — to events, listings and anything displayed — not on
+    the way in. The stored row keeps the real arguments because approving must
+    execute exactly what was described: capturing them at request time is what
+    stops the model altering an argument between asking and running.
+
+    The consequence is deliberate and worth stating: a capability whose argument
+    is a genuine credential should take a REFERENCE rather than the value, the
+    way model connections already use a secretRef. `redact_args` protects logs,
+    events and the UI; it is not at-rest encryption and does not pretend to be.
+    """
+    redact_set = set(redact_args)
+    if not redact_set:
         return dict(args)
-    return {k: ("<redacted>" if k in spec.redact_args else v) for k, v in args.items()}
+    return {k: ("<redacted>" if k in redact_set else v) for k, v in args.items()}
 
 
 def _row_to_approval(row: Any) -> Approval:
@@ -86,6 +106,7 @@ def _row_to_approval(row: Any) -> Approval:
         operation_id=row["operation_id"],
         capability=row["capability"],
         args=json.loads(row["args"]) if row["args"] else {},
+        redact_args=frozenset(json.loads(row["redact_args"]) if row["redact_args"] else []),
         risk=row["risk"],
         session_id=row["session_id"],
         turn_id=row["turn_id"],
@@ -122,7 +143,9 @@ def request(
         id=f"apr_{uuid.uuid4().hex[:12]}",
         operation_id=ctx.operation_id,
         capability=spec.name,
-        args=_redact(args, spec),
+        # Stored as given: approving must execute exactly what was described.
+        args=dict(args),
+        redact_args=frozenset(spec.redact_args),
         risk=spec.risk.value,
         session_id=ctx.session_id,
         turn_id=ctx.turn_id,
@@ -132,12 +155,13 @@ def request(
         requested_at=now_iso(),
     )
     db.execute(
-        "INSERT INTO approvals (id, operation_id, capability, args, risk, session_id, "
-        "turn_id, surface, reason, status, requested_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO approvals (id, operation_id, capability, args, redact_args, risk, "
+        "session_id, turn_id, surface, reason, status, requested_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             approval.id, approval.operation_id, approval.capability,
-            json.dumps(approval.args), approval.risk, approval.session_id,
+            json.dumps(approval.args), json.dumps(sorted(approval.redact_args)),
+            approval.risk, approval.session_id,
             approval.turn_id, approval.surface, approval.reason,
             approval.status.value, approval.requested_at,
         ),
@@ -146,6 +170,7 @@ def request(
         EventType.APPROVAL_REQUESTED,
         {
             "id": approval.id, "capability": approval.capability,
+            "args": approval.safe_args,
             "risk": approval.risk, "reason": approval.reason,
             "sessionId": approval.session_id, "surface": approval.surface,
         },

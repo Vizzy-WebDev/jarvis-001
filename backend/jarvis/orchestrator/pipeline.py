@@ -51,6 +51,15 @@ logger = logging.getLogger(__name__)
 #: silently runs forever is worse than one that admits it is stuck (§47).
 MAX_STEPS = 8
 
+#: Above this many capabilities, a turn is declared its CORE set plus whatever
+#: it has unlocked, rather than everything. Measured on the Node app, declaring
+#: the full set cost ~150,000 characters on every turn — sent on "hello" as much
+#: as on anything else — and was the single largest cause of flat,
+#: instruction-ignoring replies. The rule is a size rule because the problem is
+#: a size problem: a small registry is declared in full, and nothing is hidden
+#: from a model that could have held it all anyway.
+DECLARATION_BUDGET = 20
+
 
 # --- what a turn emits -------------------------------------------------------
 #
@@ -277,6 +286,10 @@ class Orchestrator:
         self, request: TurnRequest, state: AssistantState, cancel: threading.Event
     ) -> Iterator[TurnEvent]:
         spoken_so_far: list[str] = []
+        # What this turn has been granted beyond the core set, by a capability
+        # that returned `unlock` (see tools/find_capability.py). Per-turn and
+        # per-call: nothing here outlives the turn that earned it.
+        unlocked: set[str] = set()
 
         for step in range(1, MAX_STEPS + 1):
             if cancel.is_set():
@@ -284,7 +297,7 @@ class Orchestrator:
                 return
 
             assembled = self._assemble(request)
-            tools = self._declarations(request)
+            tools = self._declarations(request, unlocked)
 
             self._bus.publish(
                 EventType.MODEL_CALL_STARTED,
@@ -362,6 +375,7 @@ class Orchestrator:
                     "id": call.id, "name": call.name,
                     "result": result.value if result.ok else {"error": result.error},
                 })
+                unlocked |= _unlocked_by(result.value)
                 if result.outcome is ExecOutcome.NEEDS_APPROVAL and parked is None:
                     parked = (result, call)
 
@@ -403,10 +417,17 @@ class Orchestrator:
     def _assemble(self, request: TurnRequest) -> AssembledContext:
         return self._assembler.assemble(session_id=request.session_id, text=request.text)
 
-    def _declarations(self, request: TurnRequest) -> list[dict[str, Any]]:
+    def _declarations(self, request: TurnRequest, unlocked: set[str]) -> list[dict[str, Any]]:
         specs = self._registry.list()
         if request.allowed_names is not None:
             specs = [s for s in specs if s.name in request.allowed_names]
+        if len(specs) > DECLARATION_BUDGET:
+            # An explicit allowlist counts as unlocking what it names: naming a
+            # non-core tool for a restricted task and then not declaring it is
+            # how a job ends up unable to do the one thing it was created for.
+            allowed = request.allowed_names or frozenset()
+            specs = [s for s in specs
+                     if s.has_tag("core") or s.name in unlocked or s.name in allowed]
         return self._registry.declarations(specs)
 
     def _interrupt(
@@ -433,6 +454,17 @@ class Orchestrator:
             state.to(target, "reply ready")
         except Exception:  # noqa: BLE001
             logger.warning("could not leave %s at end of turn", state.state.value)
+
+
+def _unlocked_by(value: Any) -> set[str]:
+    """Capability names a tool result asks to make callable for the rest of this
+    turn. Plain data in a result, so no tool needs a handle on the turn loop."""
+    if not isinstance(value, dict):
+        return set()
+    names = value.get("unlock")
+    if not isinstance(names, (list, tuple)):
+        return set()
+    return {n for n in names if isinstance(n, str) and n}
 
 
 def _spoken_result(result: ExecutionResult) -> str | None:

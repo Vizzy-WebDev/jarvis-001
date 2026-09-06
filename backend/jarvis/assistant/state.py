@@ -82,8 +82,14 @@ TRANSITIONS: dict[State, frozenset[State]] = {
         # Approved -> run it; denied/cancelled -> back to thinking or idle.
         State.EXECUTING, State.THINKING, State.IDLE, State.INTERRUPTED, State.ERROR,
     }),
+    # EXECUTING -> WAITING_FOR_APPROVAL is real, not a shortcut: a step can ask
+    # for several tools at once, and the second of them can be the one that needs
+    # a human. The alternative — deciding policy for the whole batch before
+    # executing any of it — would mean the orchestrator re-implementing the
+    # permission check that the executor already owns.
     State.EXECUTING: frozenset({
-        State.THINKING, State.SPEAKING, State.IDLE, State.INTERRUPTED, State.ERROR,
+        State.THINKING, State.WAITING_FOR_TOOL, State.WAITING_FOR_APPROVAL,
+        State.SPEAKING, State.IDLE, State.INTERRUPTED, State.ERROR,
     }),
     # SPEAKING -> LISTENING is conversation mode (§16): a follow-up needs no wake word.
     State.SPEAKING: frozenset({State.IDLE, State.LISTENING, State.INTERRUPTED, State.ERROR}),

@@ -160,3 +160,14 @@ def test_every_state_has_a_way_out():
     """A state with no outgoing edges is a trap the assistant can never leave."""
     for state, targets in TRANSITIONS.items():
         assert targets, f"{state.value} is a dead end"
+
+
+def test_a_batch_of_tools_can_reach_the_gate_midway():
+    """One step can ask for several tools and the second can be the one that
+    needs a human — so EXECUTING must be able to park for approval."""
+    sm = AssistantState("s", event_bus=EventBus())
+    sm.to(State.THINKING)
+    sm.to(State.EXECUTING)
+    assert sm.can_go_to(State.WAITING_FOR_APPROVAL)
+    sm.to(State.WAITING_FOR_APPROVAL)
+    assert sm.state is State.WAITING_FOR_APPROVAL

@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from .migrations import MIGRATION_SQL
+from .migrations_extra import EXTRA_MIGRATION_SQL
 from .store import data_dir, read_json, write_json
 
 _db: sqlite3.Connection | None = None
@@ -177,12 +178,15 @@ _EXTRA_STEPS: dict[int, Callable[[sqlite3.Connection], None]] = {
     10: _migration_10,
 }
 
-MIGRATION_COUNT = len(MIGRATION_SQL)
+# The Node-derived steps plus this build's own. Kept as one ordered mapping so
+# migrate() stays a single loop over consecutive versions.
+ALL_MIGRATION_SQL: dict[int, list[str]] = {**MIGRATION_SQL, **EXTRA_MIGRATION_SQL}
+MIGRATION_COUNT = max(ALL_MIGRATION_SQL)
 
 
 def _apply_migration(conn: sqlite3.Connection, version: int) -> None:
     """Run one migration's DDL then its extra logic, if it has any."""
-    for script in MIGRATION_SQL.get(version, []):
+    for script in ALL_MIGRATION_SQL.get(version, []):
         for statement in _split_sql(script):
             conn.execute(statement)
     extra = _EXTRA_STEPS.get(version)

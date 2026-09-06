@@ -39,17 +39,47 @@ def test_fresh_database_reaches_the_current_version(scratch):
 
 
 @requires_node
-def test_schema_matches_node_exactly(scratch, tmp_path):
+def test_python_schema_is_a_superset_of_nodes(scratch, tmp_path):
+    """Python now adds tables of its own (approvals, permission_grants), so the
+    schemas are no longer identical — but every object Node creates must still
+    exist in Python, character for character. That is what lets the port open the
+    owner's real database, and it is the part that must never drift."""
     get_db()
-    ours = schema_fingerprint(scratch.data_dir / "jarvis.db")
+    ours = {(t, n): sql for t, n, sql in schema_fingerprint(scratch.data_dir / "jarvis.db")}
 
     node_dir = tmp_path / "node-data"
     node_dir.mkdir()
     node_migrate(node_dir)
-    theirs = schema_fingerprint(node_dir / "jarvis.db")
+    theirs = {(t, n): sql for t, n, sql in schema_fingerprint(node_dir / "jarvis.db")}
 
-    assert [o[1] for o in ours] == [t[1] for t in theirs], "object names differ"
-    assert ours == theirs, "schema SQL differs"
+    missing = sorted(k for k in theirs if k not in ours)
+    assert not missing, f"Python is missing objects Node creates: {missing}"
+
+    differing = sorted(k for k in theirs if ours[k] != theirs[k])
+    assert not differing, f"shared objects differ in SQL: {differing}"
+
+
+@requires_node
+def test_the_only_extra_objects_are_this_builds_own(scratch, tmp_path):
+    """A superset assertion alone would hide an accidental table. Name what we
+    add, so anything else appearing is a failure rather than a shrug."""
+    get_db()
+    ours = {n for _t, n, _sql in schema_fingerprint(scratch.data_dir / "jarvis.db")}
+
+    node_dir = tmp_path / "node-data"
+    node_dir.mkdir()
+    node_migrate(node_dir)
+    theirs = {n for _t, n, _sql in schema_fingerprint(node_dir / "jarvis.db")}
+
+    expected_extra = {
+        "approvals", "idx_approvals_status", "idx_approvals_session",
+        "idx_approvals_operation",
+        "permission_grants", "idx_grants_capability",
+        # SQLite creates these itself for a TEXT PRIMARY KEY. Listed rather than
+        # filtered out, so the assertion stays exact.
+        "sqlite_autoindex_approvals_1", "sqlite_autoindex_permission_grants_1",
+    }
+    assert (ours - theirs) == expected_extra
 
 
 @requires_node
@@ -60,7 +90,11 @@ def test_node_and_python_agree_on_version(scratch, tmp_path):
     node_migrate(node_dir)
     ours = _open(scratch.data_dir / "jarvis.db").execute("PRAGMA user_version").fetchone()[0]
     theirs = _open(node_dir / "jarvis.db").execute("PRAGMA user_version").fetchone()[0]
-    assert ours == theirs == MIGRATION_COUNT
+    assert ours == MIGRATION_COUNT
+    # Python is ahead by its own migrations. Node's loop runs `v < MIGRATIONS.length`
+    # with 19 entries, so a database already past that does no work there — which
+    # is what makes adding steps here safe while the Node app still runs.
+    assert ours > theirs, "Python should be ahead of Node's migration count"
 
 
 def test_wal_and_foreign_keys_are_on(scratch):
@@ -92,17 +126,49 @@ def test_migrating_twice_changes_nothing(scratch):
 
 
 @requires_node
-def test_opening_a_node_built_database_is_a_no_op(scratch, tmp_path):
-    """The migration case that actually happens on the owner's machine."""
+def test_opening_a_node_built_database_adds_only_new_objects(scratch, tmp_path):
+    """The migration case that actually happens on the owner's machine.
+
+    No longer a no-op — Python's own migrations run — so the property that
+    matters is stronger and more specific: everything that already existed must
+    survive untouched, byte for byte. Nothing Node created may be altered,
+    renamed or dropped on the way past.
+    """
     node_dir = tmp_path / "node-data"
     node_dir.mkdir()
     node_migrate(node_dir)
     shutil.copy(node_dir / "jarvis.db", scratch.data_dir / "jarvis.db")
-    before = schema_fingerprint(scratch.data_dir / "jarvis.db")
+    before = {(t, n): sql for t, n, sql in schema_fingerprint(scratch.data_dir / "jarvis.db")}
 
     db = get_db()
     assert db.execute("PRAGMA user_version").fetchone()[0] == MIGRATION_COUNT
-    assert schema_fingerprint(scratch.data_dir / "jarvis.db") == before
+
+    after = {(t, n): sql for t, n, sql in schema_fingerprint(scratch.data_dir / "jarvis.db")}
+    for key, sql in before.items():
+        assert key in after, f"{key} disappeared when Python opened the database"
+        assert after[key] == sql, f"{key} was altered when Python opened the database"
+
+
+@requires_node
+def test_existing_rows_survive_the_new_migrations(scratch, tmp_path):
+    """Schema surviving is not the same as data surviving. §40: do not destroy
+    existing data."""
+    node_dir = tmp_path / "node-data"
+    node_dir.mkdir()
+    node_migrate(node_dir)
+
+    seeded = sqlite3.connect(str(node_dir / "jarvis.db"), isolation_level=None)
+    seeded.execute("INSERT INTO conversations VALUES ('c1','Real chat','t','t',0,0)")
+    seeded.execute(
+        "INSERT INTO messages (conversation_id, seq, role, text, created_at) "
+        "VALUES ('c1', 1, 'user', 'do not lose me', 't')"
+    )
+    seeded.close()
+    shutil.copy(node_dir / "jarvis.db", scratch.data_dir / "jarvis.db")
+
+    db = get_db()
+    assert db.execute("SELECT title FROM conversations WHERE id='c1'").fetchone()[0] == "Real chat"
+    assert db.execute("SELECT text FROM messages WHERE conversation_id='c1'").fetchone()[0] == "do not lose me"
 
 
 def test_a_failing_migration_rolls_back_its_version_bump(scratch, monkeypatch):

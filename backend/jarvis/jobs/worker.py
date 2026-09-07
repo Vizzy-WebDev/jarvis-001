@@ -34,10 +34,16 @@ logger = logging.getLogger(__name__)
 #: Tool sets per kind. `generic` is deliberately the FULL catalogue with no
 #: fence — it is not "no expertise", it is the opposite. The named kinds are
 #: small hardcoded lists chosen for work whose shape is known.
+#: A worker's own tools, added to every restricted kind. A narrow, repetitive
+#: job is exactly the one most likely to turn out to be three jobs, so leaving
+#: these out of the fenced kinds would let only unrestricted work ask to split.
+JOB_OWN_TOOLS = ["request_job_split"]
+
 TOOLS_BY_KIND: dict[str, list[str] | None] = {
     "generic": None,
-    "research": ["look_it_up", "read_web_page", "get_headlines", "search_conversations"],
-    "files": ["read_web_page", "search_conversations"],
+    "research": ["look_it_up", "read_web_page", "get_headlines",
+                 "search_conversations", *JOB_OWN_TOOLS],
+    "files": ["read_web_page", "search_conversations", *JOB_OWN_TOOLS],
 }
 
 

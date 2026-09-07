@@ -32,8 +32,9 @@ from .policy import (
 
 logger = logging.getLogger(__name__)
 
-#: How many jobs may be in flight at once. Small on purpose: these compete for
-#: the same rate-limited model roster as the conversation the user is having.
+#: How many jobs may be in flight at once, when the user has not said. Small on
+#: purpose: these compete for the same rate-limited model roster as the
+#: conversation the user is having.
 MAX_ACTIVE_JOBS = 3
 
 #: No heartbeat for this long on a running job means the process is gone.
@@ -41,6 +42,22 @@ HANG_TIMEOUT_MS = 5 * 60 * 1000
 
 #: Kinds that hold something only one job may hold at a time.
 RESOURCE_BY_KIND = {"computer": "computer"}
+
+
+def active_job_limit() -> int:
+    """How many jobs may run at once, as the USER set it.
+
+    `prefs.maxBackgroundJobs` existed and nothing read it, so lowering the limit
+    changed nothing — the constant above won every time. One reader now, used by
+    admission and by anything else that has to know whether there is room.
+    """
+    from ..prefs import get_prefs
+
+    try:
+        wanted = int(get_prefs().get("maxBackgroundJobs", MAX_ACTIVE_JOBS))
+    except (TypeError, ValueError):
+        return MAX_ACTIVE_JOBS
+    return max(1, wanted)
 
 
 class AtCapacity(RuntimeError):
@@ -55,7 +72,7 @@ def admit(*, title: str, goal: str, kind: str = "generic", priority: int = 2,
     """Create a job if there is room for it, and start it unless it must not start."""
     ebus = event_bus or default_bus
     active = job_store.list_active_jobs()
-    if not has_capacity(active, MAX_ACTIVE_JOBS):
+    if not has_capacity(active, active_job_limit()):
         raise AtCapacity(active)
 
     resource = RESOURCE_BY_KIND.get(kind)

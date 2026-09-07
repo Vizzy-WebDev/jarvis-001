@@ -58,7 +58,10 @@ def build(registry: CapabilityRegistry) -> list[CapabilitySpec]:
             # means no caller has to special-case an empty search.
             return {"ok": False, "found": [], "unlock": [],
                     "error": "Say in a few words what's needed — a verb helps."}
-        scored = [(spec, _score(spec, terms)) for spec in registry.list()]
+        # A background worker's own tools are not answers to "can you do X":
+        # nothing the user says can reach one, so offering it would be a lie.
+        searchable = [spec for spec in registry.list() if not spec.has_tag("job")]
+        scored = [(spec, _score(spec, terms)) for spec in searchable]
         best = max((n for _, n in scored), default=0)
         # Two gates, both needed: a hard floor so one incidental word in a long
         # description is not a match, and a relative floor so a genuinely strong

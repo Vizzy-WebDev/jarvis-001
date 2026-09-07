@@ -25,7 +25,7 @@ consequential chat answers built, behind a preference, default off.
 | Intent router + fast path (§10/§11) | **Done** |
 | Orchestrator (§9) | **Done** |
 | Model gateway + 3 adapters + probe (§26/§27) | **Done** |
-| Built-in tools (§5) | **58 of 62** — every wave landed; the four not ported are named below |
+| Built-in tools (§5) | **59 of 62** — every wave landed; the three not ported are named below |
 | Scheduler + briefing (§13) | **Done** — tick loop off behind an interlock until cutover |
 | Background jobs (§13/§32/§43) | **Done** — trace-based recovery, one retry, escalation |
 | Sandbox + artifacts (§35/§45) | **Done** — isolation described as measured, files verified |
@@ -48,7 +48,7 @@ consequential chat answers built, behind a preference, default off.
 | The 15 acceptance tests (§51) | Not started |
 | Cutover | Not started |
 
-`cd backend && python -m pytest tests -q` → **997 passed, 28 skipped.** The
+`cd backend && python -m pytest tests -q` → **1018 passed, 28 skipped.** The
 skips are contract fixtures for routes not ported yet, so the suite doubles as a
 progress meter.
 
@@ -58,7 +58,7 @@ diagnostic checks, records their outcomes in the trace, takes a real system
 sample, and answers a live route with 200 and an unknown id with a clean 404 —
 no unhandled exception anywhere in the log.
 
-## The four Node tools with no Python equivalent
+## The three Node tools with no Python equivalent
 
 Named rather than left inside a count:
 
@@ -69,10 +69,6 @@ Named rather than left inside a count:
   tests.
 - **`open_section`** — navigating the UI to a screen. There are no screens yet;
   it lands with the front end.
-- **`request_job_split`** — a worker asking the orchestrator to break its work
-  into pieces. **This one is a real gap, not a redesign**: the schema carries
-  `parent_id`, but nothing can ask for a split. Recorded here rather than
-  quietly left in a count.
 
 ## Defects fixed during the port, disclosed
 
@@ -133,6 +129,11 @@ Each has a test that fails against the original behaviour.
   worker thread was still running, so the assertion depended on which thread
   wrote the status last. It only surfaced once the suite grew long enough to
   change the timing.
+- **`prefs.maxBackgroundJobs` existed and nothing read it.** The orchestrator
+  enforced its own constant instead, so lowering the limit changed nothing and
+  the user still got three jobs at once. One reader now
+  (`jobs/orchestrator.py`'s `active_job_limit()`), used by admission and by the
+  split's own capacity check, with the constant as its default.
 - **A CLI connector's program inherited every API key.** Saving a key writes it
   into this process's environment as well as the .env file, and the CLI
   connector launched its child with no environment of its own — so `git`, run
@@ -205,8 +206,6 @@ Run: `cd backend && python -m pytest tests/ -q`
   reading, clicking and typing are tested against a real page over real HTTP,
   headless, using the same code the visible window runs — but that a window
   opens, is visible, and carries its own profile needs a desktop.
-- **Job splitting has no way to be asked for.** See the four-tools section
-  above: `parent_id` exists in the schema and nothing can request a split.
 - **A CLI connector cannot be given ONE secret.** Its program now runs with the
   same scrubbed environment a sandboxed script gets, which is the fix; what does
   not exist yet is the deliberate opposite — handing one connector one

@@ -506,6 +506,12 @@ class Orchestrator:
 
     def _declarations(self, request: TurnRequest, unlocked: set[str]) -> list[dict[str, Any]]:
         specs = self._registry.list()
+        # A tool tagged `job` is a background worker's own voice — reporting on
+        # itself, asking for its work to be split. It reaches a job's turn and
+        # nothing else: a live conversation that could call one would be talking
+        # about a job as if it were the job.
+        if request.surface is not Surface.JOB:
+            specs = [s for s in specs if not s.has_tag("job")]
         if request.allowed_names is not None:
             specs = [s for s in specs if s.name in request.allowed_names]
         if len(specs) > DECLARATION_BUDGET:

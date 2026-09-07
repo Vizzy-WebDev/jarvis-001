@@ -340,3 +340,241 @@ def test_an_ambiguous_stop_refuses_rather_than_guessing(reg):
     from jarvis.tools.job_tools import _stop
 
     assert _stop(which="")["ok"] is False, "guessing is how the wrong job gets cancelled"
+
+
+# --- splitting ----------------------------------------------------------------
+#
+# A worker's own voice: what it was given is really three independent things.
+# Judged, never automatic — and every cheap reason to say no is checked before
+# any judgment is paid for.
+
+def _split(job_id: str, pieces, reason: str = "they're independent"):
+    from jarvis.tools.job_split import SPEC
+
+    ctx = CallContext(session_id=worker.session_for(job_id), turn_id="t1",
+                      surface=Surface.JOB, autonomy=Autonomy.ESCALATE)
+    return SPEC.handler(pieces=pieces, reason=reason, ctx=ctx)
+
+
+@pytest.fixture
+def judge(monkeypatch):
+    """Records every judgment call, so "refused without spending one" is a real
+    assertion rather than a hope."""
+    from jarvis.ai import Reply
+
+    calls: list[str] = []
+    verdict = {"data": {"approved": True, "reason": "genuinely independent"}, "ok": True}
+
+    def fake_ask(prompt, **kwargs):
+        calls.append(prompt)
+        return Reply(ok=verdict["ok"], data=verdict["data"])
+
+    monkeypatch.setattr("jarvis.ai.ask_model", fake_ask)
+    return type("Judge", (), {"calls": calls, "verdict": verdict})()
+
+
+TWO_PIECES = [{"goal": "search the archive"}, {"goal": "search the current site"}]
+
+
+def test_a_split_creates_a_real_job_per_piece_under_the_same_root(judge):
+    job = job_store.create_job(title="Search everywhere", goal="find every mention")
+    result = _split(job["id"], TWO_PIECES)
+
+    assert result["approved"] is True
+    assert len(result["newJobIds"]) == 2
+    for job_id in result["newJobIds"]:
+        piece = job_store.get_job(job_id)
+        assert piece["parentId"] == job["id"]
+        assert piece["kind"] == "generic"
+
+    parent = job_store.get_job(job["id"])
+    assert parent["status"] == "done"
+    assert all(job_id in parent["result"] for job_id in result["newJobIds"])
+    assert len(judge.calls) == 1, "one judgment call for the whole split"
+
+
+def test_a_split_of_a_split_makes_peers_not_grandchildren(judge):
+    """The depth ceiling, and it is structural: a level-2 job already carries the
+    root in its own parentId, so its pieces land beside it."""
+    # The root is already finished — that is what a split does to it — so the
+    # only active job here is the one asking.
+    root = job_store.create_job(title="Root", goal="the original", status="done")
+    level_two = job_store.create_job(title="A piece", goal="one piece of it",
+                                     parent_id=root["id"], status="running")
+
+    result = _split(level_two["id"], TWO_PIECES)
+    assert result["approved"] is True
+    for job_id in result["newJobIds"]:
+        assert job_store.get_job(job_id)["parentId"] == root["id"]
+
+
+def test_both_trace_rows_are_written_and_the_notice_never_interrupts(judge):
+    job = job_store.create_job(title="Search", goal="find it")
+    _split(job["id"], TWO_PIECES)
+
+    phases = [row["phase"] for row in job_store.get_trace(job["id"])
+              if row["kind"] == "decision"]
+    # Intent before, outcome after: a crash in between still leaves the intent
+    # on the record, which is what recovery reads.
+    assert phases == ["intent", "outcome"]
+    # Tier 3 is deliberately BELOW what the broker surfaces as an interruption,
+    # so it is on the record without being in anybody's way.
+    assert [row for row in job_store.list_pending_outbox() if row["jobId"] == job["id"]] == []
+    from jarvis.heartbeat import outbox
+
+    mine = outbox.for_job(job["id"])
+    assert mine and all(row["tier"] == 3 for row in mine)
+
+
+@pytest.mark.parametrize("pieces,expected", [
+    ([{"goal": "only one"}], "at least two"),
+    ([], "at least two"),
+    ([{"goal": "a"}, {"goal": ""}], "at least two"),
+    ([{"goal": f"piece {n}"} for n in range(6)], "too many"),
+])
+def test_a_request_that_cannot_be_approved_costs_no_judgment(judge, pieces, expected):
+    job = job_store.create_job(title="t", goal="g")
+    result = _split(job["id"], pieces)
+    assert result["approved"] is False
+    assert expected in result["reason"].lower()
+    assert judge.calls == [], "refused in code, before anything was spent"
+
+
+def test_no_room_is_refused_before_the_judgment_too(judge):
+    from jarvis.prefs import set_prefs
+
+    set_prefs({"maxBackgroundJobs": 2})
+    # Two OTHER jobs already running: the one asking does not count against its
+    # own pieces, but everything else does.
+    job_store.create_job(title="already running", goal="x", status="running")
+    job_store.create_job(title="also running", goal="y", status="running")
+    job = job_store.create_job(title="t", goal="g")
+
+    result = _split(job["id"], TWO_PIECES)
+    assert result["approved"] is False and "room" in result["reason"]
+    assert judge.calls == []
+
+
+def test_the_user_s_own_job_limit_is_what_is_enforced():
+    """`maxBackgroundJobs` existed and nothing read it, so lowering the limit
+    changed nothing."""
+    from jarvis.prefs import set_prefs
+
+    set_prefs({"maxBackgroundJobs": 1})
+    assert orchestrator.active_job_limit() == 1
+    job_store.create_job(title="running", goal="x", status="running")
+    with pytest.raises(orchestrator.AtCapacity):
+        orchestrator.admit(title="another", goal="y")
+
+
+def test_a_split_asked_for_by_the_job_being_replaced_does_not_count_itself(judge):
+    """A limit of two would otherwise never approve a two-piece split: the job
+    asking is about to be finished BY those pieces."""
+    from jarvis.prefs import set_prefs
+
+    set_prefs({"maxBackgroundJobs": 2})
+    job = job_store.create_job(title="t", goal="g", status="running")
+    assert _split(job["id"], TWO_PIECES)["approved"] is True
+
+
+def test_a_denied_split_leaves_the_job_running(judge):
+    judge.verdict["data"] = {"approved": False, "reason": "these overlap almost entirely"}
+    job = job_store.create_job(title="t", goal="g", status="running")
+
+    result = _split(job["id"], TWO_PIECES)
+    assert result["approved"] is False and "overlap" in result["reason"]
+    assert job_store.get_job(job["id"])["status"] == "running"
+    assert len(job_store.list_active_jobs()) == 1, "nothing was created"
+
+
+@pytest.mark.parametrize("broken", [
+    {"ok": False, "data": None},                       # no model could answer
+    {"ok": True, "data": None},                        # an answer that isn't JSON
+    {"ok": True, "data": {"reason": "hmm"}},           # JSON with no verdict in it
+    {"ok": True, "data": {"approved": "yes"}},         # a string, not a decision
+])
+def test_anything_short_of_an_explicit_yes_is_a_no(judge, broken):
+    """Silence is not consent. The cost of being wrong here is three background
+    jobs nobody asked for."""
+    judge.verdict.update(broken)
+    job = job_store.create_job(title="t", goal="g", status="running")
+
+    result = _split(job["id"], TWO_PIECES)
+    assert result["approved"] is False
+    assert len(job_store.list_active_jobs()) == 1
+
+
+def test_room_running_out_part_way_stops_rather_than_overshooting(judge, monkeypatch):
+    from jarvis.prefs import set_prefs
+
+    set_prefs({"maxBackgroundJobs": 4})
+    job = job_store.create_job(title="t", goal="g")
+
+    real_admit = orchestrator.admit
+    calls = {"n": 0}
+
+    def admit_once_then_full(**kwargs):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise orchestrator.AtCapacity([])
+        return real_admit(**kwargs)
+
+    monkeypatch.setattr("jarvis.tools.job_split.admit", admit_once_then_full)
+    result = _split(job["id"], [{"goal": "one"}, {"goal": "two"}, {"goal": "three"}])
+    assert result["approved"] is True and len(result["newJobIds"]) == 1
+
+
+def test_a_conversation_cannot_ask_for_a_job_to_be_split(judge):
+    from jarvis.tools.job_split import SPEC
+
+    ctx = CallContext(session_id="main", turn_id="t1", surface=Surface.TEXT,
+                      autonomy=Autonomy.INTERACTIVE)
+    result = SPEC.handler(pieces=TWO_PIECES, ctx=ctx)
+    assert result["ok"] is False and "background job" in result["error"]
+    assert judge.calls == []
+
+
+def test_the_split_tool_is_offered_to_a_worker_and_to_nobody_else():
+    """The structural half of the same rule: a chat turn is never even shown it."""
+    from jarvis.orchestrator import TurnRequest
+
+    pipeline = assembly.get_orchestrator()
+
+    def declared(surface):
+        request = TurnRequest(text="anything", session_id="s", surface=surface,
+                              turn_id="t", autonomy=Autonomy.ESCALATE)
+        return {tool["name"] for tool in pipeline._declarations(request, set())}
+
+    assert "request_job_split" in declared(Surface.JOB)
+    assert "request_job_split" not in declared(Surface.TEXT)
+    assert "request_job_split" not in declared(Surface.VOICE)
+
+
+def test_a_capability_search_never_offers_it():
+    registry = assembly.get_registry()
+    found = registry.get("find_capability").handler(intent="split this job into pieces")
+    assert "request_job_split" not in [f["name"] for f in found.get("found", [])]
+
+
+def test_a_restricted_job_can_still_ask_to_split():
+    """A narrow, repetitive job is the one most likely to turn out to be three
+    jobs — leaving it out of the fenced kinds would get that backwards."""
+    for kind in ("research", "files"):
+        assert "request_job_split" in worker.TOOLS_BY_KIND[kind]
+
+
+def test_a_real_worker_turn_can_split_its_own_job(stub, judge):
+    """Through the real worker, the real orchestrator and the real executor —
+    only the model and the judgment are scripted."""
+    stub.calls_tool("request_job_split", {
+        "reason": "three separate archives",
+        "pieces": [{"goal": "search the first archive"},
+                   {"goal": "search the second archive"}]})
+    stub.says("Split it up.")
+
+    job = job_store.create_job(title="Search the archives", goal="find every mention")
+    worker.run_job(job["id"], event_bus=EventBus())
+
+    children = [j for j in job_store.list_jobs() if j.get("parentId") == job["id"]]
+    assert len(children) == 2
+    assert job_store.get_job(job["id"])["status"] == "done"

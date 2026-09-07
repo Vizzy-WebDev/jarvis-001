@@ -10,7 +10,7 @@ authorization in `policy`, execution in `capabilities.execute`, observability on
 a model is needed at all.
 """
 
-from .context import AssembledContext, ContextAssembler, WindowContext
+from .context import AssembledContext, ContextAssembler, RelevanceContext, WindowContext
 from .model_port import ModelClient, StepComplete, TextChunk, ToolCall
 from .pipeline import (
     ApprovalRequired,
@@ -37,6 +37,7 @@ __all__ = [
     "Interrupted",
     "MAX_STEPS",
     "ModelClient",
+    "RelevanceContext",
     "Orchestrator",
     "Routed",
     "StepComplete",

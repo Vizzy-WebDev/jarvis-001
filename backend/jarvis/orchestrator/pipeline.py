@@ -42,7 +42,7 @@ from ..events.bus import EventBus
 from ..intent import Intent, Route, classify
 from ..policy import Autonomy, CallContext, Surface
 from ..policy.decide import Grant
-from .context import AssembledContext, ContextAssembler, WindowContext
+from .context import AssembledContext, ContextAssembler, RelevanceContext
 from .model_port import (
     ModelClient, ModelSwitched, ModelUnavailable, StepComplete, TextChunk, ToolCall,
 )
@@ -157,7 +157,7 @@ class Orchestrator:
         event_bus: EventBus | None = None,
     ) -> None:
         self._model = model
-        self._assembler = assembler or WindowContext()
+        self._assembler = assembler or RelevanceContext()
         self._registry = registry or default_registry
         self._bus = event_bus or default_bus
         self._states: dict[str, AssistantState] = {}
@@ -427,7 +427,9 @@ class Orchestrator:
         )
 
     def _assemble(self, request: TurnRequest) -> AssembledContext:
-        return self._assembler.assemble(session_id=request.session_id, text=request.text)
+        return self._assembler.assemble(
+            session_id=request.session_id, text=request.text,
+            low_confidence=request.low_confidence)
 
     def _declarations(self, request: TurnRequest, unlocked: set[str]) -> list[dict[str, Any]]:
         specs = self._registry.list()

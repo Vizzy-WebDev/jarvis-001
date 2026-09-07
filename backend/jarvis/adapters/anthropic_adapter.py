@@ -24,6 +24,7 @@ from typing import Any, Iterator
 from ..config import get_secret
 from ..conversation import assistant_text_of
 from ..orchestrator.model_port import ModelEvent, StepComplete, TextChunk, ToolCall
+from ..prompt_format import CACHE_BREAK
 from .base import AdapterError
 
 name = "anthropic"
@@ -32,9 +33,6 @@ MAX_TOKENS = 4096
 REQUEST_TIMEOUT_S = 120.0
 CAPABILITIES = {"video": False, "audio": False, "vision": True, "webSearch": False}
 
-#: The marker the context assembler puts between the cacheable prefix and the
-#: per-turn tail. Absent, the whole system prompt is treated as stable.
-CACHE_BREAK = "\n\n<<<volatile>>>\n\n"
 
 
 class NoApiKey(AdapterError):

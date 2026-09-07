@@ -208,6 +208,8 @@ def ask(
     task: Task | None = None,
     balance: str = "balanced",
     model_id: str | None = None,
+    media: list[dict[str, Any]] | None = None,
+    only: bool = False,
     event_bus: EventBus | None = None,
 ) -> Answer:
     """A single question with no tools and no transcript — the third way to drive
@@ -223,6 +225,11 @@ def ask(
     keeping, because benching a healthy model for that would gradually empty the
     roster on exactly the weak models most likely to do it. The next candidate is
     tried instead.
+
+    `media` rides inside the message, exactly as it does on a chat turn. `only`
+    disables fallback, and is REQUIRED whenever that media was uploaded against
+    one model's API key: the next candidate would be handed a URI it has no
+    right to read, and would fail in a way that looks like the file being bad.
     """
     ebus = event_bus or default_bus
     task = task or Task(text=prompt, needs_tools=False)
@@ -230,11 +237,15 @@ def ask(
     if not candidates:
         raise NoModelAvailable(_nothing_available_message(task), explain_exclusions(task))
 
-    messages = [{"role": "user", "text": prompt}]
+    message: dict[str, Any] = {"role": "user", "text": prompt}
+    if media:
+        message["media"] = media
+    messages = [message]
     tried: list[str] = []
     errors: list[tuple[str, str]] = []
 
-    for entry in candidates[:MAX_ATTEMPTS]:
+    attempts = candidates[:1] if only else candidates[:MAX_ATTEMPTS]
+    for entry in attempts:
         try:
             adapter = get_adapter(entry.get("adapter"))
         except KeyError as err:

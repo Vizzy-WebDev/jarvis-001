@@ -94,13 +94,20 @@ def scratch(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
     from jarvis import db as db_module
+    from jarvis import session as session_module
     from jarvis import store as store_module
 
+    # The active conversation id is cached in a module global keyed to whichever
+    # database was open. Leaving it set across a scratch boundary makes the next
+    # test resolve "the conversation the user has open" to a row in a database
+    # that is gone — which presents as a route quietly returning nothing.
     db_module.reset_for_tests()
     store_module.reset_for_tests()
+    session_module.reset_for_tests()
     yield type("Scratch", (), {"data_dir": data_dir, "env_path": env_path})()
     db_module.reset_for_tests()
     store_module.reset_for_tests()
+    session_module.reset_for_tests()
 
 
 @pytest.fixture

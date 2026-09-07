@@ -158,6 +158,50 @@ def stream(
     yield StepComplete(text=text, model_id=entry.get("id"), raw=raw, usage=usage)
 
 
+UPLOAD_TIMEOUT_S = 5 * 60
+UPLOAD_POLL_S = 2.0
+
+
+def upload_file(entry: dict[str, Any], path: str, mime_type: str | None = None,
+                *, timeout_s: float = UPLOAD_TIMEOUT_S) -> dict[str, Any]:
+    """Put a real file where this provider can read it, and wait until it can.
+
+    The only adapter that implements this, which is a fact about the providers
+    rather than a gap here: it is what makes watching a video or listening to a
+    real audio file possible at all. Callers must not fall back to another model
+    after using it — the returned URI belongs to THIS key.
+
+    Polls rather than returning immediately: a file still PROCESSING is accepted
+    by the upload call and then rejected by the generate call, which surfaces as
+    "that video is invalid" instead of "it wasn't ready yet".
+    """
+    import time
+
+    client = _client(entry)
+    config = {"mime_type": mime_type} if mime_type else None
+    uploaded = client.files.upload(file=path, config=config)
+
+    started = time.monotonic()
+    while getattr(uploaded, "state", None) and str(uploaded.state).endswith("PROCESSING"):
+        if time.monotonic() - started > timeout_s:
+            raise AdapterError("That file took too long to process — it may be too large.")
+        time.sleep(UPLOAD_POLL_S)
+        uploaded = client.files.get(name=uploaded.name)
+
+    if getattr(uploaded, "state", None) and str(uploaded.state).endswith("FAILED"):
+        detail = getattr(getattr(uploaded, "error", None), "message", None)
+        raise AdapterError(detail or "That file couldn't be processed.")
+
+    def cleanup() -> None:
+        try:
+            client.files.delete(name=uploaded.name)
+        except Exception:  # noqa: BLE001 — it expires on its own within ~48h
+            pass
+
+    return {"uri": uploaded.uri, "mimeType": getattr(uploaded, "mime_type", None) or mime_type,
+            "cleanup": cleanup}
+
+
 def test_connection(entry: dict[str, Any]) -> dict[str, Any]:
     try:
         client = _client(entry)

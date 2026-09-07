@@ -318,7 +318,7 @@ def test_a_generated_document_is_verified_by_actually_reopening_it(tmp_path):
     from jarvis.artifacts import office
 
     path = tmp_path / "report.docx"
-    office.write_docx(path, "A heading\n\nSome real body text.")
+    office.write_docx(path, ["A heading", "Some real body text."])
     result = verify.verify_file_opens(path)
     assert result == {"ok": True, "checked": True}
 

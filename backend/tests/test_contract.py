@@ -104,17 +104,20 @@ def client(tmp_path_factory):
     os.environ["JARVIS_ENV_PATH"] = str(env_path)
 
     from jarvis import db as db_module
+    from jarvis import session as session_module
     from jarvis import store as store_module
     from jarvis.main import create_app
 
     db_module.reset_for_tests()
     store_module.reset_for_tests()
+    session_module.reset_for_tests()
     app = create_app()
     with TestClient(app) as c:
         c.ported_routes = _ported_paths(app)
         yield c
     db_module.reset_for_tests()
     store_module.reset_for_tests()
+    session_module.reset_for_tests()
 
 
 def _fixture_id(path: Path) -> str:

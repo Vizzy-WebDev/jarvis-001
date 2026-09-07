@@ -67,6 +67,9 @@ class Research:
     sources: list[Source] = field(default_factory=list)
     error: str | None = None
     query: str = ""
+    #: Which model actually answered. Recorded because a plan built by a weak
+    #: fallback should not be indistinguishable from one built by the good model.
+    model_id: str | None = None
 
     def as_result(self) -> dict[str, Any]:
         return {
@@ -185,7 +188,7 @@ def fetch_source(source: Source) -> Source:
     return source
 
 
-def _synthesise(question: str, sources: list[Source]) -> str:
+def _synthesise(question: str, sources: list[Source]) -> tuple[str, str | None]:
     body = "\n\n".join(f"[{i + 1}] {s.title} — {s.url}\n{s.text}"
                        for i, s in enumerate(sources) if s.text)
     answer = ask(
@@ -198,7 +201,7 @@ def _synthesise(question: str, sources: list[Source]) -> str:
                 "silent or disagree."),
         task=Task(text=question, needs_tools=False, background=True),
     )
-    return answer.text.strip()
+    return answer.text.strip(), answer.model_id
 
 
 # --- model-native search -----------------------------------------------------
@@ -219,7 +222,8 @@ def _model_search(question: str) -> Research:
     except NoModelAvailable as err:
         return Research(ok=False, via="model-search", query=question,
                         error=f"I couldn't look that up: {err}")
-    return Research(ok=True, answer=answer.text.strip(), via="model-search", query=question)
+    return Research(ok=True, answer=answer.text.strip(), via="model-search", query=question,
+                    model_id=answer.model_id)
 
 
 # --- the entry point ---------------------------------------------------------
@@ -237,14 +241,15 @@ def research(question: str, search_query: str | None = None) -> Research:
 
     if readable and total >= THIN_CHARS:
         try:
-            answer = _synthesise(asked, readable)
+            answer, model_id = _synthesise(asked, readable)
         except NoModelAvailable as err:
             # The pages were fetched; only the summarising failed. Say so, and
             # hand back the sources — they are still worth something.
             return Research(ok=False, via="web", query=query, sources=readable,
                             error=f"I found sources but couldn't summarise them: {err}")
         if answer:
-            return Research(ok=True, answer=answer, via="web", sources=readable, query=query)
+            return Research(ok=True, answer=answer, via="web", sources=readable, query=query,
+                            model_id=model_id)
 
     escalated = _model_search(asked)
     if escalated.ok:

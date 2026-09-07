@@ -113,4 +113,25 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
         CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at);
         """
     ],
+
+    # 23: A job says how it is going, and how much it matters (§13).
+    #
+    # "A job model with: id, type, status, priority, progress, timestamps,
+    # result, error." The table had every one of those except priority and any
+    # notion of progress — so "how far along is it?" could only be answered by
+    # reading a trace, and "which of these three matters most?" could not be
+    # answered at all.
+    #
+    # `progress` is 0-100 and NULL until the work itself reports one: a job that
+    # cannot say how far along it is must not be shown as 0%, which reads as
+    # "stuck", nor as an invented fraction. `current_step` is what it is doing
+    # right now, in the user's words, so "checking on that" has a real answer.
+    23: [
+        """
+        ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 2;
+        ALTER TABLE jobs ADD COLUMN progress INTEGER;
+        ALTER TABLE jobs ADD COLUMN current_step TEXT;
+        CREATE INDEX IF NOT EXISTS idx_jobs_priority ON jobs(priority, created_at);
+        """
+    ],
 }

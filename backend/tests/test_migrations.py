@@ -28,7 +28,10 @@ from jarvis.db import MIGRATION_COUNT, get_db
 #: columns it adds. Named here so the assertions below can allow precisely this
 #: and nothing else: a column appearing that is not on this list, or a Node column
 #: changing, is still a failure.
-EXTENDED_TABLES = {"memories": {"importance", "expires_at"}}
+EXTENDED_TABLES = {
+    "memories": {"importance", "expires_at"},
+    "jobs": {"priority", "progress", "current_step"},
+}
 
 
 def _columns(path, table):
@@ -115,6 +118,9 @@ def test_the_only_extra_objects_are_this_builds_own(scratch, tmp_path):
         # Memory's expiry index (§22): an expired memory has to be filterable
         # without scanning the table on every prompt build.
         "idx_memories_expires",
+        # Jobs by priority (§13): "what should I look at first" is a query, not
+        # a sort over everything.
+        "idx_jobs_priority",
     }
     assert (ours - theirs) == expected_extra
 

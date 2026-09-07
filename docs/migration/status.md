@@ -23,10 +23,11 @@ human confirmation even when triggered by scheduled tasks or briefings.**
 | Intent router + fast path (§10/§11) | **Done** |
 | Orchestrator (§9) | **Done** |
 | Model gateway + 3 adapters + probe (§26/§27) | **Done** |
-| Built-in tools (§5) | **24 of ~62** — waves A-D landed |
+| Built-in tools (§5) | **32 of ~62** — waves A-E landed |
 | Scheduler + briefing (§13) | **Done** — tick loop off behind an interlock until cutover |
 | Background jobs (§13/§32/§43) | **Done** — trace-based recovery, one retry, escalation |
 | Sandbox + artifacts (§35/§45) | **Done** — isolation described as measured, files verified |
+| Self-improvement · self-model · monitoring | **Done** — three floors, no premature ratios, honest refusals |
 | Architecture fitness functions | **Done** |
 | Turn API + event stream + approval routes | **Done** |
 | Memory (§22) incl. importance/expiry | **Done** |
@@ -37,7 +38,7 @@ human confirmation even when triggered by scheduled tasks or briefings.**
 | The 15 acceptance tests (§51) | Not started |
 | Cutover | Not started |
 
-`cd backend && python -m pytest tests -q` → **451 passed, 38 skipped.** The
+`cd backend && python -m pytest tests -q` → **534 passed, 38 skipped.** The
 skips are contract fixtures for routes not ported yet, so the suite doubles as a
 progress meter.
 
@@ -91,6 +92,10 @@ Run: `cd backend && python -m pytest tests/ -q`
 
 ## Open seams — deliberately visible, not forgotten
 
+- **Monitoring covers only the cross-platform conditions.** Watching a window, a
+  process or the screen needs the desktop bridge (wave H); those kinds are
+  refused by name, with what it CAN watch instead, rather than accepted into a
+  watch that would never fire.
 - **`analyze_spreadsheet` is not ported yet.** The readers it needs exist; its
   INPUT does not — it reads a file the user attached, and attachments arrive
   with wave G. Porting it now would mean a tool with nothing to read.

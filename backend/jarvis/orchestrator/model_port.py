@@ -51,6 +51,13 @@ class StepComplete:
     tool_calls: tuple[ToolCall, ...] = ()
     model_id: str | None = None
     raw: dict[str, Any] | None = None
+    #: What the provider itself said this step consumed, as
+    #: `{"unitsIn", "unitsOut", "cachedIn"}` — any key absent rather than zero
+    #: when the provider did not report it. Part of the port because it is a
+    #: fact about the step: every SDK already returns it and every adapter
+    #: previously threw it away, which is why spend could only be guessed at.
+    #: A key with no number is never filled in with one.
+    usage: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

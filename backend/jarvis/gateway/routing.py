@@ -23,6 +23,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+from ..cost.advisor import observed_cost_tier
 from . import availability
 from .registry import is_ready, list_models
 
@@ -77,7 +78,12 @@ def _score(entry: dict[str, Any], task: Task, balance: str) -> float:
     tier = entry.get("tier") or {}
     speed = tier.get("speed", 3)
     quality = tier.get("quality", 3)
-    cost = tier.get("cost", 2)
+    # A price actually on record beats the catalog's name-regex guess. Same 0-4
+    # domain, so every weight below stays exactly as tuned; None means nothing
+    # has been measured yet and the guess stands.
+    measured = observed_cost_tier(entry.get("provider") or entry.get("adapter"),
+                                  entry.get("model"))
+    cost = measured if measured is not None else tier.get("cost", 2)
     caps = entry.get("caps") or {}
 
     if task.profile == "control":

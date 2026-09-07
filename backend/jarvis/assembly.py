@@ -80,6 +80,26 @@ def get_conversation_mode() -> ConversationMode:
         return _conversation_mode
 
 
+def start_background_work() -> dict[str, bool]:
+    """Switch on the things that run on their own clock.
+
+    ONE place, so "what starts itself" is answerable by reading a single
+    function. Every piece here is behind its own environment interlock and does
+    nothing until cutover: the Node app is still the live one on the owner's
+    machine, and two builds firing the same scheduled task, or polling the same
+    provider account, act on shared state twice.
+    """
+    from .cost import balances, prices
+
+    started = {"balances": False, "prices": False}
+    if prices.is_refresh_enabled():
+        seeded = prices.seed_local_model_prices()
+        logger.info("[assembly] seeded %d local model prices", seeded)
+        started["prices"] = True
+    started["balances"] = balances.start()
+    return started
+
+
 def reset_for_tests() -> None:
     global _registry, _orchestrator, _wake, _conversation_mode
     with _lock:

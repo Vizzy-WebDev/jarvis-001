@@ -16,6 +16,11 @@ dependencies = [
     # whether "hey Jarvis" was said. Downloads its ~1 MB model on first use.
     "openwakeword>=0.6",
     "numpy>=1.26",
+    # Cross-platform CPU/memory/process readings for operational awareness
+    # (§25). Node hand-rolled these off os.cpus() deltas because os.loadavg()
+    # is [0,0,0] on Windows; psutil gives the same numbers on both platforms
+    # this has to run on, plus the process list the busy-detector needs.
+    "psutil>=5.9",
 ]
 
 [project.optional-dependencies]

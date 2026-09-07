@@ -35,7 +35,12 @@ def start_observers(event_bus: EventBus | None = None) -> None:
     ebus = event_bus or default_bus
     for event_type in (EventType.TOOL_COMPLETED, EventType.TOOL_FAILED):
         _unsubscribes.append(ebus.subscribe(event_type, _record_tool_outcome))
-    logger.info("[observers] recording capability outcomes")
+
+    from .cost import record_model_call
+    _unsubscribes.append(
+        ebus.subscribe(EventType.MODEL_CALL_COMPLETED, record_model_call))
+
+    logger.info("[observers] recording capability outcomes and model usage")
 
 
 def stop_observers() -> None:

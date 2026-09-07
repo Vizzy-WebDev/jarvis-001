@@ -48,6 +48,11 @@ def create_app() -> FastAPI:
     app.include_router(voice.router)
     app.include_router(artifacts.router)
 
+    # Everything here is behind its own interlock and does nothing until
+    # cutover — see assembly.start_background_work().
+    from .assembly import start_background_work
+    start_background_work()
+
     if FRONTEND_DIR.is_dir():
         # Mounted last so it can never shadow an /api route.
         app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

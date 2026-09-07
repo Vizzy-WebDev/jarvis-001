@@ -137,7 +137,8 @@ def _sse_frames(step: dict) -> list[dict]:
     # The usage-only final chunk: a real one carries an EMPTY choices array,
     # which is exactly the shape that used to be skipped unread.
     frames.append({"id": "c", "object": "chat.completion.chunk", "choices": [],
-                   "usage": {"prompt_tokens": 11, "completion_tokens": 3}})
+                   "usage": {"prompt_tokens": 11, "completion_tokens": 3,
+                             "prompt_tokens_details": {"cached_tokens": 4}}})
     return frames
 
 

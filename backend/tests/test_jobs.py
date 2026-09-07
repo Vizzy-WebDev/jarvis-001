@@ -251,6 +251,10 @@ def test_a_stalled_job_gets_one_retry_and_then_the_user(stub):
     assert first[0]["action"] == "retried"
     assert job_store.get_job(job["id"])["retries"] == 1
 
+    # The retry runs the job on its own thread. Waiting for it before forcing the
+    # second stall is what makes this test about the retry policy rather than
+    # about which of two threads happened to write the status last.
+    worker.join_all()
     job_store.update_job(job["id"], {"status": "stalled", "error": "went nowhere again"})
     second = orchestrator.supervise(event_bus=EventBus())
     assert second[0]["action"] == "escalated"

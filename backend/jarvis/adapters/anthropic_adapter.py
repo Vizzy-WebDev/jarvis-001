@@ -25,6 +25,7 @@ from ..config import get_secret
 from ..conversation import assistant_text_of
 from ..orchestrator.model_port import ModelEvent, StepComplete, TextChunk, ToolCall
 from ..prompt_format import CACHE_BREAK
+from . import usage as usage_read
 from .base import AdapterError
 
 name = "anthropic"
@@ -136,6 +137,7 @@ def stream(
                 yield TextChunk(event.delta.text)
         message = running.get_final_message()
 
+    usage = usage_read.from_anthropic(getattr(message, "usage", None))
     blocks = [b.model_dump() if hasattr(b, "model_dump") else dict(b) for b in message.content]
     uses = [b for b in blocks if b.get("type") == "tool_use"]
     raw = {"adapter": "anthropic", "content": blocks}
@@ -144,7 +146,7 @@ def stream(
         yield StepComplete(
             text="".join(b.get("text", "") for b in blocks if b.get("type") == "text"),
             tool_calls=tuple(ToolCall(b["id"], b["name"], b.get("input") or {}) for b in uses),
-            model_id=entry.get("id"), raw=raw,
+            model_id=entry.get("id"), raw=raw, usage=usage,
         )
         return
 
@@ -153,7 +155,7 @@ def stream(
     text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
     if not text:
         raise AdapterError("The model returned an empty response — try again later.")
-    yield StepComplete(text=text, model_id=entry.get("id"), raw=raw)
+    yield StepComplete(text=text, model_id=entry.get("id"), raw=raw, usage=usage)
 
 
 def test_connection(entry: dict[str, Any]) -> dict[str, Any]:

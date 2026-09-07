@@ -27,6 +27,7 @@ from typing import Any, Iterator
 from ..config import get_secret
 from ..conversation import assistant_text_of
 from ..orchestrator.model_port import ModelEvent, StepComplete, TextChunk, ToolCall
+from . import usage as usage_read
 from .base import AdapterError
 
 name = "openai-compatible"
@@ -178,6 +179,7 @@ def stream(
     holding = False
     hold_decided = False
     calls: dict[int, dict[str, str]] = {}
+    usage: dict[str, int] | None = None
 
     def release() -> Iterator[ModelEvent]:
         nonlocal yielded
@@ -187,9 +189,13 @@ def stream(
             yield TextChunk(pending)
 
     for chunk in response:
+        # The usage-only final chunk carries no choices. It used to be skipped
+        # outright, which is why nothing in this build knew what a turn cost.
+        usage = usage_read.from_openai(getattr(chunk, "usage", None)) or usage
+
         choices = getattr(chunk, "choices", None) or []
         if not choices:
-            continue                     # the usage-only final chunk
+            continue
         delta = choices[0].delta
         if delta is None:
             continue
@@ -233,13 +239,14 @@ def stream(
             except ValueError:
                 args = {}            # a malformed call is refused downstream, not crashed on
             parsed.append(ToolCall(slot["id"], slot["name"], args if isinstance(args, dict) else {}))
-        yield StepComplete(text=text, tool_calls=tuple(parsed), model_id=entry.get("id"))
+        yield StepComplete(text=text, tool_calls=tuple(parsed), model_id=entry.get("id"),
+                           usage=usage)
         return
 
     if not text:
         raise AdapterError("The model returned an empty response — try again later.")
 
-    yield StepComplete(text=text, model_id=entry.get("id"))
+    yield StepComplete(text=text, model_id=entry.get("id"), usage=usage)
 
 
 def test_connection(entry: dict[str, Any]) -> dict[str, Any]:

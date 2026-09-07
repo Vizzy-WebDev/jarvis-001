@@ -66,6 +66,7 @@ class Gateway:
         task: Task | None = None,
         model_id: str | None = None,
         manual_model_id: str | None = None,
+        background: bool = False,
     ) -> Iterator[ModelEvent]:
         task = task or Task(text=_last_user_text(messages))
         candidates = build_candidates(task, balance=self.balance,
@@ -101,9 +102,18 @@ class Gateway:
                     yield event
                     if isinstance(event, StepComplete):
                         availability.record(entry["id"], "working")
+                        # `usage` is what the provider itself reported, and is
+                        # absent when it reported nothing. The cost observer keys
+                        # on its presence: the orchestrator publishes this same
+                        # event type per step WITHOUT usage, and recording both
+                        # would count every turn twice.
                         self._bus.publish(EventType.MODEL_CALL_COMPLETED, {
                             "sessionId": session_id, "modelId": entry["id"],
-                            "toolCalls": len(event.tool_calls)})
+                            "provider": entry.get("provider") or entry.get("adapter"),
+                            "model": entry.get("model"),
+                            "background": background,
+                            "toolCalls": len(event.tool_calls),
+                            **({"usage": event.usage} if event.usage else {})})
                         return
                 # A stream that ends without completing a step is a broken
                 # provider response, not a silent success.
@@ -233,12 +243,15 @@ def ask(
 
         tried.append(entry["id"])
         text = ""
+        usage: dict[str, Any] | None = None
         try:
             for event in adapter.stream(entry, messages, system=system, tools=[]):
                 if isinstance(event, TextChunk):
                     text += event.text
-                elif isinstance(event, StepComplete) and event.text:
-                    text = event.text
+                elif isinstance(event, StepComplete):
+                    usage = event.usage or usage
+                    if event.text:
+                        text = event.text
         except Exception as err:  # noqa: BLE001
             detail = _detail_of(adapter, err)
             availability.record(entry["id"], availability_state_for(err), detail=detail,
@@ -249,6 +262,15 @@ def ask(
             continue
 
         availability.record(entry["id"], "working")
+        # A one-off call is real spend too — the background checks, the memory
+        # extraction and the verification pass all run through here, and a
+        # subsystem that only counted chat turns would under-report exactly the
+        # usage the owner has least visibility into.
+        ebus.publish(EventType.MODEL_CALL_COMPLETED, {
+            "modelId": entry["id"],
+            "provider": entry.get("provider") or entry.get("adapter"),
+            "model": entry.get("model"), "background": True, "toolCalls": 0,
+            **({"usage": usage} if usage else {})})
         if not want_json:
             return Answer(text=text, model_id=entry["id"], tried=tried)
 

@@ -23,6 +23,7 @@ from typing import Any, Iterator
 from ..config import get_secret
 from ..conversation import assistant_text_of
 from ..orchestrator.model_port import ModelEvent, StepComplete, TextChunk, ToolCall
+from . import usage as usage_read
 from .base import AdapterError
 
 name = "gemini"
@@ -118,10 +119,16 @@ def stream(
     turn_parts: list[Any] = []
     calls: list[Any] = []
     text = ""
+    usage: dict[str, int] | None = None
 
     for chunk in client.models.generate_content_stream(
         model=entry["model"], contents=to_wire(messages), config=config or None
     ):
+        # Gemini reports the turn's CUMULATIVE totals on each chunk, so the
+        # last one seen is the whole turn — summing would multiply one turn's
+        # real cost by however many chunks it arrived in.
+        usage = usage_read.from_gemini(getattr(chunk, "usage_metadata", None)) or usage
+
         candidates = getattr(chunk, "candidates", None) or []
         if candidates and candidates[0].content and candidates[0].content.parts:
             turn_parts.extend(candidates[0].content.parts)
@@ -139,7 +146,7 @@ def stream(
             tool_calls=tuple(
                 ToolCall(getattr(c, "id", None) or f"call_{i}", c.name, dict(c.args or {}))
                 for i, c in enumerate(calls)),
-            model_id=entry.get("id"), raw=raw,
+            model_id=entry.get("id"), raw=raw, usage=usage,
         )
         return
 
@@ -148,7 +155,7 @@ def stream(
 
     if not turn_parts:
         raw["content"]["parts"] = [{"text": text}]
-    yield StepComplete(text=text, model_id=entry.get("id"), raw=raw)
+    yield StepComplete(text=text, model_id=entry.get("id"), raw=raw, usage=usage)
 
 
 def test_connection(entry: dict[str, Any]) -> dict[str, Any]:

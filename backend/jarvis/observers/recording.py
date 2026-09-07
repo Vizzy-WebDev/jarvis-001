@@ -40,7 +40,14 @@ def start_observers(event_bus: EventBus | None = None) -> None:
     _unsubscribes.append(
         ebus.subscribe(EventType.MODEL_CALL_COMPLETED, record_model_call))
 
-    logger.info("[observers] recording capability outcomes and model usage")
+    from .security import count_event
+    for event_type in (EventType.TOOL_FAILED, EventType.APPROVAL_RESOLVED):
+        _unsubscribes.append(ebus.subscribe(event_type, count_event))
+
+    from .verification import verify_answer
+    _unsubscribes.append(ebus.subscribe(EventType.ASSISTANT_RESPONSE, verify_answer))
+
+    logger.info("[observers] recording outcomes, usage, security counts and verification")
 
 
 def stop_observers() -> None:

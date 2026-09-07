@@ -19,6 +19,8 @@ from typing import Any
 
 from ..db import get_db
 from ..jscompat import now_iso
+from ..heartbeat import outbox
+from ..ops import trace as ops_trace
 
 ACTIVE_STATUSES = ("queued", "running", "awaiting_decision")
 
@@ -122,30 +124,21 @@ def append_trace(job_id: str, *, phase: str, effect: str, kind: str, summary: st
                  detail: Any = None) -> None:
     """`phase` is 'intent' or 'outcome'; `effect` is 'read', 'workspace' or
     'external'. The effect is what recovery classification reads, so it is
-    recorded by the caller that knows what the action actually touches."""
-    db = get_db()
-    row = db.execute(
-        "SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM trace WHERE source = ? AND source_ref = ?",
-        (SOURCE, job_id)).fetchone()
-    db.execute(
-        "INSERT INTO trace (source, source_ref, job_id, seq, phase, effect, kind, summary, "
-        "detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (SOURCE, job_id, job_id, row["next"], phase, effect, kind, summary,
-         json.dumps(detail, default=str) if detail is not None else None, now_iso()))
+    recorded by the caller that knows what the action actually touches.
+
+    A thin wrapper over `ops/trace.py` with this source bound, so there is one
+    writer for the table and every existing job call site is unchanged.
+    """
+    ops_trace.append(source=SOURCE, source_ref=job_id, job_id=job_id, phase=phase,
+                     effect=effect, kind=kind, summary=summary, detail=detail)
 
 
 def get_trace(job_id: str) -> list[dict[str, Any]]:
-    rows = get_db().execute(
-        "SELECT * FROM trace WHERE source = ? AND source_ref = ? ORDER BY seq",
-        (SOURCE, job_id)).fetchall()
-    return [dict(r) for r in rows]
+    return ops_trace.read(SOURCE, job_id)
 
 
 def get_trace_tail(job_id: str, size: int) -> list[dict[str, Any]]:
-    rows = get_db().execute(
-        "SELECT * FROM trace WHERE source = ? AND source_ref = ? ORDER BY seq DESC LIMIT ?",
-        (SOURCE, job_id, size)).fetchall()
-    return [dict(r) for r in reversed(rows)]
+    return ops_trace.tail(SOURCE, job_id, size)
 
 
 # --- the outbox --------------------------------------------------------------
@@ -153,30 +146,21 @@ def get_trace_tail(job_id: str, size: int) -> list[dict[str, Any]]:
 def add_outbox(*, tier: int, summary: str, job_id: str | None = None,
                source: str = "job", source_ref: str | None = None,
                reason: str = "permission", detail: Any = None) -> int:
-    cursor = get_db().execute(
-        "INSERT INTO outbox (source, source_ref, job_id, tier, reason, summary, detail, "
-        "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (source, source_ref or job_id, job_id, tier, reason, summary,
-         json.dumps(detail, default=str) if detail is not None else None, now_iso()))
-    return int(cursor.lastrowid or 0)
+    """Thin wrappers over `heartbeat/outbox.py` with this source bound. The
+    broker is one mechanism shared by every source, not one per subsystem —
+    which is what lets a heartbeat finding and a job's permission ask queue for
+    the same person in the same order."""
+    return outbox.add(tier=tier, summary=summary, job_id=job_id, source=source,
+                      source_ref=source_ref, reason=reason, detail=detail)
 
 
 def list_pending_outbox(max_tier: int = 2) -> list[dict[str, Any]]:
-    """Undelivered rows worth interrupting for. Tier 3 is pull-only and never
-    appears here — nothing about it justifies breaking into a conversation."""
-    rows = get_db().execute(
-        "SELECT * FROM outbox WHERE delivered_at IS NULL AND tier <= ? "
-        "ORDER BY tier, created_at", (max_tier,)).fetchall()
-    return [dict(r) for r in rows]
+    return outbox.list_pending(max_tier)
 
 
 def mark_delivered(outbox_id: int) -> None:
-    """Marked only by the action that actually RESOLVES the decision, never by
-    showing it — a turn that fails before the model replies must not lose it."""
-    get_db().execute("UPDATE outbox SET delivered_at = ? WHERE id = ?", (now_iso(), outbox_id))
+    outbox.mark_delivered(outbox_id)
 
 
 def deliver_all_for_job(job_id: str) -> None:
-    get_db().execute(
-        "UPDATE outbox SET delivered_at = ? WHERE job_id = ? AND delivered_at IS NULL",
-        (now_iso(), job_id))
+    outbox.deliver_all_for_job(job_id)

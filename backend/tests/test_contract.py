@@ -30,6 +30,21 @@ FIXTURES = sorted(FIXTURE_DIR.glob("*.json"))
 # that visible rather than invisible. Raise it only with a reason.
 MAX_NORMALISED_FIELDS = 40
 
+#: Keys this build ADDS to a recorded response, per route, because the feature
+#: behind them does not exist in the Node app at all.
+#:
+#: Every entry is a deliberate, named divergence and nothing more: the recorded
+#: keys must still be present and byte-identical, so this can never hide a
+#: changed or dropped value — only an added one. A new preference is the one
+#: shape of divergence a port that is also building new things cannot avoid, and
+#: editing the RECORDING to accommodate it would quietly destroy the thing the
+#: recording is for.
+ADDED_KEYS: dict[tuple[str, str], set[str]] = {
+    # Semantic verification of consequential chat answers: this build's own
+    # feature, off by default. See jarvis/ops/consequence.py.
+    ("GET", "/api/prefs"): {"verifyChatAnswers"},
+}
+
 
 def _load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
@@ -134,7 +149,16 @@ def test_route_matches_recorded_node_response(client, fixture_path):
     )
     assert got["status"] == want["status"], f"status differs for {req['method']} {req['path']}"
     assert got["headers"] == want["headers"], f"contract headers differ for {req['path']}"
-    assert got["body"] == want["body"], f"body differs for {req['method']} {req['path']}"
+    added = ADDED_KEYS.get((req["method"].upper(), req["path"]))
+    if added and isinstance(got["body"], dict) and isinstance(want["body"], dict):
+        extra = set(got["body"]) - set(want["body"])
+        assert extra == added, (
+            f"{req['path']} added {sorted(extra)}, but only {sorted(added)} is a declared "
+            "divergence — add it to ADDED_KEYS deliberately or take it back out")
+        got_body = {k: v for k, v in got["body"].items() if k not in added}
+        assert got_body == want["body"], f"body differs for {req['method']} {req['path']}"
+    else:
+        assert got["body"] == want["body"], f"body differs for {req['method']} {req['path']}"
 
 
 def _json_or_text(response):

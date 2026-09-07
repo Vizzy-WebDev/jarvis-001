@@ -65,6 +65,19 @@ def run_task_now(task_id: str, *, late: bool = False,
         logger.exception("task %s threw", task_id)
         result = {"ok": False, "summary": "", "error": str(err) or "Something went wrong."}
 
+    # Did the run actually do what the task asked for? Only for a `prompt`
+    # action, whose whole output is free text nobody watched being produced.
+    # There is no retry loop here to reuse, so a mismatch simply makes the run
+    # not-ok with the reason folded in — the next occurrence is already its
+    # natural retry, and inventing a second recovery mechanism for it would be
+    # a mechanism nobody asked for.
+    verdict = _verify_run(task, result)
+    if verdict is not None and verdict.failed:
+        result = {**result, "ok": False,
+                  "error": ((result.get("error") + " ") if result.get("error") else "")
+                           + "It ran, but the result did not match what the task asked for: "
+                           + (verdict.reason or "no reason given.")}
+
     update_task(task_id, {"lastRunAt": now_iso()})
 
     run = record_run({
@@ -95,6 +108,24 @@ def run_task_now(task_id: str, *, late: bool = False,
         _checkpoint_later(run)
 
     return result
+
+
+def _verify_run(task: dict[str, Any], result: dict[str, Any]) -> Any:
+    """One budgeted semantic check on a completed prompt task. None if not run."""
+    if task["action"].get("type") != "prompt":
+        return None
+    if not result.get("ok") or not result.get("summary"):
+        return None
+    from ..ops.verify import verify_semantic_match
+
+    asked = task["action"].get("prompt") or task.get("title") or ""
+    try:
+        return verify_semantic_match(request=asked,
+                                     result_summary=f'the scheduled task "{task.get("title")}"',
+                                     result_text=result.get("summary"))
+    except Exception:  # noqa: BLE001 — a check must never break the run it checks
+        logger.exception("the semantic check on task %s failed", task.get("id"))
+        return None
 
 
 def _should_notify(run: dict[str, Any]) -> bool:

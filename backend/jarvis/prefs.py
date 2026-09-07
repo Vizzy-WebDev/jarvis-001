@@ -53,6 +53,13 @@ DEFAULTS: dict[str, Any] = {
     # setting. A window wrapping past midnight is handled by the quiet-hours
     # module, not by this shape.
     "quietHours": {"enabled": True, "start": "23:00", "end": "08:00"},
+    # Whether a consequential CHAT answer gets a semantic check ("does this
+    # genuinely answer what was asked") after it has been given. Off by
+    # default: it is a real model call per checked answer, on a roster that is
+    # routinely rate limited, and chat is the most frequent surface there is.
+    # Built because the owner asked for it to exist and to be theirs to switch
+    # on — not for it to start spending on their behalf.
+    "verifyChatAnswers": False,
 }
 
 

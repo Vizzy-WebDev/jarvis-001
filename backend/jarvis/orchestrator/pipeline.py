@@ -302,6 +302,9 @@ class Orchestrator:
         # that returned `unlock` (see tools/find_capability.py). Per-turn and
         # per-call: nothing here outlives the turn that earned it.
         unlocked: set[str] = set()
+        # What this turn actually DID, for the observers downstream of it. The
+        # loop keeps the list; it does not know or care who reads it.
+        tools_used: list[str] = []
 
         for step in range(1, MAX_STEPS + 1):
             if cancel.is_set():
@@ -363,7 +366,8 @@ class Orchestrator:
                 self._bus.publish(
                     EventType.ASSISTANT_RESPONSE,
                     {"sessionId": request.session_id, "turnId": request.turn_id,
-                     "steps": step},
+                     "steps": step, "text": reply, "userText": request.text,
+                     "toolNames": list(tools_used)},
                 )
                 self._finish(state, request)
                 yield Done(reply, steps=step)
@@ -382,6 +386,7 @@ class Orchestrator:
             state.to(State.EXECUTING, f"step {step}")
             for call in completed.tool_calls:
                 result = self._execute_call(request, call)
+                tools_used.append(call.name)
                 yield ToolRan(call.name, result.ok, result.outcome, result.error)
                 results.append({
                     "id": call.id, "name": call.name,

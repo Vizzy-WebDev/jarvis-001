@@ -100,6 +100,16 @@ def run_job(job_id: str, *, event_bus: EventBus | None = None,
     if stall is not None and not answer:
         return _stall(job_id, stall["detail"], ebus, cause=stall["cause"])
 
+    # "It finished" is not the same as "it did what was asked". A checked
+    # mismatch is treated exactly like a stall — the SAME single retry, the same
+    # counter, the same escalation — rather than a second recovery mechanism
+    # with its own rules. An unchecked one changes nothing.
+    verdict = _verify_result(job, answer)
+    if verdict is not None and verdict.failed:
+        return _stall(job_id, f"it finished, but it did not do what was asked: "
+                              f"{verdict.reason or 'the result does not match the request'}",
+                      ebus, cause="did not match the request")
+
     job_store.update_job(job_id, {"status": "done", "result": answer,
                                   "finishedAt": now_iso(), "progress": 100,
                                   "currentStep": None})
@@ -112,6 +122,25 @@ def run_job(job_id: str, *, event_bus: EventBus | None = None,
     job_store.add_outbox(tier=3, summary=f'"{job["title"]}" finished.', job_id=job_id,
                          reason="finished")
     return {"status": "done", "result": answer}
+
+
+def _verify_result(job: dict[str, Any], answer: str) -> Any:
+    """One budgeted semantic check on a finished job. None when it did not run.
+
+    A job is worth the call in a way a chat reply usually is not: nobody watched
+    it happen, and its result is reported later as fact.
+    """
+    if not answer:
+        return None
+    from ..ops.verify import verify_semantic_match
+
+    try:
+        return verify_semantic_match(request=job.get("goal") or job.get("title") or "",
+                                     result_summary=f'the background job "{job.get("title")}"',
+                                     result_text=answer)
+    except Exception:  # noqa: BLE001 — a check that fails must not fail the job
+        logger.exception("the semantic check on job %s failed", job.get("id"))
+        return None
 
 
 def _park(job_id: str, parked: Any, ebus: EventBus) -> dict[str, Any]:

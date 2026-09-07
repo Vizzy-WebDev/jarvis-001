@@ -9,6 +9,8 @@ the port, disclosed · record-and-compare safety net first · desktop shortcut,
 which settles the architecture as one process on one port · relevance-assembled
 context (§23) · openWakeWord in the backend · **HIGH-risk actions require fresh
 human confirmation even when triggered by scheduled tasks or briefings.**
+psutil added for cross-platform system readings · semantic verification of
+consequential chat answers built, behind a preference, default off.
 
 ## Where things stand
 
@@ -23,7 +25,7 @@ human confirmation even when triggered by scheduled tasks or briefings.**
 | Intent router + fast path (§10/§11) | **Done** |
 | Orchestrator (§9) | **Done** |
 | Model gateway + 3 adapters + probe (§26/§27) | **Done** |
-| Built-in tools (§5) | **32 of ~62** — waves A-E landed |
+| Built-in tools (§5) | **36 of ~62** — waves A-F landed |
 | Scheduler + briefing (§13) | **Done** — tick loop off behind an interlock until cutover |
 | Background jobs (§13/§32/§43) | **Done** — trace-based recovery, one retry, escalation |
 | Sandbox + artifacts (§35/§45) | **Done** — isolation described as measured, files verified |
@@ -33,14 +35,22 @@ human confirmation even when triggered by scheduled tasks or briefings.**
 | Memory (§22) incl. importance/expiry | **Done** |
 | Context assembler with relevance (§23) | **Done** — `RelevanceContext` |
 | Wake word (§15) · conversation mode (§16) | **Done** (backend; a real utterance still needs a mic) |
-| Jobs · scheduler · heartbeat · ops · improvement · self | Not started |
+| Cost tracking (§25) | **Done** — measured, provider-reported and calculated, never blended |
+| Operational awareness: diagnosis, environment, verification | **Done** — one remedy per new failure; load judged against this machine |
+| Heartbeat · triggers · proactive attention | **Done** — tick loop off behind an interlock until cutover |
 | Front end F1–F4 (voice engines, shell, screens, Tailwind) | **Scaffold only** |
 | The 15 acceptance tests (§51) | Not started |
 | Cutover | Not started |
 
-`cd backend && python -m pytest tests -q` → **534 passed, 38 skipped.** The
+`cd backend && python -m pytest tests -q` → **655 passed, 38 skipped.** The
 skips are contract fixtures for routes not ported yet, so the suite doubles as a
 progress meter.
+
+A fresh-install boot with the heartbeat and sampler interlocks ON (scratch data
+dir, unusual port) migrates to `user_version 23`, registers and runs all nine
+diagnostic checks, records their outcomes in the trace, takes a real system
+sample, and answers a live route with 200 and an unknown id with a clean 404 —
+no unhandled exception anywhere in the log.
 
 ## Defects fixed during the port, disclosed
 
@@ -70,6 +80,17 @@ Each has a test that fails against the original behaviour.
 - **SDK-level retries** hid the 429s the gateway needs in order to bench a model
   and move on. Retry policy belongs to the gateway; both SDKs are constructed
   with `max_retries=0`.
+- **Every adapter discarded the usage the provider had already sent**, so spend
+  could only ever be estimated. It is read where each wire format is understood,
+  carried on the model port, and recorded off the event bus.
+- **The config-integrity check compared a time window, not content.** Any
+  external change to the secrets file landing inside the window was explained
+  away by a write the app had nothing to do with. It compares the hash of what
+  this app itself last wrote.
+- **A jobs test raced its own retry**: it forced a second stall while the retry's
+  worker thread was still running, so the assertion depended on which thread
+  wrote the status last. It only surfaced once the suite grew long enough to
+  change the timing.
 
 ## Verification in place
 
@@ -91,6 +112,25 @@ Each has a test that fails against the original behaviour.
 Run: `cd backend && python -m pytest tests/ -q`
 
 ## Open seams — deliberately visible, not forgotten
+
+- **Chat answers are verified AFTER they are given, not before**, and behind a
+  preference that is off by default (`verifyChatAnswers`). Gating a reply would
+  put a model call in front of every substantial answer and would mean the turn
+  loop importing the verification subsystem, which the fitness tests forbid. So
+  a mismatch is recorded and raised as a notice rather than withheld. Stated as
+  the trade-off it is; the owner asked for the mechanism to exist and to be
+  theirs to switch on.
+- **Balance polling covers OpenRouter only.** It is the one provider whose
+  credentials this build currently stores; ElevenLabs and Deepgram arrive with
+  the external-service key store in wave G. Adding one is a single
+  `register_reader()` call.
+- **Commitments are watched via the structured `expires_at` field**, not by
+  parsing dates out of prose. A date extracted from free text by regex is wrong
+  often enough that the notifications would be wrong often enough to ignore, and
+  this channel only works while it is trusted.
+- **`is_busy()` cannot see a call in a browser tab.** It reads process names, so
+  it is a dampener rather than a gate — and it is skippable for an emergency,
+  which is why it is a separate function from `is_reachable()`.
 
 - **Monitoring covers only the cross-platform conditions.** Watching a window, a
   process or the screen needs the desktop bridge (wave H); those kinds are
@@ -114,6 +154,10 @@ Run: `cd backend && python -m pytest tests/ -q`
   "new chat" silently leaks sticky model, unlocked tools and sticky style.
 - `run_code`'s sandbox description must describe the boundary as it actually is
   before that tool is ported (§35/§45).
+- `GET /api/prefs` now returns one key Node does not have (`verifyChatAnswers`).
+  The recording is untouched; the divergence is declared by name in
+  `tests/test_contract.py`'s `ADDED_KEYS`, and the recorded keys must still match
+  byte for byte — so it can only ever admit an added key, never a changed one.
 
 ## Things to carry into later waves
 

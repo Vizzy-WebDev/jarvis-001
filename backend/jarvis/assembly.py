@@ -90,13 +90,22 @@ def start_background_work() -> dict[str, bool]:
     provider account, act on shared state twice.
     """
     from .cost import balances, prices
+    from .heartbeat import engine as heartbeat
+    from .heartbeat.triggers import start_triggers
+    from .ops.environment import sampler
 
-    started = {"balances": False, "prices": False}
+    started = {"balances": False, "prices": False, "sampler": False, "heartbeat": False}
     if prices.is_refresh_enabled():
         seeded = prices.seed_local_model_prices()
         logger.info("[assembly] seeded %d local model prices", seeded)
         started["prices"] = True
     started["balances"] = balances.start()
+    started["sampler"] = sampler.start()
+    started["heartbeat"] = heartbeat.start(event_bus=bus)
+    if started["heartbeat"]:
+        # Only alongside the tick: the trigger feeds the same pipeline, so
+        # arming it while the tick is off would half-start the heartbeat.
+        start_triggers(bus)
     return started
 
 

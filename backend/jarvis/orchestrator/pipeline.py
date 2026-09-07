@@ -434,7 +434,10 @@ class Orchestrator:
     def _assemble(self, request: TurnRequest) -> AssembledContext:
         return self._assembler.assemble(
             session_id=request.session_id, text=request.text,
-            low_confidence=request.low_confidence)
+            low_confidence=request.low_confidence,
+            # A job's or a scheduled task's own turn has nobody to tell: what is
+            # waiting for the user belongs in a turn the user actually started.
+            background=request.surface in (Surface.JOB, Surface.SCHEDULED))
 
     def _declarations(self, request: TurnRequest, unlocked: set[str]) -> list[dict[str, Any]]:
         specs = self._registry.list()

@@ -98,6 +98,29 @@ def rules_section(rules_text: str) -> str:
             f"unprompted:\n{rules_text}")
 
 
+def notices_section(entries: list[dict[str, Any]] | None) -> str:
+    """Things waiting for the user, delivered into a turn they already started.
+
+    Never pushed: this is injected into a turn the user began, which is what
+    makes it an interruption they chose rather than one they were given. A row
+    is NOT marked delivered by appearing here — only by something acting on it,
+    so a turn that fails before the model replies loses nothing.
+    """
+    if not entries:
+        return ""
+    lines = []
+    for entry in entries:
+        if entry.get("source") == "heartbeat" or entry.get("source") == "verification":
+            lines.append(f"- {entry['summary']} (notice #{entry['id']} — if you mention this, "
+                         f"call acknowledge_notice with that number)")
+        else:
+            lines.append(f"- {entry['summary']} (use check_on_work or stop_working_on to "
+                         f"deal with it)")
+    return ("Waiting for them since you last spoke. Bring up what genuinely fits this "
+            "moment, in your own words, and let the rest wait — none of it is a script to "
+            "read out:\n" + "\n".join(lines))
+
+
 def self_focus_section(signals: dict[str, object] | None) -> str:
     """Emitted only when a signal actually fired — a thing to weigh, never a
     line to repeat back."""

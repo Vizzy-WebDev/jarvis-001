@@ -31,12 +31,15 @@ every provider rejects a transcript with an orphaned call.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from .. import conversation, prompt
 from ..memory import store as memory_store
+
+logger = logging.getLogger(__name__)
 
 #: The whole context budget for one turn, in ESTIMATED tokens. Deliberately well
 #: under the smallest context window on the roster: the budget exists to keep the
@@ -166,6 +169,23 @@ def trim_messages(messages: list[dict[str, Any]], budget_tokens: int) -> list[di
     return kept
 
 
+def _waiting_notices() -> list[dict[str, Any]]:
+    """Undelivered rows worth mentioning.
+
+    A READ, not a recorder — the same distinction that lets this module read
+    memory to build a prompt while the turn loop itself may not reach a recorder
+    at all. A failure here returns nothing: a turn must never fail because of a
+    notice.
+    """
+    from ..heartbeat import outbox
+
+    try:
+        return outbox.list_pending(max_tier=2)
+    except Exception:  # noqa: BLE001
+        logger.exception("could not read waiting notices")
+        return []
+
+
 class RelevanceContext:
     """The real assembler: a budget, memory chosen for this turn, and the tail of
     the conversation that fits in what is left."""
@@ -176,7 +196,7 @@ class RelevanceContext:
         self.memory_share = memory_share
 
     def assemble(self, *, session_id: str, text: str, low_confidence: bool = False,
-                 ) -> AssembledContext:
+                 background: bool = False) -> AssembledContext:
         memory_budget = int(self.budget_tokens * self.memory_share)
 
         conflicted = memory_store.conflicted_memory_ids()
@@ -190,15 +210,23 @@ class RelevanceContext:
         from ..improvement.store import active_rules_text
 
         rules = prompt.rules_section(active_rules_text())
+
+        # Things waiting for the user — only on a turn a PERSON started. A
+        # background job's own turn has nobody to tell, and putting a notice
+        # there would deliver it to the machinery instead of to them.
+        notices = "" if background else prompt.notices_section(_waiting_notices())
+
         system = prompt.system_instruction(memories=memories_text,
                                            low_confidence=low_confidence,
-                                           extra=[rules] if rules else None)
+                                           extra=[p for p in (rules, notices) if p])
         remaining = max(0, self.budget_tokens - estimate_tokens(system))
         messages = trim_messages(conversation.get_messages(session_id), remaining)
 
         included = ("system_instruction",)
         if rules:
             included += ("learned_rules",)
+        if notices:
+            included += ("waiting_notices",)
         if chosen:
             included += ("memory",)
         if messages:

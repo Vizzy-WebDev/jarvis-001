@@ -13,6 +13,9 @@ from ..webtext import title_of, to_text
 from ._http import get_text
 
 MAX_CHARS = 20000
+#: Below this, what came back is almost certainly a page shell rather than an
+#: article — worth rendering properly before reporting there is nothing there.
+THIN_CHARS = 600
 def _run(url: str = "") -> dict:
     target = str(url or "").strip()
     if not re.match(r"^https?://", target, re.I):
@@ -22,9 +25,27 @@ def _run(url: str = "") -> dict:
     except Exception as err:  # noqa: BLE001
         return {"ok": False, "error": f"Couldn't read that page ({err.__class__.__name__})."}
     text = to_text(markup)
+    rendered = False
+    if len(text) < THIN_CHARS:
+        # Almost nothing came back. That is usually a page that builds itself in
+        # the browser rather than a page with nothing on it, so it is worth
+        # actually running — headlessly, invisibly. A plain fetch that came back
+        # thin and an empty page look identical from here, and answering from
+        # the shell of a page is worse than taking the extra second.
+        from ..webrender import render
+
+        attempt = render(target)
+        if attempt.ok:
+            fuller = to_text(attempt.html)
+            if len(fuller) > len(text):
+                markup, text, rendered = attempt.html, fuller, True
+
     if not text:
-        return {"ok": False, "error": "That page had no readable text — it may need a browser."}
-    return {"ok": True, "url": target, "title": title_of(markup),
+        return {"ok": False,
+                "error": "That page had no readable text on it."
+                         if rendered else
+                         "That page had no readable text — it may need a real browser."}
+    return {"ok": True, "url": target, "title": title_of(markup), "rendered": rendered,
             "truncated": len(text) > MAX_CHARS, "text": text[:MAX_CHARS]}
 
 

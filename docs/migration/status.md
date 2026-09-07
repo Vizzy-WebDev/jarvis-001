@@ -25,7 +25,7 @@ consequential chat answers built, behind a preference, default off.
 | Intent router + fast path (§10/§11) | **Done** |
 | Orchestrator (§9) | **Done** |
 | Model gateway + 3 adapters + probe (§26/§27) | **Done** |
-| Built-in tools (§5) | **36 of ~62** — waves A-F landed |
+| Built-in tools (§5) | **49 of ~62** — waves A-G landed; the 7 desktop ones are wave H |
 | Scheduler + briefing (§13) | **Done** — tick loop off behind an interlock until cutover |
 | Background jobs (§13/§32/§43) | **Done** — trace-based recovery, one retry, escalation |
 | Sandbox + artifacts (§35/§45) | **Done** — isolation described as measured, files verified |
@@ -38,11 +38,15 @@ consequential chat answers built, behind a preference, default off.
 | Cost tracking (§25) | **Done** — measured, provider-reported and calculated, never blended |
 | Operational awareness: diagnosis, environment, verification | **Done** — one remedy per new failure; load judged against this machine |
 | Heartbeat · triggers · proactive attention | **Done** — tick loop off behind an interlock until cutover |
+| Content analysis (§20) · planning partner | **Done** — the free glance costs nothing; no question queue |
+| Attachments · uploads · Office documents | **Done** — inline or registered, never auto-read |
+| Folder Skills (§42) · pipelines | **Done** — two consent gates, stdlib TOML and zip |
+| Connectors: files · MCP · API · CLI | **Done** — browser and OAuth deferred, see below |
 | Front end F1–F4 (voice engines, shell, screens, Tailwind) | **Scaffold only** |
 | The 15 acceptance tests (§51) | Not started |
 | Cutover | Not started |
 
-`cd backend && python -m pytest tests -q` → **666 passed, 38 skipped.** The
+`cd backend && python -m pytest tests -q` → **877 passed, 34 skipped.** The
 skips are contract fixtures for routes not ported yet, so the suite doubles as a
 progress meter.
 
@@ -97,6 +101,16 @@ Each has a test that fails against the original behaviour.
   external change to the secrets file landing inside the window was explained
   away by a write the app had nothing to do with. It compares the hash of what
   this app itself last wrote.
+- **A camelCase split in a tool's DESCRIPTION re-created the false positive it
+  was added to remove**: "Search SharePoint" became "search share point", making
+  a harmless real tool risky. A name is an identifier where `updatePet` means
+  update; a description is prose where SharePoint is a proper noun.
+- **A capability calling another capability took a worker from the pool its own
+  caller was waiting in** — with enough in flight that is a deadlock, and a
+  deadlock there presents as the assistant simply stopping.
+- **A Skill pipeline's confirm decision read the global registry** rather than
+  the one being synced, so a sync against any other catalogue silently read the
+  wrong risk levels.
 - **A jobs test raced its own retry**: it forced a second stall while the retry's
   worker thread was still running, so the assertion depended on which thread
   wrote the status last. It only surfaced once the suite grew long enough to
@@ -122,6 +136,24 @@ Each has a test that fails against the original behaviour.
 Run: `cd backend && python -m pytest tests/ -q`
 
 ## Open seams — deliberately visible, not forgotten
+
+- **The visible browser connector is wave H.** `read_web_page` renders a
+  JavaScript-built page headlessly and invisibly, which is what a lookup needs;
+  driving a real window someone can watch is desktop work and ships where it can
+  be tested as it actually runs.
+- **Connector OAuth is not built**, so the bundled connector directory is not
+  ported either — every entry in it is an OAuth flow, and a directory of things
+  that cannot be connected is the fake functionality §45 forbids. Custom MCP,
+  API and CLI connectors that authenticate with a pasted key or token work in
+  full. The contract fixture reports as deliberately-deferred, with the reason.
+- **An MCP call connects per call rather than holding a process open.** A held
+  subprocess is a lifecycle to get right — reaping it, noticing it died, not
+  leaking one per connector — and a call is slower this way. The tool LIST is
+  cached in the connector's own config and refreshed explicitly, so building a
+  declaration never starts a server.
+- **A Skill's helper scripts are Python only.** The sandbox isolates Python;
+  shipping a runner for a language it cannot isolate would be a promise it
+  cannot keep.
 
 - **Chat answers are verified AFTER they are given, not before**, and behind a
   preference that is off by default (`verifyChatAnswers`). Gating a reply would

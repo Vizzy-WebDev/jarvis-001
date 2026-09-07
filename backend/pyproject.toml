@@ -11,6 +11,9 @@ dependencies = [
     "openai>=1.55",
     "google-genai>=1.0",
     "websockets>=13",
+    # The official MCP client. The original hand-wrote JSON-RPC over a spawned
+    # process to avoid a dependency; here it already is one, so the protocol is
+    # the library's problem rather than something this build can get subtly wrong.
     "mcp>=1.1",
     # Wake word (§15), running locally: audio never leaves the machine to decide
     # whether "hey Jarvis" was said. Downloads its ~1 MB model on first use.

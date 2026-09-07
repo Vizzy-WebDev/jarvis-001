@@ -48,6 +48,15 @@ def get_registry() -> CapabilityRegistry:
             if skills:
                 logger.info("[assembly] %d folder skill(s) available: %s",
                             len(skills), ", ".join(skills))
+
+            # Connector tools last: they are the most numerous and the least
+            # trusted, and registering them after the rest means one can never
+            # take a name a built-in or a Skill already answers to.
+            from .connectors.capabilities import sync as sync_connectors
+
+            connected = sync_connectors(registry)
+            if connected:
+                logger.info("[assembly] %d connector tool(s) available", len(connected))
             # Subscribed here rather than called from the turn loop: what a
             # capability did is already published, and a recorder that has to be
             # invoked is a dependency the loop should not carry.

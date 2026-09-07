@@ -62,6 +62,9 @@ def test_no_tool_imports_the_loader_or_the_things_built_on_it():
     assert offending(files_under("tools"), (
         "jarvis.tools.__init__", "jarvis.capabilities.execute",
         "jarvis.orchestrator", "jarvis.gateway",
+        # The composition root imports the loader, so reaching it from a tool is
+        # the same edge one hop further out — and it looks perfectly innocent.
+        "jarvis.assembly",
     )) == []
 
 

@@ -25,14 +25,16 @@ human confirmation even when triggered by scheduled tasks or briefings.**
 | Model gateway + 3 adapters + probe (§26/§27) | **Done** |
 | Built-in tools (§5) | **9 of ~62** — loader, contract and pattern established |
 | Architecture fitness functions | **Done** |
-| Wake word (§15) · conversation mode (§16) | Not started |
-| Context assembler with relevance (§23) | **Seam only** — `WindowContext` |
-| Memory · jobs · scheduler · heartbeat · ops · improvement · self | Not started |
+| Turn API + event stream + approval routes | **Done** |
+| Memory (§22) incl. importance/expiry | **Done** |
+| Context assembler with relevance (§23) | **Done** — `RelevanceContext` |
+| Wake word (§15) · conversation mode (§16) | **Done** (backend; a real utterance still needs a mic) |
+| Jobs · scheduler · heartbeat · ops · improvement · self | Not started |
 | Front end F1–F4 (voice engines, shell, screens, Tailwind) | **Scaffold only** |
 | The 15 acceptance tests (§51) | Not started |
 | Cutover | Not started |
 
-`cd backend && python -m pytest tests -q` → **260 passed, 40 skipped.** The
+`cd backend && python -m pytest tests -q` → **348 passed, 40 skipped.** The
 skips are contract fixtures for routes not ported yet, so the suite doubles as a
 progress meter.
 
@@ -86,14 +88,16 @@ Run: `cd backend && python -m pytest tests/ -q`
 
 ## Open seams — deliberately visible, not forgotten
 
-- `orchestrator/context.py`'s `WindowContext` does no relevance selection and
-  says so. The real assembler (§23) needs memory ported first.
-- `memory/review.py` — `PORTED = False`, with three real call sites wired
-  against it.
+- **A real "hey Jarvis" has never been said to this build.** The model is proven
+  not to wake on silence or noise, and every piece of plumbing around detection
+  is tested with the score forced — but recognising a genuine utterance needs a
+  microphone and a person. Owed by the front-end work.
+- `prompt.py` carries only what is true of THIS build. Sections for projects,
+  connectors, computer control, improvement and self arrive with their
+  subsystems; describing them earlier would be fake functionality aimed at the
+  model.
 - `session_hooks.py` — later modules must register their per-session cleanup or
   "new chat" silently leaks sticky model, unlocked tools and sticky style.
-- `GET /api/status` answers `configured: false` unconditionally. Honest for a
-  fresh install; must be revisited now that the registry exists.
 - `run_code`'s sandbox description must describe the boundary as it actually is
   before that tool is ported (§35/§45).
 

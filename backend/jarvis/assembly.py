@@ -95,10 +95,16 @@ def start_background_work() -> dict[str, bool]:
     from .ops.environment import sampler
 
     started = {"balances": False, "prices": False, "sampler": False, "heartbeat": False}
-    if prices.is_refresh_enabled():
-        seeded = prices.seed_local_model_prices()
-        logger.info("[assembly] seeded %d local model prices", seeded)
-        started["prices"] = True
+
+    # Seeding is NOT behind the interlock. The interlock stops two builds acting
+    # on the user's behalf; recording that a local model costs nothing is a fact
+    # about this machine, needs no network, never overwrites an existing price,
+    # and is what keeps a free model from reading as "no price known".
+    seeded = prices.seed_known_free_prices()
+    if seeded:
+        logger.info("[assembly] seeded %d free/local model prices", seeded)
+
+    started["prices"] = prices.start_price_maintenance()
     started["balances"] = balances.start()
     started["sampler"] = sampler.start()
     started["heartbeat"] = heartbeat.start(event_bus=bus)

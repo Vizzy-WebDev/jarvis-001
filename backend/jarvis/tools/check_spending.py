@@ -37,6 +37,7 @@ def _run(period: str = "month") -> dict[str, Any]:
 
     top = max(groups, key=lambda g: g["calls"])
     priceless = data["pricelessGroups"]
+    free = data["freeGroups"]
     notes = []
     if data["calculated"] is None:
         notes.append("No price is on record for anything used in this period, so there is "
@@ -47,6 +48,13 @@ def _run(period: str = "month") -> dict[str, Any]:
                      f"Usage with no known price ({names}) is counted but not costed — "
                      f"say so rather than presenting the total as complete.")
 
+    if free:
+        names = ", ".join(f"{g['modelId'] or g['provider']}" for g in free[:5])
+        # "Free" and "we don't know" both come out as no money, and saying which
+        # one it was is the whole difference between good news and missing data.
+        notes.append(f"{names} cost nothing — genuinely free or running locally, not "
+                     f"missing a price. Say free rather than unknown.")
+
     return {
         "ok": True,
         "period": wanted,
@@ -56,6 +64,7 @@ def _run(period: str = "month") -> dict[str, Any]:
         "calculated": data["calculated"],
         "providerReported": data["providerReported"],
         "pricelessGroups": priceless,
+        "freeGroups": free,
         "mostUsed": {"modelId": top["modelId"], "provider": top["provider"],
                      "calls": top["calls"]},
         "note": " ".join(notes) or "Every number here was counted, not estimated.",
@@ -67,9 +76,11 @@ SPEC = CapabilitySpec(
     name="check_spending",
     description=("Check real recorded usage and spend across every paid service — tokens, "
                  "characters, seconds — for today, this week, or this month. Use it for any "
-                 "question about cost, spending, usage or which model gets used most. Some "
-                 "usage has no price on record and therefore no money figure: say that "
-                 "plainly rather than presenting the total as if it were complete."),
+                 "question about cost, spending, usage or which model gets used most. Two "
+                 "different things come out as no money and must never be confused: usage "
+                 "that was genuinely FREE (a local or free model — say free), and usage with "
+                 "no price on record (say the cost is not known, and that the total is "
+                 "therefore incomplete)."),
     input_schema={"type": "object", "properties": {
         "period": {"type": "string", "description": '"today", "week" or "month".'}},
         "required": []},

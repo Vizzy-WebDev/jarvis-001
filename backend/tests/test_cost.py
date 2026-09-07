@@ -308,3 +308,146 @@ def test_check_spending_on_an_empty_period_says_so_rather_than_reporting_zero_sp
     answer = SPEC.handler(period="today")
     assert answer["measured"] == [] and answer["calculated"] is None
     assert "yet" in answer["note"]
+
+
+# --- free is a price; unpriced is not -----------------------------------------
+#
+# These two states both come out as "no money owed", and conflating them is the
+# failure this section exists to prevent: reporting an unpriced model as $0
+# understates spend, and reporting a free model as unpriced makes a genuinely
+# free month look like a month with no data.
+
+def _register(model: str, *, kind: str = "local", key_required: bool = False,
+              base_url: str = "http://127.0.0.1:11434/v1") -> dict:
+    conn = connections.add_connection(adapter="openai-compatible", base_url=base_url,
+                                      label=model, provider="custom", kind=kind,
+                                      key_required=key_required)
+    return registry.add_model(connection_id=conn["id"], model=model)
+
+
+def test_a_local_model_is_seeded_at_zero_rather_than_left_unpriced():
+    _register("llama3")
+    assert prices.seed_known_free_prices() == 1
+    price = store.get_price("openai-compatible", "llama3")
+    assert (price["priceIn"], price["priceOut"], price["source"]) == (0.0, 0.0, "built_in")
+
+
+def test_a_provider_labelled_free_variant_is_seeded_but_a_guessed_one_is_not():
+    """`:free` is the provider's own label. `flash -> free` is our name regex,
+    which a paid-tier key matches just as well — good enough to rank a model,
+    nowhere near good enough to assert what it costs."""
+    _register("meta-llama/llama-3-8b:free", kind="gateway", key_required=True,
+              base_url="https://openrouter.ai/api/v1")
+    _register("gemini-3.5-flash", kind="first-party", key_required=True,
+              base_url="https://generativelanguage.googleapis.com")
+
+    prices.seed_known_free_prices()
+    assert store.get_price("openai-compatible", "meta-llama/llama-3-8b:free")["priceIn"] == 0.0
+    assert store.get_price("openai-compatible", "gemini-3.5-flash") is None
+
+
+def test_seeding_never_overwrites_a_price_someone_actually_set():
+    _register("llama3")
+    prices.set_user_price(provider="openai-compatible", model_id="llama3",
+                          price_in=0.5, price_out=0.5)
+    assert prices.seed_known_free_prices() == 0
+    assert store.get_price("openai-compatible", "llama3")["source"] == "user"
+
+
+def test_seeding_happens_with_the_network_interlock_off(monkeypatch):
+    """The interlock stops two builds acting on the user's behalf. Recording that
+    a local model costs nothing is a fact about this machine, not an action."""
+    from jarvis import assembly
+
+    monkeypatch.delenv(prices.ENABLE_ENV, raising=False)
+    _register("llama3")
+    started = assembly.start_background_work()
+    assert started["prices"] is False, "the network refresh must stay off"
+    assert store.get_price("openai-compatible", "llama3")["priceIn"] == 0.0
+
+
+def test_free_usage_is_reported_as_free_and_unpriced_usage_as_unknown():
+    store.record_event(provider="openai-compatible", model_id="llama3",
+                       unit_kind="tokens", units_in=5000, units_out=5000)
+    store.record_event(provider="openai", model_id="mystery",
+                       unit_kind="tokens", units_in=1000, units_out=0)
+    store.set_price(provider="openai-compatible", model_id="llama3", price_in=0.0,
+                    price_out=0.0, source="built_in")
+
+    data = report.usage_breakdown("1970-01-01T00:00:00.000Z")
+    assert [g["modelId"] for g in data["freeGroups"]] == ["llama3"]
+    assert [g["modelId"] for g in data["pricelessGroups"]] == ["mystery"]
+    # The free one is IN the total (at zero); the unpriced one is not in it at all.
+    assert data["calculated"] == {"amount": 0.0, "currency": "USD"}
+
+
+def test_a_month_of_entirely_free_usage_is_a_real_zero_not_a_missing_total():
+    store.record_event(provider="openai-compatible", model_id="llama3",
+                       unit_kind="tokens", units_in=9999, units_out=9999)
+    store.set_price(provider="openai-compatible", model_id="llama3", price_in=0.0,
+                    price_out=0.0, source="built_in")
+    data = report.usage_breakdown("1970-01-01T00:00:00.000Z")
+    assert data["calculated"] == {"amount": 0.0, "currency": "USD"}
+    assert data["pricelessGroups"] == []
+
+
+def test_a_price_row_with_no_numbers_in_it_is_not_a_price():
+    """Reachable by clearing a user price. Multiplying it out would report "this
+    was free" from no data at all."""
+    store.set_price(provider="p", model_id="m", price_in=None, price_out=None, source="user")
+    assert prices.calculate(provider="p", model_id="m", units_in=1000, units_out=1000) is None
+    advisor.reset_cache()
+    assert advisor.observed_cost_tier("p", "m") is None
+
+
+def test_the_router_treats_free_as_cheapest_and_unpriced_as_no_opinion():
+    from jarvis.gateway.routing import Task, build_candidates
+
+    prices.set_user_price(provider="p", model_id="free-one", price_in=0.0, price_out=0.0)
+    advisor.reset_cache()
+    assert advisor.observed_cost_tier("p", "free-one") == 0
+    assert advisor.observed_cost_tier("p", "unknown-one") is None
+
+    entries = [
+        {"id": "free", "enabled": True, "provider": "p", "model": "free-one",
+         "adapter": "openai-compatible", "keyRequired": False, "kind": "local",
+         "caps": {"tools": True}, "tier": {"speed": 3, "quality": 3, "cost": 4}},
+        {"id": "unknown", "enabled": True, "provider": "p", "model": "unknown-one",
+         "adapter": "openai-compatible", "keyRequired": False, "kind": "local",
+         "caps": {"tools": True}, "tier": {"speed": 3, "quality": 3, "cost": 0}},
+    ]
+    # The free model's catalog guess says "expensive"; the measured $0 overrides
+    # it, and the unpriced model keeps its guess.
+    ranked = [e["id"] for e in build_candidates(Task(text="hi", background=True), entries=entries)]
+    assert ranked[0] == "free"
+
+
+def test_check_spending_says_free_rather_than_unknown():
+    from jarvis.tools.check_spending import SPEC
+
+    store.record_event(provider="openai-compatible", model_id="llama3",
+                       unit_kind="tokens", units_in=100, units_out=100)
+    store.set_price(provider="openai-compatible", model_id="llama3", price_in=0.0,
+                    price_out=0.0, source="built_in")
+    answer = SPEC.handler(period="month")
+    assert "cost nothing" in answer["note"] and "free" in answer["note"]
+    assert answer["calculated"]["amount"] == 0.0
+    assert [g["modelId"] for g in answer["freeGroups"]] == ["llama3"]
+
+
+def test_price_maintenance_stays_off_without_its_interlock(monkeypatch):
+    monkeypatch.delenv(prices.ENABLE_ENV, raising=False)
+    assert prices.start_price_maintenance() is False
+
+
+def test_price_maintenance_actually_pulls_when_switched_on(monkeypatch):
+    """It existed and was tested, and nothing ever called it."""
+    monkeypatch.setenv(prices.ENABLE_ENV, "1")
+    pulled = []
+    monkeypatch.setattr(prices, "refresh_from_openrouter",
+                        lambda **kw: pulled.append(1) or {"ok": True, "updated": 0})
+    try:
+        assert prices.start_price_maintenance() is True
+        assert pulled == [1]
+    finally:
+        prices.stop_price_maintenance()

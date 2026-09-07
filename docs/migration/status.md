@@ -42,7 +42,7 @@ consequential chat answers built, behind a preference, default off.
 | The 15 acceptance tests (§51) | Not started |
 | Cutover | Not started |
 
-`cd backend && python -m pytest tests -q` → **655 passed, 38 skipped.** The
+`cd backend && python -m pytest tests -q` → **666 passed, 38 skipped.** The
 skips are contract fixtures for routes not ported yet, so the suite doubles as a
 progress meter.
 
@@ -83,6 +83,16 @@ Each has a test that fails against the original behaviour.
 - **Every adapter discarded the usage the provider had already sent**, so spend
   could only ever be estimated. It is read where each wire format is understood,
   carried on the model port, and recorded off the event bus.
+- **A free model read as "no price known"** — the $0 seeding sat behind the
+  network interlock, and the provider price refresh was written, tested and
+  never called by anything. Free and unpriced both come out as no money owed,
+  and conflating them either understates spend or makes a genuinely free month
+  look like missing data. Seeding now runs on every start (it needs no network
+  and writes a fact); only the refresh is behind the interlock, and it finally
+  has the timer it was missing.
+- **A price row with both sides null costed usage at $0.00**, asserting "this was
+  free" from no data. "A price row exists" and "a price is known" are now
+  different tests, in both the report and the router's cost signal.
 - **The config-integrity check compared a time window, not content.** Any
   external change to the secrets file landing inside the window was explained
   away by a write the app had nothing to do with. It compares the hash of what

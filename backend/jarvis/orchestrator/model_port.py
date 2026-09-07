@@ -107,5 +107,13 @@ class ModelClient(Protocol):
         system: str,
         tools: list[dict[str, Any]],
         session_id: str,
+        need: dict[str, bool] | None = None,
     ) -> Iterator[ModelEvent]:
+        """`need` is what this turn REQUIRES — vision, video, audio, web search.
+
+        Part of the port because it is the orchestrator's own knowledge: it is
+        the side that knows an image was attached. A model that cannot see one
+        must be excluded BEFORE it is called, not discovered to be blind by
+        being handed bytes it cannot read.
+        """
         ...

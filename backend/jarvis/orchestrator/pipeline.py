@@ -145,6 +145,9 @@ class TurnRequest:
     #: connectors). Enforced in the policy layer, not here.
     allowed_names: frozenset[str] | None = None
     grants: list[Grant] | None = None
+    #: Upload ids attached to this turn. Ids, never paths: what arrives from the
+    #: browser is untrusted, and resolving one is the upload store's job.
+    attachments: tuple[str, ...] = ()
 
 
 class Orchestrator:
@@ -161,6 +164,9 @@ class Orchestrator:
         self._registry = registry or default_registry
         self._bus = event_bus or default_bus
         self._states: dict[str, AssistantState] = {}
+        #: What each in-flight turn's attachments require, keyed by turn id. Set
+        #: when the attachments are prepared and read once by the model loop.
+        self._needs: dict[str, dict[str, bool]] = {}
         self._lock = threading.RLock()
 
     def state_for(self, session_id: str) -> AssistantState:
@@ -201,7 +207,17 @@ class Orchestrator:
             yield Done("Sorry — I didn't catch that.", steps=0)
             return
 
-        conversation.push_user_text(request.session_id, text)
+        # Attachments are prepared BEFORE the message is pushed: what the model
+        # sees has to include them, and a document read as text has to be part
+        # of the message itself rather than an aside.
+        prepared = self._attachments(request)
+        message_text = text
+        if prepared is not None:
+            from ..attachments import compose_message
+
+            message_text = compose_message(text, prepared)
+        conversation.push_user_text(request.session_id, message_text,
+                                    media=prepared.media if prepared else None)
         try:
             state.to(State.THINKING, "turn started")
         except Exception:  # noqa: BLE001 — an odd starting state must not lose the turn
@@ -297,6 +313,10 @@ class Orchestrator:
     def _run_model_loop(
         self, request: TurnRequest, state: AssistantState, cancel: threading.Event
     ) -> Iterator[TurnEvent]:
+        # What the attachments on this turn require of a model. Computed once and
+        # passed on every step: an image in the transcript still needs a model
+        # that can see it three steps later.
+        needs = dict(self._needs.pop(request.turn_id, {}))
         spoken_so_far: list[str] = []
         # What this turn has been granted beyond the core set, by a capability
         # that returned `unlock` (see tools/find_capability.py). Per-turn and
@@ -326,6 +346,7 @@ class Orchestrator:
                 for event in self._model.stream(
                     messages=assembled.messages, system=assembled.system,
                     tools=tools, session_id=request.session_id,
+                    need=needs or None,
                 ):
                     if cancel.is_set():
                         yield self._interrupt(request, state, "".join(spoken_so_far))
@@ -430,6 +451,26 @@ class Orchestrator:
             low_confidence=request.low_confidence,
             operation_id=operation_id,
         )
+
+    def _attachments(self, request: TurnRequest) -> Any:
+        """Read this turn's attachments, or None when there are none.
+
+        A failure here never fails the turn: the user still asked something, and
+        "I couldn't read that file" is a better answer than no answer at all.
+        """
+        if not request.attachments:
+            return None
+        from ..attachments import prepare_for_turn
+
+        try:
+            prepared = prepare_for_turn(list(request.attachments),
+                                        session_id=request.session_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("could not prepare attachments for %s", request.turn_id)
+            return None
+        if prepared.need:
+            self._needs[request.turn_id] = prepared.need
+        return prepared
 
     def _assemble(self, request: TurnRequest) -> AssembledContext:
         return self._assembler.assemble(

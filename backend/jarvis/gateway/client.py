@@ -67,8 +67,9 @@ class Gateway:
         model_id: str | None = None,
         manual_model_id: str | None = None,
         background: bool = False,
+        need: dict[str, bool] | None = None,
     ) -> Iterator[ModelEvent]:
-        task = task or Task(text=_last_user_text(messages))
+        task = task or Task(text=_last_user_text(messages), need=dict(need or {}))
         candidates = build_candidates(task, balance=self.balance,
                                       model_id=model_id, manual_model_id=manual_model_id)
         if not candidates:

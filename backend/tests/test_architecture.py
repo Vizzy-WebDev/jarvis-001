@@ -80,6 +80,18 @@ def test_a_tool_gets_the_registry_passed_in_rather_than_reaching_for_it():
     assert bad == []
 
 
+def test_a_tool_asks_a_model_through_the_narrow_seam_not_the_gateway():
+    """`jarvis/ai.py` exists to be the one thing a tool may ask a model through.
+
+    It preserves a real boundary rather than a naming preference: a tool should
+    say "answer this", not pick a candidate and drive a stream. The seam itself
+    must stay clear of the loader, or it becomes the cycle it was added to avoid.
+    """
+    assert offending([PACKAGE / "ai.py"], (
+        "jarvis.tools", "jarvis.capabilities", "jarvis.orchestrator.pipeline",
+    )) == []
+
+
 # --- the authority ceiling ---------------------------------------------------
 
 def test_the_policy_layer_stays_pure():

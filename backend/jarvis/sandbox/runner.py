@@ -120,14 +120,28 @@ def child_environment() -> dict[str, str]:
 
 
 def run_python(code: str, *, timeout_s: float = DEFAULT_TIMEOUT_S,
-               keep_files: bool = True) -> SandboxResult:
-    """Run a Python snippet and report what it did, including any files it made."""
+               keep_files: bool = True,
+               input_files: dict[str, str] | None = None) -> SandboxResult:
+    """Run a Python snippet and report what it did, including any files it made.
+
+    `input_files` puts real data next to the script — `{"data.csv": "..."}` — so
+    an analysis runs over the whole file rather than over however much of it fits
+    in a prompt. Names are flattened to a basename: a caller must not be able to
+    write outside the workspace by naming its file "../../.env".
+    """
     if not (code or "").strip():
         return SandboxResult(ok=False, backend=backend(), error="There's no code to run.")
 
     workspace = Path(tempfile.mkdtemp(prefix="jarvis-run-"))
     script = workspace / "script.py"
     script.write_text(code, encoding="utf-8")
+    given = set()
+    for name, content in (input_files or {}).items():
+        safe = Path(str(name)).name or "input"
+        if safe == "script.py":
+            safe = "input.py"             # never let an input overwrite the script
+        (workspace / safe).write_text(content, encoding="utf-8")
+        given.add(safe)
 
     command = (["wsl.exe", "-e", "python3", "script.py"] if backend() == "wsl"
                else [sys.executable, "script.py"])
@@ -147,7 +161,7 @@ def run_python(code: str, *, timeout_s: float = DEFAULT_TIMEOUT_S,
     produced = []
     if keep_files:
         produced = [str(p) for p in sorted(workspace.iterdir())
-                    if p.name != "script.py"][:MAX_OUTPUT_FILES]
+                    if p.name != "script.py" and p.name not in given][:MAX_OUTPUT_FILES]
 
     return SandboxResult(
         ok=completed.returncode == 0,

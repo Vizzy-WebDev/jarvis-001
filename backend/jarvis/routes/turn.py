@@ -70,9 +70,15 @@ def _phase_of(event: dict[str, Any]) -> str:
 
 @router.get("/chat/stream")
 async def chat_stream(request: Request, message: str = "", source: str = "text",
-                      confidence: float | None = None):
+                      confidence: float | None = None, attachments: str = ""):
     text = (message or "").strip()
-    if not text:
+    # Attachment ids ride in the query string because EventSource can only make a
+    # GET with no body. Ids, never paths — see routes/uploads.py.
+    attached = tuple(part.strip() for part in (attachments or "").split(",") if part.strip())
+
+    # Sending a photo with no words is an ordinary thing to do, so an empty
+    # message is only an error when nothing is attached either.
+    if not text and not attached:
         return JSONResponse({"error": "No message provided."}, status_code=400)
 
     surface = Surface.VOICE if source == "voice" else Surface.TEXT
@@ -85,6 +91,7 @@ async def chat_stream(request: Request, message: str = "", source: str = "text",
         autonomy=Autonomy.INTERACTIVE,
         low_confidence=low_confidence,
         turn_id=uuid.uuid4().hex,
+        attachments=attached,
     )
 
     phase = {"value": "thinking"}

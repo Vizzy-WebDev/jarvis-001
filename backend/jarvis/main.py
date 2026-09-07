@@ -23,7 +23,9 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from .routes import approvals, artifacts, conversations, core, events, turn, voice
+from .routes import (
+    approvals, artifacts, conversations, core, events, turn, uploads, voice,
+)
 
 # The built Next.js export. Absent during early migration, when the front end is
 # still being served by the Node app — the API is fully usable without it.
@@ -47,6 +49,7 @@ def create_app() -> FastAPI:
     app.include_router(approvals.router)
     app.include_router(voice.router)
     app.include_router(artifacts.router)
+    app.include_router(uploads.router)
 
     # Everything here is behind its own interlock and does nothing until
     # cutover — see assembly.start_background_work().

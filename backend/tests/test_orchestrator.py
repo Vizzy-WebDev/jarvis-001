@@ -48,7 +48,7 @@ class StubModel:
         self.steps = [list(s) for s in steps]
         self.calls: list[dict] = []
 
-    def stream(self, *, messages, system, tools, session_id):
+    def stream(self, *, messages, system, tools, session_id, need=None):
         self.calls.append({"messages": list(messages), "system": system, "tools": tools})
         if not self.steps:
             raise AssertionError("the model was called more times than the test scripted")

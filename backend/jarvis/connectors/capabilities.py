@@ -20,6 +20,7 @@ import re
 from typing import Any
 
 from ..capabilities import CapabilityKind, CapabilityRegistry, CapabilitySpec, Risk
+from ..redact import redact_text
 from . import api_client, cli_client, files_connector, mcp_client, risk, store
 
 logger = logging.getLogger(__name__)
@@ -85,13 +86,18 @@ def _dispatch(connector_id: str, kind: str, tool_name: str,
             return cli_client.dispatch(tool_name, args, config)
         if kind == "mcp":
             return mcp_client.dispatch(tool_name, args, config)
+    # A failure's text goes back to the MODEL, and from there into the saved
+    # conversation and the next provider's request. A connector holds a key —
+    # in a header, or in a query string — and a service that quotes the request
+    # back in its error would otherwise send it straight through.
     except PermissionError as err:
-        return {"ok": False, "error": str(err)}
+        return {"ok": False, "error": redact_text(str(err))}
     except (ValueError, KeyError, FileNotFoundError, NotADirectoryError) as err:
-        return {"ok": False, "error": str(err)}
+        return {"ok": False, "error": redact_text(str(err))}
     except Exception as err:  # noqa: BLE001 — an external service failing is a result
-        logger.info("connector %s failed on %s: %s", connector_id, tool_name, err)
-        return {"ok": False, "error": f"{tool_name} didn't work: {err}"}
+        safe = redact_text(f"{tool_name} didn't work: {err}")
+        logger.info("connector %s failed on %s: %s", connector_id, tool_name, safe)
+        return {"ok": False, "error": safe}
     return {"ok": False, "error": f"{tool_name} is not something that connection can do."}
 
 

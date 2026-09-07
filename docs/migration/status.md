@@ -42,11 +42,12 @@ consequential chat answers built, behind a preference, default off.
 | Attachments · uploads · Office documents | **Done** — inline or registered, never auto-read |
 | Folder Skills (§42) · pipelines | **Done** — two consent gates, stdlib TOML and zip |
 | Connectors: files · MCP · API · CLI | **Done** — browser and OAuth deferred, see below |
+| Secret handling: child environments · error redaction | **Done** — one scrub, one redaction, both asserted |
 | Front end F1–F4 (voice engines, shell, screens, Tailwind) | **Scaffold only** |
 | The 15 acceptance tests (§51) | Not started |
 | Cutover | Not started |
 
-`cd backend && python -m pytest tests -q` → **877 passed, 34 skipped.** The
+`cd backend && python -m pytest tests -q` → **891 passed, 34 skipped.** The
 skips are contract fixtures for routes not ported yet, so the suite doubles as a
 progress meter.
 
@@ -115,6 +116,23 @@ Each has a test that fails against the original behaviour.
   worker thread was still running, so the assertion depended on which thread
   wrote the status last. It only surfaced once the suite grew long enough to
   change the timing.
+- **A CLI connector's program inherited every API key.** Saving a key writes it
+  into this process's environment as well as the .env file, and the CLI
+  connector launched its child with no environment of its own — so `git`, run
+  from a saved template, had exactly the access to `GEMINI_API_KEY` that a
+  sandboxed script is carefully denied. The sandbox's scrub is now a shared leaf
+  (`jarvis/childenv.py`) used by both, and an architecture test requires every
+  `subprocess` launch under `jarvis/` to name the environment it gives its child
+  — with two exceptions, the desktop-shell and browser launchers, which hand a
+  target to the user's own application.
+- **Raw provider error text was stored and shown unredacted.** A provider that
+  quotes the request back in its error — several do — put the key into
+  `data/model-availability.json`, the log, and (for a connector) the tool result
+  the model reads and the conversation saves. Node's `models/redact.js` was
+  never ported; `jarvis/redact.py` is that port, applied at four chokepoints
+  rather than by each caller: the availability record, the gateway's one source
+  of failure text, the connector dispatcher, and an API connector's response
+  body — where a query-auth service has just been sent the key in the URL.
 
 ## Verification in place
 
@@ -154,6 +172,13 @@ Run: `cd backend && python -m pytest tests/ -q`
 - **A Skill's helper scripts are Python only.** The sandbox isolates Python;
   shipping a runner for a language it cannot isolate would be a promise it
   cannot keep.
+- **A CLI connector cannot be given ONE secret.** Its program now runs with the
+  same scrubbed environment a sandboxed script gets, which is the fix; what does
+  not exist yet is the deliberate opposite — handing one connector one
+  credential on purpose. Nothing known needs it (`git`, `gh` and `aws` read
+  their own config files rather than the environment), and the shape when it is
+  wanted is a per-connector `envRefs` — `{"GH_TOKEN": "<secretRef>"}` resolved
+  through `get_secret` at call time. An explicit grant, never inheritance.
 
 - **Chat answers are verified AFTER they are given, not before**, and behind a
   preference that is off by default (`verifyChatAnswers`). Gating a reply would

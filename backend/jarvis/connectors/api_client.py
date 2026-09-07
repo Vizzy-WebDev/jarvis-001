@@ -15,6 +15,8 @@ import re
 from typing import Any
 from urllib.parse import urljoin
 
+from ..redact import redact_text
+
 HTTP_METHODS = ("get", "post", "put", "patch", "delete")
 BODY_METHODS = ("post", "put", "patch")
 MAX_RESPONSE_CHARS = 20000
@@ -173,7 +175,11 @@ def dispatch(name: str, args: dict[str, Any], config: dict[str, Any], *,
     response = request(method=operation["method"], url=url, headers=headers,
                        params=params, json=body if body is not None else None)
 
-    text = getattr(response, "text", "") or ""
+    # Whatever comes back goes to the model, and the key has just been sent — in
+    # a header, or (for `kind == "query"`) in the URL itself, which is what an
+    # error body quotes back most often. Redacted before it can be read, logged
+    # or saved into the conversation.
+    text = str(redact_text(getattr(response, "text", "") or "") or "")
     truncated = len(text) > MAX_RESPONSE_CHARS
     answer: dict[str, Any] = {"ok": response.status_code < 400,
                               "status": response.status_code,

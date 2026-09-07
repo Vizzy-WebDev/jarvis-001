@@ -193,6 +193,38 @@ def test_only_adapters_import_provider_sdks():
 
 # --- leaf modules ------------------------------------------------------------
 
+#: The two places a child process legitimately gets the real environment: both
+#: hand a target to the user's OWN desktop shell or browser. That child is the
+#: user's application — not model-written code, and not a program a connector
+#: template names — and it needs the real environment to behave normally.
+DESKTOP_LAUNCHERS = ("jarvis/tools/open_app.py", "jarvis/tools/_http.py")
+
+
+def test_every_child_process_is_given_an_environment_deliberately():
+    """Saving an API key writes it into this process's environment, so a child
+    that inherits `os.environ` inherits every key the user has configured. The
+    sandbox got this right and the CLI connector did not — the difference was
+    invisible until someone went looking, which is what this test replaces."""
+    offences = []
+    for path in PACKAGE.rglob("*.py"):
+        relative = path.relative_to(PACKAGE.parent).as_posix()
+        if relative in DESKTOP_LAUNCHERS:
+            continue
+        for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+            if not isinstance(node, ast.Call):
+                continue
+            target = node.func
+            name = (target.attr if isinstance(target, ast.Attribute)
+                    else target.id if isinstance(target, ast.Name) else "")
+            if name not in ("run", "Popen") or not isinstance(target, ast.Attribute):
+                continue
+            if getattr(target.value, "id", "") != "subprocess":
+                continue
+            if not any(kw.arg == "env" for kw in node.keywords):
+                offences.append(f"{relative}:{node.lineno} launches a child with no env=")
+    assert offences == []
+
+
 @pytest.mark.parametrize("leaf", ["store.py", "config.py", "jscompat.py"])
 def test_the_persistence_leaves_stay_leaves(leaf):
     """Everything imports these; if they import anything back, nothing can be

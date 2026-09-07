@@ -315,6 +315,30 @@ def test_a_failing_command_reports_its_real_error():
     assert result["ok"] is False and "not a git repository" in result["error"]
 
 
+def test_the_program_never_sees_the_users_api_keys(monkeypatch):
+    """Saving a key writes it into this process's environment as well as the
+    .env file, so a child that inherits os.environ can read every one of them.
+    `git` had exactly the access to GEMINI_API_KEY that a sandboxed script does
+    not, for the same reason and with none of the care."""
+    monkeypatch.setenv("GEMINI_API_KEY", "AIzaTHEREALTHING123")
+    monkeypatch.setenv("JARVIS_SECRET_MY_GATEWAY", "hunter2")
+    monkeypatch.setenv("SOME_SERVICE_TOKEN", "tok")
+    ran = {}
+
+    def run(**kw):
+        ran.update(kw)
+        return subprocess.CompletedProcess(args=kw["args"], returncode=0, stdout="",
+                                           stderr="")
+
+    cli_client.dispatch("git_log", {"count": "5"}, CLI_CONFIG, run=run)
+    child = ran["env"]
+    assert "GEMINI_API_KEY" not in child
+    assert "JARVIS_SECRET_MY_GATEWAY" not in child
+    assert "SOME_SERVICE_TOKEN" not in child
+    # A scrub, not an empty environment: the program still has to be findable.
+    assert "PATH" in child
+
+
 def test_a_command_that_is_not_installed_says_so():
     config = {"command": "definitely-not-installed-anywhere", "commands": [
         {"name": "x", "argv": []}]}
@@ -438,6 +462,68 @@ def test_a_connector_that_fails_returns_a_result_rather_than_raising():
     finally:
         module.dispatch = original
     assert result["ok"] is False and "the service is down" in result["error"]
+
+
+def test_a_failure_that_quotes_the_key_does_not_reach_the_model():
+    """A connector result is read by the model, saved in the conversation, and
+    sent to the next provider. A service that echoes the request back in its
+    error would otherwise carry the key through all three."""
+    from jarvis.config import save_secret
+    from jarvis.redact import MASK
+
+    save_secret("pet_store", "sk-petstorekey0123456789")
+    _api_connector(secretRef="pet_store")
+    registry = CapabilityRegistry()
+    capabilities.sync(registry)
+
+    import jarvis.connectors.api_client as module
+
+    original = module.dispatch
+
+    def leaky(*a, **k):
+        raise RuntimeError("401 for https://example.test/pet?api_key=sk-petstorekey0123456789")
+
+    module.dispatch = leaky
+    try:
+        result = registry.get("pet_store__getpet").handler()
+    finally:
+        module.dispatch = original
+    assert "sk-petstorekey0123456789" not in result["error"]
+    assert MASK in result["error"]
+    assert "401" in result["error"], "the failure is still legible"
+
+
+def test_an_api_response_that_echoes_the_key_is_cleaned_before_anyone_reads_it():
+    from jarvis.config import save_secret
+    from jarvis.redact import MASK
+
+    save_secret("pet_store", "sk-petstorekey0123456789")
+    config = {"baseUrl": "https://example.test", "secretRef": "pet_store",
+              "auth": {"kind": "query", "name": "api_key"},
+              "operations": [{"name": "getpet", "method": "GET", "path": "/pet"}]}
+    result = api_client.dispatch("getpet", {}, config, request=lambda **kw: _Response(
+        status_code=403,
+        text='{"error":"key sk-petstorekey0123456789 is not authorised"}'))
+    assert "sk-petstorekey0123456789" not in result["body"]
+    assert "sk-petstorekey0123456789" not in result["error"]
+    assert MASK in result["body"]
+
+
+# --- an MCP server ------------------------------------------------------------
+
+def test_a_local_mcp_server_does_not_inherit_this_processs_environment():
+    """`env=None` is the SDK's own safe default (HOME, LOGNAME, PATH, SHELL,
+    TERM, USER — no secret among them). Pinned because `os.environ | flow_env`
+    is the natural-looking edit that would quietly undo it."""
+    from mcp.client.stdio import DEFAULT_INHERITED_ENV_VARS
+
+    from jarvis.connectors import mcp_client
+
+    target = mcp_client._connect_target(
+        {"connectFlow": {"kind": "stdio", "command": "some-server", "args": []}})
+    assert target.env is None
+    assert not any("KEY" in name or "SECRET" in name
+                   for name in DEFAULT_INHERITED_ENV_VARS)
 
 
 # --- the routes ---------------------------------------------------------------

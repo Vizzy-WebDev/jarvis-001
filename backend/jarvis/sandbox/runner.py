@@ -23,21 +23,22 @@ Two backends:
 
 The secrets scrub matters even in the WSL case: the parent process holds every
 API key the user has configured, and a child inheriting `os.environ` inherits
-all of them. That is one line to get wrong and impossible to notice.
+all of them. That is one line to get wrong and impossible to notice — which is
+why the scrub itself now lives in `jarvis/childenv.py`, shared with every other
+place that starts a program, rather than only here.
 """
 
 from __future__ import annotations
 
 import logging
-import os
-import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+
+from ..childenv import scrubbed_environment
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +46,6 @@ DEFAULT_TIMEOUT_S = 30.0
 MAX_OUTPUT_CHARS = 20000
 #: Files the script produced, up to this many, are offered back as artifacts.
 MAX_OUTPUT_FILES = 10
-
-#: Anything matching these is removed from the child's environment. Broad on
-#: purpose: over-scrubbing costs a script an environment variable it probably
-#: should not have had, while under-scrubbing hands model-written code the
-#: user's API keys.
-_SECRET_PATTERN = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|SESSION|COOKIE", re.I)
-_KEEP_ALWAYS = ("PATH", "SYSTEMROOT", "COMSPEC", "TEMP", "TMP", "LANG", "LC_ALL")
 
 
 @dataclass
@@ -70,7 +64,8 @@ def _wsl_available() -> bool:
     if sys.platform != "win32" or not shutil.which("wsl.exe"):
         return False
     try:
-        probe = subprocess.run(["wsl.exe", "-e", "true"], capture_output=True, timeout=10)
+        probe = subprocess.run(["wsl.exe", "-e", "true"], capture_output=True, timeout=10,
+                               env=scrubbed_environment())
         return probe.returncode == 0
     except Exception:  # noqa: BLE001
         return False
@@ -105,18 +100,10 @@ def describe_isolation() -> str:
 def child_environment() -> dict[str, str]:
     """The environment the code gets: nothing that looks like a credential.
 
-    Built by removing rather than by listing what to keep, because a new secret
-    added to the app's environment later would otherwise be inherited silently.
+    The shared definition (`jarvis/childenv.py`), under the name this file's own
+    callers already read it by.
     """
-    clean = {name: value for name, value in os.environ.items()
-             if not _SECRET_PATTERN.search(name)}
-    for name in _KEEP_ALWAYS:
-        if name in os.environ:
-            clean[name] = os.environ[name]
-    # The app's own data directory is not the script's business either.
-    clean.pop("JARVIS_DATA_DIR", None)
-    clean.pop("JARVIS_ENV_PATH", None)
-    return clean
+    return scrubbed_environment()
 
 
 def run_python(code: str, *, timeout_s: float = DEFAULT_TIMEOUT_S,

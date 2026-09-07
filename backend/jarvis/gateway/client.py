@@ -30,6 +30,7 @@ from ..events.bus import EventBus
 from ..orchestrator.model_port import (
     ModelEvent, ModelSwitched, ModelUnavailable, StepComplete, TextChunk,
 )
+from ..redact import redact_text
 from . import availability
 from .error_kind import availability_state_for, classify_error
 from .jsonish import extract_json
@@ -143,10 +144,17 @@ class Gateway:
 
 
 def _detail_of(adapter: Any, err: BaseException) -> str:
+    """The one source of a failure's text — so it is the one place to clean it.
+
+    Everything downstream reads this: the bus event, the log line, the tried-and-
+    failed list, and the message the user finally sees. A provider that quotes
+    the key back in its error would otherwise put it in all four.
+    """
     try:
-        return adapter.friendly_error(err) if adapter else str(err)
+        text = adapter.friendly_error(err) if adapter else str(err)
     except Exception:  # noqa: BLE001 — a friendly-error helper must never mask the real one
-        return str(err)
+        text = str(err)
+    return str(redact_text(text) or "")
 
 
 def _last_user_text(messages: list[dict[str, Any]]) -> str:

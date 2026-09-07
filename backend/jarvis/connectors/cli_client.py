@@ -8,6 +8,15 @@ command, never a flag, and never anything the shell would interpret.
 
 No shell at all: the program is executed directly with an argument list, so
 quoting, globbing and `;` have no meaning to anything.
+
+**And no credentials.** Saving an API key writes it into this process's own
+environment as well as the .env file, so a child that inherits `os.environ` can
+read every key the user has configured — `git` had the same access to
+`GEMINI_API_KEY` as a sandboxed script would have. The child gets
+`jarvis/childenv.py`'s scrubbed environment instead, the same one the sandbox
+uses: a program named in a saved template has no business holding the keys to
+the model providers. A connector that genuinely needs a credential should be
+given that one credential explicitly, never all of them by inheritance.
 """
 
 from __future__ import annotations
@@ -16,6 +25,8 @@ import re
 import shutil
 import subprocess
 from typing import Any
+
+from ..childenv import scrubbed_environment
 
 DEFAULT_TIMEOUT_S = 60.0
 MAX_OUTPUT_CHARS = 20000
@@ -75,13 +86,17 @@ def dispatch(name: str, args: dict[str, Any], config: dict[str, Any], *,
         argv.append(str(value))
 
     if run is None:
-        def run(**kw: Any) -> Any:  # noqa: ANN401
-            return subprocess.run(**kw)  # noqa: S603 — a list, never a shell string
+        # `env` is named rather than swept up in **kw so that the environment a
+        # child is given stays visible at the call site — including to the
+        # architecture test that checks every launch site has one.
+        def run(*, env: dict[str, str] | None = None, **kw: Any) -> Any:  # noqa: ANN401
+            return subprocess.run(env=env, **kw)  # noqa: S603 — a list, never a shell string
 
     try:
         completed = run(args=[program, *argv], capture_output=True, text=True,
                         timeout=command.get("timeoutS") or DEFAULT_TIMEOUT_S,
-                        cwd=(config or {}).get("cwd"))
+                        cwd=(config or {}).get("cwd"),
+                        env=scrubbed_environment())
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": f'"{program}" was still running and was stopped.'}
 

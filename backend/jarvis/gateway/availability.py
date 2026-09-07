@@ -40,6 +40,7 @@ import threading
 import time
 from typing import Any, Iterable
 
+from ..redact import redact_text
 from ..store import read_json, write_json
 
 FILE = "model-availability"
@@ -91,9 +92,15 @@ def record(model_id: str, state: str, detail: str | None = None, technical: str 
     `detail` is user-facing text; `technical` is the raw provider message, kept
     separately so a UI can show it behind a disclosure without it leaking into a
     plain-language message.
+
+    Both are redacted HERE rather than by each caller. A provider error can
+    quote the key that was sent, and this file outlives the process — so the
+    guarantee has to hold for the caller who has not been written yet.
     """
     if not model_id or not state:
         return
+    detail = redact_text(detail)
+    technical = redact_text(technical)
     with _lock:
         models = _load()
         if state == WORKING:

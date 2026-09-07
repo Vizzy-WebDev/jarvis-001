@@ -132,3 +132,24 @@ def test_concurrent_records_do_not_lose_each_other():
     for n in range(4):
         for i in range(20):
             assert av.status_of(f"m{n}-{i}") is not None, f"lost m{n}-{i}"
+
+
+def test_a_provider_error_that_quotes_the_key_is_stored_redacted(scratch):
+    """This file outlives the process and is written on every failure, so the
+    guarantee belongs here rather than in each caller — including the one who
+    has not been written yet."""
+    from jarvis import config
+    from jarvis.redact import MASK
+
+    config.save_secret("gemini", "AIzaTHISISTHEREALKEY99")
+    av.record("m1", "auth",
+              detail="Your API key AIzaTHISISTHEREALKEY99 is not valid.",
+              technical='{"error":{"message":"API key not valid: AIzaTHISISTHEREALKEY99"}}')
+
+    stored = av.status_of("m1")
+    assert "AIzaTHISISTHEREALKEY99" not in stored["detail"]
+    assert "AIzaTHISISTHEREALKEY99" not in stored["technical"]
+    assert MASK in stored["detail"] and MASK in stored["technical"]
+    # And not on disk either — the record is written through, not just cached.
+    assert "AIzaTHISISTHEREALKEY99" not in \
+        (scratch.data_dir / "model-availability.json").read_text(encoding="utf-8")

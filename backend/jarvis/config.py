@@ -179,6 +179,27 @@ def save_secret(ref: str, value: str) -> None:
     os.environ[env_var] = trimmed
 
 
+def secret_values() -> list[str]:
+    """Every secret value this install currently holds, for redaction.
+
+    Values, not names: `redact.py` needs to find them inside text a provider
+    sent back. Read from BOTH the file and the environment, because the two can
+    disagree — a key set as a real environment variable by an advanced user is
+    never in the file, and a key saved before this process started is in the
+    file whether or not anything has read it yet.
+
+    Lives here rather than in redact.py so that what counts as a secret is
+    defined once, by the module that writes them.
+    """
+    found: list[str] = []
+    from_file = _read_env_file()
+    for name, value in list(from_file.items()) + list(os.environ.items()):
+        if name in ENV_KEYS.values() or name.startswith(SECRET_PREFIX):
+            if value and value not in found:
+                found.append(value)
+    return found
+
+
 def delete_secret(ref: str) -> None:
     """Removes a saved secret. Empty values are dropped by _write_env_file."""
     if not ref:

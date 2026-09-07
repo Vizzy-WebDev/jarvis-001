@@ -23,7 +23,10 @@ human confirmation even when triggered by scheduled tasks or briefings.**
 | Intent router + fast path (§10/§11) | **Done** |
 | Orchestrator (§9) | **Done** |
 | Model gateway + 3 adapters + probe (§26/§27) | **Done** |
-| Built-in tools (§5) | **9 of ~62** — loader, contract and pattern established |
+| Built-in tools (§5) | **24 of ~62** — waves A-D landed |
+| Scheduler + briefing (§13) | **Done** — tick loop off behind an interlock until cutover |
+| Background jobs (§13/§32/§43) | **Done** — trace-based recovery, one retry, escalation |
+| Sandbox + artifacts (§35/§45) | **Done** — isolation described as measured, files verified |
 | Architecture fitness functions | **Done** |
 | Turn API + event stream + approval routes | **Done** |
 | Memory (§22) incl. importance/expiry | **Done** |
@@ -34,7 +37,7 @@ human confirmation even when triggered by scheduled tasks or briefings.**
 | The 15 acceptance tests (§51) | Not started |
 | Cutover | Not started |
 
-`cd backend && python -m pytest tests -q` → **348 passed, 40 skipped.** The
+`cd backend && python -m pytest tests -q` → **451 passed, 38 skipped.** The
 skips are contract fixtures for routes not ported yet, so the suite doubles as a
 progress meter.
 
@@ -88,6 +91,12 @@ Run: `cd backend && python -m pytest tests/ -q`
 
 ## Open seams — deliberately visible, not forgotten
 
+- **`analyze_spreadsheet` is not ported yet.** The readers it needs exist; its
+  INPUT does not — it reads a file the user attached, and attachments arrive
+  with wave G. Porting it now would mean a tool with nothing to read.
+- **The desktop tools (7) are deliberately last**, so they can be tested on the
+  real Windows machine rather than shipped having only had their off-Windows
+  refusal exercised.
 - **A real "hey Jarvis" has never been said to this build.** The model is proven
   not to wake on silence or noise, and every piece of plumbing around detection
   is tested with the score forced — but recognising a genuine utterance needs a

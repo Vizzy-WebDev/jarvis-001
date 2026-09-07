@@ -12,6 +12,10 @@ dependencies = [
     "google-genai>=1.0",
     "websockets>=13",
     "mcp>=1.1",
+    # Wake word (§15), running locally: audio never leaves the machine to decide
+    # whether "hey Jarvis" was said. Downloads its ~1 MB model on first use.
+    "openwakeword>=0.6",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]

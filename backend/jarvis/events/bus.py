@@ -73,6 +73,12 @@ class EventType(str, Enum):
     MODEL_CALL_COMPLETED = "model.call_completed"
     MODEL_CALL_FAILED = "model.call_failed"
 
+    # Voice (§15/§16) — the UI needs to distinguish "the wake word fired" from
+    # "the session closed on its own", because they mean different things to
+    # the person in the room.
+    VOICE_WAKE = "voice.wake"
+    VOICE_MODE = "voice.mode"
+
     # System
     SYSTEM_HEALTH_CHANGED = "system.health_changed"
     NOTIFICATION_CREATED = "notification.created"

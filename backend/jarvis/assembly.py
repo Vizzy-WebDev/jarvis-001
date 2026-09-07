@@ -20,12 +20,15 @@ from .gateway.client import Gateway
 from .orchestrator import Orchestrator
 from .prefs import get_prefs
 from .tools import load_tools
+from .voice import ConversationMode, WakeDetector
 
 logger = logging.getLogger(__name__)
 
 _lock = threading.RLock()
 _registry: CapabilityRegistry | None = None
 _orchestrator: Orchestrator | None = None
+_wake: WakeDetector | None = None
+_conversation_mode: ConversationMode | None = None
 
 
 def get_registry() -> CapabilityRegistry:
@@ -54,8 +57,28 @@ def get_orchestrator() -> Orchestrator:
         return _orchestrator
 
 
+def get_wake_detector() -> WakeDetector:
+    """One detector for the process. It holds a loaded model and an audio
+    buffer, so a second one would score a different, half-length signal."""
+    global _wake
+    with _lock:
+        if _wake is None:
+            _wake = WakeDetector()
+        return _wake
+
+
+def get_conversation_mode() -> ConversationMode:
+    global _conversation_mode
+    with _lock:
+        if _conversation_mode is None:
+            _conversation_mode = ConversationMode()
+        return _conversation_mode
+
+
 def reset_for_tests() -> None:
-    global _registry, _orchestrator
+    global _registry, _orchestrator, _wake, _conversation_mode
     with _lock:
         _registry = None
         _orchestrator = None
+        _wake = None
+        _conversation_mode = None

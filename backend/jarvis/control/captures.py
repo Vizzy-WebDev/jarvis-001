@@ -64,9 +64,11 @@ class Capture:
     size: int
 
     def as_dict(self) -> dict[str, object]:
-        return {"id": self.id, "kind": self.kind, "bytes": self.size,
+        # `file` and `takenAt` are the shape the recorded API already lists; the
+        # id and the url are ours, and additive.
+        return {"file": f"{self.id}{KINDS[self.kind].suffix}", "id": self.id,
                 "takenAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.taken_at)),
-                "url": url_for(self.kind, self.id)}
+                "bytes": self.size, "url": url_for(self.kind, self.id)}
 
 
 def directory_for(kind: Kind) -> Path:
@@ -78,8 +80,14 @@ def directory_for(kind: Kind) -> Path:
     return path
 
 
+#: The recorded API serves these under /api/control/, one path per kind. Kept
+#: rather than invented anew: the contract fixtures pin these paths, and a
+#: gratuitously different URL is a divergence with nothing behind it.
+ROUTE_SEGMENT = {SCREENSHOT.name: "screenshots", RECORDING.name: "recordings"}
+
+
 def url_for(kind: str, capture_id: str) -> str:
-    return f"/api/captures/{kind}/{capture_id}"
+    return f"/api/control/{ROUTE_SEGMENT.get(kind, kind)}/{capture_id}"
 
 
 def new_id() -> str:

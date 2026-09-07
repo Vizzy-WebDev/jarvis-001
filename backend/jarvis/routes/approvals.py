@@ -70,6 +70,16 @@ def decide(approval_id: str, body: dict[str, Any] = Body(default_factory=dict)):
         resolved = store.resolve(approval_id, decision, resolving_turn)
         return {"approval": _public(resolved), "ran": False}
 
+    # Some approvals are answered rather than executed: a control session is
+    # already running and paused mid-action, waiting for this exact row. There
+    # is nothing in the registry to call — the session performs the action
+    # itself, having asked — so resolving IS the whole answer here.
+    from ..control import session as control_session
+
+    if control_session.is_waiting_for(approval_id):
+        resolved = store.resolve(approval_id, decision, resolving_turn)
+        return {"approval": _public(resolved), "ran": False, "delivered": True}
+
     ctx = CallContext(
         session_id=approval.session_id or get_active_session_id(),
         turn_id=resolving_turn,

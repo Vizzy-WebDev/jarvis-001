@@ -109,7 +109,7 @@ def test_a_capture_lands_in_the_scratch_data_dir_not_the_real_one(scratch):
     saved = captures.save(captures.SCREENSHOT, PNG_BYTES)
     assert saved.path.parent == scratch.data_dir / "screenshots"
     assert saved.path.read_bytes() == PNG_BYTES
-    assert saved.as_dict()["url"] == f"/api/captures/screenshot/{saved.id}"
+    assert saved.as_dict()["url"] == f"/api/control/screenshots/{saved.id}"
 
 
 def test_an_id_is_ours_and_a_path_cannot_be_smuggled_through_one():
@@ -160,7 +160,7 @@ def test_taking_a_screenshot_returns_something_the_chat_can_show(fake):
     action = result["ui_action"]
     assert action == {"type": "attachment", "kind": "image",
                       "url": action["url"], "mimeType": "image/png"}
-    assert action["url"].startswith("/api/captures/screenshot/")
+    assert action["url"].startswith("/api/control/screenshots/")
     assert fake.names() == ["windows", "screenshot"], "looking must not touch input"
 
 
@@ -273,7 +273,7 @@ def test_sharing_and_a_glance_are_different_things():
 def test_a_capture_is_served_inline_and_a_missing_one_is_a_clean_404(client):
     saved = captures.save(captures.SCREENSHOT, PNG_BYTES)
 
-    response = client.get(f"/api/captures/screenshot/{saved.id}")
+    response = client.get(f"/api/control/screenshots/{saved.id}")
     assert response.status_code == 200
     assert response.content == PNG_BYTES
     assert response.headers["content-type"] == "image/png"
@@ -283,11 +283,12 @@ def test_a_capture_is_served_inline_and_a_missing_one_is_a_clean_404(client):
     assert response.headers["x-content-type-options"] == "nosniff"
     assert "sandbox" in response.headers["content-security-policy"]
 
-    assert client.get("/api/captures/screenshot/20200101-000000-abcdef").status_code == 404
-    assert client.get("/api/captures/nonsense/whatever").status_code == 404
+    assert client.get("/api/control/screenshots/20200101-000000-abcdef").status_code == 404
+    assert client.get("/api/control/screenshots/20200101-000000-abcdef").json() == {
+        "ok": False, "error": "Not found."}, "the recorded 404 shape, exactly"
 
 
 def test_a_traversal_through_the_capture_route_does_not_reach_a_file(client, scratch):
     (scratch.data_dir / "secret.png").write_bytes(b"not yours")
     for attempt in ("../secret", "..%2Fsecret", "....//secret"):
-        assert client.get(f"/api/captures/screenshot/{attempt}").status_code in (404, 400)
+        assert client.get(f"/api/control/screenshots/{attempt}").status_code in (404, 400)

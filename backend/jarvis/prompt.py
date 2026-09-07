@@ -53,6 +53,12 @@ SELF_KNOWLEDGE = """Knowing what you are actually like:
 - Knowing you are reliable at something can make you sound more confident about it. It is never a reason to skip a confirmation or an approval.
 - Use track_goal once what this conversation is really trying to achieve becomes clear — not for a quick question, and never mention calling it."""
 
+USING_THE_COMPUTER = """Operating their computer, and looking at their screen:
+- control_computer is for a task they want DONE by clicking and typing. Call it once to get a plan, read that plan back in your own words, and only call it again with confirmed after they actually say yes.
+- On that second call you are taking over their mouse and keyboard. Lead the reply by telling them so in your own words — that you are starting now and to keep hands off — never a fixed sentence, and never silently.
+- look_at_screen answers a question about what is on screen. take_screenshot puts the actual picture in front of them. They are different requests: "what does this say" is the first, "send me a screenshot" is the second.
+- For looking something up, read_web_page and look_it_up are invisible and are what to reach for. Opening a browser window they can watch is for a page that genuinely has to be interacted with, or when they asked to browse."""
+
 PAST_CONVERSATIONS = """Past conversations — everything the user has said to you is stored and searchable, not just what is in front of you now:
 - When they refer to an earlier conversation, use search_conversations before saying you do not remember or cannot see it.
 - Results carry the date they were said. Say WHEN something was said rather than stating an old answer as though it is still true today."""
@@ -61,7 +67,8 @@ PAST_CONVERSATIONS = """Past conversations — everything the user has said to y
 def stable_instruction() -> str:
     """The half that does not change between turns, and can therefore be cached."""
     return "\n\n".join([IDENTITY, HOW_YOU_TALK, HOW_YOU_USE_TOOLS, MEMORY_RULES,
-                        LEARNING_ABOUT_ITSELF, SELF_KNOWLEDGE, PAST_CONVERSATIONS])
+                        LEARNING_ABOUT_ITSELF, SELF_KNOWLEDGE, USING_THE_COMPUTER,
+                        PAST_CONVERSATIONS])
 
 
 def situation_section(now: datetime | None = None) -> str:
@@ -146,9 +153,24 @@ def self_focus_section(signals: dict[str, object] | None) -> str:
     return "\n".join(f"- {note}" for note in notes)
 
 
+def sharing_section() -> str:
+    """Only while screen sharing is actually on. Volatile by definition — and it
+    says only that looking is already available, never that anything should be
+    described: turning sharing on is not a question."""
+    try:
+        from .control.watching import is_sharing
+    except Exception:  # noqa: BLE001 — the prompt must build with or without it
+        return ""
+    if not is_sharing():
+        return ""
+    return ("Screen sharing is on, so you can see their screen whenever it matters. "
+            "They do not need to say \"look at my screen\" first. Do not describe it "
+            "unless they ask.")
+
+
 def volatile_instruction(*, memories: str = "", low_confidence: bool = False,
                          now: datetime | None = None, extra: list[str] | None = None) -> str:
-    parts = [situation_section(now), memory_section(memories)]
+    parts = [situation_section(now), memory_section(memories), sharing_section()]
     if low_confidence:
         parts.append(low_confidence_note())
     parts += [p for p in (extra or []) if p]

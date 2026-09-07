@@ -43,7 +43,9 @@ from ..intent import Intent, Route, classify
 from ..policy import Autonomy, CallContext, Surface
 from ..policy.decide import Grant
 from .context import AssembledContext, ContextAssembler, WindowContext
-from .model_port import ModelClient, ModelSwitched, StepComplete, TextChunk, ToolCall
+from .model_port import (
+    ModelClient, ModelSwitched, ModelUnavailable, StepComplete, TextChunk, ToolCall,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +115,11 @@ class Interrupted:
 @dataclass(frozen=True)
 class Failed:
     error: str
+    #: Set when the failure is a KNOWN state rather than a fault — today only
+    #: "no model can serve this". A caller showing this to the user needs to
+    #: tell those apart: one is worth retrying in ten minutes, the other is a bug.
+    code: str | None = None
+    detail: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -210,6 +217,11 @@ class Orchestrator:
                 if not needs_model:
                     return
             yield from self._run_model_loop(request, state, cancel)
+        except ModelUnavailable as err:
+            # Not a fault: the honest state of the model roster, with the real
+            # reasons and the soonest retry already in the message.
+            state.fail(str(err))
+            yield Failed(str(err), code="no_model", detail=err.detail)
         except Exception as err:  # noqa: BLE001 — the turn must never crash the caller
             logger.exception("turn failed")
             state.fail(str(err) or err.__class__.__name__)

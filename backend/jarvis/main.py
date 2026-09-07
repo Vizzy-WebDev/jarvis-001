@@ -23,7 +23,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from .routes import conversations, core
+from .routes import approvals, conversations, core, events, turn
 
 # The built Next.js export. Absent during early migration, when the front end is
 # still being served by the Node app — the API is fully usable without it.
@@ -42,6 +42,9 @@ def create_app() -> FastAPI:
 
     app.include_router(core.router)
     app.include_router(conversations.router)
+    app.include_router(turn.router)
+    app.include_router(events.router)
+    app.include_router(approvals.router)
 
     if FRONTEND_DIR.is_dir():
         # Mounted last so it can never shadow an /api route.

@@ -73,6 +73,22 @@ class ModelSwitched:
 ModelEvent = TextChunk | StepComplete | ModelSwitched
 
 
+class ModelUnavailable(RuntimeError):
+    """No model could serve this turn.
+
+    Part of the PORT rather than the gateway because it is not an internal
+    error — it is a state the user has to be told accurately ("everything is
+    rate-limited until about 20 past"), and flattening it into a generic
+    failure is what makes an assistant feel broken when it is merely waiting.
+    The orchestrator may not import the gateway, so the shared vocabulary has
+    to live at the seam they already share.
+    """
+
+    def __init__(self, message: str, detail: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.detail = detail or {}
+
+
 @runtime_checkable
 class ModelClient(Protocol):
     """A provider-agnostic single step of generation."""

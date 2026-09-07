@@ -101,3 +101,43 @@ def scratch(tmp_path, monkeypatch):
     yield type("Scratch", (), {"data_dir": data_dir, "env_path": env_path})()
     db_module.reset_for_tests()
     store_module.reset_for_tests()
+
+
+@pytest.fixture
+def live_server(scratch):
+    """The real app on a real socket, on an unusual port.
+
+    Some behaviour is only observable over a genuine connection — a stream that
+    ends when the client disconnects cannot be exercised by an in-process client
+    that never closes a socket. Never port 3000, and never the user's data dir:
+    `scratch` is a prerequisite, not a suggestion.
+    """
+    import socket
+    import threading
+    import time
+
+    import uvicorn
+
+    from jarvis.main import create_app
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    config = uvicorn.Config(create_app(), host="127.0.0.1", port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    deadline = time.monotonic() + 10
+    while not server.started and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if not server.started:
+        server.should_exit = True
+        raise RuntimeError("the test server never started")
+
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)

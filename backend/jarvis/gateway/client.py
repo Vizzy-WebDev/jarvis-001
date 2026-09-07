@@ -26,7 +26,9 @@ from typing import Any, Iterator
 from ..adapters import get_adapter
 from ..events import EventType, bus as default_bus
 from ..events.bus import EventBus
-from ..orchestrator.model_port import ModelEvent, ModelSwitched, StepComplete, TextChunk
+from ..orchestrator.model_port import (
+    ModelEvent, ModelSwitched, ModelUnavailable, StepComplete, TextChunk,
+)
 from . import availability
 from .error_kind import availability_state_for, classify_error
 from .routing import Task, build_candidates, explain_exclusions
@@ -39,12 +41,12 @@ logger = logging.getLogger(__name__)
 MAX_ATTEMPTS = 4
 
 
-class NoModelAvailable(RuntimeError):
-    """Nothing could serve this turn. Carries the real reasons."""
+class NoModelAvailable(ModelUnavailable):
+    """Nothing could serve this turn. Carries the real reasons.
 
-    def __init__(self, message: str, detail: dict[str, Any]):
-        super().__init__(message)
-        self.detail = detail
+    A subclass of the port's own type so the orchestrator can recognise it
+    without importing this module — see model_port.ModelUnavailable.
+    """
 
 
 class Gateway:

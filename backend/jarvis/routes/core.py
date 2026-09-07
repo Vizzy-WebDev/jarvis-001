@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, Body
 
+from ..gateway.registry import is_ready, list_models
 from ..prefs import get_prefs, set_prefs
 
 router = APIRouter(prefix="/api")
@@ -21,13 +22,17 @@ router = APIRouter(prefix="/api")
 def status() -> dict[str, Any]:
     """Whether any model is actually usable — what the first-run flow checks.
 
-    Reports False until the models registry is ported (Wave 2). That is honest
-    for a fresh install with no key configured, which is the only state the
-    contract fixtures currently cover; it must be revisited the moment
-    listModels()/isReady() land, and the fixture for a CONFIGURED instance is
-    what will catch it if it is not.
+    "Configured" means at least one enabled model has whatever credential it
+    actually needs. Deliberately not "a connection exists": a saved connection
+    whose key was never entered is exactly the state this flow exists to catch,
+    and reporting it as configured sends the user to a chat box that cannot
+    answer.
     """
-    return {"configured": False}
+    usable = any(m.get("enabled", True) and is_ready(m) for m in list_models())
+    # Exactly the recorded shape, deliberately: the contract harness only catches
+    # unintended divergence if the intended response stays byte-identical too.
+    # Counts belong here when a screen actually needs them, not before.
+    return {"configured": usable}
 
 
 @router.get("/prefs")

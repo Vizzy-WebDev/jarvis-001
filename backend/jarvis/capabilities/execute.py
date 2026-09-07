@@ -107,6 +107,20 @@ def _validate(args: dict[str, Any], spec: CapabilitySpec) -> str | None:
     return None
 
 
+def _ask_text(spec: CapabilitySpec, args: dict[str, Any], fallback: str) -> str:
+    """What the user is actually asked. The capability's own summary when it has
+    one, since only it knows what these arguments mean; the policy's reason
+    otherwise."""
+    if spec.summarize is None:
+        return fallback
+    try:
+        summary = spec.summarize(args)
+    except Exception:  # noqa: BLE001 — a broken summary must not block the gate
+        logger.exception("%s failed to summarise its own call", spec.name)
+        return fallback
+    return summary.strip() if isinstance(summary, str) and summary.strip() else fallback
+
+
 def _redact(args: dict[str, Any], spec: CapabilitySpec) -> dict[str, Any]:
     if not spec.redact_args:
         return dict(args)
@@ -201,7 +215,8 @@ def execute(
             operation_id=ctx.operation_id, error=verdict.reason,
         )
     if verdict.outcome is Outcome.NEEDS_APPROVAL:
-        approval = approvals_store.request(spec, args, ctx, verdict.reason, event_bus=ebus)
+        approval = approvals_store.request(
+            spec, args, ctx, _ask_text(spec, args, verdict.reason), event_bus=ebus)
         return ExecutionResult(
             ok=False, outcome=ExecOutcome.NEEDS_APPROVAL, capability=name,
             operation_id=ctx.operation_id, error=verdict.reason,

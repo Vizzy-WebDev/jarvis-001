@@ -99,6 +99,12 @@ class CapabilitySpec:
     #: §25 — what to log about this capability, and what must never be logged.
     #: Argument names listed here are redacted before any log or trace row.
     redact_args: frozenset[str] = frozenset()
+    #: Optional: turns THIS call's arguments into the sentence the user is
+    #: actually asked to approve. The policy explains WHY a confirmation is
+    #: needed; only the capability can say WHAT will happen in the user's own
+    #: terms ("Change 'uses a Mac' to 'uses a Windows PC'?"), and a read-back
+    #: that cannot do that is a read-back nobody can meaningfully answer.
+    summarize: Callable[[dict[str, Any]], str] | None = None
 
     def __post_init__(self) -> None:
         if not self.id or not self.name:

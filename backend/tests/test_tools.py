@@ -15,7 +15,7 @@ from jarvis.tools import load_tools
 from jarvis.tools.find_capability import build as build_find
 from jarvis.tools.get_time import _run as get_time
 from jarvis.tools.open_app import best_match, list_shortcuts
-from jarvis.tools.read_web_page import to_text
+from jarvis.webtext import to_text
 
 
 @pytest.fixture

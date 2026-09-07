@@ -24,6 +24,12 @@ dependencies = [
     # is [0,0,0] on Windows; psutil gives the same numbers on both platforms
     # this has to run on, plus the process list the busy-detector needs.
     "psutil>=5.9",
+    # The desktop (wave H), Windows only and marked as such so an install
+    # anywhere else — including this project's own test environment — still
+    # works. `jarvis/control/desktop.py` probes for them and reports honestly
+    # when they are absent rather than failing at import.
+    "pywinauto>=0.6; sys_platform == 'win32'",
+    "pyautogui>=0.9; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

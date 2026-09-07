@@ -502,3 +502,14 @@ def test_the_overlay_child_never_inherits_the_users_keys(monkeypatch):
     assert Overlay().show("a goal", "http://127.0.0.1:1/api/control/stop") is True
     assert "GEMINI_API_KEY" not in seen["env"]
     assert "JARVIS_SECRET_SOMETHING" not in seen["env"]
+
+
+def test_the_self_check_refuses_where_there_is_no_desktop(capsys):
+    """It is the thing that proves the primitives on a real machine, so it must
+    never print a pass on a machine that has no screen to prove them against."""
+    from jarvis.control import selfcheck
+
+    assert selfcheck.main() == 1
+    printed = capsys.readouterr().out
+    assert "no desktop to check here" in printed
+    assert "PASS" not in printed

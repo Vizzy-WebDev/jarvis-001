@@ -25,7 +25,7 @@ consequential chat answers built, behind a preference, default off.
 | Intent router + fast path (§10/§11) | **Done** |
 | Orchestrator (§9) | **Done** |
 | Model gateway + 3 adapters + probe (§26/§27) | **Done** |
-| Built-in tools (§5) | **49 of ~62** — waves A-G landed; the 7 desktop ones are wave H |
+| Built-in tools (§5) | **58 of 62** — every wave landed; the four not ported are named below |
 | Scheduler + briefing (§13) | **Done** — tick loop off behind an interlock until cutover |
 | Background jobs (§13/§32/§43) | **Done** — trace-based recovery, one retry, escalation |
 | Sandbox + artifacts (§35/§45) | **Done** — isolation described as measured, files verified |
@@ -41,13 +41,14 @@ consequential chat answers built, behind a preference, default off.
 | Content analysis (§20) · planning partner | **Done** — the free glance costs nothing; no question queue |
 | Attachments · uploads · Office documents | **Done** — inline or registered, never auto-read |
 | Folder Skills (§42) · pipelines | **Done** — two consent gates, stdlib TOML and zip |
-| Connectors: files · MCP · API · CLI | **Done** — browser and OAuth deferred, see below |
+| Connectors: files · MCP · API · CLI · browser | **Done** — OAuth deferred, see below |
 | Secret handling: child environments · error redaction | **Done** — one scrub, one redaction, both asserted |
+| Desktop (§): control loop · screen · recording · sharing | **Done in code; the last inch needs a Windows run** — see below |
 | Front end F1–F4 (voice engines, shell, screens, Tailwind) | **Scaffold only** |
 | The 15 acceptance tests (§51) | Not started |
 | Cutover | Not started |
 
-`cd backend && python -m pytest tests -q` → **891 passed, 34 skipped.** The
+`cd backend && python -m pytest tests -q` → **997 passed, 28 skipped.** The
 skips are contract fixtures for routes not ported yet, so the suite doubles as a
 progress meter.
 
@@ -56,6 +57,22 @@ dir, unusual port) migrates to `user_version 23`, registers and runs all nine
 diagnostic checks, records their outcomes in the trace, takes a real system
 sample, and answers a live route with 200 and an unknown id with a clean 404 —
 no unhandled exception anywhere in the log.
+
+## The four Node tools with no Python equivalent
+
+Named rather than left inside a count:
+
+- **`report_job_done` / `report_job_stuck`** — a worker no longer announces its
+  own completion with a tool call. `jobs/worker.py` reads the outcome from the
+  turn itself and then verifies it semantically, which is a stronger check than
+  trusting the worker's own claim. Deliberate, and already covered by the jobs
+  tests.
+- **`open_section`** — navigating the UI to a screen. There are no screens yet;
+  it lands with the front end.
+- **`request_job_split`** — a worker asking the orchestrator to break its work
+  into pieces. **This one is a real gap, not a redesign**: the schema carries
+  `parent_id`, but nothing can ask for a split. Recorded here rather than
+  quietly left in a count.
 
 ## Defects fixed during the port, disclosed
 
@@ -172,6 +189,24 @@ Run: `cd backend && python -m pytest tests/ -q`
 - **A Skill's helper scripts are Python only.** The sandbox isolates Python;
   shipping a runner for a language it cannot isolate would be a promise it
   cannot keep.
+- **The desktop layer's last inch is not verified here, and cannot be.** The
+  control loop, the guard, the approval flow, the capture stores, the screen
+  tools, the routes and the monitor conditions are all exercised for real
+  against a `FakeDesktop` that records every call in order — which is what
+  catches sequence mistakes like typing before focusing. What that cannot cover
+  is pywinauto and pyautogui actually moving a real mouse, reading a real UI
+  tree, and posting a real WM_CLOSE. `python -m jarvis.control.selfcheck` is
+  that check, and it runs on the owner's machine: it opens a scratch Notepad,
+  does one primitive at a time, verifies each against the real OS, and prints
+  pass or fail per line, including a real ffmpeg recording decoded back to prove
+  the file plays. Until that has been run and read, this half is "written and
+  reviewed", not "known to work".
+- **The visible browser window is unverified for the same reason.** Navigation,
+  reading, clicking and typing are tested against a real page over real HTTP,
+  headless, using the same code the visible window runs — but that a window
+  opens, is visible, and carries its own profile needs a desktop.
+- **Job splitting has no way to be asked for.** See the four-tools section
+  above: `parent_id` exists in the schema and nothing can request a split.
 - **A CLI connector cannot be given ONE secret.** Its program now runs with the
   same scrubbed environment a sandboxed script gets, which is the fix; what does
   not exist yet is the deliberate opposite — handing one connector one

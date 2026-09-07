@@ -50,8 +50,9 @@ DEFERRED_ROUTES: dict[tuple[str, str], str] = {
 
 #: Rows a recorded list legitimately does not have here yet, by connector type.
 #: The rest of the list is still compared exactly, so this can hide a missing
-#: feature by name but never a changed one.
-ABSENT_CONNECTOR_TYPES = {"browser"}
+#: feature by name but never a changed one. Empty now: the browser connector was
+#: the last entry here, and it landed with the desktop work.
+ABSENT_CONNECTOR_TYPES: set[str] = set()
 
 ADDED_KEYS: dict[tuple[str, str], set[str]] = {
     # Semantic verification of consequential chat answers: this build's own
@@ -175,9 +176,8 @@ def test_route_matches_recorded_node_response(client, fixture_path):
     )
     assert got["status"] == want["status"], f"status differs for {req['method']} {req['path']}"
     assert got["headers"] == want["headers"], f"contract headers differ for {req['path']}"
-    if req["path"] == "/api/connectors" and isinstance(want["body"], dict):
-        # The browser connector ships with the desktop work, so its row is not
-        # here yet. Everything else about the list is still compared exactly.
+    if req["path"] == "/api/connectors" and ABSENT_CONNECTOR_TYPES \
+            and isinstance(want["body"], dict):
         want["body"] = {**want["body"], "connectors": [
             c for c in want["body"].get("connectors", [])
             if c.get("type") not in ABSENT_CONNECTOR_TYPES]}

@@ -53,6 +53,14 @@ def get_registry() -> CapabilityRegistry:
             # trusted, and registering them after the rest means one can never
             # take a name a built-in or a Skill already answers to.
             from .connectors.capabilities import sync as sync_connectors
+            from .connectors.store import get_or_create_singleton
+
+            # Jarvis's own two: the file allowlist (empty until a folder is
+            # allowed) and the browser it drives. Both exist as soon as the app
+            # does, because "no row at all" and "nothing allowed yet" mean the
+            # same thing and only one of them can be shown to anybody.
+            for singleton in ("files", "browser"):
+                get_or_create_singleton(singleton)
 
             connected = sync_connectors(registry)
             if connected:

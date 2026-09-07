@@ -48,6 +48,7 @@ async def listed():
     # it exists as soon as anything asks — an empty allowlist and no row at all
     # mean the same thing, and the row is the one that can be shown.
     store.get_or_create_singleton("files")
+    store.get_or_create_singleton("browser")
     return {"connectors": [_public(c) for c in store.list_connectors()]}
 
 

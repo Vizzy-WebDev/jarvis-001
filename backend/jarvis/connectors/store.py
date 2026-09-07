@@ -19,8 +19,8 @@ FILE = "connectors"
 
 #: Jarvis's own abilities, one of each, created when first needed. The label is
 #: what a person sees, so it is written as a person would write it.
-SINGLETON_TYPES = ("files",)
-SINGLETON_LABELS = {"files": "Files"}
+SINGLETON_TYPES = ("files", "browser")
+SINGLETON_LABELS = {"files": "Files", "browser": "Browser"}
 #: What a user actually connects.
 USER_TYPES = ("mcp", "api", "cli")
 

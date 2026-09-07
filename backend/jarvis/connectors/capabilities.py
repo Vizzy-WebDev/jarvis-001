@@ -21,7 +21,8 @@ from typing import Any
 
 from ..capabilities import CapabilityKind, CapabilityRegistry, CapabilitySpec, Risk
 from ..redact import redact_text
-from . import api_client, cli_client, files_connector, mcp_client, risk, store
+from . import (api_client, browser_connector, cli_client, files_connector,
+               mcp_client, risk, store)
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +30,10 @@ NAME_SEPARATOR = "__"
 _UNSAFE = re.compile(r"[^a-z0-9]+")
 
 #: Two connectors can each offer a `search`, so a user-added connector's tools
-#: are prefixed with its label. The files connector is a singleton and cannot
-#: collide, so its names stay plain — `read_file` is what it should be called.
-UNPREFIXED_TYPES = ("files",)
+#: are prefixed with its label. The singletons cannot collide, so their names
+#: stay plain — `read_file` and `browser_navigate` are what they should be
+#: called, and prefixing a name that already says what it is reads as a bug.
+UNPREFIXED_TYPES = ("files", "browser")
 
 
 def _identifier(text: str) -> str:
@@ -50,6 +52,8 @@ def _raw_tools(connector: dict[str, Any]) -> list[dict[str, Any]]:
     kind = connector.get("type")
     if kind == "files":
         return list(files_connector.TOOLS)
+    if kind == "browser":
+        return browser_connector.tool_declarations(config)
     if kind == "api":
         return api_client.tool_declarations(config)
     if kind == "cli":
@@ -80,6 +84,8 @@ def _dispatch(connector_id: str, kind: str, tool_name: str,
     try:
         if kind == "files":
             return files_connector.dispatch(tool_name, args, config)
+        if kind == "browser":
+            return browser_connector.dispatch(tool_name, args, config)
         if kind == "api":
             return api_client.dispatch(tool_name, args, config)
         if kind == "cli":
@@ -112,7 +118,12 @@ def connector_specs(connector: dict[str, Any]) -> list[CapabilitySpec]:
             # something the model has to be refused, it should be absent.
             continue
 
-        classified = risk.classify(tool["name"], tool.get("description", ""))
+        # A declared risk is honoured only for Jarvis's OWN connectors, whose
+        # declarations are written here: for those, guessing from words when the
+        # answer is known is strictly worse. Anything from a server this build
+        # has never seen is still classified, and cannot declare itself safe.
+        declared = tool.get("risk") if kind in store.SINGLETON_TYPES else None
+        classified = declared or risk.classify(tool["name"], tool.get("description", ""))
         specs.append(CapabilitySpec(
             id=f"connector.{connector['id']}.{tool['name']}",
             name=name,
@@ -125,7 +136,7 @@ def connector_specs(connector: dict[str, Any]) -> list[CapabilitySpec]:
                      _dispatch(_cid, _kind, _tool, args)),
             kind=CapabilityKind.CONNECTOR,
             timeout_s=120.0 if kind == "mcp" else 60.0,
-            tags=frozenset({"core"}) if kind == "files" else frozenset(),
+            tags=frozenset({"core"}) if kind in ("files", "browser") else frozenset(),
             summarize=(lambda args, _label=connector.get("label"), _tool=tool["name"]:
                        f'Use "{_tool}" on {_label}?'),
         ))

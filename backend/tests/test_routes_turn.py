@@ -280,3 +280,39 @@ def test_a_failed_tool_is_recorded_as_a_failure_not_as_silence(client, stub):
 
     stat = self_store.get_stat("tool", "flaky_thing")
     assert stat is not None and stat["attempts"] == 1 and stat["failures"] == 1
+
+
+def test_a_tool_that_produces_a_picture_gets_it_into_the_transcript(client, stub):
+    """The whole point of `take_screenshot`: a file to LOOK at, not a path in a
+    tool result the model then has to describe. A client that knows nothing
+    about attachments still reads the tool_result correctly."""
+    assembly.get_registry().register(CapabilitySpec(
+        id="test.snap", name="snap", description="take a picture",
+        input_schema={"type": "object", "properties": {}},
+        risk=Risk.LOW,
+        handler=lambda **_: {"ok": True, "note": "captured",
+                             "ui_action": {"type": "attachment", "kind": "image",
+                                           "url": "/api/captures/screenshot/20260101-000000-abcdef",
+                                           "mimeType": "image/png"}}))
+    stub.calls_tool("snap", {})
+    stub.says("Here it is.")
+    events = events_from(client.get("/api/chat/stream",
+                                    params={"message": "take a screenshot"}))
+
+    results = [e for e in events if e["type"] == "tool_result"]
+    assert results and results[0]["capability"] == "snap" and results[0]["ok"] is True
+    assert results[0]["attachment"] == {
+        "type": "attachment", "kind": "image",
+        "url": "/api/captures/screenshot/20260101-000000-abcdef", "mimeType": "image/png"}
+
+
+def test_an_ordinary_tool_result_carries_no_attachment_key(client, stub):
+    assembly.get_registry().register(CapabilitySpec(
+        id="test.plain", name="plain_tool", description="plain",
+        input_schema={"type": "object", "properties": {}},
+        risk=Risk.LOW, handler=lambda **_: {"ok": True, "value": 1}))
+    stub.calls_tool("plain_tool", {})
+    stub.says("Done.")
+    events = events_from(client.get("/api/chat/stream", params={"message": "do the thing"}))
+    results = [e for e in events if e["type"] == "tool_result"]
+    assert results and "attachment" not in results[0]

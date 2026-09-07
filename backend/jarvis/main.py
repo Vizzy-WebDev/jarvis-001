@@ -24,8 +24,8 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .routes import (
-    approvals, artifacts, connectors, conversations, core, events, skills, turn,
-    uploads, voice,
+    approvals, artifacts, captures, connectors, conversations, core, events, skills,
+    turn, uploads, voice,
 )
 
 # The built Next.js export. Absent during early migration, when the front end is
@@ -53,6 +53,7 @@ def create_app() -> FastAPI:
     app.include_router(uploads.router)
     app.include_router(skills.router)
     app.include_router(connectors.router)
+    app.include_router(captures.router)
 
     # Everything here is behind its own interlock and does nothing until
     # cutover — see assembly.start_background_work().

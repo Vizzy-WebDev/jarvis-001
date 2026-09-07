@@ -79,6 +79,12 @@ class EventType(str, Enum):
     VOICE_WAKE = "voice.wake"
     VOICE_MODE = "voice.mode"
 
+    # The desktop (wave H). Two subscribers need to tell these apart: the badge
+    # that says Jarvis can see the screen, and the control overlay, which is a
+    # different thing entirely — one is observation, the other is control.
+    SCREEN_WATCH = "screen.watch"
+    CONTROL_SESSION = "control.session"
+
     # System
     SYSTEM_HEALTH_CHANGED = "system.health_changed"
     NOTIFICATION_CREATED = "notification.created"

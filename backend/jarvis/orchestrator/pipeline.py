@@ -88,6 +88,11 @@ class ToolRan:
     ok: bool
     outcome: ExecOutcome
     error: str | None = None
+    #: A file the tool produced that the user should SEE — a screenshot, a screen
+    #: recording. Carried beside the result rather than inside it because the
+    #: model's copy of a tool result is text it reasons over, and an image belongs
+    #: in the transcript itself. Shape: {type, kind, url, mimeType}.
+    attachment: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +134,23 @@ class Done:
 
 
 TurnEvent = Routed | Chunk | ToolRan | ApprovalRequired | Switched | Interrupted | Failed | Done
+
+
+def _attachment_of(value: Any) -> dict[str, Any] | None:
+    """A `ui_action` attachment on a tool result, if it named one.
+
+    One reader, so a tool announces something to show by returning it — never by
+    knowing anything about the turn stream.
+    """
+    if not isinstance(value, dict):
+        return None
+    action = value.get("ui_action")
+    if not isinstance(action, dict) or action.get("type") != "attachment":
+        return None
+    if not action.get("url"):
+        return None
+    return {"type": "attachment", "kind": action.get("kind") or "file",
+            "url": str(action["url"]), "mimeType": action.get("mimeType") or ""}
 
 
 @dataclass(frozen=True)
@@ -279,7 +301,8 @@ class Orchestrator:
             registry=self._registry, grants=request.grants,
             allowed_names=request.allowed_names, event_bus=self._bus,
         )
-        events.append(ToolRan(spec.name, result.ok, result.outcome, result.error))
+        events.append(ToolRan(spec.name, result.ok, result.outcome, result.error,
+                              _attachment_of(result.value)))
 
         if result.outcome is ExecOutcome.NEEDS_APPROVAL:
             state.to(State.WAITING_FOR_APPROVAL, f"{spec.name} needs approval")
@@ -408,7 +431,8 @@ class Orchestrator:
             for call in completed.tool_calls:
                 result = self._execute_call(request, call)
                 tools_used.append(call.name)
-                yield ToolRan(call.name, result.ok, result.outcome, result.error)
+                yield ToolRan(call.name, result.ok, result.outcome, result.error,
+                              _attachment_of(result.value))
                 results.append({
                     "id": call.id, "name": call.name,
                     "result": result.value if result.ok else {"error": result.error},

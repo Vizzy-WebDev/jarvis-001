@@ -45,8 +45,15 @@ def to_wire(event: Any) -> dict[str, Any]:
         return {"type": "routed", "intent": event.intent.value, "fast": event.fast,
                 "confidence": event.confidence, "reason": event.reason}
     if isinstance(event, ToolRan):
-        return {"type": "tool_result", "capability": event.capability, "ok": event.ok,
+        wire = {"type": "tool_result", "capability": event.capability, "ok": event.ok,
                 "outcome": event.outcome.value, "error": event.error}
+        # A tool that produced something to look at says so here. Its own event
+        # rather than a field on tool_result: showing a picture and reporting a
+        # tool's outcome are different things to a reader, and a client that
+        # knows nothing about attachments still renders the result correctly.
+        if event.attachment:
+            wire["attachment"] = event.attachment
+        return wire
     if isinstance(event, ApprovalRequired):
         return {"type": "approval_required", "approvalId": event.approval_id,
                 "capability": event.capability, "reason": event.reason}

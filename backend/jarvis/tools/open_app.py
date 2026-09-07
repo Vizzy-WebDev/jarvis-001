@@ -86,6 +86,28 @@ def _launch(target: str) -> None:
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def launch_by_name(name: str) -> str:
+    """Resolve a friendly name the same way this tool does, and start it.
+
+    Exported so a control session can open an app through the ONE resolver that
+    decides what a name may become, rather than growing a second, slightly
+    different idea of what "notepad" means. Raises rather than returning a result
+    dict: its caller is the control loop, which reports failures its own way.
+    """
+    wanted = str(name or "").strip()
+    if not wanted:
+        raise ValueError("No app name given.")
+    known = ALLOWLIST.get(wanted.lower())
+    if known:
+        _launch(known)
+        return wanted
+    match = best_match(wanted, list_shortcuts())
+    if match is None:
+        raise ValueError(f'I couldn\'t find an app called "{wanted}" on this computer.')
+    _launch(match["path"])
+    return match["name"]
+
+
 def _run(name: str = "") -> dict:
     wanted = str(name or "").strip()
     if not wanted:

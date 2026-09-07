@@ -24,6 +24,25 @@ from jarvis import db as db_module
 from jarvis.db import MIGRATION_COUNT, get_db
 
 
+#: Tables this build deliberately EXTENDS rather than leaves alone, and the exact
+#: columns it adds. Named here so the assertions below can allow precisely this
+#: and nothing else: a column appearing that is not on this list, or a Node column
+#: changing, is still a failure.
+EXTENDED_TABLES = {"memories": {"importance", "expires_at"}}
+
+
+def _columns(path, table):
+    """{name: (type, notnull, default, pk)} — the properties an existing row
+    depends on. Comparing these rather than the CREATE TABLE string is what lets
+    an added column pass while a changed one does not."""
+    conn = _open(path)
+    try:
+        return {r["name"]: (r["type"], r["notnull"], r["dflt_value"], r["pk"])
+                for r in conn.execute(f"PRAGMA table_info({table})")}
+    finally:
+        conn.close()
+
+
 def _open(path):
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
@@ -56,7 +75,20 @@ def test_python_schema_is_a_superset_of_nodes(scratch, tmp_path):
     assert not missing, f"Python is missing objects Node creates: {missing}"
 
     differing = sorted(k for k in theirs if ours[k] != theirs[k])
-    assert not differing, f"shared objects differ in SQL: {differing}"
+    # A table this build extends differs in SQL by design; the property that
+    # matters there is that every column Node defines survives UNCHANGED, and
+    # that the only additions are the ones we meant to make.
+    extended = {("table", name) for name in EXTENDED_TABLES}
+    assert not [k for k in differing if k not in extended], (
+        f"shared objects differ in SQL: {[k for k in differing if k not in extended]}")
+
+    for name, added in EXTENDED_TABLES.items():
+        mine = _columns(scratch.data_dir / "jarvis.db", name)
+        node = _columns(node_dir / "jarvis.db", name)
+        for column, definition in node.items():
+            assert column in mine, f"{name}.{column} disappeared"
+            assert mine[column] == definition, f"{name}.{column} was altered"
+        assert set(mine) - set(node) == added, f"{name} gained unexpected columns"
 
 
 @requires_node
@@ -80,6 +112,9 @@ def test_the_only_extra_objects_are_this_builds_own(scratch, tmp_path):
         # filtered out, so the assertion stays exact.
         "sqlite_autoindex_approvals_1", "sqlite_autoindex_permission_grants_1",
         "sqlite_autoindex_operations_1",
+        # Memory's expiry index (§22): an expired memory has to be filterable
+        # without scanning the table on every prompt build.
+        "idx_memories_expires",
     }
     assert (ours - theirs) == expected_extra
 
@@ -148,7 +183,16 @@ def test_opening_a_node_built_database_adds_only_new_objects(scratch, tmp_path):
     after = {(t, n): sql for t, n, sql in schema_fingerprint(scratch.data_dir / "jarvis.db")}
     for key, sql in before.items():
         assert key in after, f"{key} disappeared when Python opened the database"
+        if key in {("table", name) for name in EXTENDED_TABLES}:
+            continue        # checked column-by-column below, which is stricter
         assert after[key] == sql, f"{key} was altered when Python opened the database"
+
+    for name, added in EXTENDED_TABLES.items():
+        node = _columns(node_dir / "jarvis.db", name)
+        mine = _columns(scratch.data_dir / "jarvis.db", name)
+        assert all(mine.get(c) == d for c, d in node.items()), (
+            f"an existing {name} column changed when Python opened the database")
+        assert set(mine) - set(node) == added
 
 
 @requires_node
@@ -171,6 +215,28 @@ def test_existing_rows_survive_the_new_migrations(scratch, tmp_path):
     db = get_db()
     assert db.execute("SELECT title FROM conversations WHERE id='c1'").fetchone()[0] == "Real chat"
     assert db.execute("SELECT text FROM messages WHERE conversation_id='c1'").fetchone()[0] == "do not lose me"
+
+
+@requires_node
+def test_a_memory_written_by_node_survives_the_new_columns(scratch, tmp_path):
+    """Migration 22 alters the table the owner's real memories live in. An
+    ALTER that loses a row is the worst outcome in this whole port."""
+    node_dir = tmp_path / "node-data"
+    node_dir.mkdir()
+    node_migrate(node_dir)
+
+    seeded = sqlite3.connect(str(node_dir / "jarvis.db"), isolation_level=None)
+    seeded.execute(
+        "INSERT INTO memories (id, category, text, source_kind, created_at, updated_at, "
+        "archived, origin) VALUES ('mem_1','About You','Drinks tea','chat','t','t',0,'approved')")
+    seeded.close()
+    shutil.copy(node_dir / "jarvis.db", scratch.data_dir / "jarvis.db")
+
+    db = get_db()
+    row = db.execute("SELECT * FROM memories WHERE id='mem_1'").fetchone()
+    assert row["text"] == "Drinks tea" and row["origin"] == "approved"
+    # The new columns exist and are NULL, not a value nobody chose.
+    assert row["importance"] is None and row["expires_at"] is None
 
 
 def test_a_failing_migration_rolls_back_its_version_bump(scratch, monkeypatch):

@@ -1,5 +1,10 @@
-"""Memory — the curated, approval-first store of durable facts about the user.
+"""Memory — durable facts about the USER.
 
-Ported in Wave 3. This package currently holds only the checkpoint seam that
-earlier waves need to call into.
+Distinct from Self-Improvement (what Jarvis has learned about its OWN
+performance) and from chat history (what was said, and when). A fact is
+recalled by being in the prompt; something said is recalled by being searched.
 """
+
+from . import policy, store
+
+__all__ = ["policy", "store"]

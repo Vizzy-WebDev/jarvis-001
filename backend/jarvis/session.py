@@ -14,7 +14,6 @@ a hardcoded string.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import threading
 from typing import Any
@@ -32,26 +31,23 @@ _lock = threading.RLock()
 def _fire_and_forget_checkpoint(conversation_id: str, reason: str) -> None:
     """Run a checkpoint without ever making the caller wait for it.
 
-    A checkpoint reads a whole session's worth of conversation, so it must never
-    delay the first request served after startup, and must never make "New chat"
-    feel slow. Errors are logged and dropped — a failed checkpoint is not a
-    failed user action.
+    A checkpoint reads a whole session's worth of conversation and spends a model
+    call, so it must never delay the first request served after startup, and must
+    never make "New chat" feel slow. Errors are logged and dropped — a failed
+    checkpoint is not a failed user action.
+
+    A plain thread rather than an asyncio task: the work underneath is genuinely
+    blocking (a provider SDK call), so scheduling it on the event loop would
+    block every other request for its duration. It also means this works
+    identically from a sync context, where there is no running loop at all.
     """
-    async def _run() -> None:
+    def _run() -> None:
         try:
-            await checkpoint_conversation(conversation_id, reason)
+            checkpoint_conversation(conversation_id, reason)
         except Exception:
             logger.exception("%s checkpoint failed", reason)
 
-    try:
-        asyncio.get_running_loop().create_task(_run())
-    except RuntimeError:
-        # No running loop (a sync context, e.g. a threadpool worker). The
-        # checkpoint is best-effort by design, so this degrades to running it to
-        # completion off the request path rather than being skipped silently.
-        threading.Thread(
-            target=lambda: asyncio.run(_run()), name=f"checkpoint-{reason}", daemon=True
-        ).start()
+    threading.Thread(target=_run, name=f"checkpoint-{reason}", daemon=True).start()
 
 
 def get_active_session_id() -> str:

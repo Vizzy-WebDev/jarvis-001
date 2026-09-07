@@ -21,6 +21,7 @@ looks identical to one that took none.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 from ..adapters import get_adapter
@@ -31,6 +32,7 @@ from ..orchestrator.model_port import (
 )
 from . import availability
 from .error_kind import availability_state_for, classify_error
+from .jsonish import extract_json
 from .routing import Task, build_candidates, explain_exclusions
 
 logger = logging.getLogger(__name__)
@@ -176,3 +178,87 @@ def _reason_text(reason: str) -> str:
         "no_tools": "unable to use tools",
         "context_too_small": "too small for this much text",
     }.get(reason, reason.replace("_", " "))
+
+
+@dataclass
+class Answer:
+    """One prompt, one answer, no tools."""
+
+    text: str
+    model_id: str | None = None
+    data: Any = None
+    tried: list[str] = field(default_factory=list)
+
+
+def ask(
+    prompt: str,
+    *,
+    system: str = "",
+    want_json: bool = False,
+    task: Task | None = None,
+    balance: str = "balanced",
+    model_id: str | None = None,
+    event_bus: EventBus | None = None,
+) -> Answer:
+    """A single question with no tools and no transcript — the third way to drive
+    a model, alongside a turn and (later) the control loop.
+
+    It walks the SAME candidate list as everything else, which is the point: in
+    the Node app this was a separate implementation that never marked a failing
+    model unhealthy, so one-off calls kept re-trying models the chat loop had
+    already benched.
+
+    **A model that returns unparseable JSON is not marked unhealthy.** It is
+    working, it is just not following a format instruction — a distinction worth
+    keeping, because benching a healthy model for that would gradually empty the
+    roster on exactly the weak models most likely to do it. The next candidate is
+    tried instead.
+    """
+    ebus = event_bus or default_bus
+    task = task or Task(text=prompt, needs_tools=False)
+    candidates = build_candidates(task, balance=balance, model_id=model_id)
+    if not candidates:
+        raise NoModelAvailable(_nothing_available_message(task), explain_exclusions(task))
+
+    messages = [{"role": "user", "text": prompt}]
+    tried: list[str] = []
+    errors: list[tuple[str, str]] = []
+
+    for entry in candidates[:MAX_ATTEMPTS]:
+        try:
+            adapter = get_adapter(entry.get("adapter"))
+        except KeyError as err:
+            errors.append((entry["id"], str(err)))
+            continue
+
+        tried.append(entry["id"])
+        text = ""
+        try:
+            for event in adapter.stream(entry, messages, system=system, tools=[]):
+                if isinstance(event, TextChunk):
+                    text += event.text
+                elif isinstance(event, StepComplete) and event.text:
+                    text = event.text
+        except Exception as err:  # noqa: BLE001
+            detail = _detail_of(adapter, err)
+            availability.record(entry["id"], availability_state_for(err), detail=detail,
+                                technical=str(err))
+            ebus.publish(EventType.MODEL_CALL_FAILED, {
+                "modelId": entry["id"], "kind": classify_error(err), "error": detail})
+            errors.append((entry["id"], detail))
+            continue
+
+        availability.record(entry["id"], "working")
+        if not want_json:
+            return Answer(text=text, model_id=entry["id"], tried=tried)
+
+        data = extract_json(text)
+        if data is None:
+            # Deliberately no availability record: see this function's docstring.
+            logger.info("model %s answered but not as JSON; trying the next", entry["id"])
+            errors.append((entry["id"], "did not answer in the requested format"))
+            continue
+        return Answer(text=text, model_id=entry["id"], data=data, tried=tried)
+
+    raise NoModelAvailable(_all_failed_message(errors, produced_text=False),
+                           {"tried": [{"modelId": m, "error": e} for m, e in errors]})

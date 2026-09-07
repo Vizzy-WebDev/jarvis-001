@@ -92,4 +92,25 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
         CREATE INDEX IF NOT EXISTS idx_operations_session ON operations(session_id);
         """
     ],
+
+    # 22: Memory gets importance and an expiry (§22).
+    #
+    # "Memory entries should have: content, category, importance, source,
+    # timestamps, and optionally expiry." The store had category, content,
+    # source, confidence, origin and timestamps; these are the two the
+    # directive names that were missing.
+    #
+    # `importance` is 1-5 and NULL until something actually judges it — a
+    # default of 3 would be a number nobody chose, presented later as if
+    # someone had. `expires_at` is NULL for the ordinary case: most things
+    # worth remembering do not expire, and a memory with an expiry is making a
+    # specific claim ("they are in Lisbon until the 14th") that should stop
+    # being asserted once it lapses, rather than quietly ageing into a lie.
+    22: [
+        """
+        ALTER TABLE memories ADD COLUMN importance INTEGER;
+        ALTER TABLE memories ADD COLUMN expires_at TEXT;
+        CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at);
+        """
+    ],
 }

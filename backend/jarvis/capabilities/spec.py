@@ -99,6 +99,12 @@ class CapabilitySpec:
     #: §25 — what to log about this capability, and what must never be logged.
     #: Argument names listed here are redacted before any log or trace row.
     redact_args: frozenset[str] = frozenset()
+    #: Whether the handler also wants the CallContext — the same shape as
+    #: `cancellable`, and for the same reason: a handler that needs it says so
+    #: rather than every handler having to accept an argument it ignores. Set by
+    #: a capability that has to invoke OTHER capabilities (a Skill running a
+    #: pipeline), which needs the session and turn to pass down.
+    wants_context: bool = False
     #: Optional: turns THIS call's arguments into the sentence the user is
     #: actually asked to approve. The policy explains WHY a confirmation is
     #: needed; only the capability can say WHAT will happen in the user's own

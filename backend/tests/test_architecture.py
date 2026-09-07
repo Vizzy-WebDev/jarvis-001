@@ -92,6 +92,33 @@ def test_a_tool_asks_a_model_through_the_narrow_seam_not_the_gateway():
     )) == []
 
 
+def test_a_skills_ui_reads_a_source_that_cannot_return_a_built_in():
+    """The permanent Skills rule, asserted rather than remembered.
+
+    A built-in ability must never be offered as an installable Skill. That has
+    regressed repeatedly in the design this replaces, every time by someone
+    listing capabilities and filtering — so the routes read the folder list,
+    which structurally cannot return one, and this checks they still do.
+    """
+    tree = ast.parse((PACKAGE / "routes" / "skills.py").read_text())
+    listing = {node.name: node for node in ast.walk(tree)
+               if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and node.name in ("installed", "detail")}
+    assert set(listing) == {"installed", "detail"}, "the listing routes were renamed"
+
+    for name, node in listing.items():
+        names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+        names |= {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+        # Either the folder list itself or the single-folder read built on it —
+        # both live in the skills store and neither can return a built-in.
+        assert names & {"list_user_skills", "get_skill"}, \
+            f"{name}() must read the folder list"
+        for reaching in ("registry", "get_registry", "declarations", "load_tools"):
+            assert reaching not in names, (
+                f"{name}() reaches for {reaching!r} — a Skills listing must read the "
+                "folder list, which cannot return a built-in, never a capability list")
+
+
 # --- the authority ceiling ---------------------------------------------------
 
 def test_the_policy_layer_stays_pure():

@@ -38,6 +38,16 @@ def get_registry() -> CapabilityRegistry:
         if _registry is None:
             registry = CapabilityRegistry()
             names = load_tools(registry)
+            # Folder Skills are registered AFTER the tools, so one can never take
+            # a name a built-in already has — and re-synced whenever a Skill is
+            # installed or removed, since Skills are not fixed at startup the way
+            # built-in tools are.
+            from .skills.capabilities import sync as sync_skills
+
+            skills = sync_skills(registry)
+            if skills:
+                logger.info("[assembly] %d folder skill(s) available: %s",
+                            len(skills), ", ".join(skills))
             # Subscribed here rather than called from the turn loop: what a
             # capability did is already published, and a recorder that has to be
             # invoked is a dependency the loop should not carry.

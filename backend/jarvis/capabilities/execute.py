@@ -42,6 +42,17 @@ from .spec import CapabilitySpec
 logger = logging.getLogger(__name__)
 
 _pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="capability")
+#: A capability that calls other capabilities (a Skill running a pipeline) must
+#: not take a worker from the pool its own caller is waiting in — with enough of
+#: them in flight that is a deadlock, and a deadlock here presents as the
+#: assistant simply stopping. A separate pool makes that impossible rather than
+#: unlikely.
+_nested_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="capability-nested")
+
+
+def _pool_for_this_thread() -> ThreadPoolExecutor:
+    return (_nested_pool if threading.current_thread().name.startswith("capability")
+            else _pool)
 
 
 class ExecOutcome(str, Enum):
@@ -244,7 +255,7 @@ def _run(
     for attempt in range(total):
         attempts = attempt + 1
         cancel = threading.Event()
-        future = _pool.submit(_invoke, spec, args, cancel)
+        future = _pool_for_this_thread().submit(_invoke, spec, args, cancel, ctx)
         try:
             value = future.result(timeout=spec.timeout_s)
         except FutureTimeout:
@@ -314,11 +325,15 @@ def _run(
     raise AssertionError("unreachable: the retry loop always returns")
 
 
-def _invoke(spec: CapabilitySpec, args: dict[str, Any], cancel: threading.Event) -> Any:
-    """Call the handler, passing a cancel token only if it declared one."""
+def _invoke(spec: CapabilitySpec, args: dict[str, Any], cancel: threading.Event,
+            ctx: CallContext | None = None) -> Any:
+    """Call the handler, passing only what it actually declared it wants."""
+    extra: dict[str, Any] = {}
     if spec.cancellable:
-        return spec.handler(**args, cancel=cancel)
-    return spec.handler(**args)
+        extra["cancel"] = cancel
+    if spec.wants_context:
+        extra["ctx"] = ctx
+    return spec.handler(**args, **extra)
 
 
 def execute_approved(

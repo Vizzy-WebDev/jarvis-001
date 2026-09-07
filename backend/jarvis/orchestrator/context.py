@@ -184,12 +184,21 @@ class RelevanceContext:
         chosen, selection = select_memories(text, available, memory_budget)
         memories_text = memory_store.approved_memories_text(chosen)
 
+        # Rules Jarvis has learned about its own work ride in the volatile half:
+        # they change as it learns, and they apply to a background job's turn as
+        # much as to a conversation.
+        from ..improvement.store import active_rules_text
+
+        rules = prompt.rules_section(active_rules_text())
         system = prompt.system_instruction(memories=memories_text,
-                                           low_confidence=low_confidence)
+                                           low_confidence=low_confidence,
+                                           extra=[rules] if rules else None)
         remaining = max(0, self.budget_tokens - estimate_tokens(system))
         messages = trim_messages(conversation.get_messages(session_id), remaining)
 
         included = ("system_instruction",)
+        if rules:
+            included += ("learned_rules",)
         if chosen:
             included += ("memory",)
         if messages:

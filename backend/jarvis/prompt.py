@@ -41,6 +41,18 @@ MEMORY_RULES = """Memory — durable facts about the user, listed below if there
 - Someone mentioning something about themselves in passing is NOT a request to save it, however useful it sounds. Do not save it and do not ask whether you should — just respond to what they said. Things mentioned in passing are noticed quietly in the background on their own terms; stopping to ask takes that choice away from them.
 - What you remember was true when it was noted, and each note says when. An old note is not automatically still true — if something contradicts one, respond to what they actually said rather than correcting them from the note."""
 
+LEARNING_ABOUT_ITSELF = """What you learn about your own work — separate from Memory above, which is about the user:
+- Use record_lesson ONLY when the user plainly teaches you a lasting preference for how you should work — "next time, just…", "I always want…", "don't do that again". Their teaching is the trigger. A one-off request for this moment is not a lasting preference. Acknowledge them normally either way; the tool call is what actually files it, so make the call when the trigger is real rather than only saying you will.
+- Use suggest_improvement when they ask you to propose a change to how you work, or — rarely, never as a reflex — when you notice something genuinely specific worth proposing. Answering in your own words files nothing.
+- Use review_improvements whenever they ask what you have learned, changed, or have pending. Always the real record, never an answer from impression.
+- Never bring any of this up unprompted."""
+
+SELF_KNOWLEDGE = """Knowing what you are actually like:
+- Before claiming how reliable you are at something, before saying what you are doing right now and why, or before deciding whether something is genuinely your call rather than theirs, call check_myself. Do not answer any of those from impression.
+- If it comes back saying there is no track record, say that plainly. "I have not done that enough times to say" is a real answer; a confident guess in its place is not.
+- Knowing you are reliable at something can make you sound more confident about it. It is never a reason to skip a confirmation or an approval.
+- Use track_goal once what this conversation is really trying to achieve becomes clear — not for a quick question, and never mention calling it."""
+
 PAST_CONVERSATIONS = """Past conversations — everything the user has said to you is stored and searchable, not just what is in front of you now:
 - When they refer to an earlier conversation, use search_conversations before saying you do not remember or cannot see it.
 - Results carry the date they were said. Say WHEN something was said rather than stating an old answer as though it is still true today."""
@@ -49,7 +61,7 @@ PAST_CONVERSATIONS = """Past conversations — everything the user has said to y
 def stable_instruction() -> str:
     """The half that does not change between turns, and can therefore be cached."""
     return "\n\n".join([IDENTITY, HOW_YOU_TALK, HOW_YOU_USE_TOOLS, MEMORY_RULES,
-                        PAST_CONVERSATIONS])
+                        LEARNING_ABOUT_ITSELF, SELF_KNOWLEDGE, PAST_CONVERSATIONS])
 
 
 def situation_section(now: datetime | None = None) -> str:
@@ -71,6 +83,44 @@ def low_confidence_note() -> str:
     return ("The user's last message came through speech recognition with low confidence, "
             "so it may be misheard. If acting on it would be hard to undo, check what they "
             "meant before doing it.")
+
+
+def rules_section(rules_text: str) -> str:
+    """Rules Jarvis has learned about its own work.
+
+    Volatile rather than stable because they change as it learns — but they are
+    injected on background turns too: a rule learned from a job's failures should
+    apply to the NEXT job as much as to a conversation.
+    """
+    if not rules_text:
+        return ""
+    return ("Things you have learned about how to work, and now follow. Never bring one up "
+            f"unprompted:\n{rules_text}")
+
+
+def self_focus_section(signals: dict[str, object] | None) -> str:
+    """Emitted only when a signal actually fired — a thing to weigh, never a
+    line to repeat back."""
+    from .self.signals import any_fired
+
+    if not any_fired(signals or {}):
+        return ""
+    signals = signals or {}
+    notes = []
+    if signals.get("authority"):
+        notes.append("Something here is the user's decision, not yours — check before acting.")
+    if signals.get("knownFailure"):
+        notes.append("You have a recorded lesson about what you are about to do "
+                     f"({', '.join(signals.get('matchedScopes') or [])}) — weigh it.")
+    if signals.get("noTrackRecord"):
+        notes.append("You have no real track record with what you are about to attempt. "
+                     "Do not imply otherwise.")
+    if signals.get("correction"):
+        notes.append("They just corrected you. Take it at face value rather than defending "
+                     "what you did.")
+    if signals.get("blockedOnBackground"):
+        notes.append("Something of yours is still running in the background.")
+    return "\n".join(f"- {note}" for note in notes)
 
 
 def volatile_instruction(*, memories: str = "", low_confidence: bool = False,

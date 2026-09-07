@@ -237,3 +237,46 @@ def test_a_second_tab_gets_its_own_stream(live_server):
                     break
             else:
                 raise AssertionError("one of the two streams missed the event")
+
+
+# --- observers (§38) ---------------------------------------------------------
+
+def test_a_tool_outcome_reaches_the_self_model_without_the_loop_knowing(client, stub):
+    """The seam under real pressure: nothing in the turn loop calls a recorder.
+    The capability publishes what it did, and a subscriber writes it down.
+
+    tests/test_architecture.py asserts the other half — that the orchestrator
+    still imports no observer — so together they pin both directions.
+    """
+    from jarvis.self import store as self_store
+
+    assembly.get_registry().register(CapabilitySpec(
+        id="test.tidy", name="tidy_up", description="ordinary work",
+        input_schema={"type": "object", "properties": {}},
+        risk=Risk.LOW, handler=lambda **_: "tidied"))
+    stub.calls_tool("tidy_up", {})
+    stub.says("All done.")
+
+    client.get("/api/chat/stream", params={"message": "tidy that up for me"})
+
+    stat = self_store.get_stat("tool", "tidy_up")
+    assert stat is not None and stat["attempts"] == 1 and stat["failures"] == 0
+
+
+def test_a_failed_tool_is_recorded_as_a_failure_not_as_silence(client, stub):
+    from jarvis.self import store as self_store
+
+    def explode(**_):
+        raise RuntimeError("nope")
+
+    assembly.get_registry().register(CapabilitySpec(
+        id="test.flaky", name="flaky_thing", description="fails",
+        input_schema={"type": "object", "properties": {}},
+        risk=Risk.LOW, handler=explode))
+    stub.calls_tool("flaky_thing", {})
+    stub.says("That didn't work.")
+
+    client.get("/api/chat/stream", params={"message": "try the flaky thing"})
+
+    stat = self_store.get_stat("tool", "flaky_thing")
+    assert stat is not None and stat["attempts"] == 1 and stat["failures"] == 1

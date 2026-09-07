@@ -100,11 +100,30 @@ def test_the_capability_registry_does_not_know_about_authorization():
 
 # --- the orchestrator's restraint --------------------------------------------
 
-def test_the_orchestrator_imports_no_observer():
-    """Cost, self-model, improvement and tracing subscribe to the event bus. The
-    Node turn loop imported six of them and could not be tested without them."""
-    assert offending(files_under("orchestrator"), (
+def test_the_turn_loop_imports_no_subsystem_that_watches_it():
+    """The loop must not know about cost, the self-model, improvement or
+    tracing. The Node turn loop imported six such modules and could not be
+    tested without them.
+
+    Scoped to the LOOP rather than the whole package, deliberately: assembling
+    context legitimately READS stores (it already reads memory), and a rule that
+    cannot tell "reads a store to build the prompt" from "is called to record
+    what happened" would forbid the wrong thing. The recorders themselves are
+    forbidden package-wide, just below.
+    """
+    assert offending([PACKAGE / "orchestrator" / "pipeline.py"], (
         "jarvis.cost", "jarvis.improvement", "jarvis.self", "jarvis.ops",
+        "jarvis.observers",
+    )) == []
+
+
+def test_nothing_in_the_orchestrator_calls_a_recorder():
+    """The other direction: a capability publishes what it did and a subscriber
+    writes it down. Anything under here reaching for a recorder means the event
+    seam has quietly stopped being the mechanism."""
+    assert offending(files_under("orchestrator"), (
+        "jarvis.improvement.capture", "jarvis.self.capture", "jarvis.observers",
+        "jarvis.cost", "jarvis.ops",
     )) == []
 
 

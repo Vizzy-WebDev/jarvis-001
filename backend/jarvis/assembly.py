@@ -16,6 +16,7 @@ import threading
 
 from .capabilities import CapabilityRegistry
 from .events import bus
+from .observers import start_observers
 from .gateway.client import Gateway
 from .orchestrator import Orchestrator
 from .prefs import get_prefs
@@ -37,6 +38,10 @@ def get_registry() -> CapabilityRegistry:
         if _registry is None:
             registry = CapabilityRegistry()
             names = load_tools(registry)
+            # Subscribed here rather than called from the turn loop: what a
+            # capability did is already published, and a recorder that has to be
+            # invoked is a dependency the loop should not carry.
+            start_observers(bus)
             # Logged at startup on purpose: whether every tool file actually
             # loaded is otherwise invisible until something tries to call one.
             logger.info("[assembly] %d capabilities available", len(names))

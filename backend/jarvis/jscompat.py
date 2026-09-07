@@ -48,6 +48,16 @@ def now_iso() -> str:
     return f"{now.strftime('%Y-%m-%dT%H:%M:%S')}.{now.microsecond // 1000:03d}Z"
 
 
+def to_iso_z(moment: datetime) -> str:
+    """Any datetime as `Date.toISOString()` writes it: UTC, three fractional
+    digits, trailing Z. A naive datetime is taken as local time, which is what
+    every scheduling calculation in this app produces."""
+    if moment.tzinfo is None:
+        moment = moment.astimezone()
+    utc = moment.astimezone(timezone.utc)
+    return f"{utc.strftime('%Y-%m-%dT%H:%M:%S')}.{utc.microsecond // 1000:03d}Z"
+
+
 def random_suffix(length: int = 6) -> str:
     """`Math.random().toString(36).slice(2, 2 + length)`.
 

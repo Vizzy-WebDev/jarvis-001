@@ -13,11 +13,17 @@ export function Toggle({
   onChange,
   label,
   disabled = false,
+  // Declared rather than left to be passed through, because TypeScript does NOT
+  // check hyphenated JSX attributes against a component's props: writing
+  // data-testid on a component that does not accept it typechecks cleanly and
+  // is then silently dropped, so the attribute simply never reaches the DOM.
+  'data-testid': testId,
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   label: string;
   disabled?: boolean;
+  'data-testid'?: string;
 }) {
   return (
     <button
@@ -26,6 +32,7 @@ export function Toggle({
       aria-checked={checked}
       aria-label={label}
       disabled={disabled}
+      data-testid={testId}
       onClick={() => onChange(!checked)}
       className={[
         'relative h-[22px] w-[38px] shrink-0 rounded-pill border transition duration-150 ease-out',

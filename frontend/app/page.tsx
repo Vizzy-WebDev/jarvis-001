@@ -4,7 +4,10 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { ConversationPanel } from '@/components/conversation/ConversationPanel';
 import { attachmentOf, type Turn } from '@/components/conversation/Message';
+import { BriefingScreen } from '@/components/screens/BriefingScreen';
 import { GenericScreen, NotPortedYet } from '@/components/screens/GenericScreen';
+import { ImprovementScreen } from '@/components/screens/ImprovementScreen';
+import { JobsScreen } from '@/components/screens/JobsScreen';
 import { MemoryScreen } from '@/components/screens/MemoryScreen';
 import { ModelsScreen } from '@/components/screens/ModelsScreen';
 import { NotificationsScreen } from '@/components/screens/NotificationsScreen';
@@ -16,7 +19,7 @@ import { SettingsPanel } from '@/components/shell/SettingsPanel';
 import { MicButton } from '@/components/stage/MicButton';
 import { Orb } from '@/components/stage/Orb';
 import { api, ApiRequestError } from '@/lib/api';
-import type { Message as StoredMessage } from '@/lib/api-types';
+import type { Message as StoredMessage, Monitor } from '@/lib/api-types';
 import { streamTurn, type RunningTurn } from '@/lib/chat';
 import { DuplexEngine } from '@/lib/voice/duplex-engine';
 import type { VoiceEngine } from '@/lib/voice/engine';
@@ -48,6 +51,10 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [speakReplies, setSpeakReplies] = useState(false);
   const [sharing, setSharing] = useState(false);
+  /** What Jarvis is watching for. Shown in the shell rather than only on a
+   *  screen because a watch is running whether or not anyone is looking at the
+   *  list of them. */
+  const [watching, setWatching] = useState<Monitor[]>([]);
   const [unread, setUnread] = useState(0);
   const [configured, setConfigured] = useState(true);
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -110,12 +117,38 @@ export default function Home() {
         if (event.type === 'screen.watch') {
           setSharing(Boolean((event.payload as { sharing?: boolean })?.sharing));
         }
+        // Broadcast rather than answered to the tab that clicked: a click on the
+        // Scheduled Tasks screen and a spoken "stop watching that" must never
+        // leave two windows disagreeing about what is still running.
+        if (event.type === 'monitor.stopped') {
+          const stopped = (event as unknown as { monitorId?: string }).monitorId;
+          setWatching((current) => current.filter((monitor) => monitor.id !== stopped));
+        }
       } catch {
         /* a frame we cannot read is not worth acting on */
       }
     };
     return () => source.close();
   }, []);
+
+  // Read once on load: a watch started before this tab opened is still running,
+  // and the bar has to be right from the first paint rather than only after
+  // something happens.
+  useEffect(() => {
+    api.monitors.list()
+      .then((found) => setWatching(found.monitors.filter((m) => m.status === 'watching')))
+      .catch(() => undefined);
+  }, []);
+
+  async function stopWatching(id: string) {
+    setWatching((current) => current.filter((monitor) => monitor.id !== id));
+    try {
+      await api.monitors.stop(id);
+    } catch {
+      const found = await api.monitors.list().catch(() => null);
+      if (found) setWatching(found.monitors.filter((m) => m.status === 'watching'));
+    }
+  }
 
   // --- sending ---------------------------------------------------------------
 
@@ -345,6 +378,43 @@ export default function Home() {
         >
           <Orb state={orbState} />
 
+          {/* Out of flow, pinned to the top of the stage: the orb's box is fixed
+              and nothing here may move or resize it. */}
+          {watching.length > 0 && (
+            <div className="pointer-events-none absolute inset-x-0 top-0 flex justify-center">
+              <div
+                data-testid="watching-bar"
+                className="pointer-events-auto flex max-w-[80%] items-center gap-3 rounded-pill
+                           border border-state-warn/30 bg-state-warn/10 px-3.5 py-1.5"
+              >
+                <span className="truncate text-[12px] text-state-warn">
+                  Watching for {watching.map((monitor) => monitor.description).join(', ')}
+                </span>
+                {/* One watch gets a Stop; several get a way to see them, because
+                    a single Stop over a list of three would silently pick one. */}
+                {watching.length === 1 ? (
+                  <button
+                    type="button"
+                    data-testid="watching-stop"
+                    onClick={() => void stopWatching(watching[0]!.id)}
+                    className="shrink-0 text-[12px] text-ink-muted hover:text-ink"
+                  >
+                    Stop
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    data-testid="watching-open"
+                    onClick={() => go('tasks')}
+                    className="shrink-0 text-[12px] text-ink-muted hover:text-ink"
+                  >
+                    See all {watching.length}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* The stage's lower band: what Jarvis is doing, and the control for
               it. Reserved space, so the orb's box above is fixed. */}
           <div
@@ -442,6 +512,9 @@ function screenFor(id: string, go: (id: string) => void): React.ReactNode {
   if (id === 'tasks') return <TasksScreen onNavigate={go} />;
   if (id === 'memory') return <MemoryScreen />;
   if (id === 'profile') return <ProfileScreen />;
+  if (id === 'improvement') return <ImprovementScreen />;
+  if (id === 'jobs') return <JobsScreen />;
+  if (id === 'briefing') return <BriefingScreen onNavigate={go} />;
   return null;
 }
 

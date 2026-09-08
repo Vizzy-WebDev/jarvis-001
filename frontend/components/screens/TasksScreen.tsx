@@ -10,8 +10,9 @@ import { Field, inputClass } from '@/components/ui/Field';
 import { Modal } from '@/components/ui/Modal';
 import { Toggle } from '@/components/ui/Toggle';
 import { api, ApiRequestError } from '@/lib/api';
+import { isPickable } from '@/lib/connectors';
 import type {
-  ConnectionEntry, Connector, ModelEntry, Recurrence, Task, TaskRun,
+  ConnectionEntry, Connector, ModelEntry, Monitor, Recurrence, Task, TaskRun,
 } from '@/lib/api-types';
 
 /**
@@ -69,6 +70,7 @@ export function TasksScreen({ onNavigate }: { onNavigate?: (id: string) => void 
   const [models, setModels] = useState<ModelEntry[]>([]);
   const [connections, setConnections] = useState<ConnectionEntry[]>([]);
   const [connectors, setConnectors] = useState<Connector[]>([]);
+  const [monitors, setMonitors] = useState<Monitor[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -81,9 +83,22 @@ export function TasksScreen({ onNavigate }: { onNavigate?: (id: string) => void 
     }
   }, []);
 
+  /** What Jarvis is watching for right now — a different mechanism from a task,
+   *  and it belongs beside them because both answer "what is going to happen
+   *  without me". A watch fires on a CONDITION; a task fires on a clock. */
+  const loadMonitors = useCallback(async () => {
+    try {
+      setMonitors((await api.monitors.list()).monitors.filter((m) => m.status === 'watching'));
+    } catch {
+      /* nothing being watched is the normal case, and a failure here must not
+         stop the tasks below from working */
+    }
+  }, []);
+
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadMonitors();
+  }, [load, loadMonitors]);
 
   // What the two pickers offer. Read once: neither list changes while someone
   // is filling in a task, and a failure here must not stop the screen working —
@@ -184,6 +199,32 @@ export function TasksScreen({ onNavigate }: { onNavigate?: (id: string) => void 
       </div>
 
       {error && !draft && <p className="mb-4 text-[13px] text-state-danger">{error}</p>}
+
+      {monitors.length > 0 && (
+        <Card className="mb-4 border-state-warn/25 bg-state-warn/[0.04]" data-testid="monitor-card">
+          <p className="text-[13px] font-medium text-ink">Watching for</p>
+          <div className="mt-2 space-y-2">
+            {monitors.map((monitor) => (
+              <div key={monitor.id} className="flex items-center justify-between gap-4"
+                   data-testid="monitor-row">
+                <p className="min-w-0 truncate text-[14px] text-ink">{monitor.description}</p>
+                <Button
+                  data-testid="monitor-stop"
+                  onClick={() => void api.monitors.stop(monitor.id).then(loadMonitors)}
+                >
+                  Stop
+                </Button>
+              </div>
+            ))}
+          </div>
+          {/* There is no "watch for something" button, deliberately: working out a
+              concrete check from what was actually said is Jarvis's job, and a
+              button here would be a way to start one blind. */}
+          <p className="mt-3 text-[12px] text-ink-faint">
+            Ask Jarvis to watch for something and it appears here.
+          </p>
+        </Card>
+      )}
 
       {tasks === null ? (
         <p className="py-10 text-center text-[13px] text-ink-faint">Reading…</p>
@@ -451,15 +492,6 @@ export function TasksScreen({ onNavigate }: { onNavigate?: (id: string) => void 
       </Modal>
     </>
   );
-}
-
-/** Jarvis's own built-in abilities are not "apps it may use" — they are what it
- *  can already do, and offering them here would suggest picking one adds
- *  something. Only real connected apps are pickable. */
-const OWN_ABILITIES = new Set(['files', 'browser']);
-
-function isPickable(connector: Connector): boolean {
-  return connector.enabled && !OWN_ABILITIES.has(connector.type);
 }
 
 /** Models under the connection they belong to, so two models with the same

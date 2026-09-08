@@ -454,7 +454,9 @@ export interface Job {
   title: string;
   goal: string;
   kind: string;
-  status: 'queued' | 'running' | 'awaiting_decision' | 'succeeded' | 'failed' | 'cancelled';
+  /** What the backend actually writes. `done` and `stalled` are the two terminal
+   *  states the worker sets; nothing ever emits "succeeded" or "failed". */
+  status: 'queued' | 'running' | 'awaiting_decision' | 'stalled' | 'done' | 'cancelled';
   plan: { summary?: string; steps?: string[] } | null;
   resource: string | null;
   /** What the trace says about picking this up again — never a guess. */

@@ -919,3 +919,218 @@ def test_notes_read_in_the_order_they_were_written(page):
     rows = page.locator("[data-testid=note-row]").all_inner_texts()
     assert [row.split("\n")[0] for row in rows] \
         == ["first thing", "second thing", "third thing"]
+
+
+# --- self-improvement, jobs, the briefing, and what is being watched for --------
+
+def test_a_suggestion_is_approved_on_screen_and_the_rule_really_goes_live(page):
+    """A single failure never becomes a rule — the pipeline enforces that — so
+    this seeds a proposal that has already earned its place and checks the screen
+    can actually apply it."""
+    from jarvis.improvement import store
+
+    store.create_proposal(kind="rule", title="Say less on the first pass",
+                          rationale="It over-explains before anyone has asked",
+                          payload={"text": "Say less on the first pass", "scope": "general"},
+                          source_tier=1)
+
+    go_to(page, "improvement")
+    page.click("[data-testid=proposal-row]")
+    page.click("[data-testid=approve-proposal]")
+    page.wait_for_selector("[data-testid=proposal-row]", state="detached")
+
+    assert [r["text"] for r in store.list_rules()] == ["Say less on the first pass"]
+
+
+def test_undoing_that_change_really_takes_the_rule_back(page):
+    from jarvis.improvement import store
+
+    store.create_proposal(kind="rule", title="Lead with the answer",
+                          payload={"text": "Lead with the answer", "scope": "general"},
+                          source_tier=1)
+    go_to(page, "improvement")
+    page.click("[data-testid=proposal-row]")
+    page.click("[data-testid=approve-proposal]")
+    page.wait_for_selector("[data-testid=proposal-row]", state="detached")
+
+    page.click("[data-testid=tab-changes]")
+    page.click("[data-testid=undo-change]")
+    page.wait_for_selector("[data-testid=change-row]:nth-child(2)")  # the undo is itself a row
+    assert store.list_rules() == []
+
+
+def test_an_undo_that_would_overwrite_a_later_decision_asks_first(page):
+    """A refusal is a real answer to a real question, not a failure — so the
+    screen shows a confirm rather than an error, and nothing has changed until
+    the second click."""
+    from jarvis.improvement import store
+
+    store.create_proposal(kind="rule", title="Ask before assuming",
+                          payload={"text": "Ask before assuming", "scope": "general"},
+                          source_tier=1)
+    go_to(page, "improvement")
+    page.click("[data-testid=proposal-row]")
+    page.click("[data-testid=approve-proposal]")
+    page.wait_for_selector("[data-testid=proposal-row]", state="detached")
+
+    # Muted by hand since. Undoing blind would silently overwrite that.
+    rule = store.list_rules()[0]
+    store.set_rule_active(rule["id"], False)
+
+    page.click("[data-testid=tab-changes]")
+    page.click("[data-testid=undo-change]")
+    page.wait_for_selector("[data-testid=undo-force]")
+    assert store.get_rule(rule["id"]) is not None  # nothing has happened yet
+
+    page.click("[data-testid=undo-force]")
+    page.wait_for_selector("[data-testid=undo-force]", state="detached")
+    assert store.list_rules() == []
+
+
+def test_an_idea_that_needs_code_offers_a_brief_and_never_an_apply_button(page):
+    """Jarvis never edits its own code, so there is no apply here at all —
+    generating the brief IS the approval for this kind."""
+    from jarvis.improvement import store
+
+    store.create_proposal(kind="code", title="Split the router in two",
+                          rationale="It is doing two jobs", payload={"text": "..."},
+                          source_tier=1)
+
+    go_to(page, "improvement")
+    page.click("[data-testid=proposal-row]")
+    assert page.locator("[data-testid=approve-proposal]").count() == 0
+    page.fill("[data-testid=brief-target]", "my coding assistant")
+    page.click("[data-testid=generate-brief]")
+    page.wait_for_selector("[data-testid=brief-text]")
+
+    assert "Split the router in two" in page.input_value("[data-testid=brief-text]")
+    assert store.list_rules() == []  # nothing was applied
+
+
+def test_the_budgets_are_shown_rather_than_left_a_mystery(page):
+    from jarvis.improvement import store
+
+    go_to(page, "improvement")
+    page.click("[data-testid=tab-settings]")
+    shown = page.inner_text("[data-testid=improvement-budgets]")
+    assert str(store.DAILY_BUDGET) in shown and str(store.WEEKLY_BUDGET) in shown
+
+
+def test_a_job_is_read_beside_what_it_actually_did(page):
+    """The trace is the point of this screen: it is how "it says it did this" is
+    told apart from "it did this"."""
+    from jarvis.jobs import job_store
+
+    job = job_store.create_job(title="Read the archive", goal="find every mention")
+    job_store.append_trace(job["id"], phase="intent", effect="read", kind="tool",
+                           summary="reading the index page")
+    job_store.append_trace(job["id"], phase="outcome", effect="read", kind="tool",
+                           summary="found 12 matches")
+
+    go_to(page, "jobs")
+    page.click("[data-testid=job-row]")
+    page.wait_for_selector("[data-testid=job-trace]")
+
+    rows = page.locator("[data-testid=trace-row]").all_inner_texts()
+    assert "reading the index page" in rows[0]
+    assert "found 12 matches" in rows[1]
+
+
+def test_desktop_work_shows_as_waiting_rather_than_claiming_to_run(page):
+    """It is created already parked and the ordinary "keep going" is the only
+    thing that starts it — so the screen has to say that, not show it as
+    running."""
+    from jarvis.jobs import job_store
+
+    job = job_store.create_job(title="Tidy the desktop", goal="close everything",
+                               kind="computer", status="awaiting_decision")
+    job_store.add_outbox(tier=1, job_id=job["id"], reason="permission",
+                         summary='"Tidy the desktop" would take over the computer. OK to start?')
+
+    go_to(page, "jobs")
+    assert "Waiting on you" in page.inner_text("[data-testid=job-status]")
+    page.click("[data-testid=job-row]")
+    page.wait_for_selector("[data-testid=job-waiting]")
+    assert "take over the computer" in page.inner_text("[data-testid=job-waiting]")
+    assert page.locator("[data-testid=job-resume]").count() == 1
+    assert job_store.get_job(job["id"])["startedAt"] is None  # still not started
+
+
+def test_a_job_whose_trace_reached_outside_is_not_offered_a_restart(page):
+    """Repeating something that already left the machine is not something a
+    retry can take back, and the record decides that, not the screen."""
+    from jarvis.jobs import job_store
+
+    job = job_store.create_job(title="Send the email", goal="send it")
+    job_store.update_job(job["id"], {"recovery": "unrecoverable"})
+
+    go_to(page, "jobs")
+    page.click("[data-testid=job-row]")
+    page.wait_for_selector("[data-testid=job-resume]")
+    assert page.locator("[data-testid=job-restart]").count() == 0
+
+
+def test_briefing_settings_save_and_are_really_stored(page):
+    from jarvis.scheduler import briefing_config
+
+    go_to(page, "briefing")
+    page.wait_for_selector("[data-testid=briefing-sections]")
+    assert briefing_config.get_config()["sections"]["tasks"] is True
+
+    page.click("[data-testid=briefing-tasks]")
+    page.wait_for_function(
+        "() => document.querySelector('[data-testid=briefing-tasks]')"
+        ".getAttribute('aria-checked') === 'false'")
+    assert briefing_config.get_config()["sections"]["tasks"] is False
+    # Merged, not replaced: the other sections survived a one-key save.
+    assert briefing_config.get_config()["sections"]["greeting"] is True
+
+
+def test_weather_and_headlines_are_shown_but_not_offered_as_things_to_add(page):
+    """They are abilities Jarvis already has, not sources to attach. An earlier
+    generation of this screen offered them through an "add a source" picker as
+    though its own abilities were installable skills."""
+    go_to(page, "briefing")
+    weather = page.locator("[data-testid=briefing-weather]")
+    page.wait_for_selector("[data-testid=briefing-weather]")
+    assert "set my weather" in weather.inner_text()
+    # Nothing to click: no switch, no field, no add button.
+    assert weather.locator("button, input, select").count() == 0
+    assert page.locator("[data-testid=briefing-headlines]").locator("button, input").count() == 0
+
+
+def test_a_briefing_is_composed_for_real_and_says_which_model_wrote_it(page, stub):
+    stub.says("Good morning. Nothing is scheduled today.")
+
+    go_to(page, "briefing")
+    page.click("[data-testid=briefing-preview]")
+    page.wait_for_selector("text=Good morning. Nothing is scheduled today.", timeout=20_000)
+    assert "Written by" in page.inner_text("[data-testid=briefing-result]")
+    assert stub.requests, "the backend never called a model"
+
+
+def test_a_watch_shows_in_the_shell_and_stopping_it_reaches_every_tab(page):
+    """A click here and a spoken "stop watching that" must never leave two
+    windows disagreeing, which is why this broadcasts. Checked in a SECOND tab,
+    because a bar that clears in the tab that clicked proves only the click."""
+    from jarvis.monitor import store as monitor_store
+
+    monitor_store.create_monitor(description="the report landing in Downloads",
+                                 check={"type": "file_exists", "path": "C:/x.pdf"},
+                                 on_trigger={"type": "notify", "text": "it landed"})
+
+    page.reload(wait_until="networkidle")
+    page.wait_for_selector("[data-testid=watching-bar]")
+
+    second = page.context.new_page()
+    second.goto(page.url, wait_until="networkidle")
+    second.wait_for_selector("[data-testid=watching-bar]")
+
+    # Stopped from the Scheduled Tasks screen, in the first tab.
+    go_to(page, "tasks")
+    page.click("[data-testid=monitor-stop]")
+    page.wait_for_selector("[data-testid=monitor-row]", state="detached")
+
+    # The other tab found out without being touched.
+    second.wait_for_selector("[data-testid=watching-bar]", state="detached", timeout=15_000)
+    second.close()

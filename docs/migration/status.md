@@ -50,7 +50,8 @@ consequential chat answers built, behind a preference, default off.
 | Front end — S1.7: a real connector picker (icons, dropdown, see-more) | **Done** — see below |
 | Front end — S2: models, connections and keys | **Done** — see below |
 | Voice — S3a: the TTS/STT provider seams and their routes | **Done** — see below |
-| Voice — S3b: Live proxy, duplex, and the three engines in TypeScript | Not started |
+| Voice — S3b: both sockets, the voice core, Engine A, the pickers | **Done** — see below |
+| Voice — S3c: the duplex and realtime engines (need a real mic and key) | Not started |
 | Front end — S4 the rest of About You + Automation · S5 Abilities · S6 cutover | Not started |
 | The 15 acceptance tests (§51) | Not started |
 | Cutover | Not started |
@@ -296,6 +297,41 @@ honest 501, because a green tick nobody earned is worse than no tick.
 
 **Still to come in S3b:** the Gemini Live WebSocket proxy, the duplex path, and
 ~3,900 lines of front-end engines, turn detection, players and dictation.
+
+## Voice, S3b — the sockets, the core, and Engine A
+
+**The front end's voice layer is ported with its pure logic pulled OUT and
+tested for real.** Turn detection and the sentence chunker need no browser, so
+they are plain functions with `node --test` behind them — and they are the parts
+where being wrong is actually heard: a wait that is too short cuts people off, a
+chunker that flushes too eagerly sounds chopped, one that waits for a whole long
+opening sentence leaves the assistant silent while its text is already on
+screen. The chunker also de-duplicates the constants and the opening-clause rule
+the two playback queues each carried a copy of.
+
+**One real fix fell out of writing those tests.** `SilenceWatcher.cancel()`
+stopped its interval but kept its callback, so "cancelled" only held because
+nothing else drove a tick. It drops the callback now — the difference between a
+class that happens to be safe and one that is.
+
+Both playback queues keep everything that was learned in them: the explicit
+sequential queue that makes splicing a real sound between sentences possible at
+all, the per-sentence watchdogs (a dropped utterance that reports neither end nor
+error stalls playback forever — the same class of bug on two different APIs),
+the retry-once-then-report-once on synthesis, and the reset that stops a failed
+model's audio playing underneath its replacement.
+
+Engine A is ported whole, including the parts whose comments record real bugs:
+recognition stays live through *thinking* and is suspended only once audio
+actually plays; the echo tail outlasts the audio because cloud recognition runs
+behind real time; barge-in samples on a fixed clock rather than whenever a
+result happens to arrive; and the "no progress" backstop is NOT re-armed while
+speaking, which was the root cause of a reported "replies cut off mid-sentence,
+not by me".
+
+The settings pickers read `/api/voice/options`, so an engine appears because
+something declares the capability and a voice appears because a key exists.
+Every unavailable engine carries a reason.
 
 ## The three Node tools with no Python equivalent
 

@@ -287,3 +287,27 @@ export interface RecheckPreview {
   byConnection: { id: string; label: string; count: number;
                   isFreeTier: boolean | null; remaining: number | null }[];
 }
+
+export interface VoiceEngineOption {
+  id: 'pipeline' | 'duplex' | 'realtime' | string;
+  label: string;
+  description: string;
+  available: boolean;
+  /** Why not, whenever it is unavailable — never a bare "no". */
+  reason: string | null;
+  models?: { id: string; label: string }[];
+}
+
+export interface VoiceOption {
+  id: string;
+  label: string;
+  configured: boolean;
+  needsKey: boolean;
+}
+
+export interface VoiceOptions {
+  engines: VoiceEngineOption[];
+  voices: VoiceOption[];
+  listening: { mode: string; serverProxied: boolean };
+  connections: number;
+}

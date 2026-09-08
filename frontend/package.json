@@ -6,7 +6,8 @@
     "dev": "next dev -p 3001",
     "build": "next build",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --test test/*.test.mjs"
   },
   "dependencies": {
     "next": "^14.2.15",

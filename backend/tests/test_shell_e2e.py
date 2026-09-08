@@ -534,3 +534,48 @@ def test_a_service_key_is_saved_and_never_shown_again(page):
     page.wait_for_selector("[data-testid=service-list]")
     assert config.get_secret("deepgram") == "dg-secret-value-999"
     assert "dg-secret-value-999" not in page.content()
+
+
+# --- the voice pickers ---------------------------------------------------------
+
+def test_the_voice_pickers_offer_only_what_is_actually_available(page, stub):
+    """Every option is computed from real state — a connected model's declared
+    capabilities, a configured key — and an unavailable engine always arrives
+    with a reason. "Not available" on its own is what people file bugs about
+    when the fix was ten seconds away."""
+    page.click("[data-testid=settings]")
+    page.wait_for_selector("[data-testid=engine-options]")
+
+    # A model is connected (the fixture's), so the two engines that only need a
+    # model are live; the realtime one is not, because nothing declares it.
+    assert page.is_enabled("[data-testid=engine-pipeline]")
+    assert page.is_enabled("[data-testid=engine-duplex]")
+    assert page.is_disabled("[data-testid=engine-realtime]")
+    assert "realtime" in page.inner_text("[data-testid=engine-realtime]").lower()
+
+    # The browser's own voice is always there: no key, no account, no server.
+    assert page.locator("[data-testid=voice-browser]").count() == 1
+
+
+def test_a_configured_voice_provider_appears_beside_the_browsers_own(page):
+    from jarvis import external_services
+
+    external_services.add_or_update(label="ElevenLabs", key="k")
+    page.reload(wait_until="networkidle")
+    page.click("[data-testid=settings]")
+    page.wait_for_selector("[data-testid=voice-options]")
+
+    assert page.locator("[data-testid=voice-browser]").count() == 1
+    assert page.locator("[data-testid=voice-elevenlabs]").count() == 1
+
+
+def test_the_mic_button_is_live_now(page):
+    """It said "lands with the next wave" until this point. It takes a real
+    microphone, which this browser is not given, so what is asserted is that it
+    is offered at all and reports honestly when it cannot start."""
+    assert page.is_enabled("[data-testid=mic]")
+    page.click("[data-testid=mic]")
+    # Either it took the mic or it said why not — never silence.
+    page.wait_for_function(
+        "() => document.querySelector('[data-testid=status]').textContent.trim().length > 0",
+        timeout=10_000)

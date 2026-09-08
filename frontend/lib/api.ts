@@ -19,6 +19,7 @@ import type {
   ProbeResult,
   Provider,
   RecheckPreview,
+  VoiceOptions,
   Status,
   Task,
   TaskRun,
@@ -169,6 +170,13 @@ export const api = {
       request<{ ok: true; removedModels: number }>(`/connections/${encodeURIComponent(id)}`, {
         method: 'DELETE',
       }),
+  },
+
+  /** What can actually listen and speak right now. Every entry is computed
+   *  from real state — a connected model's declared capabilities, a configured
+   *  key — never from a provider name. */
+  voice: {
+    options: () => request<VoiceOptions>('/voice/options'),
   },
 
   externalServices: {

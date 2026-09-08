@@ -16,6 +16,7 @@ import { Orb } from '@/components/stage/Orb';
 import { api, ApiRequestError } from '@/lib/api';
 import type { Message as StoredMessage } from '@/lib/api-types';
 import { streamTurn, type RunningTurn } from '@/lib/chat';
+import { PipelineEngine } from '@/lib/voice/pipeline-engine';
 import { useHashRoute } from '@/lib/useHashRoute';
 import type { OrbState } from '@/lib/orb';
 
@@ -48,7 +49,11 @@ export default function Home() {
   const [orbState, setOrbState] = useState<OrbState>('idle');
   const [status, setStatus] = useState('Type below to talk to Jarvis');
   const [busy, setBusy] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [engineId, setEngineId] = useState('pipeline');
+  const [voiceId, setVoiceId] = useState('browser');
   const running = useRef<RunningTurn | null>(null);
+  const engine = useRef<PipelineEngine | null>(null);
 
   // --- what is already true when the page opens ------------------------------
 
@@ -200,6 +205,53 @@ export default function Home() {
     setOrbState('idle');
   }
 
+  /**
+   * Start or stop listening.
+   *
+   * The engine is built on demand and torn down completely when it stops: it
+   * owns a live microphone, and an engine kept around "just in case" is a
+   * microphone kept open for no reason.
+   */
+  const toggleListening = useCallback(async () => {
+    if (engine.current) {
+      engine.current.stop();
+      engine.current = null;
+      setListening(false);
+      setOrbState('idle');
+      setStatus('Type below to talk to Jarvis');
+      return;
+    }
+
+    const started = new PipelineEngine({ voiceOutput: speakReplies ? voiceId : 'browser' });
+    started.on('state', ({ state }) => {
+      setOrbState(state as OrbState);
+      setStatus(SPOKEN_STATE[state] ?? 'Listening…');
+    });
+    started.on('transcript', ({ text, final }) => {
+      if (final && text) setTurns((current) => [...current, { id: newId(), role: 'user', text }]);
+    });
+    started.on('chunk', ({ text }) => setTurns((current) => appendToReply(current, text)));
+    started.on('restart', () => setTurns((current) => clearReply(current)));
+    started.on('done', () => setBusy(false));
+    started.on('paused', ({ reason }) => setStatus(reason));
+    // Deliberately not an error: the reply itself is fine, only its audio
+    // failed, and clearing what is on screen would be wrong.
+    started.on('tts_failure', () =>
+      setStatus('That voice could not produce audio — check its key on Model Settings.'));
+    started.on('error', ({ message }) => {
+      setStatus(message);
+      setListening(false);
+      engine.current = null;
+    });
+
+    engine.current = started;
+    setListening(true);
+    await started.start();
+  }, [speakReplies, voiceId]);
+
+  // Releasing the microphone is not optional cleanup.
+  useEffect(() => () => engine.current?.stop(), []);
+
   async function toggleSharing() {
     const next = !sharing;
     setSharing(next);
@@ -241,6 +293,10 @@ export default function Home() {
         open={settingsOpen}
         speakReplies={speakReplies}
         onSpeakReplies={setSpeakReplies}
+        engine={engineId}
+        onEngine={setEngineId}
+        voice={voiceId}
+        onVoice={setVoiceId}
         onNavigate={go}
       />
 
@@ -269,10 +325,9 @@ export default function Home() {
               {status}
             </p>
             <MicButton
-              listening={false}
-              disabled
-              hint="Voice lands with the next wave"
-              onToggle={() => {}}
+              listening={listening}
+              hint={listening ? 'Listening — click to stop' : 'Click to talk'}
+              onToggle={() => void toggleListening()}
             />
           </div>
         </section>
@@ -297,6 +352,33 @@ export default function Home() {
       </div>
     </main>
   );
+}
+
+/** What the status line says for each engine state. */
+const SPOKEN_STATE: Record<string, string> = {
+  idle: 'Type below to talk to Jarvis',
+  listening: 'Listening…',
+  hearing_speech: 'Listening…',
+  thinking: 'Thinking…',
+  tool_running: 'Working on it…',
+  speaking: 'Speaking…',
+  interrupted: 'Go on…',
+};
+
+/** Streamed text lands in the assistant turn already in flight, or starts one. */
+function appendToReply(turns: Turn[], text: string): Turn[] {
+  const last = turns[turns.length - 1];
+  if (last && last.role === 'assistant' && last.streaming) {
+    return [...turns.slice(0, -1), { ...last, text: last.text + text }];
+  }
+  return [...turns, { id: newId(), role: 'assistant', text, streaming: true }];
+}
+
+/** A model switch mid-reply: drop what the failed one said, a fresh one follows. */
+function clearReply(turns: Turn[]): Turn[] {
+  const last = turns[turns.length - 1];
+  if (last && last.role === 'assistant' && last.streaming) return turns.slice(0, -1);
+  return turns;
 }
 
 /** The screen for a section, or nothing if it is still being ported. One place

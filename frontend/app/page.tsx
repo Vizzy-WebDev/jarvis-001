@@ -302,7 +302,7 @@ export default function Home() {
  *  rather than a branch inside the render, so adding a screen is one line. */
 function screenFor(id: string, go: (id: string) => void): React.ReactNode {
   if (id === 'notifications') return <NotificationsScreen onNavigate={go} />;
-  if (id === 'tasks') return <TasksScreen />;
+  if (id === 'tasks') return <TasksScreen onNavigate={go} />;
   return null;
 }
 

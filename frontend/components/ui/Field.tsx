@@ -1,8 +1,17 @@
 'use client';
 
 /**
- * A labelled input. One component so every form in the app agrees about where
- * a label sits and what a focused field looks like.
+ * A labelled field. One component so every form in the app agrees about where
+ * a caption sits and what a focused control looks like.
+ *
+ * **Deliberately a `div`, not a `label`.** A `<label>` wrapping its control is
+ * the usual advice, and it is wrong the moment a field holds more than one
+ * interactive thing: the browser forwards a click anywhere inside a label to the
+ * FIRST labelable control in it. Found the hard way — the connector field holds
+ * an "Add connector" button and, inside the popover it opens, a switch per app;
+ * clicking either re-fired a click on the button and reopened the popover the
+ * instant it was told to close. A caption that focuses its input is not worth a
+ * whole class of bug where any control in a field triggers a different one.
  */
 export function Field({
   label,
@@ -14,11 +23,11 @@ export function Field({
   children: React.ReactNode;
 }) {
   return (
-    <label className="block py-2">
+    <div className="py-2">
       <span className="mb-1.5 block text-[12px] font-medium text-ink-muted">{label}</span>
       {children}
       {hint && <span className="mt-1 block text-[11px] text-ink-faint">{hint}</span>}
-    </label>
+    </div>
   );
 }
 

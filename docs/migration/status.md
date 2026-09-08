@@ -47,11 +47,12 @@ consequential chat answers built, behind a preference, default off.
 | Front end — S1: the shell (design system, drawer, router, orb, transcript, composer) | **Done** — see below |
 | Front end — S1.5: composer shape · Notifications · Scheduled Tasks · live approvals | **Done** — see below |
 | Front end — S1.6: the task editor's connectors + model pickers | **Done** — see below |
+| Front end — S1.7: a real connector picker (icons, dropdown, see-more) | **Done** — see below |
 | Front end — S2 models/keys · S3 voice · S4 the rest of About You + Automation · S5 Abilities | Not started |
 | The 15 acceptance tests (§51) | Not started |
 | Cutover | Not started |
 
-`cd backend && python -m pytest tests -q` → **1073 passed, 23 skipped.** The
+`cd backend && python -m pytest tests -q` → **1077 passed, 23 skipped.** The
 skips are contract fixtures for routes not ported yet, so the suite doubles as a
 progress meter.
 
@@ -179,6 +180,48 @@ permission control. The rule set at the start of this migration stands unchanged
 this screen can opt out of it. Also still absent: the original's `message` and
 `briefing` instruction modes, both already handled by `_run_action` with no way
 in from this screen, and its consent notice.
+
+## The front end, S1.7 — a connector picker that looks like one
+
+Ported from the original's shared `public/screens/_connector-picker.js`: chips
+carrying each app's own mark in the closed state, and a dropdown of real rows —
+mark, name, status, a real switch — capped at five with "See more" opening the
+full, searchable list. The cap is the original's own number and its own reason:
+its comment records finding live that an unbounded list runs off the bottom of
+the screen.
+
+**Icons, with the limitation stated.** The original resolves in three steps: a
+logo fetched server-side (`server/connectors/icon-resolver.js`, cached on the
+connector as `iconDataUri`), then a hand-authored brand mark, then a generic
+plug. The resolver is NOT ported — it belongs with the catalogue and OAuth — and
+`/api/connectors` carries no icon field yet. So `lib/app-icons.ts` ports steps 2
+and 3 and keeps step 1 as the first branch anyway, so S5 fills it in rather than
+rewriting this. The five brand marks are lifted VERBATIM out of the original's
+own file rather than retyped: a garbled path renders as a smear and nothing
+catches it. Step 3 is a deterministic coloured monogram instead of a plug — a
+plug repeated down a list stops it looking like a picker at all.
+
+**Three real bugs this turned up, two of them latent in code already shipped:**
+
+- **`Field` was a `<label>`.** A label forwards a click anywhere inside it to the
+  FIRST labelable control it contains — so clicking a switch inside the picker's
+  popover re-fired a click on the "Add connector" button and reopened the
+  popover the instant it was told to close. It is a `div` now. A caption that
+  focuses its input is not worth a class of bug where any control in a field
+  triggers a different one.
+- **Overlays could not nest.** Every open `Modal` listened for Escape on the
+  window, so "See more" from inside the task editor closed BOTH.
+  `components/ui/overlay-stack.ts` makes only the topmost respond.
+- **And the subtler half of that fix**, found because the first version still
+  failed: the push/pop effect ALSO depended on `onClose`, which callers pass as
+  an inline arrow. It re-ran on every render, popping and re-pushing, quietly
+  promoting the modal back above the popover it had opened. The effect is keyed
+  on `open` alone now and the handler reads the callback from a ref — position
+  in the stack has to mean "opened after", not "re-rendered most recently".
+
+`components/ui/Popover.tsx` positions itself `fixed` from the trigger's measured
+rect, because these pickers live inside modals whose body scrolls and an
+absolutely-positioned panel is clipped by that scroll container.
 
 ## The three Node tools with no Python equivalent
 

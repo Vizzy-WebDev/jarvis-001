@@ -204,3 +204,16 @@ const SECTION_ICONS: Record<string, (p: IconProps) => JSX.Element> = {
 export function sectionIcon(id: string): (p: IconProps) => JSX.Element {
   return SECTION_ICONS[id] ?? SparkIcon;
 }
+
+export const PlusIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 5v14M5 12h14" />
+  </Svg>
+);
+
+export const SearchIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="11" cy="11" r="6.5" />
+    <path d="M16 16l4.5 4.5" />
+  </Svg>
+);

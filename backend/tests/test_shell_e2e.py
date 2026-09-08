@@ -315,6 +315,96 @@ def test_a_task_built_through_the_screen_actually_runs(page, stub):
     assert "stretch" in run["summary"].lower()
 
 
+def _connect(label: str, kind: str = "api") -> str:
+    from jarvis.connectors import store
+
+    return store.add_connector(type=kind, label=label)["id"]
+
+
+def test_the_connector_picker_is_a_picker_not_a_list_of_names(page):
+    """Chips carrying each app's own mark, and a dropdown of real rows with real
+    switches — the thing the owner asked for, checked as structure rather than
+    admired in a screenshot."""
+    _connect("Notion")
+    _connect("Gmail")
+
+    page.goto(page.url.split("#")[0] + "#/tasks", wait_until="networkidle")
+    page.click("[data-testid=new-task]")
+    page.wait_for_selector("[data-testid=add-connector]")
+
+    page.click("[data-testid=add-connector]")
+    page.wait_for_selector("[data-testid=popover]")
+    rows = page.locator("[data-testid=popover] [data-testid^=connector-row-]")
+    assert rows.count() == 2
+    # Each row carries a real mark, not a bullet: Notion is one of the
+    # hand-authored brand paths, so it renders as an svg.
+    assert rows.first.locator("svg, img").count() >= 1
+    assert rows.first.locator("[role=switch]").count() == 1
+
+    rows.first.locator("[role=switch]").click()
+    page.wait_for_selector("[data-testid=connector-chip]")
+    assert page.locator("[data-testid=connector-chip]").count() == 1
+
+
+def test_a_long_connector_list_is_capped_and_see_more_opens_the_rest(page):
+    """The cap is not cosmetic: the original found live that an unbounded list
+    runs off the bottom of the screen."""
+    for name in ("Notion", "Gmail", "Slack", "GitHub", "Google Drive", "Linear", "Jira"):
+        _connect(name)
+
+    page.goto(page.url.split("#")[0] + "#/tasks", wait_until="networkidle")
+    page.click("[data-testid=new-task]")
+    page.click("[data-testid=add-connector]")
+    page.wait_for_selector("[data-testid=popover]")
+
+    assert page.locator("[data-testid=popover] [data-testid^=connector-row-]").count() == 5
+    page.click("[data-testid=see-more]")
+    page.wait_for_selector("[data-testid=connector-search]")
+    assert page.locator("[data-testid=modal] [data-testid^=connector-row-]").count() == 7
+
+    page.fill("[data-testid=connector-search]", "git")
+    page.wait_for_function(
+        "() => document.querySelectorAll('[data-testid=modal] [data-testid^=connector-row-]')"
+        ".length === 1")
+
+
+def test_escape_closes_only_the_list_and_leaves_the_editor_open(page):
+    """The latent bug this found: every modal listened for Escape on the window,
+    so closing the inner list took the half-filled task with it."""
+    for name in ("Notion", "Gmail", "Slack", "GitHub", "Google Drive", "Linear"):
+        _connect(name)
+
+    page.goto(page.url.split("#")[0] + "#/tasks", wait_until="networkidle")
+    page.click("[data-testid=new-task]")
+    page.fill("[data-testid=task-title]", "Half written")
+    page.click("[data-testid=add-connector]")
+    page.click("[data-testid=see-more]")
+    page.wait_for_selector("[data-testid=connector-search]")
+
+    page.keyboard.press("Escape")
+    page.wait_for_selector("[data-testid=connector-search]", state="detached")
+    # The editor survived, with what was typed in it.
+    assert page.input_value("[data-testid=task-title]") == "Half written"
+
+
+def test_a_connector_chosen_here_is_what_the_task_saves(page):
+    from jarvis.scheduler import task_store
+
+    connector_id = _connect("Notion")
+
+    page.goto(page.url.split("#")[0] + "#/tasks", wait_until="networkidle")
+    page.click("[data-testid=new-task]")
+    page.fill("[data-testid=task-prompt]", "tidy my notes")
+    page.click("[data-testid=add-connector]")
+    page.click(f"[data-testid=connector-row-{connector_id}] [role=switch]")
+    page.keyboard.press("Escape")
+    page.click("[data-testid=modal] >> text=Save")
+    page.wait_for_selector("[data-testid=task-row]")
+
+    [task] = task_store.list_tasks()
+    assert task["action"]["connectors"] == [connector_id]
+
+
 def test_the_model_picker_offers_auto_and_every_real_model(page, stub):
     """Auto is the default and always first. A pinned model is saved on the
     task, and the run history reports which model actually answered — which can

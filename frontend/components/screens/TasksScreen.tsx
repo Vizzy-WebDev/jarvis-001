@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import { ConnectorPicker } from '@/components/connectors/ConnectorPicker';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -58,7 +59,7 @@ function blank(): Task {
   };
 }
 
-export function TasksScreen() {
+export function TasksScreen({ onNavigate }: { onNavigate?: (id: string) => void }) {
   const [tasks, setTasks] = useState<Task[] | null>(null);
   const [descriptions, setDescriptions] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<Task | null>(null);
@@ -354,43 +355,17 @@ export function TasksScreen() {
               />
             </Field>
 
-            {connectors.length > 0 && (
-              <Field
-                label="Apps it may use"
-                hint="Adds these to what it can already do. Nothing picked means its usual abilities."
-              >
-                <div className="flex flex-wrap gap-1.5">
-                  {connectors.map((connector) => {
-                    const chosen = (draft.action.connectors as string[] | undefined) ?? [];
-                    const on = chosen.includes(connector.id);
-                    return (
-                      <button
-                        key={connector.id}
-                        type="button"
-                        aria-pressed={on}
-                        data-testid={`connector-${connector.id}`}
-                        onClick={() => patch({
-                          action: {
-                            ...draft.action,
-                            connectors: on
-                              ? chosen.filter((id) => id !== connector.id)
-                              : [...chosen, connector.id],
-                          },
-                        })}
-                        className={[
-                          'rounded-pill border px-3 py-1 text-[12px] transition duration-150',
-                          on
-                            ? 'border-accent/40 bg-accent/15 text-accent'
-                            : 'border-surface-border text-ink-muted hover:text-ink',
-                        ].join(' ')}
-                      >
-                        {connector.label || connector.type}
-                      </button>
-                    );
-                  })}
-                </div>
-              </Field>
-            )}
+            <Field
+              label="Apps it may use"
+              hint="Adds these to what it can already do. Nothing picked means its usual abilities."
+            >
+              <ConnectorPicker
+                connectors={connectors}
+                selected={(draft.action.connectors as string[] | undefined) ?? []}
+                onChange={(next) => patch({ action: { ...draft.action, connectors: next } })}
+                onManage={onNavigate ? () => onNavigate('app-control') : undefined}
+              />
+            </Field>
 
             <Field
               label="Model"

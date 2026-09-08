@@ -1,0 +1,94 @@
+{
+  "entries": [
+    {
+      "id": "notion",
+      "label": "Notion",
+      "icon": "notion",
+      "description": "Search, read, and update pages and databases in your Notion workspace.",
+      "connectFlow": { "kind": "oauth_dcr", "url": "https://mcp.notion.com/mcp" }
+    },
+    {
+      "id": "github",
+      "label": "GitHub",
+      "icon": "github",
+      "description": "Search code, read and open issues/PRs, and work with repositories.",
+      "connectFlow": {
+        "kind": "oauth_guided",
+        "url": "https://api.githubcopilot.com/mcp/",
+        "guide": {
+          "consoleLabel": "GitHub Developer Settings",
+          "steps": [
+            "Go to GitHub, click your profile picture (top right), then Settings.",
+            "In the left sidebar, click Developer settings, then OAuth Apps, then New OAuth App.",
+            "Application name: anything you like, e.g. \"Jarvis\". Homepage URL: anything, e.g. http://127.0.0.1.",
+            "Authorization callback URL: paste the address shown below exactly.",
+            "Click Register application, then click Generate a new client secret.",
+            "Copy the Client ID and the new Client Secret and paste them in below."
+          ]
+        }
+      }
+    },
+    {
+      "id": "slack",
+      "label": "Slack",
+      "icon": "slack",
+      "description": "Search and send messages, and read canvases, in your Slack workspace.",
+      "connectFlow": {
+        "kind": "oauth_guided",
+        "url": "https://mcp.slack.com/mcp",
+        "guide": {
+          "consoleLabel": "Slack App Management",
+          "note": "Slack requires the redirect address to use HTTPS. Jarvis's address is plain HTTP, so Slack's own sign-in step may refuse it — if that happens, this connector can't be completed yet.",
+          "steps": [
+            "Go to api.slack.com/apps, click Create New App, then From scratch. Give it a name and pick your workspace.",
+            "In the left sidebar, click OAuth & Permissions, add the address shown below under Redirect URLs, then click Save URLs.",
+            "In the left sidebar, click Basic Information — your Client ID and Client Secret are under App Credentials.",
+            "Copy both and paste them in below."
+          ]
+        }
+      }
+    },
+    {
+      "id": "google-drive",
+      "label": "Google Drive",
+      "icon": "google-drive",
+      "description": "Search, read, and upload files in your Google Drive.",
+      "connectFlow": {
+        "kind": "oauth_guided",
+        "url": "https://drivemcp.googleapis.com/mcp/v1",
+        "guide": {
+          "consoleLabel": "Google Cloud Console",
+          "steps": [
+            "Go to console.cloud.google.com and create or pick a project.",
+            "Go to Google Auth Platform, then Branding, and fill in the basic app info if it asks you to.",
+            "Go to Google Auth Platform, then Clients, then Create Client. Application type: Web application.",
+            "Under Authorized redirect URIs, paste the address shown below exactly.",
+            "Click Create, then copy the Client ID and Client Secret and paste them in below."
+          ]
+        }
+      }
+    },
+    {
+      "id": "gmail",
+      "label": "Gmail",
+      "icon": "gmail",
+      "description": "Read, search, and compose email in your Gmail account.",
+      "connectFlow": {
+        "kind": "oauth_guided",
+        "url": "https://gmailmcp.googleapis.com/mcp/v1",
+        "guide": {
+          "consoleLabel": "Google Cloud Console",
+          "note": "This is a Google Workspace Developer Preview feature, not a finished general-release product yet — Google itself may still change or restrict it.",
+          "steps": [
+            "Go to console.cloud.google.com and create or pick a project.",
+            "Go to APIs & Services, then Library, and enable both the \"Gmail API\" and the \"Gmail MCP API\".",
+            "Go to Google Auth Platform, then Branding, and fill in the basic app info if it asks you to.",
+            "Go to Google Auth Platform, then Clients, then Create Client. Application type: Web application.",
+            "Under Authorized redirect URIs, paste the address shown below exactly.",
+            "Click Create, then copy the Client ID and Client Secret and paste them in below."
+          ]
+        }
+      }
+    }
+  ]
+}

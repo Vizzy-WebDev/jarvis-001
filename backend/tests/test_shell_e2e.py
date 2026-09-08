@@ -742,3 +742,180 @@ def test_the_composers_own_mic_is_live_and_stands_the_engine_down(voice_page):
                  || (message?.textContent || '').trim().length > 0;
            }""",
         timeout=10_000)
+
+
+# --- memory, and the profile notes that are one category of it ------------------
+
+def go_to(page: Page, section: str) -> None:
+    page.click("[data-testid=menu]")
+    page.click(f"[data-testid=nav-{section}]")
+    page.wait_for_url(f"**#/{section}")
+
+
+def test_a_candidate_is_reviewed_on_screen_and_really_becomes_a_memory(page):
+    """The review queue is the only part of this screen that is asking for
+    something, so it is what gets checked first — and checked against the
+    backend, not against what the screen says it did."""
+    from jarvis.memory import store
+
+    store.create_candidate(source_kind="chat", category="Work",
+                           text="Works Tuesdays from home", confidence=0.7)
+
+    go_to(page, "memory")
+    page.wait_for_selector("[data-testid=review-queue]")
+    page.click("[data-testid=approve-candidate]")
+    page.wait_for_selector("[data-testid=memory-row]")
+
+    saved = store.list_memories()
+    assert [m["text"] for m in saved] == ["Works Tuesdays from home"]
+    # Reviewed, not typed and not auto-saved: how consent was given is its own
+    # fact, separate from where the content came from.
+    assert saved[0]["origin"] == "approved"
+    assert store.list_pending_candidates() == []
+
+
+def test_rejecting_leaves_nothing_behind(page):
+    from jarvis.memory import store
+
+    store.create_candidate(source_kind="chat", category="Work",
+                           text="Hates every Monday", confidence=0.3)
+    go_to(page, "memory")
+    page.click("[data-testid=reject-candidate]")
+    page.wait_for_selector("[data-testid=review-queue]", state="detached")
+
+    assert store.list_memories() == []
+    assert store.list_pending_candidates() == []
+
+
+def test_a_contradicted_memory_says_it_is_not_being_used(page):
+    """The other half of "a conflict always needs a person": while it waits, the
+    older memory stops being asserted to the model, and showing the row as though
+    nothing were wrong would be saying something untrue."""
+    from jarvis.memory import store
+
+    existing = store.create_memory(category="Preferences", text="Uses a Mac",
+                                   origin="explicit")
+    store.create_candidate(source_kind="chat", category="Preferences",
+                           text="Uses Windows now", confidence=0.9,
+                           conflict_with=existing["id"])
+
+    go_to(page, "memory")
+    page.wait_for_selector("[data-testid=conflicted-flag]")
+
+    # Resolving replaces rather than appends: two memories asserting opposite
+    # things is the state this exists to prevent.
+    page.click("[data-testid=use-new]")
+    page.wait_for_selector("[data-testid=conflicted-flag]", state="detached")
+    assert [m["text"] for m in store.list_memories()] == ["Uses Windows now"]
+
+
+def test_editing_a_memory_keeps_what_it_used_to_say(page):
+    from jarvis.memory import store
+
+    memory = store.create_memory(category="Work", text="Works at Acme", origin="explicit")
+
+    go_to(page, "memory")
+    page.click("[data-testid=memory-row]")
+    page.fill("[data-testid=memory-text]", "Works at Acme Corp")
+    page.click("[data-testid=save-memory]")
+    page.wait_for_selector("text=Works at Acme Corp")
+
+    assert store.get_memory(memory["id"])["text"] == "Works at Acme Corp"
+    history = store.version_history(memory["id"])
+    assert [v["text"] for v in history] == ["Works at Acme", "Works at Acme"]
+
+
+def test_archiving_then_deleting_is_two_steps_and_a_hard_delete_is_not_offered(page):
+    """A change log's undo needs the row it points at to still exist, so a hard
+    delete always goes through archive rather than being reachable from the live
+    list."""
+    from jarvis.memory import store
+
+    memory = store.create_memory(category="Work", text="Sits by the window",
+                                 origin="explicit")
+
+    go_to(page, "memory")
+    page.click("[data-testid=memory-row]")
+    assert page.locator("[data-testid=delete-memory]").count() == 0  # not from a live row
+    page.click("[data-testid=archive-memory]")
+    page.wait_for_selector("[data-testid=memory-row]", state="detached")
+    assert store.get_memory(memory["id"])["archived"] is True
+
+    page.click("[data-testid=toggle-archived]")
+    page.click("[data-testid=memory-row]")
+    page.click("[data-testid=delete-memory]")
+    page.wait_for_selector("[data-testid=memory-row]", state="detached")
+    assert store.get_memory(memory["id"]) is None
+
+
+def test_merging_duplicates_keeps_one_and_archives_the_other(page):
+    """Archived, not deleted: a merge that turns out to be wrong is recoverable."""
+    from jarvis.memory import store
+
+    store.create_memory(category="About You", text="Has a dog", origin="explicit")
+    store.create_memory(category="About You", text="Owns a dog called Rex",
+                        origin="explicit")
+
+    go_to(page, "memory")
+    page.wait_for_selector("[data-testid=memory-row]")
+    for index in range(2):
+        page.locator("[data-testid=memory-select]").nth(index).check()
+    page.click("[data-testid=merge-start]")
+    page.fill("[data-testid=merge-text]", "Has a dog called Rex")
+    page.click("[data-testid=merge-confirm]")
+    page.wait_for_function(
+        "() => document.querySelectorAll('[data-testid=memory-row]').length === 1")
+
+    assert [m["text"] for m in store.list_memories()] == ["Has a dog called Rex"]
+    assert len(store.list_memories(include_archived=True)) == 2
+
+
+def test_the_trust_dial_really_changes_the_setting(page):
+    """It lives on this screen and not in Settings: once a save can happen
+    without being asked, seeing and undoing it stops being optional."""
+    from jarvis.prefs import get_prefs
+
+    go_to(page, "memory")
+    page.wait_for_selector("[data-testid=trust-dial]")
+    assert get_prefs()["memoryTrust"] == "ask"  # the safe default, untouched
+
+    page.click("[data-testid=trust-balanced]")
+    page.wait_for_selector("[data-testid=trust-balanced][aria-pressed=true]")
+    page.wait_for_function("() => true")
+    assert get_prefs()["memoryTrust"] == "balanced"
+
+
+def test_a_profile_note_is_added_edited_and_read_back(page):
+    from jarvis.memory import store
+
+    go_to(page, "profile")
+    page.fill("[data-testid=note-input]", "Shipping the new site by March")
+    page.click("[data-testid=note-add]")
+    page.wait_for_selector("[data-testid=note-row]")
+
+    # The same rows as Memory, in one category — not a second store.
+    assert [m["text"] for m in store.list_memories("About You")] \
+        == ["Shipping the new site by March"]
+
+    page.click("[data-testid=note-row]")
+    page.fill("[data-testid=note-text]", "Shipping the new site by April")
+    page.click("[data-testid=note-save]")
+    page.wait_for_selector("text=Shipping the new site by April")
+
+    note = store.list_memories("About You")[0]
+    assert [v["text"] for v in store.version_history(note["id"])][0] \
+        == "Shipping the new site by March"
+
+
+def test_notes_read_in_the_order_they_were_written(page):
+    """The browse view sorts newest first, which is right there and wrong here:
+    a list of goals reads as a story, not as a feed."""
+    go_to(page, "profile")
+    for text in ("first thing", "second thing", "third thing"):
+        page.fill("[data-testid=note-input]", text)
+        page.click("[data-testid=note-add]")
+        page.wait_for_selector(f"text={text}")
+
+    rows = page.locator("[data-testid=note-row]").all_inner_texts()
+    assert [row.split("\n")[0] for row in rows] \
+        == ["first thing", "second thing", "third thing"]

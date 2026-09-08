@@ -85,6 +85,14 @@ class EventType(str, Enum):
     SCREEN_WATCH = "screen.watch"
     CONTROL_SESSION = "control.session"
 
+    #: A "watch for X, then act" check stopped. Its own type because the
+    #: indicator it clears is not the screen badge above: several things can be
+    #: watching, and which one stopped decides what the interface should stop
+    #: saying. Every open tab needs it, not only the one whose button was
+    #: clicked — a click and a spoken "stop watching that" must never leave two
+    #: windows disagreeing.
+    MONITOR_STOPPED = "monitor.stopped"
+
     # System
     SYSTEM_HEALTH_CHANGED = "system.health_changed"
     #: Something happened that the user should be told about. Subsystems

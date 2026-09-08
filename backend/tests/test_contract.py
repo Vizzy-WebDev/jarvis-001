@@ -86,6 +86,12 @@ ADDED_KEYS: dict[tuple[str, str], set[str]] = {
     # top-level key this harness can actually enforce. Built from
     # `recurrence.describe()` — the same sentence the spoken read-back uses.
     ("GET", "/api/tasks"): {"descriptions"},
+    # Which memories a still-pending candidate contradicts. A sibling set rather
+    # than a field on each row, for the same reason as `descriptions` above.
+    # It exists because a contradicted memory is not being asserted to the model
+    # as settled fact while it waits for a person, and a screen that showed it as
+    # though nothing were wrong would be saying something untrue.
+    ("GET", "/api/memories"): {"conflicted"},
 }
 
 

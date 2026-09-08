@@ -311,3 +311,219 @@ export interface VoiceOptions {
   listening: { mode: string; serverProxied: boolean };
   connections: number;
 }
+
+// --- memory, and the profile notes that are one category of it ------------------
+
+export interface Memory {
+  id: string;
+  category: string;
+  text: string;
+  /** How consent was given, which is a different question from where the
+   *  content came from: `explicit` was typed by hand, `approved` was reviewed,
+   *  `auto` cleared the confidence bar, `legacy` predates the distinction. */
+  origin: 'approved' | 'auto' | 'explicit' | 'legacy';
+  sourceKind: string | null;
+  sourceRef: string | null;
+  confidence: number | null;
+  importance: number | null;
+  archived: boolean;
+  expiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MemoryCandidate {
+  id: string;
+  category: string;
+  text: string;
+  confidence: number | null;
+  sourceKind: string | null;
+  /** The id of a memory this one contradicts. A conflict always needs a person,
+   *  at every trust level, with no override. */
+  conflictWith: string | null;
+  createdAt: string;
+}
+
+export interface MemoryVersion {
+  id?: number;
+  text: string;
+  category?: string;
+  changedAt: string;
+  reason: string | null;
+}
+
+export interface MemoryCategory {
+  name: string;
+  status: 'approved' | 'pending';
+}
+
+/** A profile note: the same row as a memory, read as what it is on that screen. */
+export interface ProfileEntry {
+  id: string;
+  text: string;
+  addedAt: string;
+}
+
+// --- self-improvement -------------------------------------------------------------
+
+export interface Proposal {
+  id: string;
+  kind: 'rule' | 'setting' | 'skill' | 'code' | 'idea';
+  title: string;
+  rationale: string | null;
+  helpsJarvis: string | null;
+  helpsUser: string | null;
+  payload: Record<string, unknown> | null;
+  evidence: string[];
+  sourceTier: number;
+  sourceUrl: string | null;
+  conflictWith: string | null;
+  status: 'pending' | 'approved' | 'rejected';
+  implementationPrompt?: string | null;
+  implementationTarget?: string | null;
+  createdAt: string;
+}
+
+export interface Rule {
+  id: string;
+  text: string;
+  scope: string;
+  active: 0 | 1;
+  sourceProposalId: string | null;
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Lesson {
+  id: string;
+  kind: string;
+  text: string;
+  scope: string;
+  evidence: string[];
+  confidence: number | null;
+  sourceTier: number;
+  sourceUrl: string | null;
+  status: 'active' | 'archived';
+  createdAt: string;
+}
+
+export interface Change {
+  id: number;
+  kind: 'rule' | 'setting' | 'undo';
+  target: string;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  reason: string | null;
+  proposalId: string | null;
+  appliedAt: string;
+  undoneAt: string | null;
+}
+
+export interface Outcome {
+  id: string;
+  source: string;
+  title: string;
+  goal: string | null;
+  status: string;
+  error: string | null;
+  createdAt: string;
+}
+
+export interface ImprovementStatus {
+  enabled: boolean;
+  trust: 'ask' | 'balanced' | 'auto';
+  research: 'off' | 'weekly';
+  dailyBudgetRemaining: number;
+  weeklyBudgetRemaining: number;
+  unreviewedOutcomes: number;
+  pendingProposals: number;
+}
+
+/** An undo that would overwrite a later decision answers rather than failing. */
+export type UndoResult =
+  | { ok: true; change: Change }
+  | { ok: false; reason: 'changed_since'; message: string; live: unknown; expected: unknown };
+
+// --- background jobs ---------------------------------------------------------------
+
+export interface Job {
+  id: string;
+  parentId: string | null;
+  conversationId: string | null;
+  title: string;
+  goal: string;
+  kind: string;
+  status: 'queued' | 'running' | 'awaiting_decision' | 'succeeded' | 'failed' | 'cancelled';
+  plan: { summary?: string; steps?: string[] } | null;
+  resource: string | null;
+  /** What the trace says about picking this up again — never a guess. */
+  recovery: 'resumable' | 'restartable' | 'needs_input' | 'unrecoverable' | null;
+  result: string | null;
+  error: string | null;
+  retries: number;
+  progress: number | null;
+  currentStep: string | null;
+  priority: number;
+  createdAt: string;
+  startedAt: string | null;
+  heartbeatAt: string | null;
+  finishedAt: string | null;
+}
+
+/** One row of the write-ahead record: an intent before an action, an outcome
+ *  after it, so a crash between the two still leaves the intent on record. */
+export interface TraceRow {
+  id: number;
+  seq: number;
+  phase: 'intent' | 'outcome';
+  effect: 'read' | 'workspace' | 'external';
+  kind: string;
+  summary: string;
+  detail: unknown;
+  created_at: string;
+}
+
+export interface OutboxRow {
+  id: number;
+  tier: number;
+  reason: string;
+  summary: string;
+  deliveredAt: string | null;
+  createdAt: string;
+}
+
+// --- the morning briefing, and what is being watched for ----------------------------
+
+export interface BriefingConfig {
+  sections: {
+    greeting: boolean;
+    dateTime: boolean;
+    tasks: boolean;
+    goals: boolean;
+    focus: boolean;
+    custom: boolean;
+  };
+  customText: string;
+  /** Empty means weather is skipped: it cannot be mentioned without a place. */
+  weatherPlace: string;
+  headlines: boolean;
+  /** Connector ids, never tool names — a connector's tools change on reconnect. */
+  connectors: string[];
+}
+
+export type BriefingPreview =
+  | { ok: true; text: string; facts: Record<string, unknown>; modelId: string | null }
+  | { ok: false; text: string; error: string; facts?: Record<string, unknown> };
+
+export interface Monitor {
+  id: string;
+  description: string;
+  status: 'watching' | 'stopped' | 'triggered' | 'error';
+  check: Record<string, unknown>;
+  onTrigger: Record<string, unknown>;
+  createdAt: string;
+  lastCheckedAt: string | null;
+  triggeredAt: string | null;
+  error: string | null;
+}

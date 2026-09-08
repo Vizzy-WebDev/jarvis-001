@@ -6,13 +6,31 @@
 
 import type {
   Approval,
+  BriefingConfig,
+  BriefingPreview,
+  Change,
   ConnectionEntry,
   Connector,
   DiscoveredModel,
   ExternalService,
   ConversationDetail,
   ConversationList,
+  ImprovementStatus,
+  Job,
+  Lesson,
+  Memory,
+  MemoryCandidate,
+  MemoryCategory,
+  MemoryVersion,
+  Monitor,
   Notification,
+  OutboxRow,
+  Outcome,
+  ProfileEntry,
+  Proposal,
+  Rule,
+  TraceRow,
+  UndoResult,
   Prefs,
   ModelEntry,
   ModelHealth,
@@ -231,6 +249,187 @@ export const api = {
       request<{ runs: TaskRun[] }>(
         `/task-runs${taskId ? `?taskId=${encodeURIComponent(taskId)}` : ''}`,
       ),
+  },
+
+  memories: {
+    /** `conflicted` names the memories a pending candidate contradicts. They are
+     *  not being asserted to the model while they wait, and a screen that showed
+     *  them as though nothing were wrong would be saying something untrue. */
+    list: (options: { category?: string; query?: string; origin?: string;
+                      includeArchived?: boolean } = {}) => {
+      const params = new URLSearchParams();
+      if (options.category) params.set('category', options.category);
+      if (options.query) params.set('query', options.query);
+      if (options.origin) params.set('origin', options.origin);
+      if (options.includeArchived) params.set('includeArchived', 'true');
+      const query = params.toString();
+      return request<{ memories: Memory[]; conflicted: string[] }>(
+        `/memories${query ? `?${query}` : ''}`,
+      );
+    },
+    categories: () => request<{ categories: MemoryCategory[] }>('/memories/categories'),
+    /** Empty for an id that never existed: "what changed about this" has a true
+     *  answer for something that does not exist. */
+    versions: (id: string) =>
+      request<{ versions: MemoryVersion[] }>(`/memories/${encodeURIComponent(id)}/versions`),
+    create: (memory: { text: string; category?: string; importance?: number }) =>
+      request<{ ok: true; memory: Memory }>('/memories', { method: 'POST', ...json(memory) }),
+    update: (id: string, patch: { text?: string; category?: string; importance?: number }) =>
+      request<{ ok: true; memory: Memory }>(`/memories/${encodeURIComponent(id)}`, {
+        method: 'PATCH', ...json(patch),
+      }),
+    /** Keeps the primary, archives the rest — a merge that turns out to be wrong
+     *  should be recoverable. */
+    merge: (primaryId: string, otherIds: string[], text: string, category?: string) =>
+      request<{ ok: true; memory: Memory }>('/memories/merge', {
+        method: 'POST', ...json({ primaryId, otherIds, text, category }),
+      }),
+    archive: (id: string) =>
+      request<{ ok: true }>(`/memories/${encodeURIComponent(id)}/archive`, { method: 'POST' }),
+    restore: (id: string) =>
+      request<{ ok: true }>(`/memories/${encodeURIComponent(id)}/restore`, { method: 'POST' }),
+    /** Only ever from an archived row: archive first is what leaves something
+     *  for an undo elsewhere to point at. */
+    remove: (id: string) =>
+      request<{ ok: true }>(`/memories/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+    candidates: () => request<{ candidates: MemoryCandidate[] }>('/memories/candidates'),
+    approve: (id: string, edits: { text?: string; category?: string } = {}) =>
+      request<{ ok: true; memory: Memory }>(
+        `/memories/candidates/${encodeURIComponent(id)}/approve`,
+        { method: 'POST', ...json(edits) },
+      ),
+    reject: (id: string) =>
+      request<{ ok: true }>(`/memories/candidates/${encodeURIComponent(id)}/reject`,
+        { method: 'POST' }),
+    /** `use-new` EDITS the contradicted memory rather than adding a second one:
+     *  two memories asserting opposite things is the state this prevents. */
+    resolveConflict: (id: string, choice: 'keep-old' | 'use-new' | 'keep-both',
+                      edits: { text?: string; category?: string } = {}) =>
+      request<{ ok: true; memory: Memory | null }>(
+        `/memories/candidates/${encodeURIComponent(id)}/resolve-conflict`,
+        { method: 'POST', ...json({ choice, ...edits }) },
+      ),
+  },
+
+  profile: {
+    /** Oldest first — the order they were written in, not the browse order. */
+    list: () => request<{ entries: ProfileEntry[] }>('/profile'),
+    add: (text: string) =>
+      request<{ ok: true; entry: ProfileEntry }>('/profile', { method: 'POST', ...json({ text }) }),
+    update: (id: string, text: string) =>
+      request<{ ok: true; entry: ProfileEntry }>(`/profile/${encodeURIComponent(id)}`, {
+        method: 'PATCH', ...json({ text }),
+      }),
+    versions: (id: string) =>
+      request<{ versions: MemoryVersion[] }>(`/profile/${encodeURIComponent(id)}/versions`),
+    remove: (id: string) =>
+      request<{ ok: true }>(`/profile/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  },
+
+  improvement: {
+    status: () => request<ImprovementStatus>('/improvement/status'),
+    proposals: (status = 'pending') =>
+      request<{ proposals: Proposal[] }>(`/improvement/proposals?status=${encodeURIComponent(status)}`),
+    /** Applied by the policy, which refuses anything that is not a rule or a
+     *  setting whatever the caller believed it was approving. */
+    approve: (id: string) =>
+      request<{ ok: true; applied: unknown; proposal: Proposal }>(
+        `/improvement/proposals/${encodeURIComponent(id)}/approve`, { method: 'POST' }),
+    reject: (id: string) =>
+      request<{ ok: true; proposal: Proposal }>(
+        `/improvement/proposals/${encodeURIComponent(id)}/reject`, { method: 'POST' }),
+    restoreProposal: (id: string) =>
+      request<{ ok: true; proposal: Proposal }>(
+        `/improvement/proposals/${encodeURIComponent(id)}/restore`, { method: 'POST' }),
+    deleteProposal: (id: string) =>
+      request<{ ok: true }>(`/improvement/proposals/${encodeURIComponent(id)}`,
+        { method: 'DELETE' }),
+    /** Generating this IS the approval action for an idea that needs real code:
+     *  Jarvis never edits its own. */
+    brief: (id: string, target: string) =>
+      request<{ ok: true; prompt: string; target: string; proposal: Proposal }>(
+        `/improvement/proposals/${encodeURIComponent(id)}/implementation-prompt`,
+        { method: 'POST', ...json({ target }) }),
+
+    rules: (includeArchived = false) =>
+      request<{ rules: Rule[] }>(`/improvement/rules${includeArchived ? '?includeArchived=true' : ''}`),
+    toggleRule: (id: string, active?: boolean) =>
+      request<{ ok: true; rule: Rule }>(`/improvement/rules/${encodeURIComponent(id)}/toggle`,
+        { method: 'POST', ...json({ active }) }),
+    editRule: (id: string, text: string) =>
+      request<{ ok: true; rule: Rule }>(`/improvement/rules/${encodeURIComponent(id)}`,
+        { method: 'PATCH', ...json({ text }) }),
+    archiveRule: (id: string) =>
+      request<{ ok: true; rule: Rule }>(`/improvement/rules/${encodeURIComponent(id)}/archive`,
+        { method: 'POST' }),
+    restoreRule: (id: string) =>
+      request<{ ok: true; rule: Rule }>(`/improvement/rules/${encodeURIComponent(id)}/restore`,
+        { method: 'POST' }),
+    deleteRule: (id: string) =>
+      request<{ ok: true }>(`/improvement/rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+    lessons: (status = 'active') =>
+      request<{ lessons: Lesson[] }>(`/improvement/lessons?status=${encodeURIComponent(status)}`),
+    archiveLesson: (id: string) =>
+      request<{ ok: true; lesson: Lesson }>(`/improvement/lessons/${encodeURIComponent(id)}/archive`,
+        { method: 'POST' }),
+    restoreLesson: (id: string) =>
+      request<{ ok: true; lesson: Lesson }>(`/improvement/lessons/${encodeURIComponent(id)}/restore`,
+        { method: 'POST' }),
+    deleteLesson: (id: string) =>
+      request<{ ok: true }>(`/improvement/lessons/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+    changes: () => request<{ changes: Change[] }>('/improvement/changes'),
+    /** A refusal is a 200 with a reason, not an error: the caller asked a real
+     *  question and got a real answer. */
+    undo: (id: number | string, force = false) =>
+      request<UndoResult>(`/improvement/changes/${encodeURIComponent(String(id))}/undo`,
+        { method: 'POST', ...json({ force }) }),
+
+    outcomes: () => request<{ outcomes: Outcome[] }>('/improvement/outcomes'),
+    lookupOutcomes: (ids: string[]) =>
+      request<{ outcomes: Outcome[] }>('/improvement/outcomes/lookup',
+        { method: 'POST', ...json({ ids }) }),
+  },
+
+  jobs: {
+    list: (status?: string) =>
+      request<{ jobs: Job[] }>(`/jobs${status ? `?status=${encodeURIComponent(status)}` : ''}`),
+    /** The job beside what it actually did, in one request: the trace is how
+     *  "it says it did this" is told apart from "it did this". */
+    open: (id: string) =>
+      request<{ job: Job; trace: TraceRow[]; outbox: OutboxRow[] }>(`/jobs/${encodeURIComponent(id)}`),
+    create: (job: { goal: string; title?: string; kind?: string }) =>
+      request<{ ok: true; job: Job }>('/jobs', { method: 'POST', ...json(job) }),
+    /** The one mechanism every parked decision uses — including the first start
+     *  of desktop work, which never begins unattended. */
+    resume: (id: string, guidance?: string) =>
+      request<{ ok: true; job: Job }>(`/jobs/${encodeURIComponent(id)}/resume`,
+        { method: 'POST', ...json({ guidance }) }),
+    restart: (id: string, force = false) =>
+      request<{ ok: boolean; reason?: string; message?: string; job?: Job }>(
+        `/jobs/${encodeURIComponent(id)}/restart`, { method: 'POST', ...json({ force }) }),
+    discard: (id: string) =>
+      request<{ ok: true; job: Job }>(`/jobs/${encodeURIComponent(id)}/discard`, { method: 'POST' }),
+  },
+
+  briefing: {
+    get: () => request<BriefingConfig>('/briefing'),
+    /** Merged, never replaced: the backend owns which keys exist. */
+    save: (patch: Partial<BriefingConfig>) =>
+      request<BriefingConfig>('/briefing', { method: 'POST', ...json(patch) }),
+    /** Composes one for real. Reading the settings and imagining the result is
+     *  not the same as hearing it. */
+    preview: () => request<BriefingPreview>('/briefing/preview', { method: 'POST' }),
+  },
+
+  monitors: {
+    list: () => request<{ monitors: Monitor[] }>('/monitors'),
+    /** There is deliberately no way to START one here: working out a concrete
+     *  check from what was actually said is the watching capability's job. */
+    stop: (id: string) =>
+      request<{ ok: true }>(`/monitors/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
   },
 
   approvals: {

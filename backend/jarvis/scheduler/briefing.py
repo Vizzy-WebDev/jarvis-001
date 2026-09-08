@@ -88,7 +88,8 @@ def gather_facts(config: dict[str, Any] | None = None,
     return facts
 
 
-def facts_to_prompt(facts: dict[str, Any], config: dict[str, Any]) -> str:
+def facts_to_prompt(facts: dict[str, Any], config: dict[str, Any],
+                    using_connectors: bool = False) -> str:
     lines = [
         "Give the user their briefing, out loud, in your own voice.",
         "",
@@ -98,6 +99,18 @@ def facts_to_prompt(facts: dict[str, Any], config: dict[str, Any]) -> str:
         "it out; do not invent an entry to fill the space.",
         "",
     ]
+    if using_connectors:
+        # The wording above would be false with tools on the table, and a stated
+        # rule the model can see is not true is worse than no rule: it teaches
+        # that the rules here are approximate.
+        lines += [
+            "They have also chosen to let this briefing use some of their connected "
+            "apps. You have real tools for exactly those apps and no others. If "
+            "checking one would genuinely add something, call it; otherwise skip it "
+            "rather than forcing it in. The same rule holds either way: say only "
+            "what a tool actually returned, never a guess about what it might say.",
+            "",
+        ]
     if facts.get("now"):
         lines.append(f"Now: {facts['now']['time']} on {facts['now']['date']} "
                      f"({facts['now']['partOfDay']}).")
@@ -126,18 +139,93 @@ def facts_to_prompt(facts: dict[str, Any], config: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+#: What a briefing says out loud, whichever path composes it.
+NARRATOR = ("You are giving the user their briefing out loud. You narrate only "
+            "the facts you are given, in plain spoken sentences, warmly and "
+            "briefly. You never invent an item, a time, or a detail.")
+
+
+def connector_tool_names(config: dict[str, Any]) -> list[str]:
+    """Real tool names for every connector the person picked for this briefing.
+
+    Resolved HERE, at compose time, every time. A connector's tool list changes
+    when it is reconnected, so a saved name would go stale silently; a saved id
+    that no longer resolves simply contributes nothing.
+    """
+    from ..connectors.capabilities import tool_names_for
+
+    names: list[str] = []
+    for connector_id in config.get("connectors") or []:
+        if connector_id:
+            names.extend(tool_names_for(connector_id))
+    return names
+
+
 def compose_briefing(now: datetime | None = None) -> Briefing:
+    """Gather the facts in code, then have a model narrate exactly those.
+
+    **Everything above is gathered in code and only narrated**, which is the
+    guarantee this file exists to keep: a briefing cannot invent an item because
+    the model is never in a position to fetch one.
+
+    **Chosen connectors are the one deliberate exception**, and it is explicit:
+    the person picked exactly these, so the turn is allowed to actually call
+    their tools on top of narrating what was gathered. With none picked — the
+    default — this stays a narration-only turn with no tool access at all, which
+    is the cheaper path as well as the stricter one.
+    """
     config = get_config()
     facts = gather_facts(config, now)
-    try:
-        answer = ask(
-            facts_to_prompt(facts, config),
-            system=("You are giving the user their briefing out loud. You narrate only "
-                    "the facts you are given, in plain spoken sentences, warmly and "
-                    "briefly. You never invent an item, a time, or a detail."),
-            # Nobody is waiting in real time, so cost matters more than latency.
-            task=RoutingTask(text="briefing", background=True, needs_tools=False),
-        )
-    except NoModelAvailable as err:
-        return Briefing(ok=False, facts=facts, error=str(err))
-    return Briefing(ok=True, text=answer.text.strip(), facts=facts, model_id=answer.model_id)
+    tools = connector_tool_names(config)
+    prompt = facts_to_prompt(facts, config, using_connectors=bool(tools))
+
+    if not tools:
+        try:
+            answer = ask(
+                prompt, system=NARRATOR,
+                # Nobody is waiting in real time, so cost matters more than latency.
+                task=RoutingTask(text="briefing", background=True, needs_tools=False),
+            )
+        except NoModelAvailable as err:
+            return Briefing(ok=False, facts=facts, error=str(err))
+        return Briefing(ok=True, text=answer.text.strip(), facts=facts,
+                        model_id=answer.model_id)
+
+    return _compose_with_connectors(prompt, facts, tools)
+
+
+def _compose_with_connectors(prompt: str, facts: dict[str, Any],
+                             tools: list[str]) -> Briefing:
+    """The tool-using path: a real turn, restricted to exactly what was chosen.
+
+    Its own ephemeral session, never bound to chat history, so a briefing's
+    working turns cannot appear in the conversation list. `addressed` is what
+    separates this from a scheduled task's or a background job's turn, which
+    also run in the background: those are not spoken to anyone, and this is.
+    """
+    import uuid
+
+    from ..assembly import get_orchestrator
+    from ..orchestrator import Done, Failed, TurnRequest
+    from ..policy import Autonomy, Surface
+
+    request = TurnRequest(
+        text=prompt,
+        session_id=f"briefing:{uuid.uuid4().hex[:8]}",
+        surface=Surface.SCHEDULED,
+        # Pre-consent covers ordinary work. A HIGH-risk action still parks for a
+        # person — the owner's rule, enforced by the policy, not here.
+        autonomy=Autonomy.PRE_CONSENTED,
+        turn_id=uuid.uuid4().hex,
+        allowed_names=frozenset(tools),
+    )
+
+    text, failure, model_id = "", None, None
+    for event in get_orchestrator().run_turn(request):
+        if isinstance(event, Done):
+            text, model_id = event.text, event.model_id
+        elif isinstance(event, Failed):
+            failure = event
+    if failure is not None:
+        return Briefing(ok=False, text=text, facts=facts, error=failure.error)
+    return Briefing(ok=True, text=text.strip(), facts=facts, model_id=model_id)

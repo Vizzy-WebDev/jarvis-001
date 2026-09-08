@@ -142,6 +142,16 @@ def list_lessons(status: str | None = "active", scope: str | None = None) -> lis
     return out
 
 
+def delete_lesson(lesson_id: str) -> None:
+    """Permanent, and reachable only from the archived view — the same
+    archive-then-delete discipline rules and memories both keep."""
+    get_db().execute("DELETE FROM improvement_lessons WHERE id = ?", (lesson_id,))
+
+
+def delete_proposal(proposal_id: str) -> None:
+    get_db().execute("DELETE FROM improvement_proposals WHERE id = ?", (proposal_id,))
+
+
 def set_lesson_status(lesson_id: str, status: str) -> None:
     get_db().execute(
         "UPDATE improvement_lessons SET status = ?, updated_at = ? WHERE id = ?",
@@ -246,6 +256,21 @@ def update_rule_text(rule_id: str, text: str) -> None:
 def archive_rule(rule_id: str) -> None:
     get_db().execute("UPDATE improvement_rules SET archived_at = ? WHERE id = ?",
                      (now_iso(), rule_id))
+
+
+def restore_rule(rule_id: str) -> None:
+    get_db().execute("UPDATE improvement_rules SET archived_at = NULL, updated_at = ? "
+                     "WHERE id = ?", (now_iso(), rule_id))
+
+
+def delete_rule(rule_id: str) -> None:
+    """Permanent, and only ever reachable from an archived row.
+
+    A change row's undo needs the rule it points at to still exist, so a hard
+    delete has to go through archive first — which is why nothing offers this
+    from the live list.
+    """
+    get_db().execute("DELETE FROM improvement_rules WHERE id = ?", (rule_id,))
 
 
 def active_rules_text(scope: str = "general") -> str:

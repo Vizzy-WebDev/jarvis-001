@@ -68,11 +68,20 @@ def add_connector(*, type: str, label: str, config: dict[str, Any] | None = None
 
 
 def update_connector(connector_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
+    """Patch a connector. `config` merges ONE LEVEL DEEP rather than replacing
+    outright — patching just `toolPermissions`, or just `connectFlow`, should
+    never require resending the rest of `config` (a stored secret ref, a cached
+    tool list) alongside it. Every OTHER top-level key still replaces plainly.
+    Every existing caller already builds and passes the full merged `config` by
+    hand, so this is additive: it changes nothing for them and is what lets a
+    narrower patch (OAuth's own `connectFlow` updates) be written safely."""
     data = _load()
     for index, connector in enumerate(data["connectors"]):
         if connector.get("id") != connector_id:
             continue
         merged = {**connector, **patch, "id": connector_id, "updatedAt": now_iso()}
+        if "config" in patch:
+            merged["config"] = {**(connector.get("config") or {}), **(patch["config"] or {})}
         data["connectors"][index] = merged
         _save(data)
         return merged

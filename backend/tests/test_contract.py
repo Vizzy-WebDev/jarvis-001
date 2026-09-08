@@ -44,8 +44,6 @@ MAX_NORMALISED_FIELDS = 40
 #: that this one is a decision somebody made, written down where it will be read
 #: next time rather than rediscovered.
 DEFERRED_ROUTES: dict[tuple[str, str], str] = {
-    ("GET", "/api/connectors/catalog"):
-        "the connector directory is entirely OAuth flows, which land with the front end",
     # Not deferred — deliberately never built. The Node app served its BUILT-IN
     # tool catalogue at this path, from when tools and folder Skills were one
     # word, and reproducing it is exactly the mistake the Skills rule exists to

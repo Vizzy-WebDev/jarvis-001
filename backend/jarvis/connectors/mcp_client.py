@@ -46,14 +46,40 @@ def _connect_target(config: dict[str, Any]) -> Any:
     raise ValueError("That MCP connector has no server address or command.")
 
 
-async def _with_client(config: dict[str, Any], work: Any) -> Any:
-    from mcp import Client
+async def _resolve_token(connector_id: str | None, config: dict[str, Any]) -> str | None:
+    """The bearer token to send, resolved the right way for how this
+    connector was actually set up.
 
-    headers = {}
+    A connector `oauth.py` connected holds a whole TOKEN SET under
+    `secretRef` (access token, refresh token, expiry — see `oauth.py`'s
+    `_token_set_from()`), never a bare bearer string. Reading it as a plain
+    secret and sending the raw JSON as `Authorization: Bearer <json blob>` is
+    broken on the very first call and silently never refreshes an expiring
+    token. `oauth.get_access_token()` is what actually understands that
+    shape (and refreshes first if due) — used whenever this connector's
+    `connectFlow.kind` says it went through that flow. Anything else (a
+    plain pasted API token, `kind: 'none'`/no OAuth at all) still reads
+    `secretRef` directly, exactly as before.
+    """
+    from . import oauth as oauth_module
+
+    if connector_id and oauth_module.is_oauth_flow(config):
+        try:
+            return await oauth_module.get_access_token(connector_id)
+        except RuntimeError:
+            return None
+
     from ..config import get_secret
 
     secret_ref = (config or {}).get("secretRef")
-    token = get_secret(secret_ref) if secret_ref else None
+    return get_secret(secret_ref) if secret_ref else None
+
+
+async def _with_client(config: dict[str, Any], work: Any, *, connector_id: str | None = None) -> Any:
+    from mcp import Client
+
+    headers = {}
+    token = await _resolve_token(connector_id, config)
     if token:
         # Only ever sent to the server this connector names, and never returned
         # anywhere a model can see it.
@@ -86,14 +112,14 @@ def _tool_shape(tool: Any) -> dict[str, Any]:
             "parameters": schema or {"type": "object", "properties": {}}}
 
 
-def fetch_tools(config: dict[str, Any]) -> list[dict[str, Any]]:
+def fetch_tools(config: dict[str, Any], *, connector_id: str | None = None) -> list[dict[str, Any]]:
     """Ask the server what it offers. Reaches the network or spawns a process,
     so it is called when refreshing a connector, never per turn."""
     async def work(client: Any) -> Any:
         listed = await client.list_tools()
         return [_tool_shape(tool) for tool in listed.tools]
 
-    return _run(_with_client(config, work))
+    return _run(_with_client(config, work, connector_id=connector_id))
 
 
 def tool_declarations(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -113,11 +139,12 @@ def _flatten(content: Any) -> str:
     return "\n".join(parts)
 
 
-def dispatch(name: str, args: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+def dispatch(name: str, args: dict[str, Any], config: dict[str, Any],
+            *, connector_id: str | None = None) -> dict[str, Any]:
     async def work(client: Any) -> Any:
         return await client.call_tool(name, args or {})
 
-    result = _run(_with_client(config, work))
+    result = _run(_with_client(config, work, connector_id=connector_id))
     text = _flatten(getattr(result, "content", None))
     failed = bool(getattr(result, "isError", False))
     answer: dict[str, Any] = {"ok": not failed,

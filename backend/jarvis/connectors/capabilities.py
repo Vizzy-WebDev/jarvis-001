@@ -91,7 +91,7 @@ def _dispatch(connector_id: str, kind: str, tool_name: str,
         if kind == "cli":
             return cli_client.dispatch(tool_name, args, config)
         if kind == "mcp":
-            return mcp_client.dispatch(tool_name, args, config)
+            return mcp_client.dispatch(tool_name, args, config, connector_id=connector_id)
     # A failure's text goes back to the MODEL, and from there into the saved
     # conversation and the next provider's request. A connector holds a key —
     # in a header, or in a query string — and a service that quotes the request
@@ -189,7 +189,7 @@ def refresh_tools(connector_id: str) -> dict[str, Any]:
     config = dict(connector.get("config") or {})
 
     if connector["type"] == "mcp":
-        config["tools"] = mcp_client.fetch_tools(config)
+        config["tools"] = mcp_client.fetch_tools(config, connector_id=connector_id)
         found = len(config["tools"])
     elif connector["type"] == "api" and config.get("specUrl"):
         discovered = api_client.discover_from_spec(config["specUrl"])

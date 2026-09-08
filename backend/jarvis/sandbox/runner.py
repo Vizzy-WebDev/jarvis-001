@@ -84,6 +84,38 @@ def backend() -> str:
     return _backend_cache
 
 
+def wsl_setup_steps() -> list[str]:
+    """Plain-language steps shown on the fallback — see GET /api/sandbox/status."""
+    return [
+        "Open Command Prompt or PowerShell as Administrator.",
+        "Type: wsl --install",
+        "Restart your computer when it asks.",
+        "After restarting, a window will open to finish setup — pick a username "
+        "and password for it (this is separate from your Windows login, and you "
+        "won't need to remember it often).",
+        "That's it — Jarvis will automatically start using it next time.",
+    ]
+
+
+def status() -> dict[str, object]:
+    """For GET /api/sandbox/status — what's active right now and, if it's the
+    weak fallback, how to get the real thing.
+
+    `distro`/`detected_windows_sandbox` are honestly `None`/`False` here: this
+    port's own probe (`_wsl_available()`) only answers "wsl works" or not, not
+    which distro or whether Windows Sandbox is present — a real, disclosed gap
+    versus the Node build's own `detect.js`, not a value worth guessing at.
+    """
+    using_wsl = backend() == "wsl"
+    return {
+        "backend": "wsl" if using_wsl else "restricted",
+        "isolation": "strong" if using_wsl else "weak",
+        "distro": None,
+        "detectedWindowsSandbox": False,
+        "setupSteps": [] if using_wsl else wsl_setup_steps(),
+    }
+
+
 def describe_isolation() -> str:
     """The sentence the tool's own description carries. Written from what the
     probe found, and it says what is NOT protected."""

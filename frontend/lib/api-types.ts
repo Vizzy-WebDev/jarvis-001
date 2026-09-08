@@ -127,3 +127,59 @@ export type TurnEvent =
   | { type: 'error'; error: string; code?: string; detail?: unknown }
   | { type: 'done'; text: string; steps: number }
   | { type: 'unknown' };
+
+// --- scheduled tasks ----------------------------------------------------------
+
+/** Free-form by design on the wire: `scheduler/recurrence.py` owns what a shape
+ *  means, and a type here that tried to enumerate them would be a second, worse
+ *  copy of that knowledge. `type` is the one field every shape has. */
+export interface Recurrence {
+  type: string;
+  [key: string]: unknown;
+}
+
+export interface TaskAction {
+  type: 'prompt' | 'skill' | string;
+  prompt?: string;
+  skillName?: string;
+  args?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface Task {
+  id: string;
+  title: string;
+  recurrence: Recurrence;
+  action: TaskAction;
+  enabled: boolean;
+  /** 'always' | 'on_error' | 'never'. */
+  notify: string;
+  /** Null whenever the task is off — a paused task must not advertise a time. */
+  nextRunAt: string | null;
+  createdAt: string;
+  lastRunAt: string | null;
+}
+
+export interface TaskRun {
+  id: string;
+  taskId: string;
+  ok: boolean;
+  summary?: string;
+  error?: string;
+  ranAt?: string;
+  [key: string]: unknown;
+}
+
+// --- approvals ----------------------------------------------------------------
+
+export interface Approval {
+  id: string;
+  capability: string;
+  args: Record<string, unknown>;
+  risk: string;
+  reason: string;
+  sessionId: string;
+  surface: string;
+  status: string;
+  requestedAt: string;
+}

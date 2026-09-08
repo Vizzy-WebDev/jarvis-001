@@ -34,7 +34,7 @@ export interface Section {
 export const SECTIONS: Section[] = [
   { id: 'home', label: 'Assistant', group: 'Assistant', ready: true,
     blurb: 'Talking to Jarvis.' },
-  { id: 'notifications', label: 'Notifications', group: 'Assistant', ready: false,
+  { id: 'notifications', label: 'Notifications', group: 'Assistant', ready: true,
     blurb: 'Everything Jarvis has told you, including while you were away.' },
   { id: 'chat-history', label: 'Chat History', group: 'Assistant', ready: false,
     blurb: 'Every past conversation, searchable.' },
@@ -44,7 +44,7 @@ export const SECTIONS: Section[] = [
     blurb: 'Folders of instructions Jarvis can follow.' },
   { id: 'app-control', label: 'App Control', group: 'Abilities', ready: false,
     blurb: 'The apps and services Jarvis is connected to.' },
-  { id: 'tasks', label: 'Scheduled Tasks', group: 'Automation', ready: false,
+  { id: 'tasks', label: 'Scheduled Tasks', group: 'Automation', ready: true,
     blurb: 'Work that runs on a clock.' },
   { id: 'jobs', label: 'Background Jobs', group: 'Automation', ready: false,
     blurb: 'Long-running work happening while you talk about something else.' },

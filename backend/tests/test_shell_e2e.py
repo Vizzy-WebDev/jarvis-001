@@ -185,3 +185,134 @@ def test_the_page_itself_never_grows_a_scrollbar(page, stub):
 
     grew = page.evaluate("document.documentElement.scrollHeight > window.innerHeight + 1")
     assert grew is False
+
+
+# --- the composer's real shape -------------------------------------------------
+
+def test_the_controls_sit_on_their_own_line_below_the_text(page):
+    """Not a style preference. The original wraps them onto a permanent second
+    line because sharing the textarea's line is what made a grown message clip
+    the control row off — and a narrow panel leaves no room to type besides."""
+    text = box(page, "[data-testid=composer-input]")
+    controls = box(page, "[data-testid=composer-controls]")
+    assert controls["y"] >= text["y"] + text["height"] - 1, "the controls are not below the text"
+
+    attach = box(page, "[data-testid=attach]")
+    send = box(page, "[data-testid=send]")
+    # Attach at the left, send at the right, both on the SAME line.
+    assert attach["x"] < send["x"]
+    assert abs(attach["y"] - send["y"]) < 2
+
+
+def test_attachments_scroll_sideways_and_never_stack(page, tmp_path):
+    """Attaching a tenth file must not grow the composer downwards into the
+    conversation. One row, scrolled horizontally — never a wrapping grid."""
+    files = []
+    for n in range(8):
+        path = tmp_path / f"note-{n}.txt"
+        path.write_text(f"attachment {n}", encoding="utf-8")
+        files.append(str(path))
+    page.set_input_files("input[type=file]", files)
+    page.wait_for_selector("[data-testid=attachments]")
+    page.wait_for_function(
+        "() => document.querySelectorAll('[data-testid=attachments] > div').length === 8")
+
+    row = page.locator("[data-testid=attachments]")
+    tiles = page.locator("[data-testid=attachments] > div")
+    tops = {round(tiles.nth(i).bounding_box()["y"]) for i in range(tiles.count())}
+    assert len(tops) == 1, "the tiles wrapped onto more than one line"
+
+    metrics = row.evaluate("el => ({scroll: el.scrollWidth, client: el.clientWidth})")
+    assert metrics["scroll"] > metrics["client"], "the row is not actually scrollable sideways"
+
+    # And the composer still did not push the orb around.
+    assert page.evaluate("document.documentElement.scrollHeight <= window.innerHeight + 1")
+
+
+# --- nothing is a static display ----------------------------------------------
+
+def test_a_notification_opens_and_reading_it_marks_it_read(page):
+    from jarvis import notifications
+
+    notifications.add(kind="task_run", level="warning", title="The briefing didn't run.",
+                      body="No model was available at 07:00.")
+    page.goto(page.url.split("#")[0] + "#/notifications", wait_until="networkidle")
+
+    page.wait_for_selector("[data-testid=notification-row]")
+    page.click("[data-testid=notification-row]")
+    page.wait_for_selector("[data-testid=modal]")
+    assert "No model was available" in page.locator("[data-testid=modal]").inner_text()
+
+    page.click("[data-testid=modal-close]")
+    page.wait_for_selector("[data-testid=modal]", state="detached")
+    # Reading it is what "read" means — and the backend was actually told.
+    assert notifications.unread_count() == 0
+
+
+def test_a_notification_can_be_deleted_from_its_own_detail(page):
+    from jarvis import notifications
+
+    notifications.add(kind="system", title="Something happened.")
+    page.goto(page.url.split("#")[0] + "#/notifications", wait_until="networkidle")
+    page.click("[data-testid=notification-row]")
+    page.click("[data-testid=modal] >> text=Delete")
+    page.wait_for_selector("[data-testid=notification-row]", state="detached")
+    assert notifications.listed() == []
+
+
+def test_a_task_can_be_created_edited_paused_and_deleted_from_the_screen(page):
+    from jarvis.scheduler import task_store
+
+    page.goto(page.url.split("#")[0] + "#/tasks", wait_until="networkidle")
+    page.click("[data-testid=new-task]")
+    page.fill("[data-testid=task-title]", "Morning summary")
+    page.select_option("[data-testid=task-repeat]", "weekdays")
+    page.fill("[data-testid=task-prompt]", "tell me what's due today")
+    page.click("[data-testid=modal] >> text=Save")
+
+    page.wait_for_selector("[data-testid=task-row]")
+    [task] = task_store.list_tasks()
+    assert task["title"] == "Morning summary"
+    assert task["recurrence"]["type"] == "weekdays"
+    # The schedule sentence shown under the title is the BACKEND's, not a second
+    # implementation in the browser.
+    assert "weekday" in page.locator("[data-testid=task-row]").inner_text().lower()
+
+    # The switch works from the list, without opening anything.
+    page.click("[data-testid=task-row] [role=switch]")
+    page.wait_for_function("() => document.querySelector('[role=switch]')"
+                           ".getAttribute('aria-checked') === 'false'")
+    assert task_store.get_task(task["id"])["enabled"] is False
+    assert task_store.get_task(task["id"])["nextRunAt"] is None
+
+    page.click("[data-testid=task-open]")
+    page.wait_for_selector("[data-testid=modal]")
+    page.click("[data-testid=modal] >> text=Delete")
+    page.wait_for_selector("[data-testid=task-row]", state="detached")
+    assert task_store.list_tasks() == []
+
+
+def test_an_approval_in_the_transcript_is_a_real_control(page, stub):
+    """The one place a static display is not merely unhelpful but wrong: the run
+    is stopped, waiting for this answer."""
+    ran = []
+    from jarvis.assembly import get_registry
+    from jarvis.capabilities import CapabilitySpec, Risk
+
+    get_registry().register(CapabilitySpec(
+        id="builtin.send_the_email", name="send_the_email",
+        description="send an email", input_schema={"type": "object", "properties": {}},
+        risk=Risk.HIGH, handler=lambda **kw: ran.append(kw) or "sent"))
+
+    stub.calls_tool("send_the_email", {})
+    stub.says("Sent.")
+
+    page.fill("[data-testid=composer-input]", "email the invoice")
+    page.press("[data-testid=composer-input]", "Enter")
+
+    page.wait_for_selector("[data-testid=approval]", timeout=15_000)
+    assert not ran, "it acted before anyone said yes"
+
+    page.click("[data-testid=approve]")
+    page.wait_for_selector("[data-testid=approval] >> text=You allowed this", timeout=15_000)
+    assert ran, "allowing it did not actually run anything"

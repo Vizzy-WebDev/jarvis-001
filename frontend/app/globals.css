@@ -19,8 +19,9 @@
 
   /* The conversation panel: fixed width, never growing with content, and a
      gutter matching the body's own side padding. The stage does NOT reserve
-     this width; the panel floats over it. */
-  --rail-width: 500px;
+     this width; the panel floats over it — which is why narrowing this cannot
+     move or resize the orb, and the e2e anchor test proves it. */
+  --rail-width: 380px;
   --rail-gutter: 20px;
 
   /* What the stage keeps clear at the bottom for the status line and the mic.
@@ -28,10 +29,13 @@
      other. */
   --stage-bottom-reserve: 140px;
 
-  /* Each composer region is capped on its own, so the composer's total height
-     is bounded by construction and never needs a scrollbar. */
-  --composer-chips-max: clamp(110px, 16vh, 214px);
-  --composer-text-max: clamp(39px, 14vh, 180px);
+  /* The composer's three bands are each bounded on their own, so its total
+     height is bounded by construction and it never needs a scrollbar itself.
+     Attachments are ONE row that scrolls sideways — a tile height, not a
+     wrapping area's cap — so attaching a tenth file cannot push the composer
+     up into the conversation. */
+  --composer-tile: 88px;
+  --composer-text-max: clamp(34px, 14vh, 180px);
 }
 
 html,
@@ -90,14 +94,16 @@ body {
   50% { transform: scale(1.04); }
 }
 
-/* The transcript is the one place long prose lives; give its scrollbar a
-   quieter treatment than the browser default. */
+/* Anything that scrolls inside a panel gets a quieter scrollbar than the
+   browser default — vertically (the transcript) or horizontally (the
+   attachment row), which is why both axes are sized here. */
 .scroll-quiet {
   scrollbar-width: thin;
   scrollbar-color: rgb(255 255 255 / 0.12) transparent;
 }
 .scroll-quiet::-webkit-scrollbar {
   width: 10px;
+  height: 8px;
 }
 .scroll-quiet::-webkit-scrollbar-thumb {
   background-color: rgb(255 255 255 / 0.12);

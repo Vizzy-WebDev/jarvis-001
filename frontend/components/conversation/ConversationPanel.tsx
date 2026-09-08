@@ -25,12 +25,14 @@ export function ConversationPanel({
   busy,
   onSend,
   onNewChat,
+  onDecide,
 }: {
   turns: Turn[];
   notConfigured: boolean;
   busy: boolean;
   onSend: (text: string, attachments: string[]) => void;
   onNewChat: () => void;
+  onDecide?: (approvalId: string, decision: 'allow' | 'deny') => void;
 }) {
   return (
     <div
@@ -55,7 +57,7 @@ export function ConversationPanel({
       </div>
 
       <div className="h-px shrink-0 bg-surface-border" />
-      <Transcript turns={turns} notConfigured={notConfigured} />
+      <Transcript turns={turns} notConfigured={notConfigured} onDecide={onDecide} />
       <div className="h-px shrink-0 bg-surface-border" />
       <Composer disabled={notConfigured} busy={busy} onSend={onSend} />
     </div>

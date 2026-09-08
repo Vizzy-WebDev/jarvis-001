@@ -45,11 +45,12 @@ consequential chat answers built, behind a preference, default off.
 | Secret handling: child environments · error redaction | **Done** — one scrub, one redaction, both asserted |
 | Desktop (§): control loop · screen · recording · sharing | **Done in code; the last inch needs a Windows run** — see below |
 | Front end — S1: the shell (design system, drawer, router, orb, transcript, composer) | **Done** — see below |
-| Front end — S2 models/keys · S3 voice · S4 About You + Automation · S5 Abilities | Not started |
+| Front end — S1.5: composer shape · Notifications · Scheduled Tasks · live approvals | **Done** — see below |
+| Front end — S2 models/keys · S3 voice · S4 the rest of About You + Automation · S5 Abilities | Not started |
 | The 15 acceptance tests (§51) | Not started |
 | Cutover | Not started |
 
-`cd backend && python -m pytest tests -q` → **1042 passed, 27 skipped.** The
+`cd backend && python -m pytest tests -q` → **1058 passed, 25 skipped.** The
 skips are contract fixtures for routes not ported yet, so the suite doubles as a
 progress meter.
 
@@ -91,6 +92,46 @@ that was publishing to an empty room until now.
 The stub model on the far end of the wire is the project's own established
 technique for a roster that is routinely all rate-limited; the adapter, the
 orchestrator and the routes under test are the real ones.
+
+## The front end, S1.5 — the composer, and the interactivity rule
+
+Two corrections from the owner's first live look, and one standing rule.
+
+**The composer was flattened in the port, and it mattered.** The original puts
+the textarea on its OWN line and wraps the controls onto a permanent second line
+below it — `public/style.css`'s `#composer-dock` comment records that as a real
+bug fix, not a style choice: sharing the textarea's line is what made a grown
+message clip the control row off. The port put attach · textarea · mic · send on
+one inline row. Restored to three bands — attachments, text, then controls with
+attach at the left and dictation + send at the right — which is also what makes
+a 380px panel usable. **Attachments now scroll SIDEWAYS**: one row that never
+wraps, so attaching a tenth file cannot grow the composer down into the
+conversation. The panel itself narrowed 500px → 380px.
+
+**The standing rule the owner set, which governs every screen from here:
+if a thing is a thing, it is clickable.** No screen ships as a read-only display
+of rows; every list of real objects gets a real detail view and real actions.
+Landing with it:
+
+- **Notifications** — every notice opens, reading it marks it read, and it can
+  be deleted from its own detail. Backed by the store built in S1.
+- **Scheduled Tasks**, brought forward from S4 at the owner's request. New
+  routes `/api/tasks*` + `/api/task-runs` over the existing `task_store`, with
+  the skill-name guard at the edge (the store is a leaf and must never import
+  the capability registry). The on/off switch works from the list without
+  opening anything — pausing is the thing people come here to do most. Two
+  recorded contract fixtures went from skipped to passing.
+- **The approval prompt in the transcript is now a real control.** It was a line
+  of text you could not act on, which left the whole turn stuck: the run is
+  genuinely stopped, waiting for that answer. The e2e test proves the tool did
+  not run before Allow was clicked and did run after.
+
+One declared divergence: `GET /api/tasks` returns a `descriptions` map (task id
+→ the plain-English schedule sentence) alongside the recorded `tasks` list. It is
+a sibling key rather than a field inside each task precisely so the recorded task
+shape stays byte-identical and the addition is one top-level key `ADDED_KEYS` can
+enforce. The sentence comes from `recurrence.describe()` — the same function the
+spoken read-back uses — rather than a second implementation in TypeScript.
 
 ## The three Node tools with no Python equivalent
 

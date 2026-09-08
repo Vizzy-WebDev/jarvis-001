@@ -1,11 +1,17 @@
 'use client';
 
+import { Button } from '@/components/ui/Button';
 import type { TurnEvent } from '@/lib/api-types';
 
 export type Turn = {
   id: string;
-  role: 'user' | 'assistant' | 'note';
+  role: 'user' | 'assistant' | 'note' | 'approval';
   text: string;
+  /** Set on an `approval` turn: the run is genuinely paused on this answer. */
+  approvalId?: string;
+  capability?: string;
+  /** Once answered, what was decided — the card stays, as the record of it. */
+  decided?: 'allow' | 'deny';
   /** Set while a reply is still streaming. */
   streaming?: boolean;
   /** A picture or a video a tool produced, shown in place. */
@@ -27,8 +33,50 @@ export function attachmentOf(event: TurnEvent): Turn['attachment'] {
  * accent tint; Jarvis's replies are plain, because they are the long ones. A
  * note (a model switch, a tone shift) is neither — it is quieter than both, and
  * never looks like something anyone said.
+ *
+ * An approval is the one turn that is a CONTROL rather than a record. The run
+ * is stopped, waiting for this answer; showing it as a line of text the user
+ * cannot act on would leave the whole turn stuck with no way out of it.
  */
-export function Message({ turn }: { turn: Turn }) {
+export function Message({
+  turn,
+  onDecide,
+}: {
+  turn: Turn;
+  onDecide?: (approvalId: string, decision: 'allow' | 'deny') => void;
+}) {
+  if (turn.role === 'approval') {
+    return (
+      <div
+        data-testid="approval"
+        className="animate-fade-up rounded-lg border border-accent/25 bg-accent/[0.06] p-3.5"
+      >
+        <p className="text-[13px] leading-relaxed text-ink">{turn.text}</p>
+        {turn.decided ? (
+          <p className="mt-2 text-[12px] text-ink-faint">
+            {turn.decided === 'allow' ? 'You allowed this.' : 'You said no to this.'}
+          </p>
+        ) : (
+          <div className="mt-3 flex gap-2">
+            <Button
+              tone="primary"
+              data-testid="approve"
+              onClick={() => turn.approvalId && onDecide?.(turn.approvalId, 'allow')}
+            >
+              Allow
+            </Button>
+            <Button
+              data-testid="deny"
+              onClick={() => turn.approvalId && onDecide?.(turn.approvalId, 'deny')}
+            >
+              Not now
+            </Button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   if (turn.role === 'note') {
     return (
       <p className="animate-fade-up px-1 py-1 text-center text-[12px] italic text-ink-faint">

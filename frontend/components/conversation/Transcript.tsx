@@ -15,7 +15,15 @@ import { Message, type Turn } from './Message';
  * hanging from the top of a mostly empty panel: a conversation grows upwards
  * from where you are typing, and the first exchange should not look marooned.
  */
-export function Transcript({ turns, notConfigured }: { turns: Turn[]; notConfigured: boolean }) {
+export function Transcript({
+  turns,
+  notConfigured,
+  onDecide,
+}: {
+  turns: Turn[];
+  notConfigured: boolean;
+  onDecide?: (approvalId: string, decision: 'allow' | 'deny') => void;
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
 
@@ -55,7 +63,7 @@ export function Transcript({ turns, notConfigured }: { turns: Turn[]; notConfigu
       )}
 
       {turns.map((turn) => (
-        <Message key={turn.id} turn={turn} />
+        <Message key={turn.id} turn={turn} onDecide={onDecide} />
       ))}
     </div>
   );

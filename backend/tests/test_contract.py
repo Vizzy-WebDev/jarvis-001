@@ -80,6 +80,12 @@ ADDED_KEYS: dict[tuple[str, str], set[str]] = {
     # sharing left on), and which one it is decides whether "stop" means
     # anything to the person reading it.
     ("GET", "/api/observation/status"): {"reasons"},
+    # The plain-English sentence for each task's schedule, keyed by task id.
+    # A sibling map rather than a field inside each task, precisely so the
+    # recorded task shape stays byte-identical and the addition is one
+    # top-level key this harness can actually enforce. Built from
+    # `recurrence.describe()` — the same sentence the spoken read-back uses.
+    ("GET", "/api/tasks"): {"descriptions"},
 }
 
 

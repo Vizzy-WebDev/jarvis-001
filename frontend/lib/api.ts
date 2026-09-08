@@ -5,11 +5,14 @@
 // backend is running. So nothing here needs a base URL, and there is no CORS.
 
 import type {
+  Approval,
   ConversationDetail,
   ConversationList,
   Notification,
   Prefs,
   Status,
+  Task,
+  TaskRun,
 } from './api-types';
 
 /** A failed request, carrying the server's own message.
@@ -100,6 +103,50 @@ export const api = {
     remove: (id: string) =>
       request<{ ok: true }>(`/notifications/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     clear: () => request<{ ok: true }>('/notifications', { method: 'DELETE' }),
+  },
+
+  tasks: {
+    /** `descriptions` is the plain-English sentence for each task's schedule,
+     *  keyed by id — computed by the backend's own `describe()` so the
+     *  scheduling vocabulary has exactly one implementation. */
+    list: () => request<{ tasks: Task[]; descriptions: Record<string, string> }>('/tasks'),
+    /** A task beside what it has actually been doing, in one request — the
+     *  detail view always wants both. */
+    open: (id: string) =>
+      request<{ ok: true; task: Task; runs: TaskRun[]; description: string }>(
+        `/tasks/${encodeURIComponent(id)}`,
+      ),
+    create: (task: Partial<Task>) =>
+      request<{ ok: true; task: Task }>('/tasks', { method: 'POST', ...json(task) }),
+    update: (id: string, patch: Partial<Task>) =>
+      request<{ ok: true; task: Task }>(`/tasks/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        ...json(patch),
+      }),
+    remove: (id: string) =>
+      request<{ ok: true }>(`/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    runNow: (id: string) =>
+      request<{ ok: true; result: unknown }>(`/tasks/${encodeURIComponent(id)}/run`, {
+        method: 'POST',
+      }),
+    runs: (taskId?: string) =>
+      request<{ runs: TaskRun[] }>(
+        `/task-runs${taskId ? `?taskId=${encodeURIComponent(taskId)}` : ''}`,
+      ),
+  },
+
+  approvals: {
+    pending: (session?: string) =>
+      request<{ approvals: Approval[] }>(
+        `/approvals${session ? `?session=${encodeURIComponent(session)}` : ''}`,
+      ),
+    /** The run is genuinely waiting on this, which is why the transcript's
+     *  prompt is a real control rather than a note about one. */
+    decide: (id: string, decision: 'allow' | 'deny' | 'cancel') =>
+      request<{ approval: Approval; ran: boolean }>(`/approvals/${encodeURIComponent(id)}`, {
+        method: 'POST',
+        ...json({ decision }),
+      }),
   },
 
   uploads: {

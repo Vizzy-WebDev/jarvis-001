@@ -5,6 +5,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ConversationPanel } from '@/components/conversation/ConversationPanel';
 import { attachmentOf, type Turn } from '@/components/conversation/Message';
 import { GenericScreen, NotPortedYet } from '@/components/screens/GenericScreen';
+import { NotificationsScreen } from '@/components/screens/NotificationsScreen';
+import { TasksScreen } from '@/components/screens/TasksScreen';
 import { Drawer } from '@/components/shell/Drawer';
 import { Header } from '@/components/shell/Header';
 import { SettingsPanel } from '@/components/shell/SettingsPanel';
@@ -135,12 +137,15 @@ export default function Home() {
             ]);
             break;
           case 'approval_required':
+            // A control, not a note: the run is stopped until this is answered.
             setTurns((current) => [
               ...current,
               {
                 id: newId(),
-                role: 'note',
-                text: `${event.capability} needs your go-ahead: ${event.reason}`,
+                role: 'approval',
+                approvalId: event.approvalId,
+                capability: event.capability,
+                text: event.reason || `${event.capability} needs your go-ahead.`,
               },
             ]);
             break;
@@ -167,6 +172,17 @@ export default function Home() {
       setOrbState('idle');
       setStatus('Type below to talk to Jarvis');
     });
+  }, []);
+
+  const decide = useCallback(async (approvalId: string, decision: 'allow' | 'deny') => {
+    try {
+      await api.approvals.decide(approvalId, decision);
+    } catch (err) {
+      if (err instanceof ApiRequestError) setStatus(err.message);
+      return;
+    }
+    setTurns((current) =>
+      current.map((turn) => (turn.approvalId === approvalId ? { ...turn, decided: decision } : turn)));
   }, []);
 
   async function newChat() {
@@ -200,7 +216,7 @@ export default function Home() {
       <main className="h-screen">
         <Drawer open={drawerOpen} current={section} onClose={() => setDrawerOpen(false)} onNavigate={go} />
         <GenericScreen section={section} onMenu={() => setDrawerOpen(true)}>
-          <NotPortedYet section={section} />
+          {screenFor(section.id, go) ?? <NotPortedYet section={section} />}
         </GenericScreen>
       </main>
     );
@@ -274,11 +290,20 @@ export default function Home() {
             busy={busy}
             onSend={send}
             onNewChat={newChat}
+            onDecide={decide}
           />
         </aside>
       </div>
     </main>
   );
+}
+
+/** The screen for a section, or nothing if it is still being ported. One place
+ *  rather than a branch inside the render, so adding a screen is one line. */
+function screenFor(id: string, go: (id: string) => void): React.ReactNode {
+  if (id === 'notifications') return <NotificationsScreen onNavigate={go} />;
+  if (id === 'tasks') return <TasksScreen />;
+  return null;
 }
 
 /** Tool traffic is not conversation. The transcript shows what was said. */

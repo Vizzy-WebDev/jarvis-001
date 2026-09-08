@@ -54,6 +54,23 @@ DEFERRED_ROUTES: dict[tuple[str, str], str] = {
 #: the last entry here, and it landed with the desktop work.
 ABSENT_CONNECTOR_TYPES: set[str] = set()
 
+#: A fixture recorded against an instance that was NOT empty. The recording is
+#: still the contract — what it pins is the SHAPE of a row — so rather than
+#: waving the comparison away, the same content is put into this build's own
+#: store first and the two are compared for real, ids and timestamps normalised
+#: as everywhere else. Seeding from the recording itself is what keeps this
+#: honest: nothing is written by hand to match.
+def _seed_notifications(body: dict) -> None:
+    from jarvis import notifications
+
+    for row in reversed(body.get("notifications") or []):
+        notifications.add(kind=row.get("kind") or "system", level=row.get("level") or "info",
+                          title=row.get("title") or "", body=row.get("body") or "",
+                          action=row.get("action"), meta=row.get("meta"))
+
+
+SEEDS = {("GET", "/api/notifications"): _seed_notifications}
+
 ADDED_KEYS: dict[tuple[str, str], set[str]] = {
     # Semantic verification of consequential chat answers: this build's own
     # feature, off by default. See jarvis/ops/consequence.py.
@@ -159,6 +176,10 @@ def test_route_matches_recorded_node_response(client, fixture_path):
 
     if not _matches_a_ported_route(client.ported_routes, req["method"], req["path"]):
         pytest.skip(f"not ported yet: {req['method']} {req['path']}")
+
+    seed = SEEDS.get((req["method"].upper(), req["path"]))
+    if seed is not None:
+        seed(expected.get("body") or {})
 
     url = req["path"] + (f"?{req['query']}" if req.get("query") else "")
     response = client.request(req["method"], url, json=req.get("body") or None)

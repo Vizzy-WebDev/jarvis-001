@@ -1,28 +1,80 @@
 import type { Config } from 'tailwindcss';
 
-// The palette is carried over from public/style.css rather than invented, so the
-// port is a change of technology and not a silent redesign. Named tokens exist
-// so the eventual screen-by-screen migration can reference the same colours the
-// hand-written CSS did instead of scattering hex values through components.
+// The visual language, in one place.
+//
+// The STRUCTURE of this interface is carried over exactly from the app it
+// replaces — the header, the drawer, the centred orb, the conversation
+// floating at the right, the composer beneath it. The LOOK is not: this is a
+// deliberately quieter, deeper palette with softer edges and real translucency,
+// which is what lets the conversation panel read as floating over the stage
+// rather than sitting in a box next to it.
+//
+// Colours are tokens, never hex literals in a component: a screen that reaches
+// for `#171a21` is a screen that will not follow the next change.
 const config: Config = {
   content: ['./app/**/*.{ts,tsx}', './components/**/*.{ts,tsx}', './lib/**/*.{ts,tsx}'],
   theme: {
     extend: {
       colors: {
         ink: {
-          DEFAULT: '#e8e8ea',
-          muted: '#9a9aa2',
-          faint: '#6b6b73',
+          DEFAULT: '#e9ecf1',
+          muted: '#98a0ae',
+          faint: '#6a7280',
         },
         surface: {
-          DEFAULT: '#101014',
-          raised: '#18181d',
-          border: '#2a2a32',
+          // The page itself. Deeper than the original's #0f1115 so the orb's
+          // own light is the brightest thing on screen.
+          DEFAULT: '#0b0d11',
+          raised: '#141821',
+          // Floating panels are translucent: they sit ON TOP of the stage, and
+          // saying so in the material is more honest than drawing a hard box.
+          panel: 'rgb(20 24 32 / 0.78)',
+          overlay: 'rgb(8 10 14 / 0.72)',
+          border: 'rgb(255 255 255 / 0.08)',
+          'border-strong': 'rgb(255 255 255 / 0.14)',
         },
         accent: {
-          DEFAULT: '#6ea8fe',
-          soft: '#3a5a8c',
+          DEFAULT: '#5b9cff',
+          soft: '#2f4d7d',
+          glow: 'rgb(91 156 255 / 0.28)',
         },
+        state: {
+          danger: '#ff6b6b',
+          warn: '#f2b45c',
+          ok: '#6be3a3',
+        },
+        bubble: {
+          user: 'rgb(91 156 255 / 0.14)',
+          assistant: 'rgb(255 255 255 / 0.05)',
+        },
+      },
+      borderRadius: {
+        sm: '10px',
+        DEFAULT: '14px',
+        lg: '18px',
+        xl: '22px',
+        pill: '999px',
+      },
+      boxShadow: {
+        panel: '0 24px 60px -20px rgb(0 0 0 / 0.65)',
+        focus: '0 0 0 3px rgb(91 156 255 / 0.28)',
+      },
+      transitionTimingFunction: {
+        out: 'cubic-bezier(0.22, 0.61, 0.36, 1)',
+      },
+      keyframes: {
+        'fade-up': {
+          from: { opacity: '0', transform: 'translateY(6px)' },
+          to: { opacity: '1', transform: 'translateY(0)' },
+        },
+        breathe: {
+          '0%, 100%': { transform: 'scale(1)' },
+          '50%': { transform: 'scale(1.04)' },
+        },
+      },
+      animation: {
+        'fade-up': 'fade-up 220ms cubic-bezier(0.22, 0.61, 0.36, 1)',
+        breathe: 'breathe 4s ease-in-out infinite',
       },
     },
   },

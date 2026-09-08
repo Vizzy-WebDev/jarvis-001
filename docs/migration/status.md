@@ -44,11 +44,12 @@ consequential chat answers built, behind a preference, default off.
 | Connectors: files · MCP · API · CLI · browser | **Done** — OAuth deferred, see below |
 | Secret handling: child environments · error redaction | **Done** — one scrub, one redaction, both asserted |
 | Desktop (§): control loop · screen · recording · sharing | **Done in code; the last inch needs a Windows run** — see below |
-| Front end F1–F4 (voice engines, shell, screens, Tailwind) | **Scaffold only** |
+| Front end — S1: the shell (design system, drawer, router, orb, transcript, composer) | **Done** — see below |
+| Front end — S2 models/keys · S3 voice · S4 About You + Automation · S5 Abilities | Not started |
 | The 15 acceptance tests (§51) | Not started |
 | Cutover | Not started |
 
-`cd backend && python -m pytest tests -q` → **1018 passed, 28 skipped.** The
+`cd backend && python -m pytest tests -q` → **1042 passed, 27 skipped.** The
 skips are contract fixtures for routes not ported yet, so the suite doubles as a
 progress meter.
 
@@ -57,6 +58,39 @@ dir, unusual port) migrates to `user_version 23`, registers and runs all nine
 diagnostic checks, records their outcomes in the trace, takes a real system
 sample, and answers a live route with 200 and an unknown id with a clean 404 —
 no unhandled exception anywhere in the log.
+
+## The front end, S1 — the shell
+
+The interface has FOUR fixed anchors, agreed with the owner. Everything else —
+the top bar, the drawer's insides, and the internal layout of all twelve section
+screens — is a redesign, not a port of `public/`:
+
+1. the hamburger is at the top LEFT and reaches every section;
+2. the orb stays centred, with the mic beneath it, and nothing on the page moves
+   or resizes it;
+3. the conversation floats OVER the right edge of the stage, reserving no
+   column and scrolling inside itself;
+4. the conversation and the composer are ONE panel, not two.
+
+**The anchors are tests, not a note.** `backend/tests/test_shell_e2e.py` drives
+the REAL built export served by the REAL app on a scratch port, in Chromium:
+it measures the orb's box before and after a long reply and an opening panel and
+requires it unchanged, requires the stage to run underneath the floating panel
+rather than beside it, requires the transcript and the composer to be inside one
+element, and requires the page itself never to grow a scrollbar. A redesign that
+quietly breaks one of those fails the suite — which a screenshot review does
+not, and a component test cannot see at all.
+
+What landed with it: the design tokens and the shared primitives every later
+screen composes from (`components/ui/`), the SECTIONS registry as the one source
+for drawer, hash router and (later) `open_section`, the orb in TypeScript, the
+transcript streaming from `/api/chat/stream`, the composer with real uploads,
+and the notification store + observer + routes behind the bell — a subsystem
+that was publishing to an empty room until now.
+
+The stub model on the far end of the wire is the project's own established
+technique for a roster that is routinely all rate-limited; the adapter, the
+orchestrator and the routes under test are the real ones.
 
 ## The three Node tools with no Python equivalent
 

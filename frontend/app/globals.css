@@ -2,12 +2,36 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Only what genuinely cannot be a utility class lives here.
-   public/style.css is 3,275 lines and is being replaced screen by screen as each
-   one is ported; nothing is copied over wholesale. */
+/* Only what genuinely cannot be a utility class lives here: the layout
+   GEOMETRY, which is carried over exactly from the interface this replaces,
+   and a handful of element-level base rules.
 
+   These four measurements are structural, not stylistic — the orb's box, the
+   floating panel's width and position, and the space the header occupies are
+   the shape of the app, and this file is where that shape is stated once. */
 :root {
   color-scheme: dark;
+
+  /* The header floats out of flow so nothing it contains — a badge appearing,
+     a sharing pill — can push the body or resize the orb. This is the space
+     reserved for it in the body's own padding. */
+  --header-reserve: 68px;
+
+  /* The conversation panel: fixed width, never growing with content, and a
+     gutter matching the body's own side padding. The stage does NOT reserve
+     this width; the panel floats over it. */
+  --rail-width: 500px;
+  --rail-gutter: 20px;
+
+  /* What the stage keeps clear at the bottom for the status line and the mic.
+     The orb's box is everything above it, so neither band can ever resize the
+     other. */
+  --stage-bottom-reserve: 140px;
+
+  /* Each composer region is capped on its own, so the composer's total height
+     is bounded by construction and never needs a scrollbar. */
+  --composer-chips-max: clamp(110px, 16vh, 214px);
+  --composer-text-max: clamp(39px, 14vh, 180px);
 }
 
 html,
@@ -17,4 +41,67 @@ body {
 
 body {
   @apply bg-surface text-ink antialiased;
+  /* A single soft light behind the stage, so the orb reads as lit rather than
+     pasted onto a flat field. */
+  background-image: radial-gradient(60rem 40rem at 42% 38%, rgb(91 156 255 / 0.07), transparent 70%);
+  background-attachment: fixed;
+}
+
+/* The orb's canvas: sized in viewport units so it scales with the window,
+   capped so it never dominates a large screen. */
+.orb-canvas {
+  width: min(55vh, 500px);
+  height: min(55vh, 500px);
+  max-width: 90%;
+  max-height: 100%;
+}
+
+/* Shown instead of the canvas when WebGL is unavailable — the same states,
+   drawn with a gradient. */
+.orb-fallback {
+  width: min(46vh, 420px);
+  height: min(46vh, 420px);
+  max-width: 90%;
+  max-height: 100%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #223049 0%, #0f1219 70%);
+  box-shadow: 0 0 60px rgb(91 156 255 / 0.15);
+  transition: box-shadow 600ms ease, background 600ms ease;
+  animation: breathe 4s ease-in-out infinite;
+}
+.orb-fallback[data-state='listening'] {
+  background: radial-gradient(circle at 35% 30%, #2f5a7a 0%, #14202c 70%);
+  box-shadow: 0 0 80px rgb(91 156 255 / 0.35);
+  animation-duration: 2.2s;
+}
+.orb-fallback[data-state='thinking'] {
+  background: radial-gradient(circle at 35% 30%, #4a2f6a 0%, #1c1626 70%);
+  box-shadow: 0 0 80px rgb(160 100 255 / 0.35);
+  animation-duration: 1.6s;
+}
+.orb-fallback[data-state='speaking'] {
+  background: radial-gradient(circle at 35% 30%, #1e5a44 0%, #0f2119 70%);
+  box-shadow: 0 0 90px rgb(107 227 163 / 0.4);
+  animation-duration: 0.9s;
+}
+
+@keyframes breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.04); }
+}
+
+/* The transcript is the one place long prose lives; give its scrollbar a
+   quieter treatment than the browser default. */
+.scroll-quiet {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 0.12) transparent;
+}
+.scroll-quiet::-webkit-scrollbar {
+  width: 10px;
+}
+.scroll-quiet::-webkit-scrollbar-thumb {
+  background-color: rgb(255 255 255 / 0.12);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
 }

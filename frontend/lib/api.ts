@@ -7,6 +7,7 @@
 import type {
   ConversationDetail,
   ConversationList,
+  Notification,
   Prefs,
   Status,
 } from './api-types';
@@ -82,5 +83,44 @@ export const api = {
         `/conversations/${encodeURIComponent(id)}/activate`,
         { method: 'POST' },
       ),
+  },
+
+  notifications: {
+    list: (limit?: number) =>
+      request<{ notifications: Notification[] }>(
+        `/notifications${typeof limit === 'number' ? `?limit=${limit}` : ''}`,
+      ),
+    markRead: (ids: string[]) =>
+      request<{ notifications: Notification[] }>('/notifications/read', {
+        method: 'POST',
+        ...json({ ids }),
+      }),
+    markAllRead: () =>
+      request<{ notifications: Notification[] }>('/notifications/read-all', { method: 'POST' }),
+    remove: (id: string) =>
+      request<{ ok: true }>(`/notifications/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    clear: () => request<{ ok: true }>('/notifications', { method: 'DELETE' }),
+  },
+
+  uploads: {
+    /** Raw body, not multipart: the backend lands the bytes and returns an id,
+     *  and an id is all that ever reaches a turn. */
+    create: async (file: File) => {
+      const response = await fetch(
+        `/api/uploads?name=${encodeURIComponent(file.name)}`,
+        { method: 'POST', body: file, headers: { 'Content-Type': file.type || 'application/octet-stream' } },
+      );
+      if (!response.ok) {
+        let message = `Upload failed (${response.status})`;
+        try {
+          const body = (await response.json()) as { error?: string };
+          if (body?.error) message = body.error;
+        } catch {
+          /* the status stands */
+        }
+        throw new ApiRequestError(response.status, message);
+      }
+      return (await response.json()) as { ok: true; id: string; name: string; size: number };
+    },
   },
 };

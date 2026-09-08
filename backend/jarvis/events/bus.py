@@ -87,7 +87,14 @@ class EventType(str, Enum):
 
     # System
     SYSTEM_HEALTH_CHANGED = "system.health_changed"
+    #: Something happened that the user should be told about. Subsystems
+    #: publish this; the notification store is what listens.
     NOTIFICATION_CREATED = "notification.created"
+    #: …and this is the stored row, announced to open tabs. Two types rather
+    #: than one because a store that re-published what it consumed would feed
+    #: itself, and because a browser wants the row (with its id, so it can be
+    #: marked read), not the request that produced it.
+    NOTIFICATION_STORED = "notification.stored"
 
 
 @dataclass(frozen=True)

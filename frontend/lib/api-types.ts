@@ -96,3 +96,34 @@ export interface Status {
 export interface ApiError {
   error: string;
 }
+
+export interface Notification {
+  id: string;
+  kind: string;
+  level: 'info' | 'success' | 'warning' | 'error';
+  title: string;
+  body: string;
+  /** `{label, section}` — a section id rather than a callback, so it survives
+   *  JSON and still works for a notice the server generated on its own. */
+  action: { label: string; section: string } | null;
+  meta: Record<string, unknown> | null;
+  ts: string;
+  read: boolean;
+  /** The same fault repeating collapses into one row and counts. */
+  count: number;
+}
+
+/** One event from `GET /api/chat/stream`. The wire vocabulary is deliberately
+ *  small and stable — see backend/jarvis/routes/turn.py's `to_wire`. */
+export type TurnEvent =
+  | { type: 'routed'; intent: string; fast: boolean; confidence: number; reason: string }
+  | { type: 'chunk'; text: string }
+  | { type: 'tool_result'; capability: string; ok: boolean; outcome: string; error: string | null;
+      attachment?: { type: 'attachment'; kind: string; url: string; mimeType: string } }
+  | { type: 'approval_required'; approvalId: string; capability: string; reason: string }
+  | { type: 'model_switch'; to: string; from: string | null; reason: string }
+  | { type: 'interrupted'; spokenText: string }
+  | { type: 'progress'; phase: string }
+  | { type: 'error'; error: string; code?: string; detail?: unknown }
+  | { type: 'done'; text: string; steps: number }
+  | { type: 'unknown' };

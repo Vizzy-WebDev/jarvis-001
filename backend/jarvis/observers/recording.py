@@ -47,7 +47,12 @@ def start_observers(event_bus: EventBus | None = None) -> None:
     from .verification import verify_answer
     _unsubscribes.append(ebus.subscribe(EventType.ASSISTANT_RESPONSE, verify_answer))
 
-    logger.info("[observers] recording outcomes, usage, security counts and verification")
+    from .notifications import store_notification
+    _unsubscribes.append(
+        ebus.subscribe(EventType.NOTIFICATION_CREATED, store_notification))
+
+    logger.info("[observers] recording outcomes, usage, security counts, verification "
+                "and notifications")
 
 
 def stop_observers() -> None:

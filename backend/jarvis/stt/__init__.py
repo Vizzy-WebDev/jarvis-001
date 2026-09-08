@@ -25,3 +25,7 @@ def mode() -> str:
 
 def test_key(candidate: str, ref: str | None = None):
     return deepgram.test_key(candidate, ref)
+
+
+async def open_session():
+    return await deepgram.open_session()

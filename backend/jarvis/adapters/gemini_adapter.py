@@ -239,3 +239,29 @@ def friendly_error(err: BaseException) -> str:
     except Exception:
         pass
     return str(err) or "That connection didn't work."
+
+
+# --- a realtime (speech-to-speech) session -----------------------------------
+# Declared by CAPABILITIES["realtime"] above. An adapter that flips that flag on
+# is promising this function exists, which is what lets the voice routes ask for
+# a session without knowing whose it is.
+
+#: Used when the model entry does not name a session model itself.
+DEFAULT_REALTIME_MODEL = "gemini-live-2.5-flash-preview"
+
+
+def open_realtime_session(entry: dict[str, Any], *, config: dict[str, Any]):
+    """An async context manager yielding a live speech-to-speech session.
+
+    Kept here, not in the route, for the reason the architecture test states: two
+    callers in the app this replaces constructed a provider SDK directly and that
+    is how the voice path ended up with none of the gateway's protections.
+    """
+    from google import genai
+
+    key = _key(entry)
+    if not key:
+        raise NoApiKey("No API key configured.")
+    client = genai.Client(api_key=key)
+    model = str(entry.get("model") or DEFAULT_REALTIME_MODEL)
+    return client.aio.live.connect(model=model, config=config)

@@ -57,3 +57,51 @@ def test_key(candidate: str, ref: str | None = None) -> dict[str, Any]:
     if response.status_code in (401, 403):
         return {"ok": False, "error": "Deepgram rejected that key."}
     return {"ok": False, "error": f"Deepgram rejected the request ({response.status_code})."}
+
+
+# --- a live recognition session ----------------------------------------------
+
+#: These MUST match exactly what the browser's capture actually sends (raw
+#: PCM16, 16 kHz, mono). A mismatch does not error — it produces garbage
+#: transcripts, because the far end has no way to know the parameters it was
+#: told do not describe the bytes arriving.
+SESSION_PARAMS = {
+    "encoding": "linear16",
+    "sample_rate": "16000",
+    "channels": "1",
+    "interim_results": "true",
+    # How long it waits in silence before marking a result final. This REPLACES
+    # the client-side countdown: the provider's own endpointing IS the
+    # turn-taking signal, rather than a timer guessing from the trailing word.
+    "endpointing": "300",
+    "utterance_end_ms": "1000",
+    "vad_events": "true",
+    "smart_format": "true",
+    "model": "nova-3",
+}
+
+
+class NoKey(RuntimeError):
+    """No key is configured — a setup problem, not a fault."""
+
+
+def session_url() -> str:
+    from urllib.parse import urlencode
+
+    return f"wss://api.deepgram.com/v1/listen?{urlencode(SESSION_PARAMS)}"
+
+
+async def open_session():
+    """A connected recognition socket, or `NoKey` if none is configured.
+
+    The caller owns the loop: it reads messages, forwards audio, and closes.
+    Returning the raw connection rather than wrapping it in callbacks keeps the
+    relay in one place where the reconnect rule is visible.
+    """
+    import websockets
+
+    api_key = key()
+    if not api_key:
+        raise NoKey("No Deepgram API key configured.")
+    return await websockets.connect(session_url(),
+                                    additional_headers={"Authorization": f"Token {api_key}"})

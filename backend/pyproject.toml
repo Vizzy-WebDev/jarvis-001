@@ -1,0 +1,43 @@
+[project]
+name = "jarvis"
+version = "0.1.0"
+description = "Jarvis — local voice/text personal assistant (FastAPI backend)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.27",
+    "anthropic>=0.40",
+    "openai>=1.55",
+    "google-genai>=1.0",
+    "websockets>=13",
+    # The official MCP client. The original hand-wrote JSON-RPC over a spawned
+    # process to avoid a dependency; here it already is one, so the protocol is
+    # the library's problem rather than something this build can get subtly wrong.
+    "mcp>=1.1",
+    # Wake word (§15), running locally: audio never leaves the machine to decide
+    # whether "hey Jarvis" was said. Downloads its ~1 MB model on first use.
+    "openwakeword>=0.6",
+    "numpy>=1.26",
+    # Cross-platform CPU/memory/process readings for operational awareness
+    # (§25). Node hand-rolled these off os.cpus() deltas because os.loadavg()
+    # is [0,0,0] on Windows; psutil gives the same numbers on both platforms
+    # this has to run on, plus the process list the busy-detector needs.
+    "psutil>=5.9",
+    # The desktop (wave H), Windows only and marked as such so an install
+    # anywhere else — including this project's own test environment — still
+    # works. `jarvis/control/desktop.py` probes for them and reports honestly
+    # when they are absent rather than failing at import.
+    "pywinauto>=0.6; sys_platform == 'win32'",
+    "pyautogui>=0.9; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["jarvis*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

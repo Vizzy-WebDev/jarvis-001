@@ -1,0 +1,55 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/notifications",
+    "query": "",
+    "headers": {
+      "host": "127.0.0.1:39118",
+      "connection": "keep-alive",
+      "accept": "*/*",
+      "accept-language": "*",
+      "sec-fetch-mode": "cors",
+      "user-agent": "node",
+      "accept-encoding": "gzip, deflate"
+    },
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "contentType": "application/json; charset=utf-8",
+    "headers": {
+      "x-powered-by": "Express",
+      "content-type": "application/json; charset=utf-8",
+      "content-length": "396",
+      "etag": "W/\"18c-Y2a2Z7sNIFV4GEA1MbIFeoXgMh4\"",
+      "date": "Fri, 04 Sep 2026 15:34:20 GMT",
+      "connection": "keep-alive",
+      "keep-alive": "timeout=5"
+    },
+    "kind": "json",
+    "body": {
+      "notifications": [
+        {
+          "id": "nmtn4483hwvfftw",
+          "kind": "heartbeat",
+          "level": "info",
+          "title": "Self-diagnosis: \"voice-pipeline\" is failing.",
+          "body": "No model was available to judge this, so it was held rather than guessed at.",
+          "action": {
+            "label": "View",
+            "section": "notifications"
+          },
+          "meta": {
+            "sourceId": "diagnosis",
+            "itemKey": "<redacted>",
+            "tier": 3
+          },
+          "ts": "2026-09-04T15:32:15.485Z",
+          "read": false,
+          "count": 1
+        }
+      ]
+    }
+  },
+  "recordedAt": "2026-09-04T15:34:20.157Z"
+}

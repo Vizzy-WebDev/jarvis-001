@@ -1,0 +1,204 @@
+"""Running code the model wrote, and being honest about how contained it is.
+
+**The defect this replaces.** The original's `restricted` backend accepted an
+`allowPaths` argument and never applied it: the child process had the user's
+entire filesystem, while `run_code`'s description told the user it was
+sandboxed, and the model repeated that description back to them. A boundary
+that exists only in a docstring is worse than no boundary, because it is
+believed.
+
+So the rule here is: **the level of isolation is measured, reported, and put
+into the tool's own description at load time.** `describe_isolation()` is not
+marketing copy; it is generated from what actually happened when the backends
+were probed, and it names what is NOT protected.
+
+Two backends:
+
+* **wsl** — a real boundary. The code runs inside a WSL distribution: a separate
+  filesystem and process namespace, reaching the Windows filesystem only through
+  an explicit mount. This is the one that deserves the word "sandbox".
+* **restricted** — a plain subprocess with the environment scrubbed, a throwaway
+  working directory, a hard timeout and capped output. It stops an accident, not
+  an attacker: nothing prevents the code reading elsewhere on the disk.
+
+The secrets scrub matters even in the WSL case: the parent process holds every
+API key the user has configured, and a child inheriting `os.environ` inherits
+all of them. That is one line to get wrong and impossible to notice — which is
+why the scrub itself now lives in `jarvis/childenv.py`, shared with every other
+place that starts a program, rather than only here.
+"""
+
+from __future__ import annotations
+
+import logging
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from ..childenv import scrubbed_environment
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_TIMEOUT_S = 30.0
+MAX_OUTPUT_CHARS = 20000
+#: Files the script produced, up to this many, are offered back as artifacts.
+MAX_OUTPUT_FILES = 10
+
+
+@dataclass
+class SandboxResult:
+    ok: bool
+    stdout: str = ""
+    stderr: str = ""
+    exit_code: int | None = None
+    timed_out: bool = False
+    backend: str = "restricted"
+    files: list[str] = field(default_factory=list)
+    error: str | None = None
+
+
+def _wsl_available() -> bool:
+    if sys.platform != "win32" or not shutil.which("wsl.exe"):
+        return False
+    try:
+        probe = subprocess.run(["wsl.exe", "-e", "true"], capture_output=True, timeout=10,
+                               env=scrubbed_environment())
+        return probe.returncode == 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+_backend_cache: str | None = None
+
+
+def backend() -> str:
+    """'wsl' or 'restricted'. Probed once — the answer cannot change while the
+    process runs, and probing per call would put a subprocess launch in front of
+    every piece of code."""
+    global _backend_cache
+    if _backend_cache is None:
+        _backend_cache = "wsl" if _wsl_available() else "restricted"
+    return _backend_cache
+
+
+def wsl_setup_steps() -> list[str]:
+    """Plain-language steps shown on the fallback — see GET /api/sandbox/status."""
+    return [
+        "Open Command Prompt or PowerShell as Administrator.",
+        "Type: wsl --install",
+        "Restart your computer when it asks.",
+        "After restarting, a window will open to finish setup — pick a username "
+        "and password for it (this is separate from your Windows login, and you "
+        "won't need to remember it often).",
+        "That's it — Jarvis will automatically start using it next time.",
+    ]
+
+
+def status() -> dict[str, object]:
+    """For GET /api/sandbox/status — what's active right now and, if it's the
+    weak fallback, how to get the real thing.
+
+    `distro`/`detected_windows_sandbox` are honestly `None`/`False` here: this
+    port's own probe (`_wsl_available()`) only answers "wsl works" or not, not
+    which distro or whether Windows Sandbox is present — a real, disclosed gap
+    versus the Node build's own `detect.js`, not a value worth guessing at.
+    """
+    using_wsl = backend() == "wsl"
+    return {
+        "backend": "wsl" if using_wsl else "restricted",
+        "isolation": "strong" if using_wsl else "weak",
+        "distro": None,
+        "detectedWindowsSandbox": False,
+        "setupSteps": [] if using_wsl else wsl_setup_steps(),
+    }
+
+
+def describe_isolation() -> str:
+    """The sentence the tool's own description carries. Written from what the
+    probe found, and it says what is NOT protected."""
+    if backend() == "wsl":
+        return ("Code runs inside WSL, with its own filesystem and processes, and no access "
+                "to your API keys. It cannot see your Windows files unless they are "
+                "explicitly shared with it.")
+    return ("Code runs in a throwaway folder with your API keys removed from its "
+            "environment and a hard time limit — but it is NOT fully sandboxed: it runs "
+            "as you, and can read other files on this computer. Don't run code you "
+            "wouldn't run yourself.")
+
+
+def child_environment() -> dict[str, str]:
+    """The environment the code gets: nothing that looks like a credential.
+
+    The shared definition (`jarvis/childenv.py`), under the name this file's own
+    callers already read it by.
+    """
+    return scrubbed_environment()
+
+
+def run_python(code: str, *, timeout_s: float = DEFAULT_TIMEOUT_S,
+               keep_files: bool = True,
+               input_files: dict[str, str] | None = None) -> SandboxResult:
+    """Run a Python snippet and report what it did, including any files it made.
+
+    `input_files` puts real data next to the script — `{"data.csv": "..."}` — so
+    an analysis runs over the whole file rather than over however much of it fits
+    in a prompt. Names are flattened to a basename: a caller must not be able to
+    write outside the workspace by naming its file "../../.env".
+    """
+    if not (code or "").strip():
+        return SandboxResult(ok=False, backend=backend(), error="There's no code to run.")
+
+    workspace = Path(tempfile.mkdtemp(prefix="jarvis-run-"))
+    script = workspace / "script.py"
+    script.write_text(code, encoding="utf-8")
+    given = set()
+    for name, content in (input_files or {}).items():
+        safe = Path(str(name)).name or "input"
+        if safe == "script.py":
+            safe = "input.py"             # never let an input overwrite the script
+        (workspace / safe).write_text(content, encoding="utf-8")
+        given.add(safe)
+
+    command = (["wsl.exe", "-e", "python3", "script.py"] if backend() == "wsl"
+               else [sys.executable, "script.py"])
+    try:
+        completed = subprocess.run(
+            command, cwd=str(workspace), env=child_environment(),
+            capture_output=True, text=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired as expired:
+        return SandboxResult(
+            ok=False, backend=backend(), timed_out=True,
+            stdout=_cap(expired.stdout), stderr=_cap(expired.stderr),
+            error=f"The code was still running after {timeout_s:.0f} seconds, so I stopped it.")
+    except Exception as err:  # noqa: BLE001
+        return SandboxResult(ok=False, backend=backend(),
+                             error=f"I couldn't run that: {err}")
+
+    produced = []
+    if keep_files:
+        produced = [str(p) for p in sorted(workspace.iterdir())
+                    if p.name != "script.py" and p.name not in given][:MAX_OUTPUT_FILES]
+
+    return SandboxResult(
+        ok=completed.returncode == 0,
+        stdout=_cap(completed.stdout), stderr=_cap(completed.stderr),
+        exit_code=completed.returncode, backend=backend(), files=produced,
+        error=None if completed.returncode == 0 else "The code exited with an error.")
+
+
+def _cap(text: str | bytes | None) -> str:
+    if not text:
+        return ""
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", "replace")
+    if len(text) <= MAX_OUTPUT_CHARS:
+        return text
+    return text[:MAX_OUTPUT_CHARS] + f"\n… (truncated at {MAX_OUTPUT_CHARS} characters)"
+
+
+def reset_for_tests() -> None:
+    global _backend_cache
+    _backend_cache = None

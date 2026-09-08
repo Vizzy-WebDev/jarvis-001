@@ -3,3 +3,10 @@ node_modules/
 *.log
 data/
 --full-page
+
+# Python backend (migration to FastAPI)
+__pycache__/
+*.py[cod]
+.pytest_cache/
+backend/.venv/
+backend/*.egg-info/

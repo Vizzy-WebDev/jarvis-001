@@ -46,11 +46,12 @@ consequential chat answers built, behind a preference, default off.
 | Desktop (§): control loop · screen · recording · sharing | **Done in code; the last inch needs a Windows run** — see below |
 | Front end — S1: the shell (design system, drawer, router, orb, transcript, composer) | **Done** — see below |
 | Front end — S1.5: composer shape · Notifications · Scheduled Tasks · live approvals | **Done** — see below |
+| Front end — S1.6: the task editor's connectors + model pickers | **Done** — see below |
 | Front end — S2 models/keys · S3 voice · S4 the rest of About You + Automation · S5 Abilities | Not started |
 | The 15 acceptance tests (§51) | Not started |
 | Cutover | Not started |
 
-`cd backend && python -m pytest tests -q` → **1058 passed, 25 skipped.** The
+`cd backend && python -m pytest tests -q` → **1073 passed, 23 skipped.** The
 skips are contract fixtures for routes not ported yet, so the suite doubles as a
 progress meter.
 
@@ -132,6 +133,52 @@ a sibling key rather than a field inside each task precisely so the recorded tas
 shape stays byte-identical and the addition is one top-level key `ADDED_KEYS` can
 enforce. The sentence comes from `recurrence.describe()` — the same function the
 spoken read-back uses — rather than a second implementation in TypeScript.
+
+## The front end, S1.6 — the two options the task editor was missing
+
+The owner spotted that the ported Scheduled Tasks editor had lost the original's
+connector and model pickers. Restoring them turned up something worse first.
+
+**A real bug the S1.5 tests could not see.** That editor wrote `action.prompt`;
+`scheduler/engine.py`'s `_run_prompt` reads `action["text"]`. Every prompt task
+created through the screen was accepted happily and then failed the moment it
+ran, with "This task has nothing to ask." The e2e tests created, edited, paused
+and deleted tasks — and never RAN one. There is now a test that builds a task
+through the real screen and then actually runs it, which is the only shape of
+test that could have caught this.
+
+**Connectors** (`action.connectors`) hold connector IDS and are resolved to
+capability names at RUN time, every run, by `connectors/capabilities.py`'s new
+`tool_names_for()` — a connector's tool list changes when it is reconnected, and
+anything that saved names once would go quietly stale. Picking connectors ADDS
+them to what the task could already do: `engine._allowed_names()` returns every
+non-connector capability plus the chosen connectors' tools, so the only things
+excluded are connectors nobody picked.
+
+**The model pin** needed real plumbing: `gateway/routing.py` has always accepted
+a one-off `model_id`, but `TurnRequest` had no field to carry one, so a task
+could not name a model at all. `TurnRequest.model_id` now threads through to the
+gateway, and `Done` carries the model that ACTUALLY answered — not the same
+thing, since a pin is an ordering the gateway can fall through, which is exactly
+what makes a pin to a since-deleted model degrade instead of break.
+
+`GET /api/models` and `GET /api/models/providers` came forward from S2 to feed
+the picker (read only — every write stays in S2). Two more recorded fixtures pass.
+
+**One harness fix this exposed.** `tools/record/proxy.mjs` scrubs any non-empty
+STRING under a credential-looking key name before it reaches a fixture, so
+`keyHint` is stored as the literal `<redacted>` and can never be compared. The
+comparer now reproduces that exact rule on both sides
+(`tests/contract/normalize.py`), counted like every other normalisation so the
+"how much is being waved away" ceiling still applies. Presence, position and type
+are still compared; only those strings' content is out of reach.
+
+**Deliberately NOT built, at the owner's explicit narrowing:** any per-task
+permission control. The rule set at the start of this migration stands unchanged
+— a HIGH-risk action inside a scheduled task still asks a human, and nothing in
+this screen can opt out of it. Also still absent: the original's `message` and
+`briefing` instruction modes, both already handled by `_run_action` with no way
+in from this screen, and its consent notice.
 
 ## The three Node tools with no Python equivalent
 

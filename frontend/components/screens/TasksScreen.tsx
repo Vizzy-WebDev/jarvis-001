@@ -9,7 +9,9 @@ import { Field, inputClass } from '@/components/ui/Field';
 import { Modal } from '@/components/ui/Modal';
 import { Toggle } from '@/components/ui/Toggle';
 import { api, ApiRequestError } from '@/lib/api';
-import type { Recurrence, Task, TaskRun } from '@/lib/api-types';
+import type {
+  ConnectionEntry, Connector, ModelEntry, Recurrence, Task, TaskRun,
+} from '@/lib/api-types';
 
 /**
  * Work that runs on a clock.
@@ -23,6 +25,19 @@ import type { Recurrence, Task, TaskRun } from '@/lib/api-types';
  * `recurrence.describe()`, not a second implementation in TypeScript. The
  * vocabulary of "every weekday at 07:00" exists once, where the maths that
  * produces the next run also lives.
+ *
+ * Two things about the editor are worth knowing before changing it:
+ *
+ * **The instruction goes in `action.text`.** `scheduler/engine.py`'s
+ * `_run_prompt` reads that exact key. An earlier version of this screen wrote
+ * `action.prompt`, which every task accepted happily and then failed on at run
+ * time with "this task has nothing to ask" — invisible until a task actually
+ * ran.
+ *
+ * **Connectors are saved as IDS, never as tool names.** What a connector can do
+ * changes when it is reconnected or refreshed, so the backend resolves ids to
+ * abilities at run time, every run. Picking connectors ADDS them to what the
+ * task could already do.
  */
 const REPEATS: { value: string; label: string }[] = [
   { value: 'daily', label: 'Every day' },
@@ -38,7 +53,7 @@ const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 function blank(): Task {
   return {
     id: '', title: '', recurrence: { type: 'daily', time: '08:00' },
-    action: { type: 'prompt', prompt: '' }, enabled: true, notify: 'on_error',
+    action: { type: 'prompt', text: '' }, enabled: true, notify: 'on_error',
     nextRunAt: null, createdAt: '', lastRunAt: null,
   };
 }
@@ -50,6 +65,9 @@ export function TasksScreen() {
   const [runs, setRuns] = useState<TaskRun[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [models, setModels] = useState<ModelEntry[]>([]);
+  const [connections, setConnections] = useState<ConnectionEntry[]>([]);
+  const [connectors, setConnectors] = useState<Connector[]>([]);
 
   const load = useCallback(async () => {
     try {
@@ -65,6 +83,26 @@ export function TasksScreen() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // What the two pickers offer. Read once: neither list changes while someone
+  // is filling in a task, and a failure here must not stop the screen working —
+  // a task without a pinned model or a chosen connector is the normal case.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const answer = await api.models.list();
+        setModels(answer.models);
+        setConnections(answer.connections);
+      } catch {
+        /* Auto is still the default, and it needs no list */
+      }
+      try {
+        setConnectors((await api.connectors.list()).connectors.filter(isPickable));
+      } catch {
+        /* the task keeps its built-in abilities either way */
+      }
+    })();
+  }, []);
 
   async function edit(task: Task) {
     setDraft(task);
@@ -310,10 +348,73 @@ export function TasksScreen() {
                 className={`${inputClass} resize-none`}
                 data-testid="task-prompt"
                 placeholder="Give me a short summary of what's due today."
-                value={String(draft.action.prompt ?? '')}
+                value={String(draft.action.text ?? '')}
                 onChange={(event) =>
-                  patch({ action: { ...draft.action, type: 'prompt', prompt: event.target.value } })}
+                  patch({ action: { ...draft.action, type: 'prompt', text: event.target.value } })}
               />
+            </Field>
+
+            {connectors.length > 0 && (
+              <Field
+                label="Apps it may use"
+                hint="Adds these to what it can already do. Nothing picked means its usual abilities."
+              >
+                <div className="flex flex-wrap gap-1.5">
+                  {connectors.map((connector) => {
+                    const chosen = (draft.action.connectors as string[] | undefined) ?? [];
+                    const on = chosen.includes(connector.id);
+                    return (
+                      <button
+                        key={connector.id}
+                        type="button"
+                        aria-pressed={on}
+                        data-testid={`connector-${connector.id}`}
+                        onClick={() => patch({
+                          action: {
+                            ...draft.action,
+                            connectors: on
+                              ? chosen.filter((id) => id !== connector.id)
+                              : [...chosen, connector.id],
+                          },
+                        })}
+                        className={[
+                          'rounded-pill border px-3 py-1 text-[12px] transition duration-150',
+                          on
+                            ? 'border-accent/40 bg-accent/15 text-accent'
+                            : 'border-surface-border text-ink-muted hover:text-ink',
+                        ].join(' ')}
+                      >
+                        {connector.label || connector.type}
+                      </button>
+                    );
+                  })}
+                </div>
+              </Field>
+            )}
+
+            <Field
+              label="Model"
+              hint="Auto picks the best fit each run. A pinned model that is later removed quietly falls back to Auto rather than breaking the task."
+            >
+              <select
+                className={inputClass}
+                data-testid="task-model"
+                value={String(draft.action.modelId ?? '')}
+                onChange={(event) => patch({
+                  action: { ...draft.action, modelId: event.target.value || undefined },
+                })}
+              >
+                <option value="">Default (Auto — best fit)</option>
+                {groupModels(models, connections).map(([group, entries]) => (
+                  <optgroup key={group} label={group}>
+                    {entries.map((model) => (
+                      <option key={model.id} value={model.id}>
+                        {model.label}{model.ready ? '' : ' — not ready'}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
             </Field>
 
             <Field label="Tell me about it">
@@ -351,6 +452,13 @@ export function TasksScreen() {
                         </span>
                         <span className="min-w-0 flex-1 text-ink-muted">
                           {run.summary || run.error || (run.ok ? 'Ran.' : 'Failed.')}
+                          {/* Which model ANSWERED, not which was asked for: a
+                              pin is an ordering, so these can differ. */}
+                          {run.modelId ? (
+                            <span className="text-ink-faint">
+                              {' '}· {modelLabel(models, run.modelId)}
+                            </span>
+                          ) : null}
                         </span>
                         {run.ranAt && (
                           <span className="shrink-0 text-ink-faint">
@@ -368,6 +476,35 @@ export function TasksScreen() {
       </Modal>
     </>
   );
+}
+
+/** Jarvis's own built-in abilities are not "apps it may use" — they are what it
+ *  can already do, and offering them here would suggest picking one adds
+ *  something. Only real connected apps are pickable. */
+const OWN_ABILITIES = new Set(['files', 'browser']);
+
+function isPickable(connector: Connector): boolean {
+  return connector.enabled && !OWN_ABILITIES.has(connector.type);
+}
+
+/** Models under the connection they belong to, so two models with the same
+ *  name from different providers are tellable apart. */
+function groupModels(
+  models: ModelEntry[],
+  connections: ConnectionEntry[],
+): [string, ModelEntry[]][] {
+  const labels = new Map(connections.map((c) => [c.id, c.label]));
+  const groups = new Map<string, ModelEntry[]>();
+  for (const model of models) {
+    if (!model.enabled) continue;
+    const group = labels.get(model.connectionId) ?? 'Other';
+    groups.set(group, [...(groups.get(group) ?? []), model]);
+  }
+  return [...groups.entries()];
+}
+
+function modelLabel(models: ModelEntry[], id: string): string {
+  return models.find((model) => model.id === id)?.label ?? id;
 }
 
 /** Switching repeat type replaces the whole shape: `days` left behind on a

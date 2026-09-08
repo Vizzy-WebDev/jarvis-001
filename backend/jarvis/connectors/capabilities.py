@@ -143,6 +143,20 @@ def connector_specs(connector: dict[str, Any]) -> list[CapabilitySpec]:
     return specs
 
 
+def tool_names_for(connector_id: str) -> list[str]:
+    """What one connector can currently do, by capability name.
+
+    Resolved on demand rather than stored: a connector's tool list changes when
+    it is reconnected or refreshed, and anything that saved names once would go
+    quietly stale. A scheduled task naming its connectors is the caller this
+    exists for — it saves connector IDS and asks here at every run.
+    """
+    connector = store.get_connector(connector_id)
+    if connector is None or not connector.get("enabled", True):
+        return []
+    return [spec.name for spec in connector_specs(connector)]
+
+
 def sync(registry: CapabilityRegistry) -> list[str]:
     """Register every enabled connector's tools and drop what is gone."""
     wanted: list[str] = []

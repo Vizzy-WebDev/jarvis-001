@@ -6,10 +6,14 @@
 
 import type {
   Approval,
+  ConnectionEntry,
+  Connector,
   ConversationDetail,
   ConversationList,
   Notification,
   Prefs,
+  ModelEntry,
+  ModelHealth,
   Status,
   Task,
   TaskRun,
@@ -103,6 +107,19 @@ export const api = {
     remove: (id: string) =>
       request<{ ok: true }>(`/notifications/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     clear: () => request<{ ok: true }>('/notifications', { method: 'DELETE' }),
+  },
+
+  /** Read only. Everything that WRITES — adding a connection, probing an
+   *  address, discovery, entering a key — lands with the models screen. */
+  models: {
+    list: () =>
+      request<{ connections: ConnectionEntry[]; models: ModelEntry[]; health: ModelHealth }>(
+        '/models',
+      ),
+  },
+
+  connectors: {
+    list: () => request<{ connectors: Connector[] }>('/connectors'),
   },
 
   tasks: {

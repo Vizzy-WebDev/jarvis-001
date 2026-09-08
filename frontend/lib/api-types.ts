@@ -139,10 +139,18 @@ export interface Recurrence {
 }
 
 export interface TaskAction {
-  type: 'prompt' | 'skill' | string;
-  prompt?: string;
-  skillName?: string;
-  args?: Record<string, unknown>;
+  type: 'prompt' | 'message' | 'briefing' | string;
+  /** `text`, NOT `prompt` — `scheduler/engine.py`'s `_run_prompt` reads this
+   *  exact key, and a mismatch makes every task fail at run time with "this
+   *  task has nothing to ask". */
+  text?: string;
+  /** A one-off model pin, or absent for Auto. Honoured by ORDER, not
+   *  exclusion: a pin to a model that is later deleted falls back to the usual
+   *  ranking rather than breaking the task. */
+  modelId?: string;
+  /** Connector IDS, never tool names. Resolved to what that connector can do
+   *  at RUN time, so a task never goes stale when a connector is refreshed. */
+  connectors?: string[];
   [key: string]: unknown;
 }
 
@@ -167,6 +175,9 @@ export interface TaskRun {
   summary?: string;
   error?: string;
   ranAt?: string;
+  /** Which model ANSWERED — not necessarily the one the task pinned, since a
+   *  pin is an ordering the gateway can fall through. */
+  modelId?: string;
   [key: string]: unknown;
 }
 
@@ -182,4 +193,47 @@ export interface Approval {
   surface: string;
   status: string;
   requestedAt: string;
+}
+
+// --- models, connections, connectors -------------------------------------------
+
+export interface ModelEntry {
+  id: string;
+  connectionId: string;
+  label: string;
+  model: string;
+  enabled: boolean;
+  /** Computed at read time: enabled, and its connection has what it needs. */
+  ready: boolean;
+  hasSecret: boolean;
+  caps?: Record<string, boolean>;
+  tier?: Record<string, number>;
+  [key: string]: unknown;
+}
+
+export interface ConnectionEntry {
+  id: string;
+  label: string;
+  adapter: string;
+  baseUrl: string | null;
+  provider?: string;
+  kind?: string;
+  hasSecret: boolean;
+  modelCount: number;
+  [key: string]: unknown;
+}
+
+/** Why a model is being skipped right now, keyed by model id. A model nobody
+ *  has had trouble with is simply absent. */
+export type ModelHealth = Record<string, { reason: string | null; kind: string | null; retryInMs: number }>;
+
+export interface Connector {
+  id: string;
+  type: string;
+  label: string | null;
+  description: string | null;
+  enabled: boolean;
+  status: { state: string; checkedAt: string | null; detail: string | null };
+  config: { hasSecret: boolean };
+  [key: string]: unknown;
 }

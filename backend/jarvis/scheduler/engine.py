@@ -189,6 +189,39 @@ def _run_action(task: dict[str, Any]) -> dict[str, Any]:
     return {"ok": False, "summary": "", "error": f"Unknown task action: {kind}"}
 
 
+def _allowed_names(action: dict[str, Any]) -> frozenset[str] | None:
+    """What this task may call, or None for no restriction at all.
+
+    `action.connectors` holds connector IDS, not tool names, and is resolved
+    HERE — at run time, every run. A connector's tool list changes when it is
+    reconnected or refreshed, so a task that saved names when it was created
+    would go quietly stale.
+
+    Picking connectors ADDS them to what the task could already do; it never
+    narrows it. So the allowlist is every non-connector capability plus the
+    chosen connectors' tools — which does mean the connectors NOT picked are
+    excluded, and that is the point: choosing some is how you say which ones
+    this task may reach. `action.tools`, an explicit list of names, still wins
+    outright for a caller that wants exactly that.
+    """
+    if action.get("tools"):
+        return frozenset(action["tools"])
+
+    connector_ids = [c for c in (action.get("connectors") or []) if c]
+    if not connector_ids:
+        return None
+
+    from ..assembly import get_registry
+    from ..capabilities import CapabilityKind
+    from ..connectors.capabilities import tool_names_for
+
+    allowed = {spec.name for spec in get_registry().list()
+               if spec.kind is not CapabilityKind.CONNECTOR}
+    for connector_id in connector_ids:
+        allowed.update(tool_names_for(connector_id))
+    return frozenset(allowed)
+
+
 def _run_prompt(task: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
     from ..assembly import get_orchestrator
     from ..orchestrator import ApprovalRequired, Done, Failed, TurnRequest
@@ -210,13 +243,18 @@ def _run_prompt(task: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
         # enforced by the policy, not by this module.
         autonomy=Autonomy.PRE_CONSENTED,
         turn_id=uuid.uuid4().hex,
-        allowed_names=frozenset(action["tools"]) if action.get("tools") else None,
+        allowed_names=_allowed_names(action),
+        # A pin, honoured by ORDER and not exclusion: a task pinned to a model
+        # that has since been deleted falls back to the usual ranking rather
+        # than failing, and the run history says which one actually answered.
+        model_id=(action.get("modelId") or None),
     )
 
     answer, parked, failure, model_id = "", None, None, None
     for event in get_orchestrator().run_turn(request):
         if isinstance(event, Done):
             answer = event.text
+            model_id = event.model_id
         elif isinstance(event, ApprovalRequired):
             parked = event
         elif isinstance(event, Failed):

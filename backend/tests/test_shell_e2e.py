@@ -292,6 +292,57 @@ def test_a_task_can_be_created_edited_paused_and_deleted_from_the_screen(page):
     assert task_store.list_tasks() == []
 
 
+def test_a_task_built_through_the_screen_actually_runs(page, stub):
+    """The check the first version of this screen did not have, and the reason
+    it shipped broken: it wrote `action.prompt` where the engine reads
+    `action["text"]`, so every task it created was accepted happily and then
+    failed the moment it ran. Creating and editing a task proves nothing about
+    whether it works."""
+    from jarvis.scheduler import engine, task_store
+
+    page.goto(page.url.split("#")[0] + "#/tasks", wait_until="networkidle")
+    page.click("[data-testid=new-task]")
+    page.fill("[data-testid=task-title]", "Daily nudge")
+    page.fill("[data-testid=task-prompt]", "remind me to stretch")
+    page.click("[data-testid=modal] >> text=Save")
+    page.wait_for_selector("[data-testid=task-row]")
+
+    stub.says("Time to stretch.")
+    [task] = task_store.list_tasks()
+    run = engine.run_task_now(task["id"])
+
+    assert run["ok"] is True, run.get("error")
+    assert "stretch" in run["summary"].lower()
+
+
+def test_the_model_picker_offers_auto_and_every_real_model(page, stub):
+    """Auto is the default and always first. A pinned model is saved on the
+    task, and the run history reports which model actually answered — which can
+    differ, since the gateway treats a pin as an ordering."""
+    from jarvis.scheduler import engine, task_store
+
+    page.goto(page.url.split("#")[0] + "#/tasks", wait_until="networkidle")
+    page.click("[data-testid=new-task]")
+    page.wait_for_selector("[data-testid=task-model]")
+
+    options = page.locator("[data-testid=task-model] option")
+    assert options.count() >= 2, "the stub model never reached the picker"
+    assert "Auto" in options.nth(0).inner_text()
+
+    pinned = options.nth(1).get_attribute("value")
+    page.select_option("[data-testid=task-model]", pinned)
+    page.fill("[data-testid=task-prompt]", "say something")
+    page.click("[data-testid=modal] >> text=Save")
+    page.wait_for_selector("[data-testid=task-row]")
+
+    [task] = task_store.list_tasks()
+    assert task["action"]["modelId"] == pinned
+
+    stub.says("Something.")
+    run = engine.run_task_now(task["id"])
+    assert run["ok"] is True and run["modelId"] == pinned
+
+
 def test_an_approval_in_the_transcript_is_a_real_control(page, stub):
     """The one place a static display is not merely unhelpful but wrong: the run
     is stopped, waiting for this answer."""

@@ -198,7 +198,7 @@ def test_an_attached_image_reaches_the_transcript_and_the_model_requirement():
     seen: dict[str, object] = {}
 
     class Model:
-        def stream(self, *, messages, system, tools, session_id, need=None):
+        def stream(self, *, messages, system, tools, session_id, need=None, model_id=None):
             seen["need"] = need
             seen["media"] = messages[-1].get("media")
             yield StepComplete(text="A cat.", model_id="stub")

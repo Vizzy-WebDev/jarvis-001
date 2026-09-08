@@ -62,6 +62,20 @@ VOLATILE_KEYS = {
 
 PLACEHOLDER = "<normalised>"
 
+# The recorder (tools/record/proxy.mjs) scrubs any NON-EMPTY STRING under a key
+# whose name looks credential-bearing before it ever reaches a fixture file —
+# fixtures are committed, secrets are not. That rule is reproduced here, applied
+# to BOTH sides, because a value the recording deliberately does not carry
+# cannot be compared: without this, a perfectly correct `keyHint` string is
+# compared against the literal text "<redacted>" and fails. Presence, position
+# and type are still compared; only the string's content is out of reach.
+#
+# Non-strings are untouched, exactly as the recorder leaves them: `keyRequired`
+# matches this pattern by name and is a boolean, and its VALUE is genuinely part
+# of the contract.
+SECRET_KEY_RE = re.compile(r"(key|token|secret|password|authorization|apikey)", re.I)
+RECORDER_REDACTED = "<redacted>"
+
 
 class Normaliser:
     """Applies the rules above, counting every substitution it makes."""
@@ -82,6 +96,9 @@ class Normaliser:
                 child = f"{path}.{key}" if path else key
                 if key in VOLATILE_KEYS and not isinstance(val, (dict, list)):
                     out[key] = self._mark(child)
+                elif SECRET_KEY_RE.search(key) and isinstance(val, str) and val:
+                    self._mark(child)
+                    out[key] = RECORDER_REDACTED
                 else:
                     out[key] = self.body(val, child)
             return out

@@ -131,6 +131,11 @@ class Failed:
 class Done:
     text: str
     steps: int
+    #: Which model actually answered. A scheduled task's run history reports it,
+    #: and it is the honest way to tell a pin that was honoured from one that
+    #: silently fell back — the gateway treats a pin as an ordering, not a
+    #: requirement, so a deleted pinned model degrades instead of breaking.
+    model_id: str | None = None
 
 
 TurnEvent = Routed | Chunk | ToolRan | ApprovalRequired | Switched | Interrupted | Failed | Done
@@ -166,6 +171,11 @@ class TurnRequest:
     #: An allowlist for restricted work (a job kind, a scheduled task's
     #: connectors). Enforced in the policy layer, not here.
     allowed_names: frozenset[str] | None = None
+    #: A one-off model pin — a scheduled task naming the model it wants. The
+    #: gateway honours it by ORDER, not exclusion (`gateway/routing.py`), so a
+    #: task pinned to a model that has since been deleted quietly falls back to
+    #: the usual ranking instead of breaking.
+    model_id: str | None = None
     grants: list[Grant] | None = None
     #: Upload ids attached to this turn. Ids, never paths: what arrives from the
     #: browser is untrusted, and resolving one is the upload store's job.
@@ -369,6 +379,7 @@ class Orchestrator:
                 for event in self._model.stream(
                     messages=assembled.messages, system=assembled.system,
                     tools=tools, session_id=request.session_id,
+                    model_id=request.model_id,
                     need=needs or None,
                 ):
                     if cancel.is_set():
@@ -414,7 +425,7 @@ class Orchestrator:
                      "toolNames": list(tools_used)},
                 )
                 self._finish(state, request)
-                yield Done(reply, steps=step)
+                yield Done(reply, steps=step, model_id=completed.model_id)
                 return
 
             conversation.push_assistant_tool_calls(

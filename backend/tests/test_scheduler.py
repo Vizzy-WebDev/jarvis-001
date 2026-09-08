@@ -324,3 +324,98 @@ def test_a_scheduled_task_may_do_ordinary_work_but_never_a_high_risk_action(scra
         assembly.reset_for_tests()
         availability.reset_for_tests()
         conversation.reset_for_tests()
+
+
+# --- what a task is allowed to use, and which model answers -------------------
+
+def test_a_task_with_no_connectors_is_not_restricted_at_all():
+    """The default has to stay exactly what it was: every ability, no fence."""
+    assert engine._allowed_names({"type": "prompt", "text": "hello"}) is None
+    assert engine._allowed_names({"type": "prompt", "connectors": []}) is None
+
+
+def test_choosing_connectors_adds_them_to_the_built_in_abilities(monkeypatch):
+    """Picking a connector for a task means "let it use this too", never
+    "restrict it to only this" — so every built-in survives, and the connectors
+    NOT chosen are the only thing excluded."""
+    from jarvis.capabilities import CapabilityKind, CapabilitySpec
+    from jarvis.capabilities import CapabilityRegistry as Reg
+
+    registry = Reg()
+    registry.register(CapabilitySpec(
+        id="builtin.get_time", name="get_time", description="the time",
+        input_schema={"type": "object", "properties": {}}, risk=Risk.LOW,
+        handler=lambda **kw: "now"))
+    for name in ("gmail__send", "drive__list"):
+        registry.register(CapabilitySpec(
+            id=f"connector.x.{name}", name=name, description=name,
+            input_schema={"type": "object", "properties": {}}, risk=Risk.LOW,
+            handler=lambda **kw: None, kind=CapabilityKind.CONNECTOR))
+
+    monkeypatch.setattr("jarvis.assembly.get_registry", lambda: registry)
+    monkeypatch.setattr("jarvis.connectors.capabilities.tool_names_for",
+                        lambda cid: {"gmail": ["gmail__send"], "drive": ["drive__list"]}.get(cid, []))
+
+    allowed = engine._allowed_names({"type": "prompt", "connectors": ["gmail"]})
+    assert "get_time" in allowed, "a built-in was fenced out by picking a connector"
+    assert "gmail__send" in allowed
+    assert "drive__list" not in allowed, "a connector nobody picked came along anyway"
+
+
+def test_a_connectors_tool_list_is_resolved_at_run_time_not_saved(monkeypatch):
+    """A connector's tools change when it is reconnected. The task saves IDS, so
+    what it may call is whatever that connector can do TODAY."""
+    from jarvis.capabilities import CapabilityRegistry as Reg
+
+    monkeypatch.setattr("jarvis.assembly.get_registry", lambda: Reg())
+    tools = ["gmail__send"]
+    monkeypatch.setattr("jarvis.connectors.capabilities.tool_names_for", lambda cid: list(tools))
+
+    action = {"type": "prompt", "connectors": ["gmail"]}
+    assert engine._allowed_names(action) == frozenset({"gmail__send"})
+
+    tools.append("gmail__search")  # the connector was refreshed since
+    assert engine._allowed_names(action) == frozenset({"gmail__send", "gmail__search"})
+
+
+def test_an_explicit_tool_list_still_wins_outright():
+    assert engine._allowed_names({"tools": ["get_time"], "connectors": ["gmail"]}) \
+        == frozenset({"get_time"})
+
+
+def test_a_pinned_model_reaches_the_gateway_and_the_run_says_which_one_answered(monkeypatch):
+    """The pin is an ORDERING, not a requirement — `gateway/routing.py` puts it
+    first and falls through if it fails — so what the run history must report is
+    the model that actually answered, not the one that was asked for."""
+    from jarvis.orchestrator import Done
+
+    seen = {}
+
+    class FakeOrchestrator:
+        def run_turn(self, request):
+            seen["model_id"] = request.model_id
+            seen["allowed"] = request.allowed_names
+            yield Done("all done", steps=1, model_id="the-one-that-answered")
+
+    monkeypatch.setattr("jarvis.assembly.get_orchestrator", lambda: FakeOrchestrator())
+
+    result = engine._run_prompt({"id": "t1", "title": "x"},
+                                {"type": "prompt", "text": "do it", "modelId": "my-pick"})
+    assert seen["model_id"] == "my-pick"
+    assert result["ok"] is True
+    assert result["modelId"] == "the-one-that-answered"
+
+
+def test_a_task_with_no_pin_asks_for_no_particular_model(monkeypatch):
+    from jarvis.orchestrator import Done
+
+    seen = {}
+
+    class FakeOrchestrator:
+        def run_turn(self, request):
+            seen["model_id"] = request.model_id
+            yield Done("fine", steps=1)
+
+    monkeypatch.setattr("jarvis.assembly.get_orchestrator", lambda: FakeOrchestrator())
+    engine._run_prompt({"id": "t1", "title": "x"}, {"type": "prompt", "text": "do it"})
+    assert seen["model_id"] is None

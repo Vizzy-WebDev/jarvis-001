@@ -238,8 +238,70 @@ export interface Connector {
   description: string | null;
   enabled: boolean;
   status: { state: string; checkedAt: string | null; detail: string | null };
+  source?: { type: 'catalog' | 'user'; id?: string };
+  /** Present once resolved server-side — a real, current logo, not a
+   *  hand-drawn mark. Absent while nothing has resolved yet. */
+  iconDataUri?: string | null;
   config: { hasSecret: boolean };
   [key: string]: unknown;
+}
+
+export interface ConnectorTool {
+  name: string;
+  description: string;
+  /** Whether using this tool pauses to ask, independent of the standing
+   *  per-tool permission — informational only, matches what actually
+   *  happens at runtime. */
+  confirms: boolean;
+}
+
+export interface ConnectFlow {
+  kind: string;
+  guide?: {
+    consoleLabel: string;
+    note?: string;
+    steps: string[];
+  } | null;
+  [key: string]: unknown;
+}
+
+/** One entry in the bundled directory of apps known to work — every entry
+ *  gets one uniform Connect button, no "ready"/"needs setup" badge. */
+export interface CatalogEntry {
+  id: string;
+  label: string;
+  icon: string;
+  description: string;
+  connectFlow: ConnectFlow;
+  /** Filled in only once the user has actually clicked into this entry at
+   *  least once. */
+  connectorId: string | null;
+  status: string | null;
+  iconDataUri: string | null;
+}
+
+export interface ConnectorConnectOutcome {
+  ok: true;
+  connectorId: string;
+  /** No authorization was needed at all — the connector is already usable,
+   *  no browser tab was opened. */
+  noAuthNeeded?: true;
+  /** Open this in a browser to finish signing in. */
+  authUrl?: string;
+  /** Automatic client registration failed or isn't supported — the guided
+   *  Client ID/Secret form is what's needed next. */
+  needsManualClient?: true;
+  reason?: string;
+  detail?: string;
+  message?: string;
+}
+
+export interface SandboxStatus {
+  backend: 'wsl' | 'restricted';
+  isolation: 'strong' | 'weak';
+  distro: string | null;
+  detectedWindowsSandbox: boolean;
+  setupSteps: string[];
 }
 
 export interface Provider {

@@ -265,6 +265,20 @@ async def create(body: dict):
                                         config=body.get("config") or {})
     except ValueError as err:
         return JSONResponse({"ok": False, "error": str(err)}, status_code=400)
+
+    # An API connector's key, saved server-side under a fresh ref immediately
+    # — it never sits in config as plain JSON, and it's never echoed back
+    # (_public() strips it down to hasSecret). Optional and separate from
+    # `config` on purpose: a raw secret has no business riding inside a
+    # generic config object a PATCH could otherwise echo back verbatim.
+    api_key = body.get("apiKey")
+    if api_key:
+        from ..config import save_secret
+
+        ref = f"conn_{connector['id']}"
+        save_secret(ref, str(api_key))
+        connector = store.update_connector(connector["id"], {"config": {"secretRef": ref}})
+
     _sync()
     return {"ok": True, "connector": _public(connector)}
 
@@ -279,6 +293,12 @@ async def update(connector_id: str, body: dict):
         patch["enabled"] = bool(body["enabled"])
     if "label" in body:
         patch["label"] = str(body["label"])
+    # A generic config patch — e.g. an API connector's specUrl before a
+    # refresh, or a CLI connector's reviewed command list. Merges one level
+    # deep (store.py's update_connector), so this never has to resend a
+    # stored secretRef or an already-cached tool list alongside it.
+    if isinstance(body.get("config"), dict):
+        patch["config"] = body["config"]
     if patch:
         store.update_connector(connector_id, patch)
 

@@ -8,9 +8,12 @@ import type {
   Approval,
   BriefingConfig,
   BriefingPreview,
+  CatalogEntry,
   Change,
   ConnectionEntry,
   Connector,
+  ConnectorConnectOutcome,
+  ConnectorTool,
   DiscoveredModel,
   ExternalService,
   ConversationDetail,
@@ -39,6 +42,7 @@ import type {
   ProbeResult,
   Provider,
   RecheckPreview,
+  SandboxStatus,
   VoiceOptions,
   Status,
   Task,
@@ -221,6 +225,73 @@ export const api = {
 
   connectors: {
     list: () => request<{ connectors: Connector[] }>('/connectors'),
+    open: (id: string) =>
+      request<{ ok: true; connector: Connector; tools: ConnectorTool[] }>(
+        `/connectors/${encodeURIComponent(id)}`,
+      ),
+    /** Creates a Custom Connector — the one place a mechanism (mcp/api/cli)
+     *  is picked directly, since a custom connector's mechanism can't be
+     *  inferred the way a catalogue entry's can. */
+    create: (body: {
+      type: string; label: string; description?: string; config?: unknown; apiKey?: string;
+    }) =>
+      request<{ ok: true; connector: Connector }>('/connectors', { method: 'POST', ...json(body) }),
+    update: (id: string, patch: {
+      enabled?: boolean; label?: string; toolPermissions?: Record<string, string>;
+      config?: Record<string, unknown>;
+    }) =>
+      request<{ ok: true; connector: Connector }>(`/connectors/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        ...json(patch),
+      }),
+    refresh: (id: string) =>
+      request<{ ok: true; tools: number; connector: Connector }>(
+        `/connectors/${encodeURIComponent(id)}/refresh`,
+        { method: 'POST' },
+      ),
+    remove: (id: string) =>
+      request<{ ok: true }>(`/connectors/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+    /** The Official Connectors directory — one uniform Connect button per
+     *  entry, no "ready"/"needs setup" badge. */
+    catalog: () => request<{ catalog: CatalogEntry[] }>('/connectors/catalog'),
+    /** Creates (or finds) the underlying connector record for a catalogue
+     *  entry — called once, the first time its detail view opens. */
+    ensure: (catalogId: string) =>
+      request<{ ok: true; connectorId: string }>(
+        `/connectors/catalog/${encodeURIComponent(catalogId)}/ensure`,
+        { method: 'POST' },
+      ),
+    /** The shared Client ID/Secret for a catalogue entry — registered once,
+     *  reused by every connector that entry ever creates. */
+    registerClient: (catalogId: string, clientId: string, clientSecret?: string) =>
+      request<{ ok: true }>(
+        `/connectors/catalog/${encodeURIComponent(catalogId)}/register-client`,
+        { method: 'POST', ...json({ clientId, clientSecret }) },
+      ),
+    deregisterClient: (catalogId: string) =>
+      request<{ ok: true }>(
+        `/connectors/catalog/${encodeURIComponent(catalogId)}/register-client`,
+        { method: 'DELETE' },
+      ),
+    oauthRedirectUri: () => request<{ uri: string }>('/connectors/oauth/redirect-uri'),
+    /** Starts (or restarts) an mcp connector's OAuth flow. `clientId`/
+     *  `clientSecret` are the guided-setup form's fields — omit both to
+     *  attempt Dynamic Client Registration first. */
+    connect: (id: string, manual?: { clientId?: string; clientSecret?: string }) =>
+      request<ConnectorConnectOutcome>(`/connectors/${encodeURIComponent(id)}/connect`, {
+        method: 'POST',
+        ...json(manual ?? {}),
+      }),
+    disconnect: (id: string) =>
+      request<{ ok: true; connector: Connector }>(
+        `/connectors/${encodeURIComponent(id)}/disconnect`,
+        { method: 'POST' },
+      ),
+  },
+
+  sandbox: {
+    status: () => request<SandboxStatus>('/sandbox/status'),
   },
 
   tasks: {

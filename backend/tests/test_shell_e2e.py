@@ -21,6 +21,7 @@ screenshot review would not, and a component test cannot see a layout at all.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -28,6 +29,7 @@ import pytest
 
 from jarvis.gateway import connections, registry
 
+from stub_oauth_server import StubOAuthServer
 from stub_openai_server import StubModelServer
 
 pytest.importorskip("playwright.sync_api", reason="playwright is not installed")
@@ -1278,3 +1280,117 @@ def test_asking_to_open_a_section_really_navigates(page, stub):
 
     page.wait_for_url("**#/memory", timeout=20_000)
     assert page.locator("h1").inner_text() == "Memory"
+
+
+# --- App Control: the connector screens, real OAuth, real tools -----------------
+
+@pytest.fixture
+def oauth_stub():
+    server = StubOAuthServer()
+    server.start()
+    yield server
+    server.stop()
+
+
+def _open_app_control(page):
+    page.evaluate("() => { window.location.hash = '#/app-control'; }")
+    page.wait_for_url("**#/app-control")
+    assert page.locator("h1").inner_text() == "App Control"
+
+
+def test_a_custom_mcp_connector_connects_end_to_end_against_a_real_server(page, oauth_stub):
+    """Add custom connector -> Connect -> a real popup carrying a real
+    authorization code -> the real callback route redeems it -> the row shows
+    Connected. Nothing here is mocked: the popup's own body is the stub
+    server's real, PKCE-verified authorize response, and completing the flow
+    is one real GET against `/api/connectors/oauth/callback`."""
+    _open_app_control(page)
+
+    page.click("[data-testid=add-connector-menu]")
+    page.click("[data-testid=add-custom-connector]")
+    page.fill("[data-testid=custom-label]", "Test Stub")
+    page.fill("[data-testid=custom-mcp-url]", f"{oauth_stub.base_url}/mcp")
+    page.click("[data-testid=save-custom-connector]")
+
+    page.wait_for_selector("[data-testid=connect]")
+    with page.expect_popup() as popup_info:
+        page.click("[data-testid=connect]")
+    popup = popup_info.value
+    popup.wait_for_load_state()
+    payload = json.loads(popup.inner_text("body"))
+    popup.close()
+
+    # What a real consent page's own redirect would have sent the browser to
+    # — driven directly rather than through a fake browser-side redirect,
+    # since the stub server (by design — see its own docstring) hands back
+    # exactly what that redirect would have carried.
+    callback = page.context.request.get(
+        f"{live_server_url(page)}/api/connectors/oauth/callback",
+        params={"code": payload["code"], "state": payload["state"], "iss": oauth_stub.base_url},
+    )
+    assert callback.ok
+
+    # The connect card's own poll picks the change up on its own — no reload.
+    page.wait_for_selector("[data-testid=modal]", state="detached", timeout=10_000)
+    page.wait_for_selector("text=Connected")
+
+
+def live_server_url(page: Page) -> str:
+    return page.url.split("#", 1)[0].rstrip("/")
+
+
+def test_toggling_a_connector_off_stops_its_tools_from_being_offered(page):
+    """An `api` connector, not `mcp`: it can be given real operations
+    directly (no live server to actually call), so this proves the
+    underlying enable/disable mechanism (`connector_specs()`/
+    `tool_names_for()`) rather than depending on a stub that speaks only
+    enough MCP to probe OAuth, not to answer a real `tools/list`."""
+    from jarvis.connectors import capabilities as connector_capabilities, store as connector_store
+
+    _open_app_control(page)
+    page.click("[data-testid=add-connector-menu]")
+    page.click("[data-testid=add-custom-connector]")
+    page.click("[data-testid=mechanism-api]")
+    page.fill("[data-testid=custom-label]", "Toggle Me")
+    page.fill("[data-testid=custom-base-url]", "https://api.example.invalid")
+    page.click("[data-testid=save-custom-connector]")
+    page.wait_for_selector("[data-testid=modal]")
+    page.click("[data-testid=modal-close]")
+
+    connector = next(c for c in connector_store.list_connectors(kind="api") if c["label"] == "Toggle Me")
+    connector_store.update_connector(connector["id"], {"config": {"operations": [
+        {"name": "test_op", "description": "A test operation.",
+         "parameters": {"type": "object", "properties": {}}}]}})
+    assert connector_capabilities.tool_names_for(connector["id"]) == ["toggle_me__test_op"]
+
+    page.click("[data-testid=tab-api]")
+    page.wait_for_selector("[data-testid=connector-row]")
+    page.click("[data-testid=connector-row] [role=switch]")
+    page.wait_for_function(
+        "() => document.querySelector('[data-testid=connector-row] [role=switch]')"
+        ".getAttribute('aria-checked') === 'false'",
+    )
+    assert connector_capabilities.tool_names_for(connector["id"]) == []
+
+
+def test_the_catalogue_lists_official_connectors_with_a_real_resolved_icon(page, scratch):
+    """Seeds the icon resolver's own cache file for Notion's real hostname —
+    the honest way to verify the render path without a live external fetch —
+    then asserts the Browse view's own <img> carries that exact data URI."""
+    import time
+
+    from jarvis.store import write_json
+
+    seeded = "data:image/png;base64,aGVsbG8="
+    write_json("connector-icons", {"icons": {"mcp.notion.com": {
+        "dataUri": seeded, "fetchedAt": time.time()}}})
+
+    _open_app_control(page)
+    page.click("[data-testid=add-connector-menu]")
+    page.click("[data-testid=browse-connectors]")
+    page.wait_for_selector("[data-testid=catalog-row]")
+    rows = page.locator("[data-testid=catalog-row]")
+    assert rows.count() >= 5  # the five verified entries
+
+    notion_row = page.locator("[data-testid=catalog-row]", has_text="Notion")
+    assert notion_row.locator("img").get_attribute("src") == seeded

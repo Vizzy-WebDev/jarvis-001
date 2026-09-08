@@ -42,7 +42,7 @@ export const SECTIONS: Section[] = [
     blurb: 'The models Jarvis can think with, and the keys they need.' },
   { id: 'skills', label: 'Skills', group: 'Abilities', ready: true,
     blurb: 'Folders of instructions Jarvis can follow.' },
-  { id: 'app-control', label: 'App Control', group: 'Abilities', ready: false,
+  { id: 'app-control', label: 'App Control', group: 'Abilities', ready: true,
     blurb: 'The apps and services Jarvis is connected to.' },
   { id: 'tasks', label: 'Scheduled Tasks', group: 'Automation', ready: true,
     blurb: 'Work that runs on a clock.' },

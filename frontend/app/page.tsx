@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { ConversationPanel } from '@/components/conversation/ConversationPanel';
 import { attachmentOf, type Turn } from '@/components/conversation/Message';
+import { AppControlScreen } from '@/components/screens/AppControlScreen';
 import { BriefingScreen } from '@/components/screens/BriefingScreen';
 import { ChatHistoryScreen } from '@/components/screens/ChatHistoryScreen';
 import { GenericScreen, NotPortedYet } from '@/components/screens/GenericScreen';
@@ -523,6 +524,7 @@ function screenFor(id: string, go: (id: string) => void): React.ReactNode {
   if (id === 'briefing') return <BriefingScreen onNavigate={go} />;
   if (id === 'skills') return <SkillsScreen />;
   if (id === 'chat-history') return <ChatHistoryScreen onNavigate={go} />;
+  if (id === 'app-control') return <AppControlScreen />;
   return null;
 }
 

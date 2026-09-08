@@ -32,7 +32,7 @@ name = "anthropic"
 
 MAX_TOKENS = 4096
 REQUEST_TIMEOUT_S = 120.0
-CAPABILITIES = {"video": False, "audio": False, "vision": True, "webSearch": False}
+CAPABILITIES = {"video": False, "audio": False, "vision": True, "webSearch": False, "realtime": False}
 
 
 

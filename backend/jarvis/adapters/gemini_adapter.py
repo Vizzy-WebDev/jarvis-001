@@ -30,7 +30,7 @@ name = "gemini"
 
 #: Gemini is the only adapter here that implements video, audio and web search.
 #: Seeds a model's caps; does not gate what a model may be asked to do.
-CAPABILITIES = {"video": True, "audio": True, "vision": True, "webSearch": True}
+CAPABILITIES = {"video": True, "audio": True, "vision": True, "webSearch": True, "realtime": True}
 
 
 class NoApiKey(AdapterError):

@@ -40,7 +40,7 @@ KEY_REQUIRED_HOSTS = re.compile(r"openai\.com|openrouter\.ai|groq\.com|together\
 #: The ceiling of this wire format — a seed for a model's own caps, not a gate.
 #: `webSearch` is false because it is not wired up here; claiming a capability
 #: that is not implemented is worse than not having it (§45).
-CAPABILITIES = {"video": False, "audio": False, "vision": True, "webSearch": False}
+CAPABILITIES = {"video": False, "audio": False, "vision": True, "webSearch": False, "realtime": False}
 
 #: A provider that never answers must not hang the turn forever.
 REQUEST_TIMEOUT_S = 120.0

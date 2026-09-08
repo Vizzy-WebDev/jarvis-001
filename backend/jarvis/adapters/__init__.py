@@ -30,5 +30,6 @@ def get_capabilities(adapter_name: str | None) -> dict[str, bool]:
     """An adapter that declares nothing is treated as text-only."""
     adapter = ADAPTERS.get(adapter_name or "")
     if adapter is None:
-        return {"video": False, "audio": False, "vision": False, "webSearch": False}
+        return {"video": False, "audio": False, "vision": False, "webSearch": False,
+                "realtime": False}
     return dict(getattr(adapter, "CAPABILITIES", {}))

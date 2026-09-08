@@ -21,6 +21,7 @@ from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse, Response
 
 from .. import stt, tts
+from ..voice import options as voice_options
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,17 @@ def speak(body: dict[str, Any] = Body(default_factory=dict)):
     if not chunks:
         return JSONResponse({"error": "That voice returned no audio."}, status_code=500)
     return Response(content=b"".join(chunks), media_type=mime)
+
+
+@router.get("/voice/options")
+def options() -> dict[str, Any]:
+    """Everything a voice picker needs, in one read.
+
+    Every entry is computed from real state — a connected model's declared
+    capabilities, a configured key — never from a provider name this code
+    recognises. See `jarvis/voice.py`.
+    """
+    return voice_options.status()
 
 
 @router.get("/stt/status")

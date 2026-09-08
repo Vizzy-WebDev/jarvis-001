@@ -89,8 +89,17 @@ def scratch(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
     monkeypatch.setenv("JARVIS_DATA_DIR", str(data_dir))
     monkeypatch.setenv("JARVIS_ENV_PATH", str(env_path))
+    from jarvis import config as config_module
+
     # A key inherited from the real environment would mask a file-read bug.
     for var in ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    # `save_secret` writes the .env file AND os.environ, so a secret saved by one
+    # test is still in the process for the next one — a scratch .env alone does
+    # NOT isolate them. Found by a test that added a service, was refused for
+    # colliding with a name the previous test had used, and reported the wrong
+    # cause. Cleared here rather than in each test that happens to notice.
+    for var in [name for name in os.environ if name.startswith(config_module.SECRET_PREFIX)]:
         monkeypatch.delenv(var, raising=False)
 
     from jarvis import db as db_module

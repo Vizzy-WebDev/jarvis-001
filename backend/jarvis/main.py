@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .routes import (
     approvals, artifacts, connectors, control, conversations, core, events,
-    models, notifications, skills, tasks, turn, uploads, voice,
+    external_services, models, notifications, skills, tasks, turn, uploads, voice,
 )
 
 # The built Next.js export. Absent during early migration, when the front end is
@@ -54,7 +54,9 @@ def create_app() -> FastAPI:
     app.include_router(skills.router)
     app.include_router(connectors.router)
     app.include_router(control.router)
+    app.include_router(external_services.router)
     app.include_router(models.router)
+    app.include_router(models.connections_router)
     app.include_router(notifications.router)
     app.include_router(tasks.router)
 

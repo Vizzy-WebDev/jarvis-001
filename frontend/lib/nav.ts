@@ -38,7 +38,7 @@ export const SECTIONS: Section[] = [
     blurb: 'Everything Jarvis has told you, including while you were away.' },
   { id: 'chat-history', label: 'Chat History', group: 'Assistant', ready: false,
     blurb: 'Every past conversation, searchable.' },
-  { id: 'models', label: 'Model Settings', group: 'Brain', ready: false,
+  { id: 'models', label: 'Model Settings', group: 'Brain', ready: true,
     blurb: 'The models Jarvis can think with, and the keys they need.' },
   { id: 'skills', label: 'Skills', group: 'Abilities', ready: false,
     blurb: 'Folders of instructions Jarvis can follow.' },

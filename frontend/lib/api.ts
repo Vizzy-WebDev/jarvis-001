@@ -8,12 +8,17 @@ import type {
   Approval,
   ConnectionEntry,
   Connector,
+  DiscoveredModel,
+  ExternalService,
   ConversationDetail,
   ConversationList,
   Notification,
   Prefs,
   ModelEntry,
   ModelHealth,
+  ProbeResult,
+  Provider,
+  RecheckPreview,
   Status,
   Task,
   TaskRun,
@@ -116,6 +121,74 @@ export const api = {
       request<{ connections: ConnectionEntry[]; models: ModelEntry[]; health: ModelHealth }>(
         '/models',
       ),
+    providers: () => request<{ providers: Provider[] }>('/models/providers'),
+    add: (connectionId: string, models: (string | Partial<DiscoveredModel>)[]) =>
+      request<{ ok: true; added: ModelEntry[]; failed: { model: string; error: string }[] }>(
+        '/models',
+        { method: 'POST', ...json({ connectionId, models }) },
+      ),
+    update: (id: string, patch: Record<string, unknown>) =>
+      request<{ ok: true; model: ModelEntry }>(`/models/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        ...json(patch),
+      }),
+    remove: (id: string) =>
+      request<{ ok: true }>(`/models/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    test: (id: string) =>
+      request<{ ok: boolean; error?: string }>(`/models/${encodeURIComponent(id)}/test`, {
+        method: 'POST',
+      }),
+    recheckPreview: () => request<RecheckPreview>('/models/recheck/preview'),
+    recheck: (scope: 'all' | 'not_working') =>
+      request<{ ok: true; models: ModelEntry[] }>('/models/recheck', {
+        method: 'POST',
+        ...json({ scope }),
+      }),
+  },
+
+  connections: {
+    /** A key goes in here and never comes back out on any route. */
+    add: (body: Record<string, unknown>) =>
+      request<{
+        ok: true; connection: ConnectionEntry; added: ModelEntry[];
+        failed: { model: string; error: string }[]; steps: string[] | null;
+      }>('/connections', { method: 'POST', ...json(body) }),
+    probe: (baseUrl: string, secret?: string) =>
+      request<ProbeResult>('/connections/probe', { method: 'POST', ...json({ baseUrl, secret }) }),
+    discover: (body: { adapter?: string; baseUrl?: string; secret?: string; connectionId?: string }) =>
+      request<{ models: DiscoveredModel[]; error: string | null }>('/connections/discover', {
+        method: 'POST',
+        ...json(body),
+      }),
+    update: (id: string, patch: { label?: string; baseUrl?: string; secret?: string }) =>
+      request<{ ok: true; connection: ConnectionEntry }>(`/connections/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        ...json(patch),
+      }),
+    remove: (id: string) =>
+      request<{ ok: true; removedModels: number }>(`/connections/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      }),
+  },
+
+  externalServices: {
+    list: () => request<{ services: ExternalService[] }>('/external-services'),
+    add: (body: { label: string; key: string; extraFieldLabel?: string; extraFieldValue?: string }) =>
+      request<{ ok: true; service: ExternalService }>('/external-services', {
+        method: 'POST',
+        ...json(body),
+      }),
+    update: (ref: string, body: { key: string; extraFieldLabel?: string; extraFieldValue?: string }) =>
+      request<{ ok: true; service: ExternalService }>(
+        `/external-services/${encodeURIComponent(ref)}`,
+        { method: 'POST', ...json(body) },
+      ),
+    clearKey: (ref: string) =>
+      request<{ ok: true }>(`/external-services/${encodeURIComponent(ref)}`, { method: 'DELETE' }),
+    remove: (ref: string) =>
+      request<{ ok: true }>(`/external-services/${encodeURIComponent(ref)}/full`, {
+        method: 'DELETE',
+      }),
   },
 
   connectors: {

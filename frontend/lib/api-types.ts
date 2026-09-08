@@ -237,3 +237,53 @@ export interface Connector {
   config: { hasSecret: boolean };
   [key: string]: unknown;
 }
+
+export interface Provider {
+  id: string;
+  label: string;
+  icon: string;
+  iconBg: string;
+  baseUrl: string | null;
+  urlEditable: boolean;
+  keyRequired: boolean;
+  kind: string;
+  suggestions?: string[];
+  keyHint?: string;
+}
+
+/** One model a server says it has, before anything is added. */
+export interface DiscoveredModel {
+  model: string;
+  label: string;
+  contextTokens: number | null;
+  billing: string | null;
+}
+
+/** What a probe tried, and what it found. `steps` is the point: a failure that
+ *  cannot be explained is the exact problem this flow was built to fix. */
+export interface ProbeResult {
+  ok: boolean;
+  steps: string[];
+  adapter: string | null;
+  baseUrl: string | null;
+  kind: string | null;
+  keyRequired: boolean | null;
+  models: DiscoveredModel[];
+  error: string | null;
+  needsKey: boolean;
+}
+
+export interface ExternalService {
+  ref: string;
+  label: string;
+  configured: boolean;
+  extraFieldLabel: string | null;
+  extraFieldConfigured: boolean;
+}
+
+export interface RecheckPreview {
+  total: number;
+  notWorking: number;
+  byConnection: { id: string; label: string; count: number;
+                  isFreeTier: boolean | null; remaining: number | null }[];
+}

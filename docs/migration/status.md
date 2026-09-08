@@ -48,11 +48,12 @@ consequential chat answers built, behind a preference, default off.
 | Front end — S1.5: composer shape · Notifications · Scheduled Tasks · live approvals | **Done** — see below |
 | Front end — S1.6: the task editor's connectors + model pickers | **Done** — see below |
 | Front end — S1.7: a real connector picker (icons, dropdown, see-more) | **Done** — see below |
-| Front end — S2 models/keys · S3 voice · S4 the rest of About You + Automation · S5 Abilities | Not started |
+| Front end — S2: models, connections and keys | **Done** — see below |
+| Front end — S3 voice · S4 the rest of About You + Automation · S5 Abilities · S6 cutover | Not started |
 | The 15 acceptance tests (§51) | Not started |
 | Cutover | Not started |
 
-`cd backend && python -m pytest tests -q` → **1077 passed, 23 skipped.** The
+`cd backend && python -m pytest tests -q` → **1108 passed, 21 skipped.** The
 skips are contract fixtures for routes not ported yet, so the suite doubles as a
 progress meter.
 
@@ -222,6 +223,45 @@ plug repeated down a list stops it looking like a picker at all.
 `components/ui/Popover.tsx` positions itself `fixed` from the trigger's measured
 rect, because these pickers live inside modals whose body scrolls and an
 absolutely-positioned panel is clipped by that scroll container.
+
+## The front end, S2 — models, connections and keys
+
+The front door: nothing in this app works until a model is added, and until now
+no route reached `config.save_secret()` at all — the third finding of the
+key/credential review, now closed.
+
+**A connection is the unit, not a model.** A connection owns an address and a
+key; several models share it. The screen groups by connection for the same
+reason, and removing one says how many models go with it before it happens.
+
+**The reachability rule is the part worth knowing.** Adding several models at
+once is NOT validated by generating with one of them: a gateway's model listing
+can succeed while one routed model's own upstream key or quota fails, and the
+original rejected a real, working connection over exactly one bad route among
+115 good ones. So one model asks the specific question (can THIS model produce a
+token); several prove the address and key by listing. Both paths are tested
+against a real stub over real HTTP.
+
+**Rechecking is rate-limited, and the limit is not cosmetic.** The unbounded
+version fired every enabled model's test at once and was confirmed live to have
+mass-banned a real roster — ten Gemini models stamped unreachable inside one
+150ms window, seven working the moment each was retried alone — and to burn half
+a day of a free tier in one click. Three at a time; the default scope skips
+anything already working; and a preview route says what a full check would cost
+before anyone presses it, making no model calls to answer.
+
+`jarvis/external_services.py` ports the generic key store: any service the user
+names, its key, and an optional second field. Adding over an existing name is a
+refusal rather than a silent overwrite — a real, confirmed bug in the original.
+Its live-test route is an honest 501 until the voice adapters land, because a
+green tick nobody earned is worse than no tick.
+
+**One test-isolation hole fixed on the way.** `config.save_secret()` writes the
+`.env` file AND `os.environ`, so a secret written by one test was still in the
+process for the next — a scratch `.env` alone does not isolate them. The
+`scratch` fixture now clears `JARVIS_SECRET_*`. Found by a test that was refused
+for colliding with a name a previous test had used, and reported the wrong
+cause.
 
 ## The three Node tools with no Python equivalent
 

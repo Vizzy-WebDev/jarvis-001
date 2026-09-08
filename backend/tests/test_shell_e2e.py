@@ -54,7 +54,7 @@ pytestmark = [
 def stub(scratch):
     """A model that answers, registered in the scratch data dir only."""
     server = StubModelServer()
-    base_url = server.start()
+    server.base_url = base_url = server.start()
     conn = connections.add_connection(adapter="openai-compatible", base_url=base_url,
                                       label="stub", provider="custom", kind="local",
                                       key_required=False)
@@ -457,3 +457,80 @@ def test_an_approval_in_the_transcript_is_a_real_control(page, stub):
     page.click("[data-testid=approve]")
     page.wait_for_selector("[data-testid=approval] >> text=You allowed this", timeout=15_000)
     assert ran, "allowing it did not actually run anything"
+
+
+# --- the models screen ---------------------------------------------------------
+
+def test_a_model_can_be_added_through_the_screen_and_then_answers(page, stub):
+    """The front door: nothing works until a model is added, so this walks the
+    real three steps — pick a provider, give the address, choose models — and
+    then proves the thing that was added can actually hold a conversation."""
+    from jarvis.gateway import registry
+
+    stub.models = [{"id": "alpha"}, {"id": "beta"}]
+
+    page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
+    page.click("[data-testid=add-model]")
+    page.click("[data-testid=provider-local]")
+    page.fill("[data-testid=base-url]", stub.base_url)
+    page.click("[data-testid=find-models]")
+
+    page.wait_for_selector("[data-testid=found-alpha]", timeout=15_000)
+    page.click("[data-testid=found-alpha]")
+    # Adding ONE model asks the specific question — can this model produce a
+    # token — so the stub needs something to answer with.
+    stub.says("ready")
+    page.click("[data-testid=add-models]")
+
+    page.wait_for_selector("[data-testid=connection-list] >> text=alpha", timeout=15_000)
+    # Beside the one the fixture already registered — "alpha" is the one this
+    # test actually added, through the real screen.
+    assert "alpha" in [m["model"] for m in registry.list_models()]
+
+    # And it is a real, usable model, not just a row: ask it something.
+    stub.says("Hello from alpha.")
+    page.goto(page.url.split("#")[0] + "#/", wait_until="networkidle")
+    page.fill("[data-testid=composer-input]", "are you there")
+    page.press("[data-testid=composer-input]", "Enter")
+    page.wait_for_selector("text=Hello from alpha.", timeout=15_000)
+
+
+def test_an_address_with_nothing_at_it_says_what_it_tried(page):
+    """The failure this whole flow was rebuilt for: one generic sentence with no
+    way to tell what went wrong."""
+    page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
+    page.click("[data-testid=add-model]")
+    page.click("[data-testid=provider-custom]")
+    page.fill("[data-testid=base-url]", "http://127.0.0.1:19999")
+    page.click("[data-testid=find-models]")
+
+    page.wait_for_selector("text=What Jarvis tried", timeout=20_000)
+    assert page.locator("[data-testid=modal]").inner_text().strip()
+
+
+def test_removing_a_connection_says_what_goes_with_it(page, stub):
+    from jarvis.gateway import registry
+
+    page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
+    page.wait_for_selector("[data-testid=connection-card]")
+    page.locator("[data-testid=connection-card]").first.get_by_text("Remove").click()
+
+    # The count is stated before it happens, not discovered afterwards.
+    assert "1 model" in page.locator("[data-testid=modal]").inner_text()
+    page.click("[data-testid=confirm-remove]")
+    page.wait_for_selector("[data-testid=connection-card]", state="detached")
+    assert registry.list_models() == []
+
+
+def test_a_service_key_is_saved_and_never_shown_again(page):
+    from jarvis import config
+
+    page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
+    page.click("[data-testid=add-service]")
+    page.fill("[data-testid=service-label]", "Deepgram")
+    page.fill("[data-testid=service-key]", "dg-secret-value-999")
+    page.click("[data-testid=save-service]")
+
+    page.wait_for_selector("[data-testid=service-list]")
+    assert config.get_secret("deepgram") == "dg-secret-value-999"
+    assert "dg-secret-value-999" not in page.content()

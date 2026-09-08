@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ConversationPanel } from '@/components/conversation/ConversationPanel';
 import { attachmentOf, type Turn } from '@/components/conversation/Message';
 import { GenericScreen, NotPortedYet } from '@/components/screens/GenericScreen';
+import { ModelsScreen } from '@/components/screens/ModelsScreen';
 import { NotificationsScreen } from '@/components/screens/NotificationsScreen';
 import { TasksScreen } from '@/components/screens/TasksScreen';
 import { Drawer } from '@/components/shell/Drawer';
@@ -302,6 +303,7 @@ export default function Home() {
  *  rather than a branch inside the render, so adding a screen is one line. */
 function screenFor(id: string, go: (id: string) => void): React.ReactNode {
   if (id === 'notifications') return <NotificationsScreen onNavigate={go} />;
+  if (id === 'models') return <ModelsScreen />;
   if (id === 'tasks') return <TasksScreen onNavigate={go} />;
   return null;
 }

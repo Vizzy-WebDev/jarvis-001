@@ -10,12 +10,15 @@ answers, and a green tick nobody earned is worse than no tick.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 
 from .. import external_services
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/external-services")
 
@@ -79,11 +82,33 @@ def test(ref: str, body: dict[str, Any] = Body(default_factory=dict)):
     before it is saved; otherwise whatever is already stored, so this doubles as
     "is this still valid" after a provider-side rotation.
 
-    No provider has a tester in this build yet — the speech and voice adapters
-    arrive with the voice wave — so this is honestly a 501 rather than a pass.
+    Two ways a tester is found, in this order. Deepgram by its exact ref, which
+    is safe because that ref is created once by this app's own migration and is
+    never user-typed. Then the voice seam's own dispatch, whose refs ARE whatever
+    the user typed — see `tts/matching.py` for why an exact-string map cannot
+    work for those.
+
+    A service nothing recognises gets an honest 501. "We could not check" and
+    "it works" are different answers, and a green tick nobody earned is worse
+    than no tick.
     """
+    from .. import stt, tts
+
     if external_services.get_service(ref) is None:
         return JSONResponse({"error": "Unknown service."}, status_code=404)
-    return JSONResponse(
-        {"ok": False, "error": "No live test is available for this service yet."},
-        status_code=501)
+
+    tester = (stt.test_key if ref == stt.REF else None) or tts.tester_for(ref)
+    if tester is None:
+        return JSONResponse(
+            {"ok": False, "error": "No live test is available for this service yet."},
+            status_code=501)
+
+    # The key in the body when one is given, so it can be tested before it is
+    # saved; otherwise whatever is stored, so this doubles as "is this still
+    # valid" after a provider-side rotation.
+    candidate = body.get("key") or external_services.get_key(ref) or ""
+    try:
+        return tester(str(candidate))
+    except Exception:  # noqa: BLE001 — an unreachable provider is an answer
+        logger.exception("live test failed for %s", ref)
+        return {"ok": False, "error": "That service could not be reached."}

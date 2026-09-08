@@ -103,9 +103,11 @@ def test_an_unknown_service_is_a_clean_404(client):
 
 
 def test_with_no_tester_the_answer_is_could_not_check_not_it_works(client):
-    """A green tick nobody earned is worse than no tick."""
-    client.post("/api/external-services", json={"label": "Deepgram", "key": "k"})
-    answer = client.post("/api/external-services/deepgram/test")
+    """A green tick nobody earned is worse than no tick. Deepgram and the voice
+    providers DO have real testers now (see test_voice_providers.py); anything
+    else still gets an honest 501."""
+    client.post("/api/external-services", json={"label": "Something Nobody Knows", "key": "k"})
+    answer = client.post("/api/external-services/something-nobody-knows/test")
     assert answer.status_code == 501
     assert answer.json()["ok"] is False
 

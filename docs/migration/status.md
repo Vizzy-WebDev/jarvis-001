@@ -49,11 +49,13 @@ consequential chat answers built, behind a preference, default off.
 | Front end — S1.6: the task editor's connectors + model pickers | **Done** — see below |
 | Front end — S1.7: a real connector picker (icons, dropdown, see-more) | **Done** — see below |
 | Front end — S2: models, connections and keys | **Done** — see below |
-| Front end — S3 voice · S4 the rest of About You + Automation · S5 Abilities · S6 cutover | Not started |
+| Voice — S3a: the TTS/STT provider seams and their routes | **Done** — see below |
+| Voice — S3b: Live proxy, duplex, and the three engines in TypeScript | Not started |
+| Front end — S4 the rest of About You + Automation · S5 Abilities · S6 cutover | Not started |
 | The 15 acceptance tests (§51) | Not started |
 | Cutover | Not started |
 
-`cd backend && python -m pytest tests -q` → **1108 passed, 21 skipped.** The
+`cd backend && python -m pytest tests -q` → **1139 passed, 19 skipped.** The
 skips are contract fixtures for routes not ported yet, so the suite doubles as a
 progress meter.
 
@@ -262,6 +264,38 @@ process for the next — a scratch `.env` alone does not isolate them. The
 `scratch` fixture now clears `JARVIS_SECRET_*`. Found by a test that was refused
 for colliding with a name a previous test had used, and reported the wrong
 cause.
+
+## Voice, S3a — the provider seams
+
+`jarvis/tts/` and `jarvis/stt/`, ported with the rule that matters intact:
+**nothing is matched by a name the shared seam knows.** A service's ref is
+whatever the user typed, slugified, so the seam asks each adapter "is this one
+yours?" and defers entirely to the answer.
+
+**Each adapter recognises itself typo-tolerantly, and that is not
+over-engineering — a substring check failed live twice.** "elevenlab" (no
+trailing s) needed the check widened once already, and "elevenlap" (a b→p slip)
+does not contain "elevenlab" as a substring AT ALL, so it matched nothing: the
+service silently vanished from both the voice picker and the Test button with no
+error, because nothing was wrong from either side's point of view — they simply
+never found each other. `tts/matching.py` closes the failure class with real edit
+distance, refusing to fuzzy-match anything under four characters.
+
+`tts/generic.py` is the data-driven half: known providers as ENTRIES, not files,
+because different companies genuinely differ in body shape (Fish Audio wants
+`reference_id`, not `voice`). Adding one is one entry — no UI change, no route.
+
+ElevenLabs' default voice is RESOLVED, never assumed: a hardcoded "standard"
+voice id fails live on a free-tier account, so with no Voice ID set the default
+is the first voice the account itself lists — one it provably has access to.
+
+The external-service live test now dispatches for real: Deepgram by its exact
+ref (safe — that ref is created once by this app's own migration and is never
+user-typed), then the voice seam's own recognition. Anything else still gets an
+honest 501, because a green tick nobody earned is worse than no tick.
+
+**Still to come in S3b:** the Gemini Live WebSocket proxy, the duplex path, and
+~3,900 lines of front-end engines, turn detection, players and dictation.
 
 ## The three Node tools with no Python equivalent
 

@@ -7,7 +7,6 @@ import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Field, inputClass } from '@/components/ui/Field';
 import { Modal } from '@/components/ui/Modal';
-import { PageHeader } from '@/components/ui/PageHeader';
 import { Toggle } from '@/components/ui/Toggle';
 import { api, ApiRequestError } from '@/lib/api';
 import type {
@@ -69,11 +68,7 @@ export function ImprovementScreen() {
   }, [loadStatus]);
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10">
-      <PageHeader
-        title="Self-Improvement"
-        blurb="What Jarvis has noticed about its own work, and what it has changed because of it."
-      />
+    <>
 
       <div className="mb-5 inline-flex rounded-pill border border-surface-border p-0.5"
            data-testid="improvement-tabs">
@@ -101,7 +96,7 @@ export function ImprovementScreen() {
       {tab === 'changes' && <Changes />}
       {tab === 'learned' && <Learned />}
       {tab === 'settings' && <Settings status={status} onChanged={loadStatus} />}
-    </div>
+    </>
   );
 }
 

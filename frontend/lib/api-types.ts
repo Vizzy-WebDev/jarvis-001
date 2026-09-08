@@ -119,7 +119,11 @@ export type TurnEvent =
   | { type: 'routed'; intent: string; fast: boolean; confidence: number; reason: string }
   | { type: 'chunk'; text: string }
   | { type: 'tool_result'; capability: string; ok: boolean; outcome: string; error: string | null;
-      attachment?: { type: 'attachment'; kind: string; url: string; mimeType: string } }
+      attachment?: { type: 'attachment'; kind: string; url: string; mimeType: string };
+      /** A tool asked the interface to open a section. Navigating is something
+       *  the browser does, so it arrives beside the result rather than inside
+       *  it, exactly like an attachment. */
+      navigate?: { section: string } }
   | { type: 'approval_required'; approvalId: string; capability: string; reason: string }
   | { type: 'model_switch'; to: string; from: string | null; reason: string }
   | { type: 'interrupted'; spokenText: string }
@@ -528,4 +532,42 @@ export interface Monitor {
   lastCheckedAt: string | null;
   triggeredAt: string | null;
   error: string | null;
+}
+
+// --- folder skills ------------------------------------------------------------------
+
+/**
+ * A Skill is a FOLDER OF INSTRUCTIONS, never a built-in ability under another
+ * name. Everything here comes from the one backend function that reads folders
+ * directly and structurally cannot return a built-in — which is why this type
+ * has no "kind" discriminator to get wrong.
+ */
+export interface Skill {
+  /** The folder name: what a model calls, and what is shown. It can never drift
+   *  from where the Skill actually lives, even if its own file disagrees. */
+  name: string;
+  declaredName: string;
+  description: string;
+  hasSkillMd: boolean;
+  hasToml: boolean;
+  allowedTools: string[];
+  enabled: boolean;
+  source: { type: string; repo?: string; url?: string };
+  installedAt: string | null;
+  updatedAt: string | null;
+  /** Whether this Skill's helper scripts may run in the sandbox. */
+  scriptsApproved: boolean;
+  /** Whether its pipeline may run. A different mechanism from the above, with a
+   *  different default: true only for a Skill written and reviewed in the app. */
+  pipelineApproved: boolean;
+}
+
+export interface SkillDetail extends Skill {
+  ok: true;
+  /** The whole file as written, and just the instructions under the frontmatter. */
+  raw: string;
+  body: string;
+  supportingFiles: { name: string; size: number }[];
+  pipeline: { description?: string; inputs?: unknown; steps?: unknown[] } | null;
+  pipelineErrors: string[];
 }

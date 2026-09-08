@@ -7,7 +7,6 @@ import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Field, inputClass } from '@/components/ui/Field';
 import { Modal } from '@/components/ui/Modal';
-import { PageHeader } from '@/components/ui/PageHeader';
 import { api, ApiRequestError } from '@/lib/api';
 import type { MemoryVersion, ProfileEntry } from '@/lib/api-types';
 
@@ -64,11 +63,7 @@ export function ProfileScreen() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10">
-      <PageHeader
-        title="Profile & Goals"
-        blurb="What you have told Jarvis to keep in mind. The morning briefing reads these."
-      />
+    <>
 
       <Card className="mb-4">
         <Field label="Add a note" hint="A goal, a preference, something about how you work.">
@@ -126,7 +121,7 @@ export function ProfileScreen() {
           }}
         />
       )}
-    </div>
+    </>
   );
 }
 

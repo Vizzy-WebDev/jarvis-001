@@ -29,6 +29,8 @@ import type {
   ProfileEntry,
   Proposal,
   Rule,
+  Skill,
+  SkillDetail,
   TraceRow,
   UndoResult,
   Prefs,
@@ -430,6 +432,45 @@ export const api = {
      *  check from what was actually said is the watching capability's job. */
     stop: (id: string) =>
       request<{ ok: true }>(`/monitors/${encodeURIComponent(id)}/stop`, { method: 'POST' }),
+  },
+
+  skills: {
+    /** Folder Skills only. The route reads the folder list, which has no code
+     *  path back to a built-in ability — a Skills UI must never enumerate
+     *  capabilities and filter, because that has been got wrong before. */
+    list: () => request<{ skills: Skill[] }>('/skills/installed'),
+    open: (name: string) => request<SkillDetail>(`/skills/${encodeURIComponent(name)}`),
+    create: (skill: { name: string; description: string; instructions: string }) =>
+      request<{ ok: true; skill: Skill }>('/skills', { method: 'POST', ...json(skill) }),
+    update: (name: string, patch: { enabled?: boolean; description?: string; instructions?: string }) =>
+      request<{ ok: true; skill: Skill }>(`/skills/${encodeURIComponent(name)}`, {
+        method: 'PATCH', ...json(patch),
+      }),
+    remove: (name: string) =>
+      request<{ ok: true }>(`/skills/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    /** One route for all three ways in — a repository link, a pasted file, or a
+     *  zip — because they differ only in where the folder comes from. */
+    installFromRepo: (repo: string) =>
+      request<{ ok: true; skill: Skill }>('/skills/install', { method: 'POST', ...json({ repo }) }),
+    installFromMarkdown: (markdown: string) =>
+      request<{ ok: true; skill: Skill }>('/skills/install', { method: 'POST', ...json({ markdown }) }),
+    installFromZip: async (file: File) => {
+      const response = await fetch('/api/skills/install', {
+        method: 'POST', body: file, headers: { 'Content-Type': 'application/zip' },
+      });
+      if (!response.ok) {
+        let message = `Could not install that (${response.status})`;
+        try {
+          const body = (await response.json()) as { error?: string };
+          if (body?.error) message = body.error;
+        } catch {
+          /* the status stands */
+        }
+        throw new ApiRequestError(response.status, message);
+      }
+      return (await response.json()) as { ok: true; skill: Skill };
+    },
+    downloadUrl: (name: string) => `/api/skills/${encodeURIComponent(name)}/download`,
   },
 
   approvals: {

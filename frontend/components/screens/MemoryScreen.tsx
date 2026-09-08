@@ -7,7 +7,6 @@ import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Field, inputClass } from '@/components/ui/Field';
 import { Modal } from '@/components/ui/Modal';
-import { PageHeader } from '@/components/ui/PageHeader';
 import { api, ApiRequestError } from '@/lib/api';
 import type {
   Memory, MemoryCandidate, MemoryCategory, MemoryVersion, Prefs,
@@ -109,17 +108,17 @@ export function MemoryScreen() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10">
-      <PageHeader title="Memory" blurb="Everything Jarvis has saved about you — editable, and undoable.">
-        {selected.length > 1 && (
-          <Button tone="primary" data-testid="merge-start" onClick={() => setMerging(true)}>
-            Merge {selected.length}
-          </Button>
-        )}
-        {selected.length > 0 && (
+    <>
+      {selected.length > 0 && (
+        <div className="mb-4 flex items-center gap-2">
+          {selected.length > 1 && (
+            <Button tone="primary" data-testid="merge-start" onClick={() => setMerging(true)}>
+              Merge {selected.length}
+            </Button>
+          )}
           <Button onClick={() => setSelected([])}>Clear selection</Button>
-        )}
-      </PageHeader>
+        </div>
+      )}
 
       {error && <p className="mb-4 text-[13px] text-state-danger">{error}</p>}
 
@@ -220,7 +219,7 @@ export function MemoryScreen() {
           }}
         />
       )}
-    </div>
+    </>
   );
 }
 

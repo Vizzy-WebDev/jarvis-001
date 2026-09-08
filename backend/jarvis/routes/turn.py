@@ -55,6 +55,10 @@ def to_wire(event: Any) -> dict[str, Any]:
         # knows nothing about attachments still renders the result correctly.
         if event.attachment:
             wire["attachment"] = event.attachment
+        # Same reasoning one field along: a client that knows nothing about
+        # navigation still renders the tool result correctly.
+        if event.navigate:
+            wire["navigate"] = event.navigate
         return wire
     if isinstance(event, ApprovalRequired):
         return {"type": "approval_required", "approvalId": event.approval_id,

@@ -1134,3 +1134,147 @@ def test_a_watch_shows_in_the_shell_and_stopping_it_reaches_every_tab(page):
     # The other tab found out without being touched.
     second.wait_for_selector("[data-testid=watching-bar]", state="detached", timeout=15_000)
     second.close()
+
+
+# --- skills, chat history, and being taken somewhere by asking ------------------
+
+def test_a_skill_is_written_here_and_really_lands_on_disk(page):
+    go_to(page, "skills")
+    page.click("[data-testid=add-skill]")
+    page.fill("[data-testid=skill-name]", "weekly-report")
+    page.fill("[data-testid=skill-description]", "How to write the Friday report")
+    page.fill("[data-testid=skill-instructions]", "Open with the headline number.")
+    page.click("[data-testid=save-skill]")
+    page.wait_for_selector("[data-testid=skill-row]")
+
+    from jarvis.skills import files
+
+    saved = files.list_user_skills()
+    assert [s["name"] for s in saved] == ["weekly-report"]
+    assert files.read_skill_md("weekly-report")["body"].strip() \
+        == "Open with the headline number."
+
+
+def test_nothing_jarvis_can_already_do_is_ever_listed_as_a_skill(page):
+    """The rule this screen exists under, checked against the real thing: the
+    built-in abilities are loaded and numerous, and none of them may appear
+    here. It reads the folder list, which has no code path back to a
+    capability."""
+    from jarvis.assembly import get_registry
+    from jarvis.capabilities import CapabilityKind
+
+    built_in = {spec.name for spec in get_registry().list()
+                if spec.kind is not CapabilityKind.SKILL}
+    assert len(built_in) > 20, "the built-in tools did not load, so this proves nothing"
+
+    go_to(page, "skills")
+    page.wait_for_selector("[data-testid=add-skill]")
+    shown = page.locator("[data-testid=skill-list]").inner_text() \
+        if page.locator("[data-testid=skill-list]").count() else ""
+    assert not (built_in & set(shown.split())), f"a built-in ability was listed: {shown}"
+
+
+def test_a_skill_is_edited_and_turned_off_from_the_screen(page):
+    from jarvis.skills import files
+
+    files.create_skill(name="house-style", description="How we write",
+                       instructions="Short sentences.", reserved=set())
+
+    go_to(page, "skills")
+    page.click("[data-testid=skill-open]")
+    page.fill("[data-testid=detail-instructions]", "Short sentences. No jargon.")
+    page.click("[data-testid=save-skill-edit]")
+    page.wait_for_selector("[data-testid=skill-row]")
+    assert "No jargon" in files.read_skill_md("house-style")["body"]
+
+    page.click("[data-testid=skill-toggle]")
+    page.wait_for_selector("[data-testid=skill-toggle][aria-checked=false]")
+    assert files.get_skill("house-style")["enabled"] is False
+
+
+def test_a_skill_is_deleted_from_its_own_detail(page):
+    from jarvis.skills import files
+
+    files.create_skill(name="temporary", description="x", instructions="y", reserved=set())
+    go_to(page, "skills")
+    page.click("[data-testid=skill-open]")
+    page.click("[data-testid=delete-skill]")
+    page.wait_for_selector("[data-testid=skill-row]", state="detached")
+    assert files.list_user_skills() == []
+
+
+def test_chat_history_searches_what_was_SAID_not_the_titles(page, stub):
+    """Search runs on the server over the full transcript. Filtering titles in
+    the browser would quietly answer a much worse question."""
+    stub.says("The kettle is on.")
+    page.fill("[data-testid=composer-input]", "put the kettle on")
+    page.press("[data-testid=composer-input]", "Enter")
+    page.wait_for_selector("text=The kettle is on.", timeout=15_000)
+
+    go_to(page, "chat-history")
+    page.wait_for_selector("[data-testid=history-row]")
+    # The word appears nowhere in any title, only inside the conversation.
+    page.fill("[data-testid=history-search]", "kettle")
+    page.wait_for_function(
+        "() => document.querySelectorAll('[data-testid=history-row]').length === 1")
+
+    page.fill("[data-testid=history-search]", "zzz-nothing-said-this")
+    page.wait_for_selector("[data-testid=history-row]", state="detached")
+
+
+def test_opening_a_conversation_shows_what_was_said_without_resuming_it(page, stub):
+    """Reading an old thread is the common thing and resuming it by accident is
+    not, so they are two different actions."""
+    # Deliberately not a question with a fast path: "what day is it" is answered
+    # from the clock with no model call at all, so a scripted reply would never
+    # be reached and this would fail for a reason that has nothing to do with
+    # chat history.
+    stub.says("Because it rained.")
+    page.fill("[data-testid=composer-input]", "why did the picnic get cancelled")
+    page.press("[data-testid=composer-input]", "Enter")
+    page.wait_for_selector("text=Because it rained.", timeout=15_000)
+
+    go_to(page, "chat-history")
+    page.click("[data-testid=history-row]")
+    # The container renders before the fetch resolves, so waiting for it alone
+    # reads the empty state rather than the conversation.
+    page.wait_for_selector("[data-testid=conversation-messages] >> text=Because it rained.",
+                           timeout=10_000)
+    body = page.inner_text("[data-testid=conversation-messages]")
+    assert "why did the picnic get cancelled" in body and "Because it rained." in body
+    # It is already the live one, so there is nothing to resume.
+    assert page.locator("[data-testid=resume-conversation]").count() == 0
+
+
+def test_no_screen_draws_its_own_title_over_the_one_the_shell_draws(page):
+    """A real bug this caught, and the reason it is now checked on every screen.
+
+    The shell renders each section's title and blurb once, in the same place, for
+    all of them — that sameness is most of what makes twelve screens feel like
+    one product. Seven screens rendered a PageHeader of their own as well, so the
+    title appeared twice and the column was padded twice. Nothing asserted on it
+    until a Playwright strict-mode violation did, by accident.
+    """
+    from jarvis.tools.open_section import SECTIONS
+
+    for section in sorted(SECTIONS):
+        if section == "home":
+            continue  # the assistant is the stage, not a titled screen
+        page.evaluate(f"() => {{ window.location.hash = '#/{section}'; }}")
+        page.wait_for_url(f"**#/{section}")
+        count = page.locator("h1").count()
+        assert count == 1, f"{section} draws {count} titles"
+
+
+def test_asking_to_open_a_section_really_navigates(page, stub):
+    """The tool returns WHERE to go and the browser goes there, through the same
+    hash router the drawer drives — so a spoken request and a click land in
+    exactly the same place."""
+    stub.calls_tool("open_section", {"section": "memory"})
+    stub.says("Opening Memory.")
+
+    page.fill("[data-testid=composer-input]", "open my memory")
+    page.press("[data-testid=composer-input]", "Enter")
+
+    page.wait_for_url("**#/memory", timeout=20_000)
+    assert page.locator("h1").inner_text() == "Memory"

@@ -7,7 +7,6 @@ import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Field, inputClass } from '@/components/ui/Field';
 import { Modal } from '@/components/ui/Modal';
-import { PageHeader } from '@/components/ui/PageHeader';
 import { api, ApiRequestError } from '@/lib/api';
 import type { Job, OutboxRow, TraceRow } from '@/lib/api-types';
 
@@ -97,11 +96,7 @@ export function JobsScreen() {
   }, [load]);
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10">
-      <PageHeader
-        title="Background Jobs"
-        blurb="Longer work happening while you talk about something else."
-      />
+    <>
 
       <div className="mb-4 flex flex-wrap gap-1.5" data-testid="job-filters">
         {FILTERS.map(([value, label]) => (
@@ -150,7 +145,7 @@ export function JobsScreen() {
           onChanged={load}
         />
       )}
-    </div>
+    </>
   );
 }
 

@@ -46,6 +46,15 @@ MAX_NORMALISED_FIELDS = 40
 DEFERRED_ROUTES: dict[tuple[str, str], str] = {
     ("GET", "/api/connectors/catalog"):
         "the connector directory is entirely OAuth flows, which land with the front end",
+    # Not deferred — deliberately never built. The Node app served its BUILT-IN
+    # tool catalogue at this path, from when tools and folder Skills were one
+    # word, and reproducing it is exactly the mistake the Skills rule exists to
+    # prevent: a built-in ability offered as an installable Skill. The Skills
+    # screen reads /api/skills/installed, which reads folders and structurally
+    # cannot return a built-in.
+    ("GET", "/api/skills"):
+        "the Node route served built-in tools under the Skills name; this build "
+        "will not reproduce that — see routes/skills.py",
 }
 
 #: Rows a recorded list legitimately does not have here yet, by connector type.

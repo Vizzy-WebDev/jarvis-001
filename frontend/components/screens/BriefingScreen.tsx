@@ -6,7 +6,6 @@ import { ConnectorPicker } from '@/components/connectors/ConnectorPicker';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Field, inputClass } from '@/components/ui/Field';
-import { PageHeader } from '@/components/ui/PageHeader';
 import { Toggle } from '@/components/ui/Toggle';
 import { api, ApiRequestError } from '@/lib/api';
 import type { BriefingConfig, BriefingPreview, Connector } from '@/lib/api-types';
@@ -87,24 +86,18 @@ export function BriefingScreen({ onNavigate }: { onNavigate?: (id: string) => vo
 
   if (!config) {
     return (
-      <div className="mx-auto max-w-3xl px-6 py-10">
-        <PageHeader title="Morning Briefing" />
-        {error && <p className="text-[13px] text-state-danger">{error}</p>}
-      </div>
+      <>{error && <p className="text-[13px] text-state-danger">{error}</p>}</>
     );
   }
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10">
-      <PageHeader
-        title="Morning Briefing"
-        blurb="What Jarvis tells you at the start of the day. It only ever says what it actually found."
-      >
+    <>
+      <div className="mb-4 flex items-center gap-2">
         <Button tone="primary" data-testid="briefing-preview" disabled={previewing}
                 onClick={() => void runPreview()}>
           {previewing ? 'Putting one together…' : 'Hear one now'}
         </Button>
-      </PageHeader>
+      </div>
 
       {error && <p className="mb-4 text-[13px] text-state-danger">{error}</p>}
 
@@ -202,6 +195,6 @@ export function BriefingScreen({ onNavigate }: { onNavigate?: (id: string) => vo
           </p>
         </div>
       </Card>
-    </div>
+    </>
   );
 }

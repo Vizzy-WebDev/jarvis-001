@@ -108,3 +108,41 @@ def test_matching_never_returns_the_whole_registry(reg):
     same as matching on nothing."""
     [spec] = build_find(reg)
     assert len(spec.handler(intent="what can you do for me please")["unlock"]) < len(reg.list())
+
+
+# --- opening a section ---------------------------------------------------------
+
+def test_opening_a_section_returns_where_to_go_rather_than_going(reg):
+    """The navigation happens in the browser. This tool knows nothing about
+    routing, which is why a caller with no interface gets a harmless result
+    instead of an error."""
+    from jarvis.tools.open_section import _run as open_section
+
+    answer = open_section(section="memory")
+    assert answer["ok"] is True
+    assert answer["ui_action"] == {"type": "navigate", "section": "memory"}
+    assert "Memory" in answer["speak"]
+
+
+def test_a_section_that_does_not_exist_is_refused_with_the_real_list(reg):
+    from jarvis.tools.open_section import _run as open_section
+
+    answer = open_section(section="the moon")
+    assert answer["ok"] is False
+    assert "memory" in answer["sections"]
+
+
+def test_every_section_it_offers_is_one_the_interface_actually_has():
+    """This list drives the drawer, the router and this tool, and it has drifted
+    before — three real sections were missing from the tool's own enum for a
+    while, so asking for them navigated nowhere."""
+    import re
+    from pathlib import Path
+
+    from jarvis.tools.open_section import SECTIONS
+
+    nav = (Path(__file__).resolve().parent.parent.parent
+           / "frontend" / "lib" / "nav.ts").read_text(encoding="utf-8")
+    in_interface = set(re.findall(r"\{ id: '([a-z-]+)'", nav))
+    assert in_interface, "could not read the interface's own section list"
+    assert set(SECTIONS) == in_interface

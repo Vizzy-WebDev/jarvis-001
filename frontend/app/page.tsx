@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ConversationPanel } from '@/components/conversation/ConversationPanel';
 import { attachmentOf, type Turn } from '@/components/conversation/Message';
 import { BriefingScreen } from '@/components/screens/BriefingScreen';
+import { ChatHistoryScreen } from '@/components/screens/ChatHistoryScreen';
 import { GenericScreen, NotPortedYet } from '@/components/screens/GenericScreen';
 import { ImprovementScreen } from '@/components/screens/ImprovementScreen';
 import { JobsScreen } from '@/components/screens/JobsScreen';
@@ -12,6 +13,7 @@ import { MemoryScreen } from '@/components/screens/MemoryScreen';
 import { ModelsScreen } from '@/components/screens/ModelsScreen';
 import { NotificationsScreen } from '@/components/screens/NotificationsScreen';
 import { ProfileScreen } from '@/components/screens/ProfileScreen';
+import { SkillsScreen } from '@/components/screens/SkillsScreen';
 import { TasksScreen } from '@/components/screens/TasksScreen';
 import { Drawer } from '@/components/shell/Drawer';
 import { Header } from '@/components/shell/Header';
@@ -180,6 +182,10 @@ export default function Home() {
             setOrbState('tool_running');
             const attachment = attachmentOf(event);
             if (attachment) patch((turn) => ({ ...turn, attachment }));
+            // Asked out loud to open a section. The hash router is the same one
+            // the drawer drives, so a spoken "open my memory" and a click land
+            // in exactly the same place.
+            if (event.navigate?.section) go(event.navigate.section);
             break;
           }
           case 'model_switch':
@@ -515,6 +521,8 @@ function screenFor(id: string, go: (id: string) => void): React.ReactNode {
   if (id === 'improvement') return <ImprovementScreen />;
   if (id === 'jobs') return <JobsScreen />;
   if (id === 'briefing') return <BriefingScreen onNavigate={go} />;
+  if (id === 'skills') return <SkillsScreen />;
+  if (id === 'chat-history') return <ChatHistoryScreen onNavigate={go} />;
   return null;
 }
 

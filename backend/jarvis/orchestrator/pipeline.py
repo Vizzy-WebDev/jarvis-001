@@ -93,6 +93,11 @@ class ToolRan:
     #: model's copy of a tool result is text it reasons over, and an image belongs
     #: in the transcript itself. Shape: {type, kind, url, mimeType}.
     attachment: dict[str, Any] | None = None
+    #: A section the interface should open, when the tool's whole job was to take
+    #: the user somewhere. Beside the result for the same reason as an
+    #: attachment: navigating is something the browser does, not something the
+    #: model reasons over. Shape: {section}.
+    navigate: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -156,6 +161,21 @@ def _attachment_of(value: Any) -> dict[str, Any] | None:
         return None
     return {"type": "attachment", "kind": action.get("kind") or "file",
             "url": str(action["url"]), "mimeType": action.get("mimeType") or ""}
+
+
+def _navigate_of(value: Any) -> dict[str, Any] | None:
+    """A section a tool asked the interface to open.
+
+    Same one-reader shape as `_attachment_of` above: a tool says where to go by
+    returning it, and knows nothing about the turn stream or the browser.
+    """
+    if not isinstance(value, dict):
+        return None
+    action = value.get("ui_action")
+    if not isinstance(action, dict) or action.get("type") != "navigate":
+        return None
+    section = action.get("section")
+    return {"section": str(section)} if section else None
 
 
 @dataclass(frozen=True)
@@ -312,7 +332,7 @@ class Orchestrator:
             allowed_names=request.allowed_names, event_bus=self._bus,
         )
         events.append(ToolRan(spec.name, result.ok, result.outcome, result.error,
-                              _attachment_of(result.value)))
+                              _attachment_of(result.value), _navigate_of(result.value)))
 
         if result.outcome is ExecOutcome.NEEDS_APPROVAL:
             state.to(State.WAITING_FOR_APPROVAL, f"{spec.name} needs approval")
@@ -443,7 +463,7 @@ class Orchestrator:
                 result = self._execute_call(request, call)
                 tools_used.append(call.name)
                 yield ToolRan(call.name, result.ok, result.outcome, result.error,
-                              _attachment_of(result.value))
+                              _attachment_of(result.value), _navigate_of(result.value))
                 results.append({
                     "id": call.id, "name": call.name,
                     "result": result.value if result.ok else {"error": result.error},

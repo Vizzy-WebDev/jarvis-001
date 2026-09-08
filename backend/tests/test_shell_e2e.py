@@ -579,3 +579,166 @@ def test_the_mic_button_is_live_now(page):
     page.wait_for_function(
         "() => document.querySelector('[data-testid=status]').textContent.trim().length > 0",
         timeout=10_000)
+
+
+# --- the engines that need a microphone ----------------------------------------
+
+@pytest.fixture
+def voice_page(stub, live_server):
+    """A browser with a FAKE microphone, so an engine can genuinely start.
+
+    Chromium's fake device is a real capture device as far as the page is
+    concerned: `getUserMedia` resolves, an audio context runs, and frames flow.
+    What it plays is a test tone, not speech, so nothing here can assert that a
+    spoken sentence comes back — that needs a real microphone and a real
+    provider, which is the owner's machine. What it CAN prove is everything up
+    to that line: the engine takes the device, opens its socket, handles what
+    the server answers, and still carries a typed turn end to end.
+    """
+    with sync_playwright() as play:
+        browser = play.chromium.launch(executable_path=str(CHROME), args=[
+            "--no-sandbox",
+            "--use-fake-device-for-media-stream",
+            "--use-fake-ui-for-media-stream",
+        ])
+        context = browser.new_context(viewport={"width": 1440, "height": 900},
+                                      permissions=["microphone"])
+        page = context.new_page()
+        page.goto(live_server, wait_until="networkidle")
+        yield page
+        context.close()
+        browser.close()
+
+
+def start_engine(page: Page, engine: str) -> None:
+    """Pick an engine in Settings, then start listening with it."""
+    page.click("[data-testid=settings]")
+    page.wait_for_selector("[data-testid=engine-options]")
+    page.click(f"[data-testid=engine-{engine}]")
+    page.click("[data-testid=settings]")  # close it again; it overlaps the stage
+    page.click("[data-testid=mic]")
+
+
+def test_the_engine_chosen_in_settings_is_the_one_that_runs(voice_page):
+    """The picker was wired to nothing before this: whichever engine was chosen,
+    the pipeline one started. Continuous listening opens a socket the pipeline
+    engine never touches, so what the server is asked for is the proof."""
+    opened: list[str] = []
+    voice_page.on("websocket", lambda socket: opened.append(socket.url))
+
+    start_engine(voice_page, "duplex")
+    voice_page.wait_for_timeout(1500)
+
+    assert any(url.endswith("/api/duplex") for url in opened), \
+        f"the continuous-listening socket was never opened: {opened}"
+
+
+def test_with_no_recognition_key_it_says_it_fell_back_rather_than_pretending(voice_page):
+    """The server answers "use the browser's own" and closes. Silently behaving
+    like a different engine, with none of the fast endpointing this one is
+    chosen for, is not something anyone can be expected to work out."""
+    start_engine(voice_page, "duplex")
+    voice_page.wait_for_function(
+        "() => (document.querySelector('[data-testid=status]')?.textContent || '')"
+        ".toLowerCase().includes('browser')",
+        timeout=15_000)
+
+
+def test_a_typed_message_still_flows_while_that_engine_is_listening(voice_page, stub):
+    """A typed turn goes through the running engine, not around it — the same
+    path speech would take once there is speech to take it."""
+    stub.says("Both hands are free.")
+    start_engine(voice_page, "duplex")
+    voice_page.wait_for_timeout(1000)
+
+    voice_page.fill("[data-testid=composer-input]", "can you hear me")
+    voice_page.press("[data-testid=composer-input]", "Enter")
+
+    voice_page.wait_for_selector("text=Both hands are free.", timeout=15_000)
+    assert stub.requests, "the backend never called the model"
+
+
+def test_stopping_tears_the_engine_down_rather_than_leaving_it_open(voice_page):
+    """An engine kept around "just in case" is a microphone kept open for no
+    reason, and the browser shows a recording indicator the whole time.
+
+    The socket closing is what is asserted, because it is genuinely observable
+    from outside the page; whether the device track itself was released is not,
+    so this proves teardown ran rather than claiming to prove the microphone is
+    off. The two are the same call in `stop`.
+    """
+    closed: list[str] = []
+    voice_page.on("websocket", lambda socket: socket.on("close", lambda _: closed.append(socket.url)))
+
+    start_engine(voice_page, "duplex")
+    voice_page.wait_for_timeout(1000)
+    voice_page.click("[data-testid=mic]")  # off again
+    voice_page.wait_for_timeout(500)
+
+    assert any(url.endswith("/api/duplex") for url in closed), \
+        "the continuous-listening socket was left open after stopping"
+
+
+def test_the_realtime_engine_is_offered_from_a_capability_and_fails_honestly(voice_page):
+    """Two things at once, and both are the point.
+
+    It is offered because a connected model's adapter DECLARES a realtime API —
+    no provider is named anywhere in the picker, the socket, or the engine — and
+    when the session cannot actually open, the start FAILS rather than leaving
+    the microphone running under a screen claiming to listen. The original
+    resolved on the socket merely opening, so a session that could never start
+    took the microphone first and mentioned the problem afterwards.
+    """
+    from jarvis.gateway import connections, registry
+
+    conn = connections.add_connection(adapter="gemini", base_url=None, label="realtime",
+                                      provider="gemini", kind="first-party", key_required=True,
+                                      secret="not-a-real-key")
+    registry.add_model(connection_id=conn["id"], model="a-realtime-model")
+
+    voice_page.reload(wait_until="networkidle")
+    voice_page.click("[data-testid=settings]")
+    voice_page.wait_for_selector("[data-testid=engine-realtime]:not([disabled])")
+
+    opened: list[str] = []
+    voice_page.on("websocket", lambda socket: opened.append(socket.url))
+    voice_page.click("[data-testid=engine-realtime]")
+    voice_page.click("[data-testid=settings]")
+    voice_page.click("[data-testid=mic]")
+
+    # The key is fake, so the session cannot open. What must happen is that it
+    # says so and stops — never a silent microphone left running.
+    voice_page.wait_for_selector("[data-testid=mic][aria-pressed=false]", timeout=25_000)
+    assert any(url.endswith("/api/live") for url in opened), \
+        f"the realtime socket was never opened: {opened}"
+    assert voice_page.inner_text("[data-testid=status]").strip(), "it failed silently"
+
+
+def test_the_composers_own_mic_is_live_and_stands_the_engine_down(voice_page):
+    """Speaking INSTEAD of typing, which is a different thing from talking to
+    Jarvis — it never sends and never reaches the server.
+
+    Only one recognition session runs reliably at a time, so starting this has
+    to stop whatever else is listening. That button said "lands with the voice
+    engines" until now; they have landed.
+    """
+    assert voice_page.is_enabled("[data-testid=dictate]")
+
+    start_engine(voice_page, "duplex")
+    voice_page.wait_for_selector("[data-testid=mic][aria-pressed=true]")
+
+    voice_page.click("[data-testid=dictate]")
+    # The engine stood down rather than both holding the microphone at once.
+    voice_page.wait_for_selector("[data-testid=mic][aria-pressed=false]", timeout=10_000)
+
+    # Whether it can actually LISTEN depends on a speech service this browser
+    # has no route to, so that is not asserted. What is: it either starts or
+    # says why, and never simply switches itself off in silence.
+    voice_page.wait_for_function(
+        """() => {
+             const button = document.querySelector('[data-testid=dictate]');
+             const message = document.querySelector('[data-testid=composer-error]');
+             return button?.getAttribute('aria-pressed') === 'true'
+                 || (message?.textContent || '').trim().length > 0;
+           }""",
+        timeout=10_000)

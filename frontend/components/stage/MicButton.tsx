@@ -10,8 +10,9 @@ import { MicIcon } from '@/components/ui/Icons';
  * composer's dictation mic, which is for speaking a message instead of typing
  * it.
  *
- * The voice engines land in their own wave; until then this is honest about
- * being unavailable rather than pretending to listen.
+ * Which engine it starts is whatever the picker chose — a pipeline turn,
+ * continuous listening, or a provider's own realtime session. This button knows
+ * none of that; it is the same two-way toggle whichever one is running.
  */
 export function MicButton({
   listening,

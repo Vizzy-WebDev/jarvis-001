@@ -18,7 +18,9 @@ from typing import Any, Iterator
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
+from .. import conversation
 from ..assembly import get_orchestrator
 from ..orchestrator import (
     ApprovalRequired, Chunk, Done, Failed, Interrupted, Routed, Switched, ToolRan, TurnRequest,
@@ -113,3 +115,33 @@ async def chat_stream(request: Request, message: str = "", source: str = "text",
         stream_sync_source(request, produce,
                            heartbeat=lambda: {"type": "progress", "phase": phase["value"]}),
         media_type="text/event-stream", headers=SSE_HEADERS)
+
+
+class InterruptRequest(BaseModel):
+    """What was actually HEARD, reconstructed from the sentences that truly
+    started playing — not a slice of the reply by character count, which would
+    need the client's chunk boundaries and the model's own spacing to agree
+    exactly, and they do not."""
+
+    spokenText: str = ""
+
+
+@router.post("/chat/interrupt")
+async def chat_interrupt(body: InterruptRequest):
+    """Report a barge-in from the browser.
+
+    The server sees what it GENERATED; only the browser knows what was audible,
+    because sentences are fetched and queued ahead of what is playing. Without
+    this the next turn reasons from a reply the person never heard the end of.
+
+    Cancelling the stream is what stops the turn — this only corrects the record
+    afterwards, so it is safe to arrive late and safe to never arrive at all.
+    """
+    spoken = (body.spokenText or "").strip()
+    if not spoken:
+        return {"ok": False, "reason": "nothing was spoken"}
+    recorded = conversation.mark_last_assistant_interrupted(get_active_session_id(), spoken)
+    # False is not an error: the race where no assistant message exists yet is
+    # known and disclosed, and its only cost is that the interruption went
+    # unrecorded — never wrong data.
+    return {"ok": recorded}

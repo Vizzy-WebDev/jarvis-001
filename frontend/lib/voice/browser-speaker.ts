@@ -47,6 +47,7 @@ export class BrowserSpeaker {
   private flushed = false;
   private lastBoundaryAt = 0;
   private currentClip: HTMLAudioElement | null = null;
+  private spoken = '';
 
   constructor(private readonly hooks: { onStart?: () => void; onIdle?: () => void } = {}) {}
 
@@ -58,6 +59,19 @@ export class BrowserSpeaker {
    * which gives a real per-word rhythm instead of flat procedural motion. A
    * clip has no boundaries, so it shows nothing: a known, accepted gap.
    */
+  /**
+   * What has actually been heard so far, for a barge-in report.
+   *
+   * **A gap the original had and this closes.** There, only the provider player
+   * tracked this, so interrupting the free browser voice reported nothing and
+   * the stored reply kept claiming the whole thing was said. The explicit queue
+   * this class now owns makes the cursor available: an utterance is appended
+   * when the browser actually STARTS it, not when it was queued.
+   */
+  getSpokenText(): string {
+    return this.spoken;
+  }
+
   getOutputLevel(): number {
     if (!this.lastBoundaryAt) return 0;
     const elapsed = performance.now() - this.lastBoundaryAt;
@@ -116,6 +130,7 @@ export class BrowserSpeaker {
     this.streamEnded = false;
     this.buffer = '';
     this.flushed = false;
+    this.spoken = '';  // per reply, and this is a fresh one
   }
 
   private enqueue(item: Item): void {
@@ -162,7 +177,10 @@ export class BrowserSpeaker {
     }, Math.min(30_000, Math.max(6000, estimated * 2.5)));
     once.onSettle = () => clearTimeout(watchdog);
 
-    utterance.onstart = () => this.hooks.onStart?.();
+    utterance.onstart = () => {
+      this.spoken = this.spoken ? `${this.spoken} ${sentence}` : sentence;
+      this.hooks.onStart?.();
+    };
     utterance.onboundary = () => {
       this.lastBoundaryAt = performance.now();
     };

@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type Key
 import { AttachIcon, CloseIcon, MicIcon, SendIcon } from '@/components/ui/Icons';
 import { IconButton } from '@/components/ui/IconButton';
 import { api, ApiRequestError } from '@/lib/api';
+import { Dictation } from '@/lib/voice/dictation';
 
 export interface Attachment {
   id: string;
@@ -40,17 +41,83 @@ export function Composer({
   disabled,
   busy,
   onSend,
+  onDictationStart,
+  isSpeaking,
 }: {
   disabled: boolean;
   busy: boolean;
   onSend: (text: string, attachments: string[]) => void;
+  /** Silence anything else that is listening — only one recognition session
+   *  runs reliably at a time. */
+  onDictationStart?: () => void;
+  /** Whether Jarvis is speaking right now. A backstop: the caller is expected
+   *  to have silenced it, and this catches the case where it starts for some
+   *  unrelated reason while this is already open. */
+  isSpeaking?: () => boolean;
 }) {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dictating, setDictating] = useState(false);
+  /**
+   * Whether this browser can do it at all, settled AFTER mounting.
+   *
+   * Reading it during render would be read once with no `window` at all, since
+   * the production build is a static export prerendered at build time — so the
+   * button would ship permanently disabled in the HTML, and the mismatch when
+   * the page hydrated is a bug React papers over rather than fixes.
+   */
+  const [canDictate, setCanDictate] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
+  const speakingRef = useRef(isSpeaking);
+  speakingRef.current = isSpeaking;
+
+  /**
+   * The composer's own microphone: speaking INSTEAD of typing, which is a
+   * different thing from talking to Jarvis. It never sends anything and never
+   * reaches the server — words land in the box and are sent, or edited first,
+   * by hand.
+   *
+   * Built once and kept: unlike a voice engine, it holds no device until it is
+   * started, so there is nothing to release between uses.
+   */
+  const [dictation] = useState(() => new Dictation({
+    onText: (spoken) => {
+      setText(spoken);
+      const box = textRef.current;
+      if (box) {
+        box.value = spoken;
+        grow(box);
+      }
+    },
+    onState: (state) => setDictating(state === 'listening'),
+    onError: setError,
+    // Read through a ref rather than captured: this object is built once, and a
+    // captured prop would answer with the value from that first render forever.
+    isSpeaking: () => speakingRef.current?.() ?? false,
+  }));
+
+  function toggleDictation() {
+    if (dictation.active) {
+      dictation.stop();
+      return;
+    }
+    // Only one recognition session runs reliably at a time, so whatever else is
+    // listening has to stop first. The page owns that decision, because only it
+    // knows what else is running.
+    setError(null);
+    onDictationStart?.();
+    dictation.start(text);
+  }
+
+  useEffect(() => {
+    setCanDictate(dictation.supported);
+  }, [dictation]);
+
+  // A live session outlives a re-render but must not outlive the composer.
+  useEffect(() => () => dictation.stop(), [dictation]);
 
   // A preview URL is a real allocation; letting them pile up over a long
   // session is a leak the browser cannot clean up on its own.
@@ -160,7 +227,11 @@ export function Composer({
         </div>
       )}
 
-      {error && <p className="px-1 pb-1.5 text-[12px] text-state-danger">{error}</p>}
+      {error && (
+        <p data-testid="composer-error" className="px-1 pb-1.5 text-[12px] text-state-danger">
+          {error}
+        </p>
+      )}
 
       <form onSubmit={submit} autoComplete="off">
         <textarea
@@ -193,11 +264,17 @@ export function Composer({
 
           <div className="ml-auto flex items-center gap-1">
             <IconButton
-              label="Speak instead of typing"
-              disabled
-              title="Dictation lands with the voice engines"
+              label={dictating ? 'Stop dictating' : 'Speak instead of typing'}
+              data-testid="dictate"
+              aria-pressed={dictating}
+              onClick={toggleDictation}
+              disabled={!canDictate}
+              title={canDictate
+                ? (dictating ? 'Stop dictating' : 'Speak instead of typing')
+                : 'This browser has no speech recognition'}
+              className={dictating ? 'border-accent/40 bg-accent/15 text-accent' : undefined}
             >
-              <MicIcon />
+              <MicIcon muted={!dictating} />
             </IconButton>
             <IconButton
               label="Send"

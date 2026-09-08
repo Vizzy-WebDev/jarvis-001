@@ -81,6 +81,10 @@ export class AudioPlayer {
   /** At most once per REPLY: a broken provider fails every sentence, and one
    *  notification per sentence would be a wall of identical noise. */
   private failureNotified = false;
+  /** Every sentence that has actually STARTED playing, in order. Read on a
+   *  barge-in: what was HEARD, which is not what was fetched — several
+   *  sentences can be in flight ahead of the audible one. */
+  private spoken = '';
 
   constructor(
     private readonly hooks: {
@@ -91,6 +95,17 @@ export class AudioPlayer {
       provider?: string;
     } = {},
   ) {}
+
+  /**
+   * What has actually been heard so far — reported on a barge-in so the stored
+   * reply reflects what the person heard rather than what the model finished
+   * generating. Text, not a character offset: an offset would have to be sliced
+   * back out of a string whose whitespace need not match, since chunk
+   * boundaries trim differently than the model's own spacing.
+   */
+  getSpokenText(): string {
+    return this.spoken;
+  }
 
   /** For the orb: sampled from the offline envelope of whatever is playing. */
   getOutputLevel(): number {
@@ -168,6 +183,7 @@ export class AudioPlayer {
     this.buffer = '';
     this.flushed = false;
     this.failureNotified = false;
+    this.spoken = '';  // per reply, and this is a fresh one
   }
 
   private async advance(): Promise<void> {
@@ -189,6 +205,12 @@ export class AudioPlayer {
     }
 
     this.hooks.onStart?.();
+    // Appended the moment this sentence starts, never when it was fetched. A
+    // borrowed URL is a sound effect, not spoken words, and this text is
+    // exactly what a barge-in truncates the stored reply to.
+    if (!ready.borrowed && ready.text) {
+      this.spoken = this.spoken ? `${this.spoken} ${ready.text}` : ready.text;
+    }
     const audio = new Audio(ready.url);
     this.current = audio;
     this.envelope = null;

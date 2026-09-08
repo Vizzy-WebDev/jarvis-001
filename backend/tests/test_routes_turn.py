@@ -19,6 +19,7 @@ from jarvis.events import EventType, bus
 from jarvis.gateway import availability, connections, registry
 from jarvis.main import create_app
 from jarvis.policy import approvals as approval_store
+from jarvis.session import get_active_session_id
 
 from stub_openai_server import StubModelServer
 
@@ -316,3 +317,47 @@ def test_an_ordinary_tool_result_carries_no_attachment_key(client, stub):
     events = events_from(client.get("/api/chat/stream", params={"message": "do the thing"}))
     results = [e for e in events if e["type"] == "tool_result"]
     assert results and "attachment" not in results[0]
+
+
+# --- barge-in ----------------------------------------------------------------
+
+def test_a_barge_in_records_what_was_HEARD_not_what_was_generated(client, stub):
+    """Only the browser knows how much was audible.
+
+    Sentences are fetched and queued ahead of what is playing, so the server's
+    own view of the reply is what it GENERATED — several sentences further on
+    than anyone heard. Without this the next turn reasons from a reply that was
+    cut off mid-sentence as though it had been delivered whole.
+    """
+    stub.says("First sentence. Second sentence. Third sentence.")
+    client.get("/api/chat/stream", params={"message": "go on"})
+
+    answer = client.post("/api/chat/interrupt", json={"spokenText": "First sentence."})
+    assert answer.json() == {"ok": True}
+
+    session = get_active_session_id()
+    last = [m for m in conversation.get_messages(session) if m["role"] == "assistant"][-1]
+    assert last["interrupted"] is True
+    assert last["spokenText"] == "First sentence."
+    # The full reply is left intact: chat history can still show what it would
+    # have finished saying.
+    assert "Third sentence." in last["text"]
+
+
+def test_an_empty_report_changes_nothing(client, stub):
+    """Interrupting before a word was audible is a real case — nothing was
+    heard, so there is nothing to correct."""
+    stub.says("Anything at all.")
+    client.get("/api/chat/stream", params={"message": "hello"})
+
+    assert client.post("/api/chat/interrupt", json={"spokenText": "  "}).json()["ok"] is False
+    session = get_active_session_id()
+    last = [m for m in conversation.get_messages(session) if m["role"] == "assistant"][-1]
+    assert "interrupted" not in last
+
+
+def test_a_report_with_no_reply_to_mark_is_answered_not_a_crash(client):
+    """A known, disclosed race. Its only cost is that the interruption went
+    unrecorded — never wrong data — so it answers honestly rather than raising."""
+    assert client.post("/api/chat/interrupt", json={"spokenText": "heard this"}).json() \
+        == {"ok": False}

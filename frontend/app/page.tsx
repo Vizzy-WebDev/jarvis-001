@@ -16,7 +16,10 @@ import { Orb } from '@/components/stage/Orb';
 import { api, ApiRequestError } from '@/lib/api';
 import type { Message as StoredMessage } from '@/lib/api-types';
 import { streamTurn, type RunningTurn } from '@/lib/chat';
+import { DuplexEngine } from '@/lib/voice/duplex-engine';
+import type { VoiceEngine } from '@/lib/voice/engine';
 import { PipelineEngine } from '@/lib/voice/pipeline-engine';
+import { RealtimeEngine } from '@/lib/voice/realtime-engine';
 import { useHashRoute } from '@/lib/useHashRoute';
 import type { OrbState } from '@/lib/orb';
 
@@ -53,7 +56,15 @@ export default function Home() {
   const [engineId, setEngineId] = useState('pipeline');
   const [voiceId, setVoiceId] = useState('browser');
   const running = useRef<RunningTurn | null>(null);
-  const engine = useRef<PipelineEngine | null>(null);
+  const engine = useRef<VoiceEngine | null>(null);
+  /**
+   * A note that outlives one state change — today, that recognition landed on
+   * the browser's own rather than the provider that was picked. A ref, not
+   * state: the status handler below is a closure the engine keeps for its whole
+   * life, and reading a captured `useState` value there would read the value
+   * from the moment the engine was built, forever.
+   */
+  const sttNotice = useRef<string | null>(null);
 
   // --- what is already true when the page opens ------------------------------
 
@@ -216,16 +227,25 @@ export default function Home() {
     if (engine.current) {
       engine.current.stop();
       engine.current = null;
+      sttNotice.current = null;
       setListening(false);
       setOrbState('idle');
       setStatus('Type below to talk to Jarvis');
       return;
     }
 
-    const started = new PipelineEngine({ voiceOutput: speakReplies ? voiceId : 'browser' });
+    sttNotice.current = null;
+    const started = buildEngine(engineId, speakReplies ? voiceId : 'browser');
     started.on('state', ({ state }) => {
       setOrbState(state as OrbState);
-      setStatus(SPOKEN_STATE[state] ?? 'Listening…');
+      // A standing note wins while resting, because that is when there is
+      // nothing more urgent to say and it is exactly when someone is wondering
+      // why the engine they picked feels no different. It never overwrites
+      // thinking or speaking.
+      const resting = state === 'listening' || state === 'hearing_speech';
+      setStatus(resting && sttNotice.current
+        ? sttNotice.current
+        : SPOKEN_STATE[state] ?? 'Listening…');
     });
     started.on('transcript', ({ text, final }) => {
       if (final && text) setTurns((current) => [...current, { id: newId(), role: 'user', text }]);
@@ -234,6 +254,14 @@ export default function Home() {
     started.on('restart', () => setTurns((current) => clearReply(current)));
     started.on('done', () => setBusy(false));
     started.on('paused', ({ reason }) => setStatus(reason));
+    // Not an error: the browser's own recognition is a real path, just not the
+    // one that was picked. Saying nothing here is how someone ends up wondering
+    // why the engine they chose does not feel any different.
+    started.on('stt_fallback', () => {
+      sttNotice.current = 'Listening — no speech-recognition key is set up, '
+        + 'so this is using the browser’s own.';
+      setStatus(sttNotice.current);
+    });
     // Deliberately not an error: the reply itself is fine, only its audio
     // failed, and clearing what is on screen would be wrong.
     started.on('tts_failure', () =>
@@ -247,7 +275,7 @@ export default function Home() {
     engine.current = started;
     setListening(true);
     await started.start();
-  }, [speakReplies, voiceId]);
+  }, [engineId, speakReplies, voiceId]);
 
   // Releasing the microphone is not optional cleanup.
   useEffect(() => () => engine.current?.stop(), []);
@@ -347,11 +375,34 @@ export default function Home() {
             onSend={send}
             onNewChat={newChat}
             onDecide={decide}
+            // Only one recognition session runs reliably at a time, so the
+            // voice engine stands down when the composer's own mic starts.
+            onDictationStart={() => {
+              if (!engine.current) return;
+              void toggleListening();
+            }}
+            isSpeaking={() => engine.current?.state === 'speaking'}
           />
         </aside>
       </div>
     </main>
   );
+}
+
+/**
+ * The engine the picker chose, built fresh.
+ *
+ * The id comes from `/api/voice/options`, which decides what to offer from a
+ * capability check rather than from any provider's name — so this maps ids to
+ * classes and knows nothing else. An unrecognised id falls back to the engine
+ * that works with any model rather than failing: the picker only ever offers
+ * what is available, so reaching here with something else means a mismatch, and
+ * refusing to listen at all would be the worse of the two answers.
+ */
+function buildEngine(id: string, voiceOutput: string): VoiceEngine {
+  if (id === 'duplex') return new DuplexEngine({ voiceOutput });
+  if (id === 'realtime') return new RealtimeEngine();
+  return new PipelineEngine({ voiceOutput });
 }
 
 /** What the status line says for each engine state. */

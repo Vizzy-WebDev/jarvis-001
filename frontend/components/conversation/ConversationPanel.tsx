@@ -26,6 +26,8 @@ export function ConversationPanel({
   onSend,
   onNewChat,
   onDecide,
+  onDictationStart,
+  isSpeaking,
 }: {
   turns: Turn[];
   notConfigured: boolean;
@@ -33,6 +35,9 @@ export function ConversationPanel({
   onSend: (text: string, attachments: string[]) => void;
   onNewChat: () => void;
   onDecide?: (approvalId: string, decision: 'allow' | 'deny') => void;
+  /** Passed straight through to the composer's dictation — see there. */
+  onDictationStart?: () => void;
+  isSpeaking?: () => boolean;
 }) {
   return (
     <div
@@ -59,7 +64,13 @@ export function ConversationPanel({
       <div className="h-px shrink-0 bg-surface-border" />
       <Transcript turns={turns} notConfigured={notConfigured} onDecide={onDecide} />
       <div className="h-px shrink-0 bg-surface-border" />
-      <Composer disabled={notConfigured} busy={busy} onSend={onSend} />
+      <Composer
+        disabled={notConfigured}
+        busy={busy}
+        onSend={onSend}
+        onDictationStart={onDictationStart}
+        isSpeaking={isSpeaking}
+      />
     </div>
   );
 }

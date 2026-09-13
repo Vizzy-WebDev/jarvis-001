@@ -45,7 +45,7 @@ answer.
   goal per scope at a time; `closeGoal()`/`getActiveGoal()` round it out). Plus one more
   from migration 11: `capture_health` (`recordCaptureHealth()`/`captureHealthSummary()`)
   — the health of the CAPTURE MECHANISM itself, a different axis from what
-  `self_capability_stats` measures; see `self-capture.py`'s own entry below. Two more
+  `self_capability_stats` measures; see the capture-wiring entry below. Two more
   from migration 12: `self_model_snapshots` (`saveSelfModelSnapshot()`/
   `getSelfModelSnapshot()`/`getSnapshotByToolCallId()` — the exact JSON a `check_myself`
   call returned, kept permanently) and `self_model_citations`
@@ -64,21 +64,27 @@ answer.
   `selfFocusSection()` checks before spending any tokens on it. Testable with a bare
   `python -c "..."` script — no server, no database — same as
   the Node build's style floors' `detectFloors()`.
-- **`self-capture.py`** — leaf-adjacent (imports `self/store.py` and
-  `improvement/improvement/store.py`, both leaves). `recordToolOutcome()` is called once
-  per `tool_result` from `orchestrator/pipeline.py`'s own per-step loop: **every** outcome bumps
-  the rolling tally (dimension 2's whole grounding), but only a **notable** one (a real
-  failure, a refused-allowlist call, or an escalated confirm) also writes one more
-  `improvement_outcomes` row (`source: 'turn'`) into Self-Improvement's *existing*
-  pipeline — this file is the one place this build feeds that pipeline, and it feeds the
-  one door it already has, never a second one. **A real audit gap, closed:**
-  `recordAttempt()` used to run with no local error handling — a throw from
-  `self/store.py`'s SQLite write propagated straight out, caught only one level up in
-  `runner.py`'s own wrapper, left on record as nothing but a `console.error`. A broken
-  recorder and a tool genuinely never used looked identical to every dimension reading
-  `self_capability_stats`. Now wrapped in its own local `try/catch`, and either branch
-  logs to `self/store.py`'s `capture_health` table (`recordCaptureHealth()`) — the health
-  of the SENSOR, distinct from what it measures.
+- **No separate `self-capture.py` file exists in this port — worth being explicit,
+  since the Node original had one and this doc used to describe it as if it still
+  did.** Its rolling-tally half survives, folded directly into `self/store.py`'s own
+  `record_attempt(axis, key, ok)` — called from `observers/recording.py`'s
+  `_record_tool_outcome`, subscribed to `EventType.TOOL_COMPLETED`/`TOOL_FAILED` and
+  wired up unconditionally at real startup via `start_observers()`, never by a direct
+  call from the turn loop (`orchestrator/pipeline.py` deliberately never imports
+  `jarvis.self`, the same invariant that keeps it clear of `jarvis.improvement`,
+  `jarvis.cost`, `jarvis.observers`; `test_architecture.py` asserts it). **What did
+  NOT survive the port: the other half.** The Node original's `recordToolOutcome()`
+  also wrote a fresh `improvement_outcomes` row (`source: 'turn'`) for a *notable*
+  outcome (a real failure, a refused-allowlist call, an escalated confirm), feeding
+  Self-Improvement's pipeline from live tool activity in the same turn it happened.
+  Nothing in this Python port does that — a tool's failure bumps the Self-Model tally
+  and nothing else; Self-Improvement's own capture (`observers/improvement.py`) only
+  ever hears about a job's or a scheduled task's terminal status, never a single
+  notable tool call inside an ordinary live turn. A real, disclosed gap, not yet
+  built. **`record_attempt()`'s own error handling did survive the port intact**:
+  wrapped in its own local `try/except`, and either branch logs to `self/store.py`'s
+  `capture_health` table (`record_capture_health()`) — the health of the SENSOR,
+  distinct from what it measures, still read by `ops/diagnostics/checks/capture_health.py`.
 - **`self/model.py`** — the assembler. Not a leaf (imports several stores), but every one
   of those is itself leaf or leaf-adjacent, which is what keeps this file safe for
   `jarvis/tools/self_tools.py` to import directly. `buildSelfModel({ only, ... })`

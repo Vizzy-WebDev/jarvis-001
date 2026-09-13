@@ -1,8 +1,10 @@
 """Is the scheduler actually firing?
 
-Only meaningful when the scheduler is switched on: while it is deliberately off
-before cutover, an overdue task is expected, and reporting it would be reporting
-a decision as a fault.
+Only meaningful when the scheduler is switched on. `main()` turns it on by default
+at every real launch (`scheduler.engine.ENABLE_ENV`, set via `_BACKGROUND_INTERLOCKS`);
+it stays off only in tests, which construct the app directly without going through
+`main()`. An overdue task while the interlock is off is expected there, and reporting
+it would be reporting a deliberate test-isolation choice as a fault.
 """
 
 from __future__ import annotations

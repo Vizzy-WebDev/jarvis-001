@@ -1,7 +1,6 @@
 .env
 *.log
 data/
---full-page
 
 # Python backend
 __pycache__/

@@ -29,8 +29,10 @@ from .routes import (
     skills, speech, tasks, turn, uploads, voice,
 )
 
-# The built Next.js export. Absent during early migration, when the front end is
-# still being served by the Node app — the API is fully usable without it.
+# The built Next.js export. Committed to the repo (see root CLAUDE.md's "Run it"),
+# so this is present on a normal checkout — the check below is defensive, not a
+# real runtime branch, and the API is fully usable even without it (e.g. a fresh
+# clone before the first `npm run build`).
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "out"
 
 

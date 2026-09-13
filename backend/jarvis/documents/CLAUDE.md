@@ -10,43 +10,55 @@ does not exist. -->
 # Documents (`jarvis/documents/`)
 
 Reads `.docx`/`.xlsx`/`.pptx` into Markdown with no new dependency: they're ZIP
-archives full of XML, so `artifacts/office.py` (a minimal reader over Node's built-in
-`zlib.inflateRawSync`) plus `artifacts/office.py` (a small tree-building parser, not a spec
-implementation) is all it takes. One reader per format (`docx.py`/`xlsx.py`/
-`pptx.py`) plus two shared pieces (`media.py` for embedded pictures, `artifacts/office.py`
-for chart data), unified behind `__init__.py`'s `extractDocument()` — the only seam
-anything outside this folder should import. Output is Markdown text, so it rides
-through `attachments.py`'s existing `composeMessage()` exactly like a plain text
-document — every model can read an Office document, not just Gemini, no
-capability gate.
+archives full of XML, so Python's own `zipfile` plus `xml.etree.ElementTree` (a
+small tree-walking parser, not a spec implementation) is all it takes.
 
-`xlsx.py` places every cell by its own `r=` reference rather than by iteration
-order (a real workbook's blank cells are usually absent from the XML entirely —
-walking in document order would silently shift every later column left) and
-detects date-serial numbers via `styles.xml` rather than showing a raw number
-like `41640`. A workbook too big to inline gets a truncation note pointing at
-`jarvis/tools/analyze_spreadsheet.py`, which renders the FULL sheet to CSV and
-runs a model-written script against it in `jarvis/sandbox/` — the real
-ingest-once/compute-properly answer to a big spreadsheet, not more truncation.
+**Two readers on purpose, both in this directory, neither split further by
+format** — a real structural difference from the Node original, which had one file
+per format (`docx.js`/`xlsx.js`/`pptx.js`) plus separate `media.js`/chart-data
+helpers. Here:
+- **`office.py`** — the richer reader everything else uses: `docx_to_markdown()`,
+  `xlsx_to_markdown()`/`sheet_names()`/`sheet_rows()`, `pptx_to_markdown()`, and
+  the shared embedded-picture helper `_images()`, all in one file, unified behind
+  `extract_document()` — the one seam anything outside this folder should import
+  (re-exported from `__init__.py`, along with each of the above). Output is
+  Markdown text, so it rides through `attachments.py`'s existing message
+  composition exactly like a plain text document — every model can read an Office
+  document, no capability gate.
+- **`reader.py`** — a second, deliberately minimal, independently-written reader
+  (`read_docx()`, `read_xlsx()`, `read_document()`). Its only job is being the
+  thing the artifact WRITERS (`artifacts/office.py`'s `write_docx()`/`write_xlsx()`)
+  are verified against — round-tripping a written file back through the same
+  reader that wrote it proves nothing, so this file exists specifically to be a
+  second, unrelated implementation.
 
-## Gotchas
+`office.py`'s `xlsx_to_markdown()` places every cell by its own `r=` reference
+rather than by iteration order (a real workbook's blank cells are usually absent
+from the XML entirely — walking in document order would silently shift every
+later column left) and detects date-serial numbers via `styles.xml` rather than
+showing a raw number like `41640`. A workbook too big to inline gets a truncation
+note pointing at `jarvis/tools/analyze_spreadsheet.py`, which renders the FULL
+sheet to CSV and runs a model-written script against it in `jarvis/sandbox/` —
+the real ingest-once/compute-properly answer to a big spreadsheet, not more
+truncation.
 
-- **`media.py`'s embedded-picture extractor filters by real pixel dimensions,
-  not file size.** A byte-size cutoff ("drop anything under 8KB, it's probably
-  a bullet or an icon") silently dropped genuine small-but-legitimate photos —
-  ordinary JPEG compression can put a real photo under 4KB. `imageDimensions()`
-  reads each format's actual header bytes (fixed offsets for PNG/GIF/BMP, a
-  marker-segment walk for JPEG) and filters on physical size instead — file
-  size conflates visual content with compression efficiency, which are
-  unrelated.
-- **`artifacts/office.py` must look up cache elements recursively, not as direct
-  children.** A `<c:strCache>`/`<c:numCache>` in Office chart XML is never a
-  direct child of `<c:tx>`/`<c:cat>`/`<c:val>` — it's one level deeper, wrapped
-  in a `<c:strRef>`/`<c:numRef>`. A direct-children-only lookup silently
-  produces an empty table (headers, no rows) for every chart, with no error —
-  this class of bug only shows up by rendering real output, never by static
-  review. Fixed with a recursive lookup (`findAll` instead of `findChild`).
-  Chart-position-within-the-document is a separate, deliberately unsolved
-  problem — see `artifacts/office.py`'s own header comment for why every chart in an
-  archive is appended as one section rather than interleaved at its real
-  location.
+## What did not carry over from the Node original — disclosed, not silently missing
+
+The Node build's equivalent had two pieces of behaviour this port does not
+reproduce. Both are real, open gaps rather than docs to fix quietly:
+
+- **No embedded-chart extraction at all.** The Node original read Office chart
+  XML (`<c:strCache>`/`<c:numCache>` cache elements) into a real data table
+  appended to the Markdown. `office.py` has no equivalent — a chart embedded in
+  a `.docx`/`.xlsx`/`.pptx` is silently invisible to `extract_document()` today,
+  never surfaced as an error, just absent from the output.
+- **The embedded-picture filter is a plain byte-size cap, not a pixel-dimension
+  check.** `office.py`'s `_images()` drops anything over `IMAGE_MAX_BYTES` (2MB,
+  an upper bound against bloating the response) and otherwise keeps every
+  image regardless of size — genuinely simpler than, and not vulnerable to, the
+  specific Node bug this replaced (a LOWER-bound byte cutoff meant to filter out
+  bullets/icons that also dropped small-but-legitimate JPEG photos under 4KB).
+  Worth knowing if this is ever "upgraded": the Node fix for that bug
+  (`imageDimensions()`, reading each format's real header bytes to filter by
+  physical size instead of file size) has no Python counterpart, because the
+  simpler upper-bound-only design here never had that failure mode to fix.

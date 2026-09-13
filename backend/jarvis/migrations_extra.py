@@ -5,9 +5,9 @@ from server/db.js and carries a "do not hand-edit" rule so it stays a faithful
 copy; hand-adding a step there would quietly break that guarantee. These are ours.
 
 Numbering continues from 19, so `PRAGMA user_version` keeps rising monotonically.
-The Node app is unaffected: its own migrate() loop runs `for v = current; v <
-MIGRATIONS.length` with 19 entries, so a database at version 20+ simply does no
-work there. Additive, and safe for both to open the same file.
+Before the Node app was retired, this was also what kept it safe to open the same
+database file: its own migrate() loop ran `for v = current; v < MIGRATIONS.length`
+with 19 entries, so a database already at version 20+ simply did no work there.
 """
 
 from __future__ import annotations

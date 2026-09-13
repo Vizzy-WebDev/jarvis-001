@@ -161,18 +161,31 @@ common case.
 
 ## `orchestrator.py` — admission, the 5-second tick, crash recovery
 
-`buildToolsetForKind(kind)` — `'generic'` gets every non-meta, non-internal capability
-(`listCapabilities({includeMeta:false})`) with **no restriction at all**; `'research'`/
-`'files'` filter that same list down to a small hardcoded `KIND_TOOL_NAMES` array PLUS
-every currently-enabled folder Skill, unconditionally (`c.kind === 'skill'`) — a Skill is
-the user's own packaged process, not a raw capability the kind is trying to fence off, so
-every kind can reach one regardless of `KIND_TOOL_NAMES`. Before this, a `research`- or
-`files`-kind job could not call an installed Skill under any circumstances, however well
-it matched the job's actual goal — confirmed live, not assumed. `'computer'` never calls
-this (see `driveComputerJob` above). Every kind gets
-`report_job_done`/`report_job_stuck`/`request_job_split` appended regardless of what's
-otherwise restricted — the completion/stuck/split vocabulary isn't something a narrower
-kind should have to give up.
+**Kind-based tool restriction lives in `worker.py`, not here — worth being explicit,
+since the Node original's equivalent (`buildToolsetForKind`) lived beside admission
+and an earlier version of this doc described it as if it still did.** `worker.py`'s
+`TOOLS_BY_KIND` dict is what `run_job()` actually reads: `'generic'` maps to `None`,
+meaning no restriction at all (every declared capability is offered); `'research'`
+and `'files'` each map to a small hardcoded raw-tool list (`look_it_up`,
+`read_web_page`, etc.) plus `request_job_split` (`JOB_OWN_TOOLS`, appended to every
+restricted kind). `'computer'` never calls this at all (see `driveComputerJob` above).
+
+**A real, disclosed gap, not a stale doc issue alone: `research`/`files`-kind jobs
+cannot reach an installed Skill, at all, regardless of how well it matches the job's
+own goal.** The Node original fixed exactly this (`c.kind === 'skill'` unconditionally
+added back into a restricted kind's tool list, reasoning that a Skill is the user's
+own packaged process, not a raw capability the kind is trying to fence off) — that
+fix was never carried over into `TOOLS_BY_KIND`. Confirmed by reading the dict, not
+assumed. Worth building if a `research`/`files`-kind job ever needs to use a Skill;
+not yet built.
+
+**`report_job_done`/`report_job_stuck` do not exist in this port, and that is by
+design, not an omission** — see root `CLAUDE.md`'s own note on this: the Python
+worker observes completion from the orchestrator's own events plus semantic
+verification (`ops/verify.py`) instead of depending on a model honestly
+self-reporting via an internal tool, which is strictly better than what those two
+tools did. `request_job_split` is the only surviving member of that internal-tool
+set, and it is what `JOB_OWN_TOOLS` above actually appends.
 
 **What "kind" is NOT, worth being explicit about since the name invites a stronger
 reading than the code delivers:** there is no per-kind system prompt, no role or

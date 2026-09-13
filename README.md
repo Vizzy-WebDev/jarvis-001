@@ -40,17 +40,26 @@ OpenAI-compatible gateway can all be added afterward from Model Settings.
 
 ## What it can actually do
 
-- **Real-time conversation, by voice or text.** Two independent voice engines behind
-  one interface: an any-model pipeline (browser speech-to-text → whichever AI model
-  is active → server-side or browser TTS) and Gemini Live (near-instant, mid-word
-  interruptible, Gemini only). Adaptive turn-taking tells "still thinking" pauses
-  apart from "actually done talking."
+- **Real-time conversation, by voice or text.** Three voice engines behind one
+  interface, picked by what's actually configured: a browser-speech-to-text →
+  any-model → TTS pipeline (works with anything); a keeps-listening-while-it-talks
+  engine over a server-relayed recognition socket; and a provider's own realtime
+  speech-to-speech session (near-instant, mid-word interruptible) when one is
+  configured — nothing in the engine picker is hardcoded to a specific provider.
+  Adaptive turn-taking tells "still thinking" pauses apart from "actually done
+  talking."
 - **Any model, real fallback.** Connect Gemini, Claude, OpenAI, a local server
   (Ollama/LM Studio), or any other OpenAI/Anthropic/Gemini-shaped gateway (OpenRouter,
   Groq, Together, an in-house endpoint) via a generic Custom connection that probes
   the address to work out what's actually on the other end. Auto-routing picks a
   model per task and by real, measured cost, not just a name-based guess; a broken
   model degrades gracefully with the conversation's context intact.
+- **A real, adaptive delivery register, separate from what it concludes.** Warmth,
+  directness and playfulness shift with the moment — softer when you sound genuinely
+  distressed, more measured on an inherently serious topic, and it can genuinely
+  laugh out loud (a real audible cue, never a transcribed "haha") when something
+  actually lands. What it concludes never changes to fit the mood; only how it's said
+  does.
 - **Memory and Chat History.** Approved facts about you sit directly in every
   conversation (no search needed); full conversation history persists across restarts
   and is full-text searchable, including from inside a live conversation ("what did I
@@ -66,9 +75,10 @@ OpenAI-compatible gateway can all be added afterward from Model Settings.
 - **Screen capture.** Real screenshots and ffmpeg-recorded `.mp4` screen recordings
   delivered straight into the conversation, plus a persistent Screen Sharing mode for
   ongoing "look at what I'm doing" conversations.
-- **Real file generation.** Word, Excel, PowerPoint, and plain data/text files, built
-  for real and mechanically verified (re-opened through Jarvis's own document reader)
-  before being handed to you, served as a forced download.
+- **Real file generation.** Word and Excel files, built for real and mechanically
+  verified (re-opened through Jarvis's own document reader) before being handed to
+  you, served as a forced download — plus plain data/text formats. It can also READ a
+  PowerPoint file you hand it; it cannot create one (see Honest limits).
 - **Automation that runs without you watching.** Scheduled Tasks (on a clock, always
   read back and confirmed before saving), Background Jobs (long-running work
   backgrounded from a live conversation, checkable and cancellable anytime, escalating
@@ -79,13 +89,14 @@ OpenAI-compatible gateway can all be added afterward from Model Settings.
   Memory — and speak up first, judged case-by-case against real context rather than a
   fixed "always interrupt for this" list, and held back overnight by quiet hours
   except for a genuine emergency.
-- **Self-improvement and self-knowledge.** Jarvis reviews its own completed work,
-  extracts lessons, and — only from its own directly-observed track record, never
-  from something merely read online — can turn a genuinely recurring one into a
-  behaviour rule, always undoable. Separately, it can give an honest, evidence-backed
-  answer to "can you actually do this reliably," "has anything gone wrong with you
-  lately," and "how much have I spent" (three separately-labelled numbers: measured,
-  provider-reported, calculated — never blended into a guess).
+- **Self-improvement and self-knowledge.** Jarvis reviews its own completed work
+  (every finished job and scheduled task run, plus anything that reads as you
+  correcting it), extracts lessons, and — only from its own directly-observed track
+  record, never from something merely read online — can turn a genuinely recurring
+  one into a behaviour rule, always undoable. Separately, it can give an honest,
+  evidence-backed answer to "can you actually do this reliably," "has anything gone
+  wrong with you lately," and "how much have I spent" (three separately-labelled
+  numbers: measured, provider-reported, calculated — never blended into a guess).
 - **Operational self-awareness.** Automatic self-diagnosis with real self-heal for a
   handful of failure modes, live rolling CPU/reachability awareness ("can you handle a
   heavy task right now"), and mechanical + semantic verification wired into artifact
@@ -95,9 +106,9 @@ OpenAI-compatible gateway can all be added afterward from Model Settings.
 
 - No wake word — you start it with a click or the Space bar.
 - No photographic/raster image generation — no adapter in use does this.
-- A generated `.pptx` slide deck is checked less thoroughly than `.docx`/`.xlsx` (its
-  master/theme chain can't be round-tripped the same way) — worth a look in real
-  PowerPoint before fully trusting one.
+- **No PowerPoint generation.** Jarvis can read a `.pptx` you hand it, but asking it
+  to create one gets a plain refusal naming exactly what it can produce instead
+  (`.docx`, `.xlsx`, plain text formats) — not a lesser-effort attempt.
 - Runs only while its own server window is open; nothing scheduled fires into an
   empty room while it's closed — it catches up, clearly marked "ran late," next time
   you open it.
@@ -122,15 +133,17 @@ OpenAI-compatible gateway can all be added afterward from Model Settings.
 ```
 backend/jarvis/
   main.py          FastAPI app + routers + the static mount that serves the front end
+  assembly.py      The composition root — builds the registry/orchestrator once; starts every background clock
   routes/          One module per area — a surface over the subsystems, no business logic
   capabilities/    The capability contract, the registry, and the one dispatcher
   orchestrator/    pipeline.py — the turn loop
+  personality.py   The adaptive delivery register — tone floors, sticky style, real vocal laughter
   gateway/         Connections/models registry, routing, availability, probing
   adapters/        One module per wire format: Anthropic, Gemini, OpenAI-compatible
   policy/          The permission layer — decided independently of model behaviour
-  events/          Typed event bus; observers/ subscribe (cost, security, verification)
+  events/          Typed event bus; observers/ subscribe (cost, security, verification, improvement)
   conversation.py  Neutral, model-agnostic transcript format
-  db.py            The one SQLite connection; migrations.py holds the schema history
+  db.py            The one SQLite connection; migrations.py + migrations_extra.py hold the schema
   chat_store.py    Conversation/message CRUD + full-text search
   memory/          Memory Manager: extraction, approval policy, checkpoints
   scheduler/       Scheduled Tasks, recurrence, briefing
@@ -140,19 +153,20 @@ backend/jarvis/
   self/            Self-Model — grounded, evidence-backed self-knowledge
   ops/             Self-diagnosis + self-heal, environment awareness, verification
   cost/            Automatic spend/usage tracking, fed back into model routing
-  artifacts/       Real file generation (.docx/.xlsx/.pptx/...), verified on creation
+  artifacts/       Real file generation (.docx/.xlsx/plain text), verified on creation
   control/         Computer control: perceive/decide/act loop, screen capture, safety
   connectors/      MCP/API/CLI/browser/files app connectors, the catalogue, OAuth
   tools/           Auto-loaded executable capabilities (weather, open_app, run_code, ...)
   skills/          Folder Skills (SKILL.md-based instructions)
   sandbox/         Isolated code execution backends
   monitor/         "Watch for X, then act" background checks
+  documents/       Reads .docx/.xlsx/.pptx into Markdown (write support: docx/xlsx only)
   voice/ tts/ stt/ Voice options, speech synthesis and recognition provider seams
 backend/tests/     ~1300 tests, plus contract/fixtures/ — 45 recorded HTTP exchanges
 frontend/
   app/page.tsx     The shell: stage, orb, conversation panel, composer, drawer, router
   components/      screens/ (one per section), ui/ (shared primitives), conversation/
-  lib/             api.ts (the one typed client), nav.ts (the SECTIONS registry), voice/
+  lib/             api.ts (the one typed client), nav.ts (the SECTIONS registry), voice/ (three engines)
   out/             The BUILT export the backend serves — committed, so running needs no Node
 ```
 
@@ -166,6 +180,11 @@ cd backend && python -m pytest tests -q                      # ~1300 tests
 cd backend && python -m pytest tests/test_shell_e2e.py -q     # 65, in a real browser
 cd frontend && npm run typecheck && npm run build             # only if the UI changed
 ```
+
+Run the first two as separate commands, not combined into one invocation — running
+the whole backend suite and the browser suite in a single pytest process has produced
+spurious failures in the browser tests that go away the moment the same test is
+re-run on its own.
 
 Three layers, each catching what the others cannot:
 
@@ -195,4 +214,4 @@ optional query flag.
 
 - **[`How to Use Jarvis.md`](How%20to%20Use%20Jarvis.md)** — for using it, no technical background needed.
 - **[`CLAUDE.md`](CLAUDE.md)** — the full architecture and design-decision record.
-- **[`handoff.md`](handoff.md)** — session-by-session build history.
+- **[`handoff-archive.md`](handoff-archive.md)** — session-by-session build history.

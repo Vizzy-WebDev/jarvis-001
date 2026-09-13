@@ -64,31 +64,46 @@ whichever coding assistant the user names, never reading the repo itself.
 | `improvement/store.py` | **leaf** — `db.py` only | Safe for `jarvis/tools/*.py` and `prompt.py` to import directly, same reasoning as `memory/memory/store.py` and `jobs/job_store.py` |
 | `improvement/policy.py` | **pure** — `prefs.py` only | Testable with a bare `python -c` truth table, same as `memory/policy.py` |
 | `domains.py` | **zero imports** | Same reasoning as the Node build's style floors (not ported — see the root CLAUDE.md) — a floor, directly testable, no server needed |
-| `capture.py` | `improvement/store.py`, `jobs/job_store.py`, both leaves | Zero model calls, ever — safe to call from `orchestrator/pipeline.py`'s own per-turn loop and `scheduler/engine.py`'s own outcome hook with no latency risk |
+| `capture.py` | `improvement/store.py`, `jobs/job_store.py`, both leaves | Zero model calls, ever — cheap enough to call from anywhere with no latency risk. Only `scheduler/engine.py` calls it directly; `orchestrator/pipeline.py` never imports it at all (see below) |
 | `apply.py` | `improvement/store.py`, `prefs.py` | Never imports anything that could write to the repo's own source tree — see its own header comment on why that's the one invariant this whole module exists to protect |
 | `reflect.py`, `synthesize.py`, `improvement/reflect.py`, `improvement/synthesize.py`, `improvement/implementation_prompt.py` | + `ai.py` (and, for `improvement/reflect.py`, `research.py`) | Not leaf — safe to import from `improvement/reflect.py` only |
 | `improvement/reflect.py` | everything above | The only non-leaf top-level module; `startImprovementCycle()` called once from `main.py`, beside `startScheduler()`/`startOrchestrator()` |
 
-`capture.py` being callable from `orchestrator/pipeline.py` (for `noteCorrection()`, gated on
-`!opts.background`) and from `scheduler/engine.py` (for `recordTaskOutcome()`, beside the
-existing memory checkpoint hook) is what makes capture cost nothing structurally — a
-leaf module three hops away from any model call can't accidentally spend quota no
-matter where it's called from.
+**Two different wiring shapes reach `capture.py`, not one.** `scheduler/engine.py` calls
+`record_task_outcome()` directly — a scheduled task run has no event of its own to
+subscribe to, and the call site already has both `run` and `task` in hand right where
+`record_run()` builds them. Jobs and corrections do NOT reach `capture.py` the same
+way: `orchestrator/pipeline.py`'s own header states it deliberately never imports
+`jarvis.improvement` at all (`test_architecture.py`'s
+`test_the_turn_loop_imports_no_subsystem_that_watches_it` enforces this), so
+`observers/improvement.py` subscribes to the event bus instead —
+`JOB_COMPLETED`/`JOB_UPDATED` (re-reading the job and its trace at event time rather
+than trusting the event's own thin payload) feed `record_job_outcome()`, and
+`ASSISTANT_INPUT` (which now carries the turn's raw `text`, added specifically for
+this) feeds `note_correction()`, gated on the turn not being `background`. Either way
+`capture.py` itself stays a leaf three hops from any model call — the wiring differs,
+the zero-cost property doesn't.
 
-## The hook points — verified, not assumed
+## The hook points — verified against the real code, not assumed
 
-A job's terminal status is caught two ways: `improvement/reflect.py` subscribes directly to
-`jobs/job-events/bus.py`'s `jobEvents` (a pure leaf — deliberately NOT
-`jobs/orchestrator.py`, which would be the non-leaf-but-still-safe-here choice but is
-reserved for `main.py` alone per that directory's own circular-import note) for
-`'status'` events with `done`/`failed`/`cancelled`; a crash-classified `orphaned` job
-never emits at all (`orchestrator.py`'s `recoverOrphans()` writes the row directly), so
-`improvement/reflect.py`'s own tick sweeps for it separately via `jobStore.listJobs({status:
-'orphaned'})`. Both paths funnel into `capture.py`'s `recordJobOutcome(jobId)`, which is
-idempotent by construction (`improvement_outcomes.UNIQUE(source, source_ref)` +
-`INSERT OR IGNORE`) — confirmed live that `orchestrator.py`/`worker.py` really can emit
-`'status'` twice for the same job, and a repeat sweep of an already-captured orphan
-really is a no-op, not a growing cost.
+A job's terminal status (`done`/`stalled`/`cancelled`/`failed`) is caught through the
+event bus: `worker.py`'s done/stalled paths and `orchestrator.py`'s `cancel()` publish
+`EventType.JOB_COMPLETED`/`JOB_UPDATED`, and `observers/improvement.py` subscribes to
+both, re-reading the job and its trace at event time (never trusting the event's own
+thin `{id, status, title}` payload) before calling `capture.record_job_outcome()`.
+That function's own `TERMINAL_JOB_STATUSES` guard plus `improvement_outcomes.UNIQUE(source,
+source_ref)` (`INSERT OR IGNORE` under the hood) make it safe to call on every
+`JOB_UPDATED`, not just a terminal one, and safe to call twice for the same job.
+
+**A real, disclosed gap: a crash-classified orphan is NOT currently captured as an
+outcome at all.** `orchestrator.py`'s `recover_orphans()` moves a crashed job to
+`queued` (resumable/restartable) or `awaiting_decision` (unrecoverable) — none of
+those are in `TERMINAL_JOB_STATUSES`, and `recover_orphans()` publishes no event
+either, so nothing about an orphan's crash ever reaches Self-Improvement's capture
+step today. The Node original's equivalent (`improvement/reflect.py`'s own tick
+sweeping `jobStore.listJobs({status: 'orphaned'})`) does not exist here — there is no
+periodic sweep for this case in the Python port. Worth closing if orphan recoveries
+turn out to be common enough to be worth learning from; not yet built.
 
 **A split completion must never become an outcome.**
 `jarvis/tools/job_split.py` marks the ORIGINAL job `status:'done'` with

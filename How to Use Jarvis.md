@@ -364,16 +364,16 @@ above, which is an ongoing mode rather than a one-off capture.
 ## 15. Getting Jarvis to make you a real file
 
 Ask for something you can actually keep — *"write this up as a Word document,"*
-*"put these numbers in a spreadsheet,"* *"make me a slide deck for this,"* or any
-other document, spreadsheet, presentation, or plain data/text file — and Jarvis
-builds a real file and drops it into the conversation as a card you can open or
-download. Every generated file is checked by actually opening it back up before
-it's ever handed to you, so a broken file is never silently delivered.
+*"put these numbers in a spreadsheet,"* or any other document, spreadsheet, or plain
+data/text file — and Jarvis builds a real file and drops it into the conversation as
+a card you can open or download. Every generated file is checked by actually opening
+it back up before it's ever handed to you, so a broken file is never silently
+delivered.
 
-**One honest limit:** Jarvis can't generate photographs or other raster/AI images —
-no adapter it uses does that today. And a generated slide deck (`.pptx`) is checked
-less thoroughly than a Word or Excel file — worth a quick look in real PowerPoint
-before you trust it completely.
+**Two honest limits:** Jarvis can't generate photographs or other raster/AI images —
+no adapter it uses does that today. And it can't build a PowerPoint slide deck either
+— it can read one you hand it, but asking it to create one gets a plain "I can't make
+that" naming what it can produce instead, not a lesser-effort attempt.
 
 ---
 

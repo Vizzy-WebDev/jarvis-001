@@ -78,16 +78,39 @@ they are surfaced as-is rather than replaced with a generic failure.
 
 ## Voice engine (`frontend/lib/voice/`)
 
-`PipelineEngine` (Chrome STT -> any model -> TTS) and `LiveEngine` (Gemini
-Live, audio in/out over WebSocket). Both extend `VoiceEngine`, which provides
-`.on(event, handler)`/`._emit()`. Events: `state`, `transcript`, `chunk`,
-`tool`, `tool_result`, `model_switch`, `restart`, `paused`, `done`, `error`.
-`frontend/app/page.tsx` wires UI to whichever is selected in settings and doesn't otherwise
-care which engine it's talking to.
+Three engines, all extending the shared `VoiceEngine` contract
+(`lib/voice/engine.ts` — `.on(event, handler)`/`.emit()`, `start`/`stop`/`sendText`/
+`interrupt`/`setMuted`), so `app/page.tsx` wires UI to whichever is selected in
+settings and doesn't otherwise care which one it's talking to. Events: `state`,
+`transcript`, `chunk`, `tool`, `tool_result`, `model_switch`, `style_floors`,
+`reaction`, `restart`, `stt_fallback`, `paused`, `tts_failure`, `done`, `error`.
 
-**All three voice-output paths now expose a real `getOutputLevel()` (0..1) for
-`frontend/components/stage/Orb.tsx`'s audio-reactivity** — none of them are a hardcoded 0 any more:
-- `LiveEngine` computes RMS inline from each scheduled PCM chunk as it plays.
+- **`PipelineEngine`** (`pipeline-engine.ts`) — Engine A. Chrome's own
+  `SpeechRecognition` → any model, over the ordinary `/api/chat/stream` path →
+  server-side or browser TTS. Three separately-swappable hops, not a fused
+  pipeline.
+- **`DuplexEngine`** (`duplex-engine.ts`) — Engine C, "keeps listening while it
+  talks." Recognition goes over `/api/duplex` (a provider when a key is
+  configured, the browser's own otherwise), reasoning is the ordinary chat
+  stream, speech is any configured voice — four layers, kept genuinely
+  separate. Self-echo is prevented by not SENDING mic frames while it speaks
+  (plus a short tail), never by filtering audio after the fact — three
+  filtering approaches were tried and all three still let some of the
+  assistant's own voice through; barge-in still works because interruption is
+  detected from local mic energy, unaffected by whether frames are being sent.
+- **`RealtimeEngine`** (`realtime-engine.ts`) — Engine B, a provider's own
+  speech-to-speech session relayed by the server over `/api/live`. **Nothing
+  here names a provider** — the socket picks whichever connection declared a
+  realtime capability, the same rule the picker itself uses one layer up, so
+  the two can never disagree; Gemini Live is the one provider that qualifies
+  today, not a hardcoded target. Mic audio is NOT held back while it speaks,
+  unlike the other two — its interruption detection is server-side and
+  depends on hearing the person while its own audio plays, so gating the
+  upload would silently disable that entirely.
+
+**All three voice-output paths expose a real `getOutputLevel()` (0..1) for
+`frontend/components/stage/Orb.tsx`'s audio-reactivity** — none of them are a hardcoded 0:
+- `RealtimeEngine` computes RMS inline from each scheduled PCM chunk as it plays.
 - `frontend/lib/voice/audio-player.ts` (server-side TTS — `jarvis/tts/matching.py`'s provider
   registry, e.g. ElevenLabs; the free `browser` voice is `PipelineEngine`'s
   actual default, not this) reads an
@@ -112,11 +135,11 @@ care which engine it's talking to.
   flat procedural motion.
 
 `getMicLevel()` is real on both engines: `PipelineEngine` reads
-`MicLevelMonitor`; `LiveEngine` computes RMS inline from each
+`MicLevelMonitor`; `RealtimeEngine` computes RMS inline from each
 `onaudioprocess` frame.
 
 **The mic never re-enters while Jarvis is talking, on purpose.**
-`pipeline-engine.py`'s continuous `SpeechRecognition` opens its own separate,
+`pipeline-engine.ts`'s continuous `SpeechRecognition` opens its own separate,
 unprocessed mic capture — `echoCancellation: true` on `getUserMedia()` never
 reaches it — so without suspension Jarvis hears its own voice as user input.
 Recognition is suspended for the window Jarvis's audio is *actually playing*
@@ -133,12 +156,12 @@ fire on two loud instants seconds apart). `MicLevelMonitor._speakingSince`
 turns, or the barge-in sustain gate can trigger almost instantly on the
 *next* reply.
 
-**Don't gate `LiveEngine`'s mic upload for echo reasons the way
-`PipelineEngine` is gated above.** Gemini Live's own barge-in depends on its
-server-side voice detection hearing the user while it's talking; gating
+**Don't gate `RealtimeEngine`'s mic upload for echo reasons the way
+`PipelineEngine` is gated above.** The realtime provider's own barge-in depends on
+its server-side voice detection hearing the user while it's talking; gating
 `onaudioprocess` during Jarvis's own playback would silently disable that
-entirely, since Gemini can't detect being talked over in audio it was never
-sent. `LiveEngine` streams mic audio continuously and lets Gemini's own
+entirely, since it can't detect being talked over in audio it was never
+sent. `RealtimeEngine` streams mic audio continuously and lets the provider's own
 `interrupted` event handle it — one duplex socket, not two separate
 capture/playback pipelines like the Pipeline engine.
 
@@ -187,8 +210,8 @@ blank page. Keep it that way — do not reintroduce hand-copied vendor files.
   in the single digits and sanity-check the face count before raising it.
 
 **The mic button (`#mic-button`) is a real Mute/Unmute toggle — it never
-reflects, and never touches, thinking/speaking.** Both engines expose a real
-`setMuted(bool)`/`.muted` (`voice-engine.py`'s shared contract) that touches
+reflects, and never touches, thinking/speaking.** Every engine exposes a real
+`setMuted(bool)`/`.muted` (`engine.ts`'s shared contract) that touches
 ONLY microphone capture — never `speaker`, `currentEventSource`/`ws`, or
 `state`. `PipelineEngine` composes this with the self-listening suspend via
 `_shouldListen()` (`active && !_recSuspended && !muted`), so muting and
@@ -220,31 +243,24 @@ thing being cleared could legitimately have been produced BEFORE the
 triggering condition, not just during or after it** — `pendingUtterance` at
 mute-time is always pre-mute content.
 
-## Delivering a real image/video into the transcript (`ui_action:{type:'attachment'}`)
+## Delivering a real image/video into the transcript
 
 A tool result can put a real, visible image or video into the current reply, not just
-describe it in words — see `jarvis/tools/CLAUDE.md`'s own entry on the `ui_action`
+describe it in words — see `jarvis/tools/CLAUDE.md`'s own entry on the attachment
 convention for the server side (`take_screenshot.py`/`tools/screen_recording.py`).
-`frontend/app/page.tsx`'s `tool_result` handler calls `appendAttachment({kind, url, mimeType})`, which
-appends a real `<img>`/`<video controls>` (class `bubble-attachment`, `style.css`) into
-`currentAssistantEl` — creating one first if the attachment arrives before any reply text
-has streamed in yet.
+This is ordinary React, not DOM manipulation: `Message.tsx`'s `attachmentOf(event)`
+reads `event.attachment` off a `tool_result` turn event
+(`{kind, url, mimeType}`), and `app/page.tsx`'s handler does
+`patch((turn) => ({ ...turn, attachment }))` on that turn's state — no imperative
+node creation, no separate "does the bubble exist yet" check, since React re-renders
+the turn from its own state regardless of when the attachment arrives relative to the
+reply text. `Message.tsx` then renders `turn.attachment?.kind === 'image'`/`'video'`
+conditionally in JSX (a plain `<img>`/`<video controls>`), alongside `turn.text`.
 
-**Two real bugs this surfaced in the existing streaming-bubble code, both fixed as part
-of adding this — worth knowing before touching either path again:**
-- **`currentAssistantEl.textContent += text` in the `chunk` handler silently WIPES any
-  already-appended attachment element.** `.textContent`'s own setter replaces every
-  child with a single text node, even when read back and reassigned via `+=` — so if an
-  image landed first and then more reply text streamed in on the same turn (a completely
-  normal sequence: attachment now, a closing sentence after), the image vanished with no
-  error. Fixed by switching to `appendChild(document.createTextNode(text))`, which only
-  ever adds a sibling, never rebuilds the node.
-- **The three "if the bubble ended up empty, remove it" checks** (`paused`/`done`/`error`
-  handlers) used a bare `!currentAssistantEl.textContent`, which is true for an
-  image-only reply — an `<img>`/`<video>` contributes nothing to `textContent` — and
-  would delete a bubble that actually held a real, delivered attachment. Fixed with a
-  small shared `bubbleHasContent(el)` helper (`textContent` OR a `.bubble-attachment`
-  child) used by all three checks instead of the bare `textContent` test. **The general
-  lesson**: once a bubble can hold something other than plain text, every "is this
-  bubble empty" check anywhere in the file needs to agree on what "empty" means — a
-  narrower, ad-hoc check at just one call site drifts out of sync with the others.
+Because attachment and text both live as plain fields on one immutable `Turn` object
+rather than as mutated DOM nodes, the two classes of bug the vanilla-JS version of
+this had structurally cannot recur here: appending more reply text can never wipe an
+already-set attachment (React reconciles from state, it doesn't mutate a text node in
+place), and there is no bespoke "is this bubble empty" check to keep in sync with what
+counts as content — a turn with an attachment and a turn with text are just two fields
+on the same object, checked directly rather than inferred from a DOM query.

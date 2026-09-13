@@ -7,13 +7,13 @@
 //
 // `output: 'export'` is applied only for a production build. In development the
 // app runs as a normal Next dev server (hot reload, fast refresh) and proxies
-// /api to whichever backend is running, which is what lets the front end be
-// built against the still-authoritative Node server before the Python one
-// catches up. Rewrites are not supported alongside `export`, hence the switch.
+// /api to the running backend; rewrites are not supported alongside `export`,
+// hence the switch. The export this produces is committed (see .gitignore) —
+// it is what the Python app serves, and why running Jarvis needs no Node.
 const isProduction = process.env.NODE_ENV === 'production';
 
-// Where /api goes during development. Defaults to the Node app's usual port so a
-// contributor can point the new front end at the old backend with no setup.
+// Where /api goes during development — the Python backend's own default port.
+// Override with JARVIS_API_TARGET to point a dev front end somewhere else.
 const API_TARGET = process.env.JARVIS_API_TARGET || 'http://127.0.0.1:3000';
 
 const nextConfig = {

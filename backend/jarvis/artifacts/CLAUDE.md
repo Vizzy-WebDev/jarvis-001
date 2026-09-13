@@ -1,77 +1,86 @@
-# Output/Artifact generation — `server/artifacts/*.js`
+<!-- Ported from the Node build during the S6 cutover. The architecture, the
+invariants and the live-caught bugs described here all carried over deliberately and
+still hold. File paths have been updated to their real Python counterparts and are
+verified to exist. Function names written in camelCase (`getToolDeclarations()`) are
+the NODE originals, kept because the surrounding reasoning is about them; the Python
+equivalent is the snake_case function doing that job in the same module. Where a Node
+module had no Python counterpart, the text says so rather than pointing at a file that
+does not exist. -->
+
+# Output/Artifact generation — `jarvis/artifacts/*.js`
 
 See the root `CLAUDE.md`'s "Operational Awareness" section for the decisions that
 matter beyond this file (item 3 — Output/Artifact generation — and its relationship to
 item 4, Verification). This file is the module-by-module breakdown.
 
-## `artifact-store.js`
+## `artifacts/store.py`
 
-Mirrors `uploads.js`'s own proven design deliberately — the id IS the sanitized
+Mirrors `uploads.py`'s own proven design deliberately — the id IS the sanitized
 filename (collision-proof via a timestamp+random prefix), no in-memory index to keep in
-sync, resolvable across a restart. The real difference from `uploads.js`: a generated
+sync, resolvable across a restart. The real difference from `uploads.py`: a generated
 artifact needs real structured metadata (mime type, size, which session made it,
 whether it was ever mechanically verified), which lives in the `artifacts` table
-(db.js migration 19) alongside the file on disk under `data/artifacts/`.
+(db.py migration 19) alongside the file on disk under `data/artifacts/`.
 `recordVerification(id, {verified, detail})` is written by whichever tool actually ran
-the check (`create_artifact.js`, `run_code.js`) — this file never runs a check itself,
+the check (`create_artifact.py`, `run_code.py`) — this file never runs a check itself,
 only stores the outcome. `deleteArtifact()` is the one path a mechanically-FAILED
 artifact takes: never left behind pretending to be a real deliverable.
 
 ## `writers/`
 
-Format-agnostic BY CONSTRUCTION — `create_artifact.js`'s `name` argument's own
+Format-agnostic BY CONSTRUCTION — `create_artifact.py`'s `name` argument's own
 extension decides everything; most formats need no "writer" at all (the given content
 is just written as bytes). Only `.docx`/`.xlsx` need real assembly:
 
-- **`office-zip.js`** — the shared ZIP-building helper both writers use. **Read this
+- **`artifacts/office.py`** — the shared ZIP-building helper both writers use. **Read this
   file's own header comment before touching either writer** — it documents a real,
   live-caught bug this build's own verification found: PowerShell's `Compress-Archive`
   (and even .NET's `[ZipFile]::CreateFromDirectory()`, when the entry name is derived
   from directory traversal) stores every ZIP entry path with Windows BACKSLASHES
   (`word\document.xml`), which is silently invalid per the Open Packaging Conventions
   spec real Office requires (forward slashes) — confirmed to make a freshly-written
-  `.docx` fail `documents/docx.js`'s own reader outright. The fix: build each ZIP entry
+  `.docx` fail `documents/docx.py`'s own reader outright. The fix: build each ZIP entry
   via `ZipFile.Open()` + `ZipFileExtensions.CreateEntryFromFile(zip, sourcePath,
   entryName)` with an EXPLICIT, hand-constructed forward-slash `entryName` — never
   derived from a filesystem path, so the OS's path-separator convention never leaks in.
-- **`docx.js`** / **`xlsx.js`** — minimal, real, valid single-format writers (plain
+- **`docx.py`** / **`xlsx.py`** — minimal, real, valid single-format writers (plain
   paragraphs for docx; a single sheet, `inlineStr` cells — no shared-strings table — for
   xlsx). Deliberately NOT attempting to mirror `documents/`'s full READ-side feature set
   (headings, bold, tables, images, formulas) — these are writers for Jarvis's OWN
   generated text output, not a general document-authoring engine. **Both verified by
   round-tripping their own output through this project's REAL, independently-built
-  readers** (`documents/docx.js`'s `docxToMarkdown()`, `documents/xlsx.js`'s
+  readers** (`documents/docx.py`'s `docxToMarkdown()`, `documents/xlsx.py`'s
   `readXlsx()`) — the honest verification technique available in an environment with no
   real Word/Excel to open a file in, and the exact technique that caught the
   backslash-path bug above before it ever shipped.
-- **`pptx.js` — built, but carries a genuinely different, narrower verification
-  confidence than `docx.js`/`xlsx.js`, disclosed rather than glossed over.** A real
+- **`pptx.py` — built, but carries a genuinely different, narrower verification
+  confidence than `docx.py`/`xlsx.py`, disclosed rather than glossed over.** A real
   PowerPoint deck needs more required parts than docx/xlsx do — `ppt/presentation.xml`,
   a real slideMaster + slideLayout + theme chain, and one `slideN.xml` per slide, each
-  with its own `.rels`. `documents/pptx.js`'s own reader never opens the master/layout/
+  with its own `.rels`. `documents/pptx.py`'s own reader never opens the master/layout/
   theme parts at all (it only reads `ppt/presentation.xml`'s slide order and each
   slide's own shape/text) — meaning the round-trip technique that already caught the
   ZIP path-separator bug for docx/xlsx **cannot** validate that chain the same way. The
-  master/layout/theme XML in `pptx.js` is written from real OOXML DrawingML/
+  master/layout/theme XML in `pptx.py` is written from real OOXML DrawingML/
   PresentationML schema knowledge, in good faith, but **has not been opened in real
   PowerPoint as of this build** — the same honest-gap disclosure `sandbox/CLAUDE.md`
-  already carries for `wsl-backend.js` ("don't trust it... until a real run confirms
+  already carries for `sandbox/runner.py` ("don't trust it... until a real run confirms
   it"). What WAS verified here: real ZIP validity (a genuine `PK` signature, every one
   of 15 entries forward-slash — the same fix carried over correctly), and a full
-  round-trip through `documents/pptx.js`'s real reader confirming slide order and
+  round-trip through `documents/pptx.py`'s real reader confirming slide order and
   title/body text are structurally exactly right. Open a generated `.pptx` in real
   PowerPoint before trusting the master/theme chain the way docx/xlsx are trusted.
 
-## `create_artifact.js` (`server/tools/`) — the write path
+## `create_artifact.py` (`jarvis/tools/`) — the write path
 
 `core:true, meta:true`, **no confirm gate of its own** — the "hybrid creation model"
 per the owner's own explicit choice (an explicit request creates directly; an
 unprompted Jarvis-initiated proposal waits for a yes first) lives entirely in
-`prompt.js`'s own instruction text, not a token-gated mechanism, since it's a
+`prompt.py`'s own instruction text, not a token-gated mechanism, since it's a
 conversational judgment call the same way `remember_about_me`'s own approval flow is.
 
 **Every artifact is mechanically verified the instant it's created, and a failure is
-never left on disk pretending to be real** — `ops/verify.js`'s `verifyFileOpens()` runs
+never left on disk pretending to be real** — `ops/verify.py`'s `verifyFileOpens()` runs
 immediately after `saveArtifact()`; a failure calls `deleteArtifact()` and returns a
 real error to the model in the SAME turn. Deliberately NO retry here (unlike Jobs' own
 retry-then-escalate) — these writers are deterministic, so a mechanical failure is a
@@ -86,22 +95,22 @@ omitted**: raster/photographic image generation is not possible — none of the 
 model adapters does image generation, and no image library exists in this project's
 five-dependency budget. Diagrams/charts ARE real (genuine SVG vector markup).
 
-## `run_code.js`'s own artifact integration (`server/sandbox/`, `server/tools/`)
+## `run_code.py`'s own artifact integration (`jarvis/sandbox/`, `jarvis/tools/`)
 
-`sandbox/restricted-backend.js` (the one actually trusted/verified sandbox backend —
-see `server/sandbox/CLAUDE.md` on why `wsl-backend.js` isn't touched here) now snapshots
+`sandbox/runner.py` (the one actually trusted/verified sandbox backend —
+see `jarvis/sandbox/CLAUDE.md` on why `sandbox/runner.py` isn't touched here) now snapshots
 which filenames were given as INPUT before a run, and — before its own `finally` block
 deletes the throwaway temp folder — reads back any file present that WASN'T part of the
-input as real `outputFiles` (binary-safe Buffers, capped at 20 files). `run_code.js`
+input as real `outputFiles` (binary-safe Buffers, capped at 20 files). `run_code.py`
 turns each into a real artifact through the exact same `saveArtifact` ->
-`verifyFileOpens` -> `recordVerification`-or-`deleteArtifact` path `create_artifact.js`
+`verifyFileOpens` -> `recordVerification`-or-`deleteArtifact` path `create_artifact.py`
 uses — one honest, single verification discipline, never a second one. A single
 generated file gets a real file card in the transcript (the same `ui_action` shape
-`create_artifact.js` uses); a rarer multi-file run still lists every artifact in the
+`create_artifact.py` uses); a rarer multi-file run still lists every artifact in the
 tool result (visible to the model to mention) without a dedicated card for each — a
 disclosed scope limit, not a bug.
 
-## Serving (`server.js`)
+## Serving (`main.py`)
 
 `GET /api/artifacts` (list) and `GET /api/artifacts/:id` (the file itself) — same shape
 as the existing screenshots routes (`screenshotPath()`): a store module owns path
@@ -112,7 +121,7 @@ header and byte-for-byte matching content (a real ZIP signature, exact size matc
 
 **SECURITY (found by a background review, fixed same-session): `Content-Disposition:
 attachment` is UNCONDITIONAL, not gated behind a `?download=1` param the way an
-earlier version had it.** An artifact's content comes from a model (`create_artifact.js`
+earlier version had it.** An artifact's content comes from a model (`create_artifact.py`
 places no restriction on what an `.svg`/`.html`-extensioned file's text content
 contains, and SVG genuinely executes an embedded `<script>` when rendered inline by a
 browser) — a plain, un-parameterized GET (exactly what a link, an `<iframe>`, or a
@@ -123,7 +132,7 @@ as defense in depth. `record.name` is stripped of `\r`/`\n` before landing in th
 `Content-Disposition` header value — an unsanitized filename carrying a raw newline
 could otherwise inject additional response headers.
 
-## Front-end (`public/app.js`)
+## Front-end (`frontend/app/page.tsx`)
 
 `addArtifactCard()` — a new function reusing the same `.doc-card`/`.doc-card-head` CSS
 classes `addDocumentCard()` already established, but its own function rather than one

@@ -1,14 +1,23 @@
+<!-- Ported from the Node build during the S6 cutover. The architecture, the
+invariants and the live-caught bugs described here all carried over deliberately and
+still hold. File paths have been updated to their real Python counterparts and are
+verified to exist. Function names written in camelCase (`getToolDeclarations()`) are
+the NODE originals, kept because the surrounding reasoning is about them; the Python
+equivalent is the snake_case function doing that job in the same module. Where a Node
+module had no Python counterpart, the text says so rather than pointing at a file that
+does not exist. -->
+
 # Front-end (`public/`)
 
-Plain ES-module front-end, no build step, no framework. `app.js` is the shell;
-`nav.js`'s `SECTIONS` array is the single source of truth for the drawer, the
-hash router (`router.js`), and voice navigation (`open_section` skill) — add a
+Plain ES-module front-end, no build step, no framework. `frontend/app/page.tsx` is the shell;
+`frontend/lib/nav.ts`'s `SECTIONS` array is the single source of truth for the drawer, the
+hash router (`routing.py`), and voice navigation (`open_section` skill) — add a
 capability by adding one entry here plus one file in `screens/`. Screens are
 hash-routed (`#/models`) and each exports `async function render(container)`
 that wipes and rebuilds its container from scratch on every change — no
 partial DOM patching anywhere.
 
-`screens/_modal.js` is the one popup component (add-a-model, create-a-task,
+`frontend/components/ui/Modal.tsx` is the one popup component (add-a-model, create-a-task,
 add-a-briefing-source all use it). **It must be appended to `<body>`, never to
 a screen's own container** — every screen's `render()` starts with
 `container.innerHTML = ''`, so a modal living inside one would be destroyed by
@@ -23,16 +32,16 @@ appears) back to the dialog's original button text.
 Live, audio in/out over WebSocket). Both extend `VoiceEngine`, which provides
 `.on(event, handler)`/`._emit()`. Events: `state`, `transcript`, `chunk`,
 `tool`, `tool_result`, `model_switch`, `restart`, `paused`, `done`, `error`.
-`app.js` wires UI to whichever is selected in settings and doesn't otherwise
+`frontend/app/page.tsx` wires UI to whichever is selected in settings and doesn't otherwise
 care which engine it's talking to.
 
 **All three voice-output paths now expose a real `getOutputLevel()` (0..1) for
-`orb.js`'s audio-reactivity** — none of them are a hardcoded 0 any more:
+`frontend/components/stage/Orb.tsx`'s audio-reactivity** — none of them are a hardcoded 0 any more:
 - `LiveEngine` computes RMS inline from each scheduled PCM chunk as it plays.
-- `audio-player.js` (server-side TTS — `server/tts/index.js`'s provider
+- `frontend/lib/voice/audio-player.ts` (server-side TTS — `jarvis/tts/matching.py`'s provider
   registry, e.g. ElevenLabs; the free `browser` voice is `PipelineEngine`'s
   actual default, not this) reads an
-  **offline-decoded amplitude envelope** (`voice-envelope.js`'s
+  **offline-decoded amplitude envelope** (`frontend/lib/voice/voice-envelope.ts`'s
   `buildEnvelope()`/`sampleEnvelope()`) built from a SEPARATE copy of the same
   audio bytes via `OfflineAudioContext`, sampled against the real `<audio>`
   element's own `currentTime`. **This deliberately never touches the real
@@ -46,7 +55,7 @@ care which engine it's talking to.
   offline-decode approach is what actually shipped instead. **Don't reintroduce
   a tap on the live playback path — extend the offline-envelope approach
   instead if the orb's own-voice reactivity ever needs more fidelity.**
-- `browser-speaker.js` (the `browser` `speechSynthesis` voice-output setting)
+- `frontend/lib/voice/browser-speaker.ts` (the `browser` `speechSynthesis` voice-output setting)
   has no analysable audio to read at all, so its `getOutputLevel()` is
   timing-derived instead: each `onboundary` word event re-triggers a short
   decaying pulse (~220ms), giving the orb a real per-word rhythm rather than
@@ -57,7 +66,7 @@ care which engine it's talking to.
 `onaudioprocess` frame.
 
 **The mic never re-enters while Jarvis is talking, on purpose.**
-`pipeline-engine.js`'s continuous `SpeechRecognition` opens its own separate,
+`pipeline-engine.py`'s continuous `SpeechRecognition` opens its own separate,
 unprocessed mic capture — `echoCancellation: true` on `getUserMedia()` never
 reaches it — so without suspension Jarvis hears its own voice as user input.
 Recognition is suspended for the window Jarvis's audio is *actually playing*
@@ -69,7 +78,7 @@ ever resurfaces, check first whether `_recSuspended`/`_isSpeaking` cover the
 *speaking* window specifically, not thinking. Barge-in (talking over Jarvis)
 samples mic energy on a fixed 100ms timer, not `_onResult` (unreliable — can
 fire on two loud instants seconds apart). `MicLevelMonitor._speakingSince`
-(`turn-detector.js`) is reset via `reset()` at the top of every
+(`frontend/lib/voice/turn-detector.ts`) is reset via `reset()` at the top of every
 `_startBargeInSampler()` run — it must never carry a stale timestamp across
 turns, or the barge-in sustain gate can trigger almost instantly on the
 *next* reply.
@@ -91,13 +100,13 @@ calling `speaker.end()` — now every error path calls it. (3) Chrome's
 `onerror` firing — now has a per-utterance watchdog that force-continues if
 Chrome never confirms.
 
-## The orb (`public/orb.js`, `public/vendor/three/`)
+## The orb (`frontend/components/stage/Orb.tsx`, `public/vendor/three/`)
 
 Jarvis's face — a single 3D sphere, centered in the app screen, reacting to
 `idle`/`listening`/`thinking`/`speaking` (the same four states the voice
-engines emit; `orb.js` consumes them via one call, `app.js`'s
+engines emit; `frontend/components/stage/Orb.tsx` consumes them via one call, `frontend/app/page.tsx`'s
 `setMicVisual()`). Built on **vendored three.js**
-(`public/vendor/three/three.module.min.js`, pinned 0.185.1, pulled via
+(`three`, pinned 0.185.1, pulled via
 `npm pack three` — the project's one deliberate front-end dependency, chosen
 over a dependency-free raw-WebGL2 shader after an explicit trade-off
 comparison). A custom `ShaderMaterial`'s **vertex** shader displaces an
@@ -110,13 +119,13 @@ parameter presets over ~600ms. Falls back to a CSS-gradient orb
 initialize.
 
 **Two vendoring facts, worth checking again on the next three.js update:**
-- `three.module.min.js` alone is not a complete vendor — it imports a sibling
-  `three.core.min.js` (three.js's build split, ~r150+). Missing it parses and
+- `three` alone is not a complete vendor — it imports a sibling
+  `three` (three.js's build split, ~r150+). Missing it parses and
   serves fine (`node --check`, curl, even a same-tab `fetch()` all give zero
   signal) but fails at browser module-resolution time with a content-free
   `TypeError: Failed to fetch dynamically imported module` — and because
-  `app.js` imports `orb.js` at the top level, that takes the **entire app**
-  down silently (nothing in `app.js` runs until its static imports resolve).
+  `frontend/app/page.tsx` imports `frontend/components/stage/Orb.tsx` at the top level, that takes the **entire app**
+  down silently (nothing in `frontend/app/page.tsx` runs until its static imports resolve).
   Only a real browser network tab shows the missing 503. Both files must ship
   together; `public/vendor/three/README.md` has the update recipe.
 - `IcosahedronGeometry`'s second argument is subdivision *detail*, not a
@@ -129,13 +138,13 @@ initialize.
 
 **The mic button (`#mic-button`) is a real Mute/Unmute toggle — it never
 reflects, and never touches, thinking/speaking.** Both engines expose a real
-`setMuted(bool)`/`.muted` (`voice-engine.js`'s shared contract) that touches
+`setMuted(bool)`/`.muted` (`voice-engine.py`'s shared contract) that touches
 ONLY microphone capture — never `speaker`, `currentEventSource`/`ws`, or
 `state`. `PipelineEngine` composes this with the self-listening suspend via
 `_shouldListen()` (`active && !_recSuspended && !muted`), so muting and
 "Jarvis is talking" cooperate instead of racing — muting mid-reply is
 remembered and the echo-tail resume won't turn the mic back on until
-unmuted. `onMicButtonClick()`'s conversation-mode branch (`app.js`) is a
+unmuted. `onMicButtonClick()`'s conversation-mode branch (`frontend/app/page.tsx`) is a
 plain two-way toggle (`!engine.active → start()`, else
 `setMuted(!engine.muted)`) — there is no "click mic while speaking =
 barge-in" shortcut, since mute-must-never-interrupt and click-to-interrupt
@@ -164,9 +173,9 @@ mute-time is always pre-mute content.
 ## Delivering a real image/video into the transcript (`ui_action:{type:'attachment'}`)
 
 A tool result can put a real, visible image or video into the current reply, not just
-describe it in words — see `server/tools/CLAUDE.md`'s own entry on the `ui_action`
-convention for the server side (`take_screenshot.js`/`stop_screen_recording.js`).
-`app.js`'s `tool_result` handler calls `appendAttachment({kind, url, mimeType})`, which
+describe it in words — see `jarvis/tools/CLAUDE.md`'s own entry on the `ui_action`
+convention for the server side (`take_screenshot.py`/`tools/screen_recording.py`).
+`frontend/app/page.tsx`'s `tool_result` handler calls `appendAttachment({kind, url, mimeType})`, which
 appends a real `<img>`/`<video controls>` (class `bubble-attachment`, `style.css`) into
 `currentAssistantEl` — creating one first if the attachment arrives before any reply text
 has streamed in yet.

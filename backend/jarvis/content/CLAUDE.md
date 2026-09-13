@@ -1,7 +1,16 @@
-# Content Analysis (`server/content/`)
+<!-- Ported from the Node build during the S6 cutover. The architecture, the
+invariants and the live-caught bugs described here all carried over deliberately and
+still hold. File paths have been updated to their real Python counterparts and are
+verified to exist. Function names written in camelCase (`getToolDeclarations()`) are
+the NODE originals, kept because the surrounding reasoning is about them; the Python
+equivalent is the snake_case function doing that job in the same module. Where a Node
+module had no Python counterpart, the text says so rather than pointing at a file that
+does not exist. -->
 
-`content-store.js` (leaf CRUD, `data/content.json`) · `intake.js` (the free
-glance + preparing content for a model) · `investigator.js` (the engine).
+# Content Analysis (`jarvis/content/`)
+
+`content/store.py` (leaf CRUD, `data/content.json`) · `intake.py` (the free
+glance + preparing content for a model) · `investigator.py` (the engine).
 
 **Rebuilt from scratch** to remove a defect that ran deeper than a bug: the
 previous build read or watched *everything* the instant it was shared,
@@ -10,13 +19,13 @@ timescales, guarantees, before-and-after results") — a fact-checking
 schema applied to every photo, article, and document regardless of what was
 actually asked. Two changes fix both the eagerness and the fixed shape:
 
-- **`intake.js`'s `identify(source)` makes NO model call, ever.** Sharing
+- **`intake.py`'s `identify(source)` makes NO model call, ever.** Sharing
   something only works out what it IS — a title, a rough kind, a length or
   size — from cheap metadata (YouTube's oEmbed endpoint, a page's `<title>`,
   a file's size on disk). This is what lets Jarvis say "that's a 40-minute
   video on X — what do you want from it?" and then actually wait, rather than
   reading first and asking second.
-- **`investigator.js`'s `examine(contentId, request)` has no fixed output
+- **`investigator.py`'s `examine(contentId, request)` has no fixed output
   shape.** The user's own request is what goes into the one model call that
   does the looking — there is no `claims[]`/`keyPoints[]`/`summary` template
   imposed on every request. For expensive media (video/audio/image/PDF) the

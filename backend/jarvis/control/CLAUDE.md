@@ -1,7 +1,16 @@
-# Computer control (`server/control/*.js`)
+<!-- Ported from the Node build during the S6 cutover. The architecture, the
+invariants and the live-caught bugs described here all carried over deliberately and
+still hold. File paths have been updated to their real Python counterparts and are
+verified to exist. Function names written in camelCase (`getToolDeclarations()`) are
+the NODE originals, kept because the surrounding reasoning is about them; the Python
+equivalent is the snake_case function doing that job in the same module. Where a Node
+module had no Python counterpart, the text says so rather than pointing at a file that
+does not exist. -->
+
+# Computer control (`jarvis/control/*.js`)
 
 Lets Jarvis actually operate the desktop — click, type, read windows, launch apps —
-toward a stated goal. Deliberately **not** built on `models/runner.js`'s chat loop: a
+toward a stated goal. Deliberately **not** built on `orchestrator/pipeline.py`'s chat loop: a
 control session is long-running, carries screenshots, and must never be able to
 reschedule itself mid-click via a tool like `schedule_task`. It has its own loop and its
 own small fixed tool set.
@@ -18,46 +27,46 @@ had likely never worked with Gemini and any connector enabled (effectively alway
 since `browser`/`files` auto-register at startup) until that fix.
 
 - **`agent.ps1`** — the actual mouse/keyboard/screen primitives, as one long-lived
-  PowerShell process (`ps-bridge.js` owns it) reading one JSON command per line on
+  PowerShell process (`control/desktop.py` owns it) reading one JSON command per line on
   stdin, writing one JSON result per line on stdout. Commands: `windows`, `focus`,
   `switch_window` (backed by `focus`), `minimize_window`, `restore_window`
   (`SW_RESTORE`), `arrange_window` (`SetWindowPos`), `close_window` (`PostMessage` +
   `WM_CLOSE` — never `Stop-Process`, see the shared-host-process gotcha below),
   `read_window` (UI Automation — exact button names/values/positions, the
   accurate-aim path), `screenshot` (fallback path — also the path
-  `skills/look_at_screen.js` uses for observation-only, no-control requests; that
+  `skills/look_at_screen.py` uses for observation-only, no-control requests; that
   skill's `pickWindow()` excludes Jarvis's own window from the candidate pool first —
   see the gotcha below), `click`/`double_click`/`right_click` (each
   now glides the cursor there over ~250ms via `Move-CursorSmoothly` — an eased series of
   position updates, not an instant jump — so the user can actually see where Jarvis is
-  about to click; ends exactly on target, so `session.js`'s post-click cursor-drift
+  about to click; ends exactly on target, so `session.py`'s post-click cursor-drift
   stop-guard is unaffected), a standalone `move_cursor`, `type`, `key`, `scroll`,
   `cursor`, `idle`, `processes`.
-- **`ps-bridge.js`** — one persistent `powershell.exe -STA` process (see the STA gotcha
+- **`control/desktop.py`** — one persistent `powershell.exe -STA` process (see the STA gotcha
   below), request/response matched by numeric id, auto-restarts if the process dies.
-- **`session.js`** — the loop: PLAN (one model call, shown to the user for approval) →
+- **`session.py`** — the loop: PLAN (one model call, shown to the user for approval) →
   repeat PERCEIVE (free — window list + front window's UI tree or a vision-gated
   screenshot fallback) → DECIDE (one model call against a small fixed `CONTROL_TOOLS`
   set — `launch_app`/`switch_window`/`minimize_window`/`restore_window`/
   `arrange_window`/`close_window`/click/type/key/scroll/`wait`/`report_done`/
-  `report_stuck`, plus whatever `connectors/index.js` currently has enabled merged in, so
+  `report_stuck`, plus whatever `connectors/capabilities.py` currently has enabled merged in, so
   a desktop task can call a connected service mid-run through the same confirm gate) →
-  GUARD (`guard.js`, evaluated against whichever window the action actually targets) →
-  ACT (`ps-bridge.js`) → back to PERCEIVE, which doubles as verification (the model sees
+  GUARD (`guard.py`, evaluated against whichever window the action actually targets) →
+  ACT (`control/desktop.py`) → back to PERCEIVE, which doubles as verification (the model sees
   the result of its last action in the next PERCEIVE and decides whether to
   proceed/retry/finish) — until done/stuck/stopped/a step cap. Never imports
-  `tools/index.js` or `capabilities.js` (see the circular-import invariant in the root
+  `capabilities/registry.py` or `capabilities/` (see the circular-import invariant in the root
   `CLAUDE.md`); a
   control session's tool list is its own `CONTROL_TOOLS` plus merged connector tools,
   not the chat skill catalog. Tracks `preExistingHandles` vs. `createdHandles` per
   session and only ever auto-closes windows Jarvis itself opened for the current task at
   `report_done` — closing anything pre-existing or unsaved-looking always confirms first
   (a risky action). **PERCEIVE excludes Jarvis's own browser tab from the front-window
-  pick** (reuses `tools/look_at_screen.js`'s `isJarvisOwnWindow()`, same reasoning as
+  pick** (reuses `tools/look_at_screen.py`'s `isJarvisOwnWindow()`, same reasoning as
   that file's own gotcha below — a control session used to have no equivalent guard,
   so it could start by reading/acting on Jarvis's own tab instead of the app the user
   meant). **DECIDE now falls back across up to 3 ranked candidate models**
-  (`pickModelCandidates()`), same shape as `models/runner.js`'s own chat-turn fallback —
+  (`pickModelCandidates()`), same shape as `orchestrator/pipeline.py`'s own chat-turn fallback —
   confirmed gap: a single rate-limited/unreachable model used to fail the whole session
   on step one, with no fallback at all; only triggers on a genuine adapter throw, never
   on a timeout (a slow-but-working model still gets its full `DECIDE_TIMEOUT_MS`).
@@ -72,13 +81,13 @@ since `browser`/`files` auto-register at startup) until that fix.
   action earlier in the same batch left unattempted** — those used to get no result
   entry at all, which could read as "it also succeeded" rather than "never ran" (the
   reported case: a batched `[launch_app, type]` silently dropped the `type`).
-- **`guard.js`** — `classifyActionRisk()` (safe/notable/risky — keyword-scanned BEFORE
+- **`guard.py`** — `classifyActionRisk()` (safe/notable/risky — keyword-scanned BEFORE
   the kind lookup, so a low-level primitive like `key` or `type` still escalates if what
   it's actually doing sounds irreversible) and `checkBlocklist()` (window title/process/
-  URL against `safety.js`'s configured patterns). A risky action pauses mid-loop via a
+  URL against `safety.py`'s configured patterns). A risky action pauses mid-loop via a
   real `Promise` the session awaits, resolved by `POST /api/control/confirm` — not a
   polling loop.
-- **`overlay.ps1`** / **`overlay-bridge.js`** — the always-on-top red control bar,
+- **`overlay.ps1`** / **`control/overlay.py`** — the always-on-top red control bar,
   spawned as its own process so it stays reachable even while a control session has
   focused a different window. Non-activating (`WS_EX_NOACTIVATE`) so it never steals
   keyboard focus.
@@ -86,41 +95,41 @@ since `browser`/`files` auto-register at startup) until that fix.
   polled via `GetAsyncKeyState`, not `RegisterHotKey`), and moving your own mouse
   (cursor position is compared before every synthetic mouse action; a real move stops
   the session, it does not just pause it).
-- **`observation-bridge.js`** — the always-on-top blue "Jarvis can see your screen"
-  badge, reference-counted across independent callers (`look_at_screen.js`'s one-off
-  glance, a `screen_looks_like` monitor's ongoing watch, and now `screen-share-state.js`'s
+- **`control/watching.py`** — the always-on-top blue "Jarvis can see your screen"
+  badge, reference-counted across independent callers (`look_at_screen.py`'s one-off
+  glance, a `screen_looks_like` monitor's ongoing watch, and now `control/watching.py`'s
   persistent Screen Sharing mode below) — see its own header comment for the token
   design. A spoken heads-up ("I'm taking over now, hands off the keyboard and mouse")
-  is a `prompt.js`-level instruction (the SECOND, confirmed `control_computer` call
+  is a `prompt.py`-level instruction (the SECOND, confirmed `control_computer` call
   specifically), not anything in this directory — it's ordinary reply text the model
   generates for that turn, spoken exactly like any other reply.
-- **`screen-share-state.js`** — Screen Sharing as a persistent ON/OFF mode, deliberately
-  separate from `observation-bridge.js`'s own per-call token accounting: `look_at_screen`/a
+- **`control/watching.py`** — Screen Sharing as a persistent ON/OFF mode, deliberately
+  separate from `control/watching.py`'s own per-call token accounting: `look_at_screen`/a
   monitor light the badge for exactly as long as one capture is happening; Screen Sharing
   is a real mode the user (or a spoken "share my screen with me") turns on and leaves on.
   Turning it on never itself triggers a description — nothing was asked yet — it only
-  arms the badge and tells the model, via a `prompt.js` volatile section gated on
+  arms the badge and tells the model, via a `prompt.py` volatile section gated on
   `isSharing()`, that the next screen-related question doesn't need "look at my screen"
-  said first. `server.js`'s `/api/observation/share/start`/`/stop` back a real header
-  toggle (`public/app.js`'s `setupScreenShareToggle()`) AND the voice-facing
-  `share_screen.js`/`stop_sharing_screen.js` tools — either path updates the same state,
+  said first. `main.py`'s `/api/observation/share/start`/`/stop` back a real header
+  toggle (`frontend/app/page.tsx`'s `setupScreenShareToggle()`) AND the voice-facing
+  `tools/screen_sharing.py`/`tools/screen_sharing.py` tools — either path updates the same state,
   so the toggle always reflects a spoken instruction and vice versa, per the requirement
   that the two work alongside each other. The existing dot-click `/api/observation/stop`
   also stops sharing now, as one unified "stop whatever's making this badge lit" action.
-- **`screen-recorder.js`** / **`recording-store.js`** — real video screen recording via
+- **`control/recorder.py`** / **`control/recorder.py`** — real video screen recording via
   ffmpeg (`gdigrab` desktop capture → `libx264`/`yuv420p`/`+faststart` for a file any
-  `<video>` element can actually play), resolved the same way `browser.js` resolves a
+  `<video>` element can actually play), resolved the same way `browser_connector.py` resolves a
   real Chrome (a couple of common install paths, then whatever the OS's own PATH
   resolves) — never bundled, never a hard dependency; a plain-language explanation of
   what ffmpeg is and how to add it is returned instead of a raw error when none is found.
   Stopped gracefully via ffmpeg's own `q`-on-stdin convention (never killed outright,
   which can leave a corrupt file) and force-killed only as a bounded last resort.
   Genuinely independent of the perceive/act loop above — a recording keeps running
-  through an active control session. `recording-store.js` mirrors `screenshot-store.js`'s
+  through an active control session. `control/recorder.py` mirrors `control/captures.py`'s
   save/list/prune-by-count-and-age shape, just for `.mp4`s, at a much lower default
-  retention count (`safety.js`'s `recordingRetention`) given the file size. Delivered into
-  the chat as a real, playable attachment — see `take_screenshot.js`'s own entry in
-  `server/tools/CLAUDE.md` for the shared `ui_action:{type:'attachment'}` delivery
+  retention count (`safety.py`'s `recordingRetention`) given the file size. Delivered into
+  the chat as a real, playable attachment — see `take_screenshot.py`'s own entry in
+  `jarvis/tools/CLAUDE.md` for the shared `ui_action:{type:'attachment'}` delivery
   mechanism both this and a screenshot use. **Verified live**: a real ~3-second recording
   produced a genuinely valid, cleanly-decoding `.mp4` (confirmed with `ffmpeg -f null -`
   reporting zero errors), not just a non-empty file.
@@ -129,12 +138,12 @@ since `browser`/`files` auto-register at startup) until that fix.
 
 - **Connector tool declarations merged into the control loop's own `tools` array carried
   internal bookkeeping fields the model was never meant to see — Gemini's strict schema
-  validation rejected the whole request outright, every time.** `connectors/index.js`'s
+  validation rejected the whole request outright, every time.** `connectors/capabilities.py`'s
   `getToolDeclarations()` attaches `connectorId` (which connector a tool belongs to) and
-  `confirm` (risk level) directly onto each declaration — fields `capabilities.js`'s OWN
+  `confirm` (risk level) directly onto each declaration — fields `capabilities/`'s OWN
   `getToolDeclarations()` strips before the normal chat path ever sees them (its own doc
-  comment: "model-facing, stripped to `{name, description, parameters}`"). `session.js`
-  called `connectors/index.js` directly, bypassing that stripping entirely. Confirmed
+  comment: "model-facing, stripped to `{name, description, parameters}`"). `session.py`
+  called `connectors/capabilities.py` directly, bypassing that stripping entirely. Confirmed
   live: a real control-loop DECIDE call against Gemini failed with a 400 — "Unknown name
   `\"connectorId\"` at `'tools[0].function_declarations[3]'`: Cannot find field" — the
   instant ANY connector was enabled, which is effectively always (the `browser`/`files`
@@ -146,7 +155,7 @@ since `browser`/`files` auto-register at startup) until that fix.
   (`{name, description, parameters}` only) for what's actually sent to `adapter.stream()`,
   while keeping the full, unstripped `connectorDeclarations` for this loop's own dispatch
   (`.find()`, `.confirm`, `runConnectorTool()`) — the same two-shapes-for-two-audiences
-  split `capabilities.js` already draws for the ordinary chat path. Re-verified live after
+  split `capabilities/` already draws for the ordinary chat path. Re-verified live after
   the fix: the identical goal (open Notepad, type text) completed with `status:'done'`,
   independently confirmed against the real, running Notepad window afterward — not
   trusting the loop's own claim of success (per root `CLAUDE.md`'s testing discipline).
@@ -170,7 +179,7 @@ since `browser`/`files` auto-register at startup) until that fix.
   broader `RISKY_KEYWORDS` word-tokenized scan unchanged.
 - **`action.reasoning` was always `undefined`, silently dropping the model's stated
   intent from ever reaching the risk check.** `reasoning` is a field on the
-  `perform_actions` call itself (a sibling of `actions`), not per-action — `session.js`
+  `perform_actions` call itself (a sibling of `actions`), not per-action — `session.py`
   was reading `action.reasoning` inside the per-action loop, which no schema anywhere
   actually populates. Fixed by threading the batch's one `reasoning` string into
   `actOnBatch()` as its own parameter, applied to every action in that batch (the best
@@ -213,8 +222,8 @@ since `browser`/`files` auto-register at startup) until that fix.
   per-call, args-aware risk classification (reading the dispatcher's own arguments, not
   just its static declaration) is the honest fix if that gap ever needs closing —
   bigger change, deliberately not attempted here.
-- **`capabilities.js`'s confirm-token redemption (formerly in the merged
-  `skills/index.js`) used to require the model's "yes, do
+- **`capabilities/`'s confirm-token redemption (formerly in the merged
+  `skills/capabilities.py`) used to require the model's "yes, do
   it" call to resend byte-identical arguments to the original ask** (`JSON.stringify`'d
   and compared for exact equality). Fine for a skill with one or two simple string
   arguments; a real bug for anything with a complex/nested shape, since a model
@@ -231,7 +240,7 @@ since `browser`/`files` auto-register at startup) until that fix.
   targets whichever window last had real OS foreground focus, and Windows' anti-focus-
   stealing rules can suppress a synthetic click's usual side effect of shifting that
   focus. `type`/`key` can silently go to the wrong window without an explicit `focus`
-  command immediately before them — `session.js` always calls `focus` before acting on
+  command immediately before them — `session.py` always calls `focus` before acting on
   a window, never relies on a click alone.
 - **PowerShell's inline `Add-Type -TypeDefinition` does NOT automatically see
   assemblies loaded via a separate `Add-Type -AssemblyName` call** — a C# class
@@ -241,7 +250,7 @@ since `browser`/`files` auto-register at startup) until that fix.
   even though the assembly is already loaded and usable from plain PowerShell code in
   the same script (`overlay.ps1`'s `NoActivateForm` class).
 - **UI Automation and the clipboard both expect a single-threaded apartment (STA)** —
-  PowerShell's default is MTA. `ps-bridge.js` launches `agent.ps1` with `-STA`
+  PowerShell's default is MTA. `control/desktop.py` launches `agent.ps1` with `-STA`
   specifically for `read_window` (`AutomationElement`) and the clipboard-paste path in
   `type`; `overlay.ps1` has run fine without it so far but add `-STA` there too if it
   ever shows the same class of intermittent failure.
@@ -257,14 +266,14 @@ since `browser`/`files` auto-register at startup) until that fix.
   Notepad window sharing the same PID. **Never `Stop-Process` a shared-host app like
   Notepad to clean up a test window** — use its own UI (focus the window, `Ctrl+W`), or
   `agent.ps1`'s real `close_window` (`WM_CLOSE` via `PostMessage`, never `Stop-Process`).
-- **`skills/look_at_screen.js` must exclude Jarvis's own window before matching** — the
+- **`skills/look_at_screen.py` must exclude Jarvis's own window before matching** — the
   OS foreground window while someone is *typing to Jarvis* is Jarvis's own browser tab,
   so a naive front-window fallback (or even explicit targeting like "my Chrome window")
   could capture Jarvis itself instead of the app the user meant. `pickWindow()` excludes
   any window matching `isJarvisOwnWindow()` (known browser process + title exactly
   "Jarvis" or starting with "Jarvis -") from the candidate pool, falling back to
   including it only if it's genuinely the only window open.
-- **A one-off Node test script that imports `ps-bridge.js` and then calls
+- **A one-off Node test script that imports `control/desktop.py` and then calls
   `process.exit(0)` can crash on its way out** with a libuv assertion
   (`!(handle->flags & UV_HANDLE_CLOSING)`, exit code 127) — this is libuv objecting to
   the forced exit while the persistent `agent.ps1` child process handle is still open,

@@ -1,4 +1,13 @@
-# Self-Model (`server/self/*.js`)
+<!-- Ported from the Node build during the S6 cutover. The architecture, the
+invariants and the live-caught bugs described here all carried over deliberately and
+still hold. File paths have been updated to their real Python counterparts and are
+verified to exist. Function names written in camelCase (`getToolDeclarations()`) are
+the NODE originals, kept because the surrounding reasoning is about them; the Python
+equivalent is the snake_case function doing that job in the same module. Where a Node
+module had no Python counterpart, the text says so rather than pointing at a file that
+does not exist. -->
+
+# Self-Model (`jarvis/self/*.js`)
 
 See the root `CLAUDE.md`'s "Self-Model" section for the decisions that matter beyond this
 file (the grounding rule, the authority ceiling, the hybrid trigger design, why it reads
@@ -6,28 +15,28 @@ Self-Improvement instead of duplicating it). This file is the module-by-module b
 
 ## The invariant every module here exists to protect
 
-`self-model.js` produces **read-only text and data**, exactly the way `personality.js`
+`self/model.py` produces **read-only text and data**, exactly the way the Node build's style floors (not ported — see the root CLAUDE.md)
 produces prose appended to a delivery instruction and nothing else. Enforced by the
-import graph, not by convention: nothing under `server/self/` imports
-`capabilities.js`, `tools/index.js`, `models/runner.js`, `scheduler/*`, or
-`control/session.js` — verified live (`node -e "import('./server/tools/index.js')"`
+import graph, not by convention: nothing under `jarvis/self/` imports
+`capabilities/`, `capabilities/registry.py`, `orchestrator/pipeline.py`, `scheduler/*`, or
+`control/session.py` — verified live (`node -e "import('./jarvis/capabilities/registry.py')"`
 loads cleanly with `check_myself`/`track_goal` both present, and a grep of every
-`server/self/*.js` file for those five module paths turns up only doc-comment mentions,
+`jarvis/self/*.js` file for those five module paths turns up only doc-comment mentions,
 never a real `import`). A self-assessment computed here can inform what Jarvis *says*;
-it structurally cannot reach `memory-policy.js`'s `decide()`, `improvement-policy.js`'s
-`decide()`, the confirm gate, or `job-actions.js` — there is no import edge for it to
+it structurally cannot reach `memory/policy.py`'s `decide()`, `improvement/policy.py`'s
+`decide()`, the confirm gate, or `orchestrator.py` — there is no import edge for it to
 travel through even if a future edit tried.
 
 **Zero model calls, anywhere in this directory.** Every read is a cheap SQLite query or
-an in-memory registry lookup — grep confirms no file here imports `ai.js`,
-`models/registry.js`'s `getAdapter`, or calls `adapter.stream`/`askModel`. This matters
+an in-memory registry lookup — grep confirms no file here imports `ai.py`,
+`gateway/registry.py`'s `getAdapter`, or calls `adapter.stream`/`askModel`. This matters
 given how often every model in this project is rate-limited (see the "Free-tier quota"
 Gotcha in root `CLAUDE.md`) — the self-model has to work even when nothing else can
 answer.
 
 ## Modules
 
-- **`self-store.js`** — leaf (imports only `db.js`). Two tables from `db.js` migration
+- **`self/store.py`** — leaf (imports only `db.py`). Two tables from `db.py` migration
   9: `self_capability_stats` (a rolling per-`(axis, key)` tally —
   `recordAttempt(axis, key, ok)` bumps it, `getStat`/`listStats` read it; a row that has
   never been written returns `null`, never a zeroed-out fake) and `self_goals` (one
@@ -36,58 +45,58 @@ answer.
   goal per scope at a time; `closeGoal()`/`getActiveGoal()` round it out). Plus one more
   from migration 11: `capture_health` (`recordCaptureHealth()`/`captureHealthSummary()`)
   — the health of the CAPTURE MECHANISM itself, a different axis from what
-  `self_capability_stats` measures; see `self-capture.js`'s own entry below. Two more
+  `self_capability_stats` measures; see `self-capture.py`'s own entry below. Two more
   from migration 12: `self_model_snapshots` (`saveSelfModelSnapshot()`/
   `getSelfModelSnapshot()`/`getSnapshotByToolCallId()` — the exact JSON a `check_myself`
   call returned, kept permanently) and `self_model_citations`
   (`recordSelfModelCitation()`/`listCitationsForSnapshot()` — one row per numeric,
   checkable fact a snapshot contained, logged as a CANDIDATE the instant the snapshot is
-  taken, never as a confirmed verdict); see `self-verify.js`'s own entry below for the
+  taken, never as a confirmed verdict); see `self/verify.py`'s own entry below for the
   actual check built on top of these two. All five deliberately hold **no prose
   knowledge and no facts about the user** — that's what keeps this from being the
   "second memory-like store" the build was explicitly told never to create; everything
-  content-shaped keeps going through `improvement/improvement-store.js`'s existing
+  content-shaped keeps going through `improvement/improvement/store.py`'s existing
   tables instead.
-- **`self-signals.js`** — zero imports, pure. `detectSelfSignals()` takes only plain data
+- **`self/signals.py`** — zero imports, pure. `detectSelfSignals()` takes only plain data
   a caller has already computed from real state (never touches a store itself) and
   returns which of five triggers fired: `authority`, `knownFailure`, `noTrackRecord`,
-  `correction`, `blockedOnBackground`. `anySignalFired()` is the one gate `prompt.js`'s
+  `correction`, `blockedOnBackground`. `anySignalFired()` is the one gate `prompt.py`'s
   `selfFocusSection()` checks before spending any tokens on it. Testable with a bare
   `node --input-type=module -e "..."` script — no server, no database — same as
-  `personality.js`'s `detectFloors()`.
-- **`self-capture.js`** — leaf-adjacent (imports `self-store.js` and
-  `improvement/improvement-store.js`, both leaves). `recordToolOutcome()` is called once
-  per `tool_result` from `models/runner.js`'s own per-step loop: **every** outcome bumps
+  the Node build's style floors' `detectFloors()`.
+- **`self-capture.py`** — leaf-adjacent (imports `self/store.py` and
+  `improvement/improvement/store.py`, both leaves). `recordToolOutcome()` is called once
+  per `tool_result` from `orchestrator/pipeline.py`'s own per-step loop: **every** outcome bumps
   the rolling tally (dimension 2's whole grounding), but only a **notable** one (a real
   failure, a refused-allowlist call, or an escalated confirm) also writes one more
   `improvement_outcomes` row (`source: 'turn'`) into Self-Improvement's *existing*
   pipeline — this file is the one place this build feeds that pipeline, and it feeds the
   one door it already has, never a second one. **A real audit gap, closed:**
   `recordAttempt()` used to run with no local error handling — a throw from
-  `self-store.js`'s SQLite write propagated straight out, caught only one level up in
-  `runner.js`'s own wrapper, left on record as nothing but a `console.error`. A broken
+  `self/store.py`'s SQLite write propagated straight out, caught only one level up in
+  `runner.py`'s own wrapper, left on record as nothing but a `console.error`. A broken
   recorder and a tool genuinely never used looked identical to every dimension reading
   `self_capability_stats`. Now wrapped in its own local `try/catch`, and either branch
-  logs to `self-store.js`'s `capture_health` table (`recordCaptureHealth()`) — the health
+  logs to `self/store.py`'s `capture_health` table (`recordCaptureHealth()`) — the health
   of the SENSOR, distinct from what it measures.
-- **`self-model.js`** — the assembler. Not a leaf (imports several stores), but every one
+- **`self/model.py`** — the assembler. Not a leaf (imports several stores), but every one
   of those is itself leaf or leaf-adjacent, which is what keeps this file safe for
-  `server/tools/check_myself.js` to import directly. `buildSelfModel({ only, ... })`
+  `jarvis/tools/self_tools.py` to import directly. `buildSelfModel({ only, ... })`
   dispatches to one builder function per dimension (see `DIMENSION_KEYS`) — omitting
   `only` builds nothing at all, on purpose, never a default "everything." Every builder
   returns a `verdict`/`grounded` field alongside its data; below `MIN_ATTEMPTS_FOR_RATIO`
   (5) a tally is reported as `no_track_record`, never a premature ratio.
   `computeTurnSignals()` is the live-data half of `detectSelfSignals()` — reads the real
   current state (active jobs, pending memory conflicts, active lesson/rule scopes, tool
-  stats) and hands it to the pure function, keeping `self-signals.js` itself zero-import.
+  stats) and hands it to the pure function, keeping `self/signals.py` itself zero-import.
   Also exports `extractCitableFields(snapshot)` and `getByPath(obj, path)` — the
-  mechanical, key-name-blocklist walker `check_myself.js` uses to find every NUMERIC
-  leaf in its own returned snapshot (see `self-verify.js` below for why only numbers).
-- **`self-verify.js`** — leaf-adjacent (imports `self-store.js` and `../chat-store.js`,
-  both leaves; `self-store.js` itself deliberately never imports `chat-store.js`, so
+  mechanical, key-name-blocklist walker `tools/self_tools.py` uses to find every NUMERIC
+  leaf in its own returned snapshot (see `self/verify.py` below for why only numbers).
+- **`self/verify.py`** — leaf-adjacent (imports `self/store.py` and `../chat_store.py`,
+  both leaves; `self/store.py` itself deliberately never imports `chat_store.py`, so
   this is the one place the two meet). The actual utterance-provenance check:
   `verifyCitation(snapshotId, toolCallId, fieldName)` re-reads the real snapshot AND the
-  real reply that followed it — via `chat-store.js`'s own `getMessages()`, correlating
+  real reply that followed it — via `chat_store.py`'s own `getMessages()`, correlating
   by the tool call's own persisted id, never a new schema field on `messages` — and
   returns `used` / `ignored` / `unverifiable`. Never trusts `self_model_citations`' own
   stored `field_value`; always re-derives it fresh from the snapshot, so a stale
@@ -99,19 +108,19 @@ answer.
   section).
 - **`CLAUDE.md`** — this file.
 
-## Dimension grounding, one line each (see `self-model.js`'s own comments for the full detail)
+## Dimension grounding, one line each (see `self/model.py`'s own comments for the full detail)
 
 1. **What it is** — live counts (models, connectors, Skills, active jobs) plus a short,
    hand-written structural description explicitly marked `verified: false` — the weakest
    grounding in the build, and it says so rather than passing as fact.
-2. **What it can/can't do** — `self_capability_stats` for tools; `improvement-store.js`'s
+2. **What it can/can't do** — `self_capability_stats` for tools; `improvement/store.py`'s
    new `outcomeReliability()` aggregate for job kinds/task types (no rolling tally exists
-   for those two axes in this build — see `self-store.js`'s header comment on why).
-   `sensorHealth` (`self-store.js`'s `captureHealthSummary()`, always included in this
+   for those two axes in this build — see `self/store.py`'s header comment on why).
+   `sensorHealth` (`self/store.py`'s `captureHealthSummary()`, always included in this
    dimension's response) reports the health of the RECORDER itself — a
    `no_track_record` verdict elsewhere in the same response can now be told apart from
    "never used" versus "the thing that would have noticed it was used is broken."
-3. **How it behaves** — a read-only VIEW over `improvement-store.js`'s `listRules()` —
+3. **How it behaves** — a read-only VIEW over `improvement/store.py`'s `listRules()` —
    owns none of this data.
 4. **Doing now, and why** — active jobs, the goal declared for this session
    (`self_goals`), and Personality's *own already-computed* `readStyle()` result,
@@ -119,15 +128,15 @@ answer.
 5. **How it knows** — real memory `origin`/date on a text match, real provenance-kind
    descriptions, otherwise labelled general knowledge — never invents a category. Every
    real `check_myself` call is also persisted (`self_model_snapshots`) with its
-   checkable NUMERIC facts logged as citation candidates — `self-verify.js`'s
+   checkable NUMERIC facts logged as citation candidates — `self/verify.py`'s
    `verifyCitation()` is the actual, independent check of whether a given call's own
    reply used one, closing the audit's central finding for the one narrow slice of
    "did the sentence match the data" that plain string matching can answer.
-6. **Its call to make** — reads the *actual live values* out of `memory-policy.js`'s
-   `THRESHOLDS` and `improvement-policy.js`'s `MIN_EVIDENCE_BY_TRUST`/hard floors, so this
+6. **Its call to make** — reads the *actual live values* out of `memory/policy.py`'s
+   `THRESHOLDS` and `improvement/policy.py`'s `MIN_EVIDENCE_BY_TRUST`/hard floors, so this
    can never drift from what those modules really enforce. **Fix 4 (audit remediation):**
    the two numeric floors' own explanatory sentences (`memoryApprovalFloorText()`/
-   `improvementEvidenceFloorText()`, `self-model.js`) are now built FROM the live number
+   `improvementEvidenceFloorText()`, `self/model.py`) are now built FROM the live number
    as their own template argument, not hand-typed nearby — the prose and the number it
    describes are the same read, so they can't independently drift apart. Regression-
    tested by mutating `THRESHOLDS`/`MIN_EVIDENCE_BY_TRUST` directly at runtime (both are
@@ -139,14 +148,14 @@ answer.
 8. **Works with the user** — corrections/explicit-teaching outcome counts; reported as
    genuinely thin below the same 5-attempt floor as everything else.
 9. **Goal, on track** — `self_goals` for a live conversation (a job already has its own
-   durable `goal` column — see `jobs/job-store.js`). Always reported as *what Jarvis
+   durable `goal` column — see `jobs/job_store.py`). Always reported as *what Jarvis
    recorded it understood*, never as a verified account of what the user meant.
    **Fix 3 (audit remediation):** every declared goal now also snapshots the real text
-   of the user's own most recent message at declare time (`track_goal.js`'s
-   `latestUserTurnText()`, reading `conversation.js`'s live window — never a second
+   of the user's own most recent message at declare time (`tools/self_tools.py`'s
+   `latestUserTurnText()`, reading `conversation.py`'s live window — never a second
    source of truth). Deliberately NOT a computed aligned/drifted/ambiguous verdict —
    judging whether a goal actually matches a real request is a semantic question no
-   plain code can honestly answer, the same class of problem `self-verify.js` was
+   plain code can honestly answer, the same class of problem `self/verify.py` was
    built to stay clear of. The owner's own explicit choice: hand the model both real
    texts side by side and let it judge freshly each time it checks in, the same way
    dimension 6 hands it real policy numbers instead of a pre-baked answer.
@@ -157,10 +166,10 @@ answer.
 
 ## The trigger design — push vs. pull, and the real limitation of push
 
-`self-signals.js`'s five triggers are computed fresh every step of
-`models/runner.js`'s own tool-calling loop (`computeTurnSignals()`, not once per turn) —
+`self/signals.py`'s five triggers are computed fresh every step of
+`orchestrator/pipeline.py`'s own tool-calling loop (`computeTurnSignals()`, not once per turn) —
 `authority`/`blockedOnBackground` read state that's knowable before the turn even starts
-(pending job/memory decisions); `correction` reuses `improvement/capture.js`'s
+(pending job/memory decisions); `correction` reuses `improvement/capture.py`'s
 `noteCorrection()` return value from the same turn rather than a second regex pass.
 **`knownFailure`/`noTrackRecord` can only ever match a tool THIS turn has already called
 in an earlier step** (`usedToolNames`, accumulated across the loop) — there's no way to
@@ -168,10 +177,10 @@ warn about a tool before the model decides to call it for the first time in a tu
 nothing here has foreknowledge of that decision. This is an accepted, structural
 limitation of a push-only mechanism, not a bug — the **pull** path
 (`check_myself`'s `can_do`/`failure_modes` dimensions) is what catches it proactively,
-*before* any use at all, exactly when the model chooses to check first. `prompt.js`'s
+*before* any use at all, exactly when the model chooses to check first. `prompt.py`'s
 system-instruction paragraph tells it to.
 
-## `prompt.js` integration
+## `prompt.py` integration
 
 `selfSection()` (stable, cacheable, no DB read) carries the one hard governing rule;
 `selfFocusSection(signals)` (volatile, emitted only when something actually fired) is the
@@ -181,29 +190,29 @@ it's blocked on something or heading into a known failure just as much as live c
 `correction` simply never fires on a background turn, since `noteCorrection()` itself is
 gated on `!opts.background`.
 
-## Tools (`server/tools/`)
+## Tools (`jarvis/tools/`)
 
-`check_myself.js` (`core:true, meta:true` — the pull path; no reliable search-intent text
-to find it by otherwise) and `track_goal.js` (`core:true, meta:true` — records what
+`tools/self_tools.py` (`core:true, meta:true` — the pull path; no reliable search-intent text
+to find it by otherwise) and `tools/self_tools.py` (`core:true, meta:true` — records what
 Jarvis understands the current goal to be; no confirm gate, since recording an
-understanding has no outward effect of its own to protect). `track_goal.js` is the one
-tool file in this directory that imports `../conversation.js` directly (leaf-safe —
-`conversation.js` itself only imports `chat-store.js`) — it reads the live conversation
+understanding has no outward effect of its own to protect). `tools/self_tools.py` is the one
+tool file in this directory that imports `../conversation.py` directly (leaf-safe —
+`conversation.py` itself only imports `chat_store.py`) — it reads the live conversation
 window to snapshot the real user-turn text a goal is declared from (Fix 3, audit
 remediation).
 
-## `capabilities.js`'s ctx injection
+## `capabilities/`'s ctx injection
 
 `invoke()`'s existing pattern (`reservedSkillNames`, `searchCapabilities`, `invoke`
 itself, injected into every capability's `ctx` — see that file's own header comment) now
 also injects `listCapabilities` — the one piece of dimension 1's live counts
-(`self-model.js`'s `whatItIs()`) that can only come from `capabilities.js`, which this
+(`self/model.py`'s `whatItIs()`) that can only come from `capabilities/`, which this
 directory can never import directly.
 
-A separate, one-hop-earlier addition: `models/runner.js` itself now passes
+A separate, one-hop-earlier addition: `orchestrator/pipeline.py` itself now passes
 `toolCallId: call.id` into the `ctx` object it builds for every `invoke()` call (the
-same object `turnId`/`style` already ride in) — this is runner.js's own ctx, not
-something `capabilities.js` injects, since it needs the real tool call's own id from
-the adapter's own response, which only runner.js's per-step loop ever sees.
-`check_myself.js` uses this exact id to link its snapshot/citation rows back to the
-real, persisted `messages` row `self-verify.js`'s `verifyCitation()` later reads.
+same object `turnId`/`style` already ride in) — this is runner.py's own ctx, not
+something `capabilities/` injects, since it needs the real tool call's own id from
+the adapter's own response, which only runner.py's per-step loop ever sees.
+`tools/self_tools.py` uses this exact id to link its snapshot/citation rows back to the
+real, persisted `messages` row `self/verify.py`'s `verifyCitation()` later reads.

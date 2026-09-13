@@ -1,3 +1,10 @@
+# Declared explicitly rather than left to pip's fallback: this is the one
+# install the owner ever runs (the launcher's first-run step), and "whatever pip
+# decided to assume today" is not a thing to discover on someone's first launch.
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "jarvis"
 version = "0.1.0"
@@ -34,6 +41,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+
+# `main()` already exists as a real function, so this costs nothing and gives
+# the launcher one command to run instead of a module path plus a working
+# directory it has to be careful about.
+[project.scripts]
+jarvis = "jarvis.main:main"
 
 [tool.setuptools.packages.find]
 include = ["jarvis*"]

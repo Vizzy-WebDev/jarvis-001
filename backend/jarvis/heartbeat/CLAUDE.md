@@ -1,98 +1,107 @@
-# Heartbeat + Trigger + Proactive Attention (`server/heartbeat/*.js`)
+<!-- Ported from the Node build during the S6 cutover. The architecture, the
+invariants and the live-caught bugs described here all carried over deliberately and
+still hold. File paths have been updated to their real Python counterparts and are
+verified to exist. Function names written in camelCase (`getToolDeclarations()`) are
+the NODE originals, kept because the surrounding reasoning is about them; the Python
+equivalent is the snake_case function doing that job in the same module. Where a Node
+module had no Python counterpart, the text says so rather than pointing at a file that
+does not exist. -->
+
+# Heartbeat + Trigger + Proactive Attention (`jarvis/heartbeat/*.js`)
 
 See the root `CLAUDE.md`'s "Heartbeat" section for the decisions that matter beyond this
 file (why the Interruption Broker needed generalizing, the reliability guarantees, the
 quiet-hours/emergency design, the real dedup bug live testing caught). This file is the
 module-by-module breakdown.
 
-**Named for the user's own term for this mechanism — unrelated to `jobs/job-store.js`'s
+**Named for the user's own term for this mechanism — unrelated to `jobs/job_store.py`'s
 `heartbeat_at` column**, which is worker-liveness tracking for a single running job, a
 different concept entirely. Don't confuse the two while reading either directory.
 
 ## The chain
 
-`schedule-store.js` (leaf) persists each registered item's own next-due time —
-restart-safety depends on this being real, never in-memory. `sources/registry.js` (pure,
+`schedule_store.py` (leaf) persists each registered item's own next-due time —
+restart-safety depends on this being real, never in-memory. `heartbeat/triggers.py` (pure,
 zero imports) is the entire plug-in surface: `registerSource({id, defaultIntervalMs,
-listItems(), check(itemKey)})`. `engine.js` ticks once a minute, reconciles every
+listItems(), check(itemKey)})`. `engine.py` ticks once a minute, reconciles every
 source's current item list against the schedule, then processes whatever's due
 SEQUENTIALLY up to a per-tick cap — what turns a big restart catch-up into several ticks
 of steady work instead of one burst, and what makes the `running` overlap guard
-meaningful. `triggers.js` is the event-driven half, reacting to a job going
+meaningful. `heartbeat/triggers.py` is the event-driven half, reacting to a job going
 `awaiting_decision` immediately rather than waiting for the next poll — both paths
-funnel into `engine.js`'s exported `routeFinding()`, the ONE place a finding becomes a
+funnel into `engine.py`'s exported `routeFinding()`, the ONE place a finding becomes a
 notification, an outbox row, and (Tier 1, available, not quiet-hours-blocked) real
-proactive speech. `index.js`'s `startHeartbeat()` wires all of it, called once from
-`server.js` beside the other three `start*()` calls.
+proactive speech. `__init__.py`'s `startHeartbeat()` wires all of it, called once from
+`main.py` beside the other three `start*()` calls.
 
-## `outbox-store.js` — the generalized Interruption Broker
+## `outbox.py` — the generalized Interruption Broker
 
-Owns the `outbox` table (db.js migration 13 — a real rebuild of the old job-only
+Owns the `outbox` table (db.py migration 13 — a real rebuild of the old job-only
 `job_outbox`, not an ALTER, since SQLite can't relax a NOT NULL foreign key in place).
 `source` (`'job'` | `'heartbeat'`) and `source_ref` are new; `job_id` stays its own
 column, still real and still cascading, so every existing Jobs call site is unaffected.
-**`jobs/job-store.js`'s own `addOutboxEntry`/`getOutboxForJob`/`listPendingOutbox`/
+**`jobs/job_store.py`'s own `addOutboxEntry`/`getOutboxForJob`/`listPendingOutbox`/
 `markOutboxDelivered` are now thin wrappers over this file** (`source:'job'`,
-`sourceRef:jobId` baked in) — Jobs' own code (`job-actions.js`, `worker.js`,
-`orchestrator.js`, `server.js`'s job routes) needed zero changes to keep working
+`sourceRef:jobId` baked in) — Jobs' own code (`orchestrator.py`, `worker.py`,
+`orchestrator.py`, `main.py`'s job routes) needed zero changes to keep working
 identically. `getPendingForSourceRef(source, sourceRef)` is the dedup lookup a source's
 own routing should check before parking a second undelivered row for the same finding —
 but see the next section for why this alone is NOT sufficient for every tier.
 
 ## The dedup bug live testing caught — read this before touching `check()` in a source
 
-**A Tier 3 verdict never creates an outbox row at all** (see `engine.js`'s
+**A Tier 3 verdict never creates an outbox row at all** (see `engine.py`'s
 `routeFinding()` — `if (verdict.tier === 3) return` happens right after the notification
-is written, before any outbox insert). `outbox-store.js`'s dedup
+is written, before any outbox insert). `outbox.py`'s dedup
 (`getPendingForSourceRef`) only ever finds something to dedup against when a Tier 1/2
 row exists and is still undelivered. **Confirmed live**, not hypothetical: the first
-version of `jobs-source.js` had no dedup of its own at all, assuming `routeFinding()`'s
+version of `heartbeat/triggers.py` had no dedup of its own at all, assuming `routeFinding()`'s
 outbox-based check was enough — a job whose Tier 1 permission ask kept getting judged
-Tier 3 by `decision.js` (a routine, low-stakes automation request, correctly not worth
-interrupting for) produced a **fresh finding, a fresh spent `decision.js` model call, AND
+Tier 3 by `decision.py` (a routine, low-stakes automation request, correctly not worth
+interrupting for) produced a **fresh finding, a fresh spent `decision.py` model call, AND
 a fresh notification on every single tick, forever**, since nothing ever recorded "this
 exact ask was already reported." **The fix: a source with a persistent underlying
 condition must track its OWN "have I already reported this" state via
-`schedule-store.js`'s `checkState` (read with `getItem(sourceId, itemKey)`, written by
-returning `{finding, checkState}` from `check()`), the same way `commitments-source.js`
+`schedule_store.py`'s `checkState` (read with `getItem(sourceId, itemKey)`, written by
+returning `{finding, checkState}` from `check()`), the same way `heartbeat/triggers.py`
 already did for its own `notifiedApproaching`/`notifiedOverdue` flags.**
-`jobs-source.js` now remembers the specific outbox entry id (`lastReportedOutboxId`) it
+`heartbeat/triggers.py` now remembers the specific outbox entry id (`lastReportedOutboxId`) it
 last reported and only fires again once that id actually changes — a genuinely new ask,
 not the same still-unanswered one. **Any future source with a condition that can stay
 true across many ticks needs this same discipline** — outbox-based dedup alone is only
 ever real for Tier 1/2.
 
-**The trigger path needed the identical fix, for a subtler reason.** `triggers.js`'s
+**The trigger path needed the identical fix, for a subtler reason.** `heartbeat/triggers.py`'s
 reaction to a job's `awaiting_decision` transition calls the source's `check()` directly,
 outside the normal tick — if it doesn't ALSO persist the `checkState` that call returns
-(via `schedule-store.upsertItem()` + `markDone()`, the same two calls `engine.js`'s own
+(via `schedule-store.upsertItem()` + `markDone()`, the same two calls `engine.py`'s own
 `processDueItem()` makes), the trigger's own dedup memory is silently lost, letting one
 redundant re-fire slip through on the very next regular tick even though nothing had
-changed. `triggers.js` does this explicitly now — see its own inline comment.
+changed. `heartbeat/triggers.py` does this explicitly now — see its own inline comment.
 
-## `sources/jobs-source.js` and `sources/commitments-source.js`
+## `sources/heartbeat/triggers.py` and `sources/heartbeat/triggers.py`
 
-Both leaf-adjacent, both registered from `index.js`. `jobs-source.js` (job-store.js +
-outbox-store.js + schedule-store.js, no model calls of its own) closes the actual gap
+Both leaf-adjacent, both registered from `__init__.py`. `heartbeat/triggers.py` (job_store.py +
+outbox.py + schedule_store.py, no model calls of its own) closes the actual gap
 this whole build exists for: a Tier 1 job outbox row sits completely silent —
 structurally invisible to the user — until they happen to start a new conversation
-themselves, at which point `prompt.js`'s drain finally surfaces it. This source turns
+themselves, at which point `prompt.py`'s drain finally surfaces it. This source turns
 "sitting silently in the outbox" into a real Heartbeat finding. It deliberately does NOT
 duplicate Jobs' own completion/failure notifications (already fired directly via
-`addNotification()` in `worker.js`/`orchestrator.js`) — only the specific gap above.
+`addNotification()` in `worker.py`/`orchestrator.py`) — only the specific gap above.
 
-`commitments-source.js` derives a deadline from an ordinary Memory row that has no
-deadline column at all. Deterministic parsing (`date-parse.js`, zero dependencies, zero
-quota) is the always-on first pass; a budgeted model call (`budget.js`, its own daily
+`heartbeat/triggers.py` derives a deadline from an ordinary Memory row that has no
+deadline column at all. Deterministic parsing (`scheduler/recurrence.py`, zero dependencies, zero
+quota) is the always-on first pass; a budgeted model call (`improvement/store.py`, its own daily
 ledger — never Self-Improvement's) is spent at most once per memory TEXT VERSION, only
-when the parser came back empty. `date-parse.js`'s own header comment is explicit that
+when the parser came back empty. `scheduler/recurrence.py`'s own header comment is explicit that
 its coverage is a deliberately incomplete safety net, not a claim of completeness — the
 model fallback is what closes the gap, not a second attempt at exhaustive regex coverage.
 
-## `decision.js` — the one urgency-reasoning step
+## `decision.py` — the one urgency-reasoning step
 
 Used ONLY by Heartbeat/Trigger findings — Jobs' own tier assignment at its own call
-sites (`worker.js`, `orchestrator.js`) is untouched and never calls this; those are
+sites (`worker.py`, `orchestrator.py`) is untouched and never calls this; those are
 mechanical "does this need the owner" facts, not a judgment call. One model call
 answers both the tier (1/2/3) AND — only when quiet hours are active — whether this
 clears the emergency bar, to keep quota cost down. No model available, or an
@@ -105,35 +114,35 @@ the urgent verdict's own reasoning cited a real approved memory about the user's
 finances, confirming the "weigh against known priorities" design is actually happening,
 not just generic reasoning.
 
-## `quiet-hours.js` / `presence.js` — the two gates on live speech
+## `quiet_hours.py` / `presence.py` — the two gates on live speech
 
-`quiet-hours.js` only answers "is it quiet right now," from `prefs.quietHours`
+`quiet_hours.py` only answers "is it quiet right now," from `prefs.quietHours`
 (`{enabled, start, end}` as 'HH:MM' strings, wraps midnight correctly). It gates LIVE
-SPEECH only, in `engine.js`'s own routing — the notification and outbox row a finding
+SPEECH only, in `engine.py`'s own routing — the notification and outbox row a finding
 produces are unaffected either way, since they only take effect once the user is already
 engaging, at which point quiet hours has nothing left to protect.
 
-`presence.js` exports `isReachable()` (a tab is connected AND the user was recently
+`presence.py` exports `isReachable()` (a tab is connected AND the user was recently
 active — the hard requirement for any live delivery attempt) and `isBusy()` (the
-secondary, skippable-for-emergencies dampener, via the same `control/ps-bridge.js`
-window/process listing `server/monitor/engine.js` already uses) as two SEPARATE
+secondary, skippable-for-emergencies dampener, via the same `control/control/desktop.py`
+window/process listing `jarvis/monitor/engine.py` already uses) as two SEPARATE
 functions, not one — an emergency verdict during quiet hours should still try to reach
 the user through a detected "busy" state (the same way it already breaks through quiet
 hours itself), while ordinary Tier 1 flow should respect both. `isAvailable()` combines
-them for the ordinary case; the emergency path in `engine.js`'s `routeFinding()` calls
+them for the ordinary case; the emergency path in `engine.py`'s `routeFinding()` calls
 `isReachable()` alone.
 
-## `speak.js` — the one genuinely new channel
+## `speak.py` — the one genuinely new channel
 
 Real proactive speech: pushes a real assistant message onto the active session
-(`brain.js`'s `getActiveSessionId()` — reused deliberately rather than reimplemented, to
+(`session.py`'s `getActiveSessionId()` — reused deliberately rather than reimplemented, to
 avoid drifting from the one authoritative place session resolution already lives) and
 broadcasts a `proactive_message` SSE event any open tab can actually play. This is what
-makes this file (and `engine.js`/`triggers.js`/`index.js` above it) NOT leaf-safe —
-accepted, since nothing under `server/tools/` ever imports this file directly (only
-`outbox-store.js`, a true leaf, for `acknowledge_notice.js`'s own needs).
+makes this file (and `engine.py`/`heartbeat/triggers.py`/`__init__.py` above it) NOT leaf-safe —
+accepted, since nothing under `jarvis/tools/` ever imports this file directly (only
+`outbox.py`, a true leaf, for `acknowledge_notice.py`'s own needs).
 
-## `prompt.js` / `acknowledge_notice.js`
+## `prompt.py` / `acknowledge_notice.py`
 
 `jobsSection()` (kept under its original name to avoid rippling a rename across every
 comment that references it, despite draining more than jobs now) generalizes its own

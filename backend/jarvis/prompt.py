@@ -64,11 +64,26 @@ PAST_CONVERSATIONS = """Past conversations — everything the user has said to y
 - Results carry the date they were said. Say WHEN something was said rather than stating an old answer as though it is still true today."""
 
 
-def stable_instruction() -> str:
-    """The half that does not change between turns, and can therefore be cached."""
-    return "\n\n".join([IDENTITY, HOW_YOU_TALK, HOW_YOU_USE_TOOLS, MEMORY_RULES,
+def stable_instruction(*, has_audience: bool = True) -> str:
+    """The half that does not change between turns, and can therefore be cached.
+
+    `has_audience` mirrors Node's own `systemInstructionParts()`: `!background
+    or addressed`. A turn with nobody listening — a scheduled task's own run, a
+    job worker's own turn — gets no delivery register at all, since there is no
+    one for warmth, directness or playfulness to be aimed at. This still stays
+    cacheable: it just caches as one of two stable prefixes (audience / no
+    audience) instead of one, which is exactly what Node's own design does too.
+    """
+    from .personality import STYLE_FRAMEWORK
+
+    # Complements HOW_YOU_TALK (brevity, no markdown, no filler) rather than
+    # repeating it — this is the adaptive delivery register: warmth,
+    # directness, playfulness, how hard to push back. See personality.py's own
+    # header for the substance/style invariant this protects.
+    base = "\n\n".join([IDENTITY, HOW_YOU_TALK, HOW_YOU_USE_TOOLS, MEMORY_RULES,
                         LEARNING_ABOUT_ITSELF, SELF_KNOWLEDGE, USING_THE_COMPUTER,
                         PAST_CONVERSATIONS])
+    return base + STYLE_FRAMEWORK if has_audience else base
 
 
 def situation_section(now: datetime | None = None) -> str:
@@ -178,8 +193,9 @@ def volatile_instruction(*, memories: str = "", low_confidence: bool = False,
 
 
 def system_instruction(*, memories: str = "", low_confidence: bool = False,
-                       now: datetime | None = None, extra: list[str] | None = None) -> str:
+                       now: datetime | None = None, extra: list[str] | None = None,
+                       has_audience: bool = True) -> str:
     """Both halves, joined by the cache breakpoint the Anthropic adapter splits on."""
     volatile = volatile_instruction(memories=memories, low_confidence=low_confidence,
                                     now=now, extra=extra)
-    return stable_instruction() + (CACHE_BREAK + volatile if volatile else "")
+    return stable_instruction(has_audience=has_audience) + (CACHE_BREAK + volatile if volatile else "")

@@ -1,10 +1,12 @@
 """Running scheduled tasks: what is due, running one, and recording what happened.
 
-**The timer is OFF by default and must stay that way until cutover.** The Node app
-is still the live one on the user's machine; two schedulers reading the same
-`data/tasks.json` would both fire every task, so `start()` does nothing unless
-`JARVIS_SCHEDULER=1` is set. That is a deliberate safety interlock, not a
-configuration nicety — the failure it prevents is silent and doubles real actions.
+**The timer is OFF by default.** `start()` does nothing unless `JARVIS_SCHEDULER=1`
+is set — a real launch (`main()`) sets it, so this fires normally once the app is
+actually running; a test's own bare `create_app()` never does, so importing this
+module for a test never starts a real background thread unasked. Kept as a real
+interlock rather than folded away, because a second process reading the same
+`data/tasks.json` at the same time would fire every task twice — a deliberate
+safety property, not just a migration-era guard rail.
 
 **A scheduled task carries pre-consent for ordinary work and never for a
 high-risk action.** That is the owner's explicit decision, and it is enforced in
@@ -94,6 +96,15 @@ def run_task_now(task_id: str, *, late: bool = False,
         # what it could and is waiting for a person.
         "awaitingApproval": result.get("awaitingApproval") or None,
     })
+
+    # Self-Improvement's capture step — zero model calls, safe on every run.
+    try:
+        from ..observers.improvement import _record_task_outcome
+
+        _record_task_outcome(run)
+    except Exception:  # noqa: BLE001 — capture must never take a real task run down
+        logger.exception("could not record this run for Self-Improvement")
+
     # Two different things, deliberately: the run always happened and any open
     # screen should see it, but whether the USER is interrupted about it is the
     # task's own notify setting.
@@ -322,8 +333,7 @@ def start() -> bool:
     """Start the tick loop, if the interlock allows it. Returns whether it started."""
     global _timer
     if not is_enabled():
-        logger.info("[scheduler] not started — set %s=1 to enable "
-                    "(the Node app still owns the schedule)", ENABLE_ENV)
+        logger.info("[scheduler] not started — set %s=1 to enable", ENABLE_ENV)
         return False
     if _timer is not None and _timer.is_alive():
         return True

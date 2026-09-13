@@ -18,6 +18,8 @@ counter, so a job cannot get two attempts by failing in two different ways.
 from __future__ import annotations
 
 import logging
+import os
+import threading
 from datetime import datetime, timezone
 from typing import Any
 
@@ -31,6 +33,18 @@ from .policy import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: How often supervise() sweeps everything in flight. Frequent relative to
+#: HANG_TIMEOUT_MS (below) so a genuinely hung job is not sitting undetected
+#: for most of its own hang window.
+TICK_SECONDS = 60.0
+ENABLE_ENV = "JARVIS_JOBS"
+
+_timer: threading.Timer | None = None
+
+
+def is_enabled() -> bool:
+    return os.environ.get(ENABLE_ENV) == "1"
 
 #: How many jobs may be in flight at once, when the user has not said. Small on
 #: purpose: these compete for the same rate-limited model roster as the
@@ -200,3 +214,42 @@ def recover_orphans(event_bus: EventBus | None = None) -> list[dict[str, Any]]:
                          else f'"{job["title"]}" is waiting on you.'))
         out.append({"job": job["id"], "recovery": verdict})
     return out
+
+
+def start(*, event_bus: EventBus | None = None) -> bool:
+    """Start periodic supervision, if the interlock allows it. Returns whether
+    it started — same shape as scheduler.engine.start()/heartbeat.engine.start().
+
+    Sweeps for orphaned jobs once, at startup, before the first tick — same
+    "startup only" placement as heartbeat.engine.start()'s own stale-running
+    reset, and for the same reason: a crash leaves state only a fresh process
+    boot can honestly resolve.
+    """
+    global _timer
+    if not is_enabled() or _timer is not None:
+        return False
+
+    try:
+        recover_orphans(event_bus=event_bus)
+    except Exception:  # noqa: BLE001
+        logger.exception("orphan recovery failed at startup")
+
+    def run() -> None:
+        global _timer
+        try:
+            supervise(event_bus=event_bus)
+        except Exception:  # noqa: BLE001
+            logger.exception("a supervision pass failed")
+        _timer = threading.Timer(TICK_SECONDS, run)
+        _timer.daemon = True
+        _timer.start()
+
+    run()
+    return True
+
+
+def stop() -> None:
+    global _timer
+    if _timer is not None:
+        _timer.cancel()
+        _timer = None

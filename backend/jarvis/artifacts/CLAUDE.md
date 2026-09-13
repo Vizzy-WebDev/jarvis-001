@@ -26,50 +26,48 @@ the check (`create_artifact.py`, `run_code.py`) — this file never runs a check
 only stores the outcome. `deleteArtifact()` is the one path a mechanically-FAILED
 artifact takes: never left behind pretending to be a real deliverable.
 
-## `writers/`
+## `artifacts/office.py`
 
 Format-agnostic BY CONSTRUCTION — `create_artifact.py`'s `name` argument's own
 extension decides everything; most formats need no "writer" at all (the given content
-is just written as bytes). Only `.docx`/`.xlsx` need real assembly:
+is just written as bytes). Only `.docx`/`.xlsx` need real assembly, and both writers
+(`write_docx`, `write_xlsx`) live together in this one file, not a `writers/`
+subdirectory and not one file per format the way the Node original split them —
+there was never enough writer-specific logic here to justify the split.
 
-- **`artifacts/office.py`** — the shared ZIP-building helper both writers use. **Read this
-  file's own header comment before touching either writer** — it documents a real,
-  live-caught bug this build's own verification found: PowerShell's `Compress-Archive`
-  (and even .NET's `[ZipFile]::CreateFromDirectory()`, when the entry name is derived
-  from directory traversal) stores every ZIP entry path with Windows BACKSLASHES
+**PowerPoint (`.pptx`) can be READ but never WRITTEN — no writer exists under any
+name, at any point in this port.** Reading one already works:
+`documents/office.py`'s `pptx_to_markdown()` is wired into `extract_document()`
+exactly like the docx/xlsx readers, so Jarvis can already summarise a `.pptx` it is
+handed. Producing one is a different story: `create_artifact.py` does not
+special-case `.pptx` at all — an unrecognised suffix falls straight through to its
+generic refusal, "I can't make a {suffix} file. I can do documents (.docx),
+spreadsheets (.xlsx), and plain text formats." — which is the accurate, complete
+list of what this build can PRODUCE. (An earlier version of this doc, carried over
+mechanically from the Node build at the S6 cutover, described a `pptx.py` writer
+with real OOXML DrawingML/PresentationML assembly and a disclosed master/theme
+verification gap — no such writer exists in the Python port. If PowerPoint writing
+is ever wanted, it is new work, not a gap to close in code that is already there.)
+
+- **This file's own header comment documents a real, live-caught bug** this build's
+  own verification found: PowerShell's `Compress-Archive` (and even .NET's
+  `[ZipFile]::CreateFromDirectory()`, when the entry name is derived from directory
+  traversal) stores every ZIP entry path with Windows BACKSLASHES
   (`word\document.xml`), which is silently invalid per the Open Packaging Conventions
   spec real Office requires (forward slashes) — confirmed to make a freshly-written
-  `.docx` fail `documents/docx.py`'s own reader outright. The fix: build each ZIP entry
-  via `ZipFile.Open()` + `ZipFileExtensions.CreateEntryFromFile(zip, sourcePath,
-  entryName)` with an EXPLICIT, hand-constructed forward-slash `entryName` — never
-  derived from a filesystem path, so the OS's path-separator convention never leaks in.
-- **`docx.py`** / **`xlsx.py`** — minimal, real, valid single-format writers (plain
+  `.docx` fail `documents/office.py`'s own reader outright. The fix: build each ZIP
+  entry with an EXPLICIT, hand-constructed forward-slash entry name — never derived
+  from a filesystem path, so the OS's path-separator convention never leaks in.
+- **`write_docx` / `write_xlsx`** — minimal, real, valid single-format writers (plain
   paragraphs for docx; a single sheet, `inlineStr` cells — no shared-strings table — for
   xlsx). Deliberately NOT attempting to mirror `documents/`'s full READ-side feature set
   (headings, bold, tables, images, formulas) — these are writers for Jarvis's OWN
   generated text output, not a general document-authoring engine. **Both verified by
   round-tripping their own output through this project's REAL, independently-built
-  readers** (`documents/docx.py`'s `docxToMarkdown()`, `documents/xlsx.py`'s
-  `readXlsx()`) — the honest verification technique available in an environment with no
-  real Word/Excel to open a file in, and the exact technique that caught the
-  backslash-path bug above before it ever shipped.
-- **`pptx.py` — built, but carries a genuinely different, narrower verification
-  confidence than `docx.py`/`xlsx.py`, disclosed rather than glossed over.** A real
-  PowerPoint deck needs more required parts than docx/xlsx do — `ppt/presentation.xml`,
-  a real slideMaster + slideLayout + theme chain, and one `slideN.xml` per slide, each
-  with its own `.rels`. `documents/pptx.py`'s own reader never opens the master/layout/
-  theme parts at all (it only reads `ppt/presentation.xml`'s slide order and each
-  slide's own shape/text) — meaning the round-trip technique that already caught the
-  ZIP path-separator bug for docx/xlsx **cannot** validate that chain the same way. The
-  master/layout/theme XML in `pptx.py` is written from real OOXML DrawingML/
-  PresentationML schema knowledge, in good faith, but **has not been opened in real
-  PowerPoint as of this build** — the same honest-gap disclosure `sandbox/CLAUDE.md`
-  already carries for `sandbox/runner.py` ("don't trust it... until a real run confirms
-  it"). What WAS verified here: real ZIP validity (a genuine `PK` signature, every one
-  of 15 entries forward-slash — the same fix carried over correctly), and a full
-  round-trip through `documents/pptx.py`'s real reader confirming slide order and
-  title/body text are structurally exactly right. Open a generated `.pptx` in real
-  PowerPoint before trusting the master/theme chain the way docx/xlsx are trusted.
+  reader** (`documents/office.py`'s `docx_to_markdown()`/`xlsx_to_markdown()`) — the
+  honest verification technique available in an environment with no real Word/Excel
+  to open a file in, and the exact technique that caught the backslash-path bug above
+  before it ever shipped.
 
 ## `create_artifact.py` (`jarvis/tools/`) — the write path
 

@@ -7,8 +7,14 @@ Every stage above already exists as its own module: `intent.classify`,
 `orchestrator.context`, `capabilities.execute` (which itself asks `policy.decide`),
 and `events.bus`. This file wires them together and owns the loop and the
 lifecycle — nothing else. It deliberately does NOT import cost tracking, the
-self-model, improvement capture, personality or tracing; those subscribe to the
-event bus (§38).
+self-model, improvement capture, or tracing; those subscribe to the event bus
+(§38) instead, since they RECORD what happened rather than shape it.
+
+`personality` is the one narrow exception, imported directly rather than via the
+bus — it is a dependency-free leaf (see its own header) that only ever turns a
+literal `[[laugh]]` token into a `Reaction` event at the exact point the model's
+text becomes a `Chunk`; it observes nothing and writes nothing down, so it is
+transformation, not the recording the restraint above is about.
 
 That restraint is the whole point. The Node original grew into a 1,027-line file
 that is simultaneously the turn loop, the provider gateway and the observability
@@ -83,6 +89,16 @@ class Chunk:
 
 
 @dataclass(frozen=True)
+class Reaction:
+    """A real, audible reaction — never text read aloud as words. Produced by
+    `personality.ReactionScanner` from a literal `[[laugh]]` token in the
+    model's own streamed text; the token itself never reaches `Chunk`, so it
+    never appears in the transcript or gets spoken as words by any voice."""
+
+    kind: str
+
+
+@dataclass(frozen=True)
 class ToolRan:
     capability: str
     ok: bool
@@ -143,7 +159,8 @@ class Done:
     model_id: str | None = None
 
 
-TurnEvent = Routed | Chunk | ToolRan | ApprovalRequired | Switched | Interrupted | Failed | Done
+TurnEvent = (Routed | Chunk | Reaction | ToolRan | ApprovalRequired | Switched | Interrupted
+            | Failed | Done)
 
 
 def _attachment_of(value: Any) -> dict[str, Any] | None:
@@ -245,10 +262,15 @@ class Orchestrator:
         state = self.state_for(request.session_id)
         text = (request.text or "").strip()
 
+        # `text` rides in this event (not just `length`, its only field before)
+        # specifically so Self-Improvement's capture step can subscribe rather
+        # than the turn loop importing it directly — this file deliberately
+        # does not import cost tracking, the self-model, improvement capture,
+        # personality or tracing; those subscribe to the event bus instead.
         self._bus.publish(
             EventType.ASSISTANT_INPUT,
             {"sessionId": request.session_id, "turnId": request.turn_id,
-             "surface": request.surface.value, "length": len(text)},
+             "surface": request.surface.value, "length": len(text), "text": text},
         )
 
         route = classify(text)
@@ -395,6 +417,12 @@ class Orchestrator:
             state.to(State.THINKING, f"step {step}")
 
             completed: StepComplete | None = None
+            # Scoped to this one step — a marker split across a tool-call
+            # boundary would be meaningless anyway, since a new step is a new
+            # generation, not a continuation of the same text stream.
+            from ..personality import create_reaction_scanner, strip_reaction_markers
+
+            reactions = create_reaction_scanner()
             try:
                 for event in self._model.stream(
                     messages=assembled.messages, system=assembled.system,
@@ -403,12 +431,26 @@ class Orchestrator:
                     need=needs or None,
                 ):
                     if cancel.is_set():
+                        # Whatever the scanner is still holding back (at most a
+                        # few characters — see its own docstring) was genuinely
+                        # heard before the user cut in; it just hadn't yet been
+                        # decided to be ordinary text rather than the start of a
+                        # marker. Yielded as a real Chunk too, so what gets
+                        # recorded as "heard" matches what was actually sent.
+                        for piece in reactions.flush():
+                            if piece.text:
+                                spoken_so_far.append(piece.text)
+                                yield Chunk(piece.text)
                         yield self._interrupt(request, state, "".join(spoken_so_far))
                         return
                     if isinstance(event, TextChunk):
                         if event.text:
-                            spoken_so_far.append(event.text)
-                            yield Chunk(event.text)
+                            for piece in reactions.feed(event.text):
+                                if piece.type == "reaction":
+                                    yield Reaction(piece.kind)
+                                elif piece.text:
+                                    spoken_so_far.append(piece.text)
+                                    yield Chunk(piece.text)
                     elif isinstance(event, ModelSwitched):
                         yield Switched(event.to_model, event.reason, event.from_model)
                     elif isinstance(event, StepComplete):
@@ -420,6 +462,13 @@ class Orchestrator:
                      "step": step, "error": str(err)},
                 )
                 raise
+
+            # Anything still held back was never a real marker, just ordinary
+            # text that happened to look like the start of one.
+            for piece in reactions.flush():
+                if piece.text:
+                    spoken_so_far.append(piece.text)
+                    yield Chunk(piece.text)
 
             if completed is None:
                 # A client that streamed text but never said the step finished is
@@ -434,7 +483,12 @@ class Orchestrator:
             )
 
             if not completed.tool_calls:
-                reply = completed.text or "".join(spoken_so_far)
+                # `completed.text` is the adapter's own final assembly, built
+                # independently of the streamed Chunks above — it can still
+                # carry a raw [[laugh]] token the scanner never saw, so it
+                # gets the same stripping before it ever reaches the
+                # transcript or gets said back as words.
+                reply = strip_reaction_markers(completed.text) or "".join(spoken_so_far)
                 conversation.push_assistant_text(
                     request.session_id, reply, completed.model_id, completed.raw
                 )
@@ -453,7 +507,7 @@ class Orchestrator:
                 [{"id": c.id, "name": c.name, "args": c.args} for c in completed.tool_calls],
                 model_id=completed.model_id,
                 raw=completed.raw,
-                text=completed.text or "",
+                text=strip_reaction_markers(completed.text) or "",
             )
 
             parked = None

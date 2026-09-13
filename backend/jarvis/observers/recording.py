@@ -51,8 +51,13 @@ def start_observers(event_bus: EventBus | None = None) -> None:
     _unsubscribes.append(
         ebus.subscribe(EventType.NOTIFICATION_CREATED, store_notification))
 
-    logger.info("[observers] recording outcomes, usage, security counts, verification "
-                "and notifications")
+    from .improvement import _check_for_correction, _record_job_outcome
+    for event_type in (EventType.JOB_COMPLETED, EventType.JOB_UPDATED):
+        _unsubscribes.append(ebus.subscribe(event_type, _record_job_outcome))
+    _unsubscribes.append(ebus.subscribe(EventType.ASSISTANT_INPUT, _check_for_correction))
+
+    logger.info("[observers] recording outcomes, usage, security counts, verification, "
+                "notifications and improvement capture")
 
 
 def stop_observers() -> None:

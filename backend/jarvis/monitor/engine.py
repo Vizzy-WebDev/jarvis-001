@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +30,18 @@ from ..jscompat import now_iso
 from . import store
 
 logger = logging.getLogger(__name__)
+
+#: How often a pass over every active watch runs. Watches here have no
+#: per-item interval of their own (unlike heartbeat's schedule_store) — one
+#: fixed cadence checking everything is the whole design.
+TICK_SECONDS = 60.0
+ENABLE_ENV = "JARVIS_MONITOR"
+
+_timer: threading.Timer | None = None
+
+
+def is_enabled() -> bool:
+    return os.environ.get(ENABLE_ENV) == "1"
 
 SUPPORTED_KINDS = ("file_exists", "file_gone", "file_size_stable", "web_page_changed")
 
@@ -193,3 +207,32 @@ def check_all(event_bus: EventBus | None = None) -> list[dict[str, Any]]:
             "body": (monitor.get("onTrigger") or {}).get("text") or "",
             "meta": {"monitorId": monitor["id"]}})
     return fired
+
+
+def start(*, event_bus: EventBus | None = None) -> bool:
+    """Start the periodic check, if the interlock allows it. Returns whether it
+    started — same shape as scheduler.engine.start()/heartbeat.engine.start(),
+    so assembly.start_background_work() can report all three the same way."""
+    global _timer
+    if not is_enabled() or _timer is not None:
+        return False
+
+    def run() -> None:
+        global _timer
+        try:
+            check_all(event_bus=event_bus)
+        except Exception:  # noqa: BLE001
+            logger.exception("a monitor check pass failed")
+        _timer = threading.Timer(TICK_SECONDS, run)
+        _timer.daemon = True
+        _timer.start()
+
+    run()
+    return True
+
+
+def stop() -> None:
+    global _timer
+    if _timer is not None:
+        _timer.cancel()
+        _timer = None

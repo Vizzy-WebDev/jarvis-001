@@ -23,7 +23,8 @@ from pydantic import BaseModel
 from .. import conversation
 from ..assembly import get_orchestrator
 from ..orchestrator import (
-    ApprovalRequired, Chunk, Done, Failed, Interrupted, Routed, Switched, ToolRan, TurnRequest,
+    ApprovalRequired, Chunk, Done, Failed, Interrupted, Reaction, Routed, Switched, ToolRan,
+    TurnRequest,
 )
 from ..policy import Autonomy, Surface
 from ..session import get_active_session_id
@@ -41,6 +42,8 @@ LOW_CONFIDENCE_BELOW = 0.6
 def to_wire(event: Any) -> dict[str, Any]:
     if isinstance(event, Chunk):
         return {"type": "chunk", "text": event.text}
+    if isinstance(event, Reaction):
+        return {"type": "reaction", "kind": event.kind}
     if isinstance(event, Done):
         return {"type": "done", "text": event.text, "steps": event.steps}
     if isinstance(event, Routed):

@@ -419,3 +419,71 @@ def test_a_task_with_no_pin_asks_for_no_particular_model(monkeypatch):
     monkeypatch.setattr("jarvis.assembly.get_orchestrator", lambda: FakeOrchestrator())
     engine._run_prompt({"id": "t1", "title": "x"}, {"type": "prompt", "text": "do it"})
     assert seen["model_id"] is None
+
+
+# --- Self-Improvement capture, on every run (S7) ------------------------------
+#
+# `capture.record_task_outcome()` is correct in isolation, but nothing ever
+# called it. `run_task_now()` calls it directly (no event to subscribe to —
+# see `observers/improvement.py`'s own header), so this drives a real task
+# through the real engine and a real stub model, and reads the row back from
+# `improvement/store.py` with no call from the test into `capture.py` itself.
+
+def test_a_completed_task_run_lands_a_real_outcome_row(scratch):
+    from jarvis import assembly, conversation
+    from jarvis.gateway import availability, connections, registry as model_registry
+    from jarvis.improvement import store as improvement_store
+
+    from stub_openai_server import StubModelServer
+
+    assembly.reset_for_tests()
+    conversation.reset_for_tests()
+    availability.reset_for_tests()
+    stub = StubModelServer()
+    base = stub.start()
+    try:
+        conn = connections.add_connection(adapter="openai-compatible", base_url=base,
+                                          label="stub", provider="custom", kind="local",
+                                          key_required=False)
+        model_registry.add_model(connection_id=conn["id"], model="stub-model")
+        stub.says("All tidied up.")
+
+        task = task_store.create_task(
+            title="Nightly cleanup",
+            recurrence={"type": "daily", "time": "03:00"},
+            action={"type": "prompt", "text": "tidy up"})
+        run = engine.run_task_now(task["id"], event_bus=EventBus())
+        assert run["ok"] is True
+
+        real_run = task_store.list_runs(task["id"])[0]
+        rows = [r for r in improvement_store.list_unreviewed_outcomes()
+                if r["source"] == "task" and r["source_ref"] == real_run["id"]]
+        assert len(rows) == 1
+        assert rows[0]["status"] == "done"
+        assert rows[0]["entity_ref"] == task["id"]
+        assert rows[0]["title"] == "Nightly cleanup"
+    finally:
+        stub.stop()
+        assembly.reset_for_tests()
+        availability.reset_for_tests()
+        conversation.reset_for_tests()
+
+
+def test_a_failed_task_run_is_captured_as_failed_not_silently_dropped(scratch):
+    from jarvis.improvement import store as improvement_store
+
+    task = task_store.create_task(
+        title="Broken action",
+        recurrence={"type": "daily", "time": "03:00"},
+        # No model configured at all — `_run_action` fails cleanly rather than
+        # hanging, which is exactly the ordinary "every model rate-limited"
+        # state the root CLAUDE.md calls out as normal, not an edge case.
+        action={"type": "prompt", "text": "do something"})
+    run = engine.run_task_now(task["id"], event_bus=EventBus())
+    assert run["ok"] is False
+
+    real_run = task_store.list_runs(task["id"])[0]
+    rows = [r for r in improvement_store.list_unreviewed_outcomes()
+            if r["source"] == "task" and r["source_ref"] == real_run["id"]]
+    assert len(rows) == 1
+    assert rows[0]["status"] == "failed"

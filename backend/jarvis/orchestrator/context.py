@@ -216,9 +216,27 @@ class RelevanceContext:
         # there would deliver it to the machinery instead of to them.
         notices = "" if background else prompt.notices_section(_waiting_notices())
 
-        system = prompt.system_instruction(memories=memories_text,
-                                           low_confidence=low_confidence,
-                                           extra=[p for p in (rules, notices) if p])
+        # The adaptive communication register — both its stable half
+        # (STYLE_FRAMEWORK, via has_audience below) and its per-turn half
+        # (the floors) share the same gate Node's own `systemInstructionParts`
+        # uses: `hasAudience = !background or addressed`. A briefing's own
+        # turn also runs with `background=True` today (there is no separate
+        # `addressed` flag threaded through `TurnRequest`/`Surface` the way
+        # the Node build had one), so a briefing gets neither half either —
+        # narrower than the Node design, disclosed rather than silently
+        # matched with plumbing this wave didn't scope.
+        has_audience = not background
+        floors_text = ""
+        if has_audience:
+            from ..personality import floors_section, read_style
+
+            floors, sticky = read_style(session_id, text)
+            floors_text = floors_section(floors, sticky)
+
+        system = prompt.system_instruction(
+            memories=memories_text, low_confidence=low_confidence,
+            extra=[p for p in (rules, notices, floors_text) if p],
+            has_audience=has_audience)
         remaining = max(0, self.budget_tokens - estimate_tokens(system))
         messages = trim_messages(conversation.get_messages(session_id), remaining)
 

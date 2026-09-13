@@ -136,3 +136,26 @@ def test_a_low_confidence_turn_says_so_to_the_model_only_when_it_applies():
 def test_no_memories_means_no_empty_memory_heading():
     system = RelevanceContext().assemble(session_id="s1", text="hello").system
     assert "What you remember about the user" not in system
+
+
+# --- the adaptive communication register: has_audience gating (S7) -----------
+
+def test_a_turn_with_someone_listening_gets_both_halves_of_the_register():
+    system = RelevanceContext().assemble(
+        session_id="s1", text="give it to me straight, is this a bad idea",
+        background=False).system
+    assert "How you communicate" in system  # STYLE_FRAMEWORK, stable half
+    assert "for this reply specifically" in system  # the per-turn floors
+
+
+def test_a_background_turn_gets_neither_half_of_the_register():
+    """Node's own `hasAudience = !background or addressed`: a scheduled task's
+    or job worker's own turn has nobody to warm up, push back on, or joke
+    with — so it gets neither STYLE_FRAMEWORK nor a floors section, matching
+    the root CLAUDE.md's documented scope. Regression test for the bug S7
+    found live: STYLE_FRAMEWORK had been baked unconditionally into
+    `stable_instruction()`, which leaked it onto every background turn."""
+    system = RelevanceContext().assemble(
+        session_id="s2", text="give it to me straight", background=True).system
+    assert "How you communicate" not in system
+    assert "for this reply specifically" not in system

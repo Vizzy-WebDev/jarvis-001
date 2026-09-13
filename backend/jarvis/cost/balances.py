@@ -107,9 +107,8 @@ def is_enabled() -> bool:
 
 
 def start() -> bool:
-    """Periodic refresh. Does nothing unless the interlock is set — the Node app
-    is still the live one, and two builds polling the same accounts is noise at
-    best."""
+    """Periodic refresh. Does nothing unless JARVIS_COST_REFRESH is set — a real
+    launch (main()) sets it; a test's own create_app() never does."""
     global _timer
     if not is_enabled() or _timer is not None:
         return False

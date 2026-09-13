@@ -27,7 +27,7 @@ from jarvis.events import EventType
 from jarvis.events.bus import EventBus
 from jarvis.orchestrator import (
     ApprovalRequired, Chunk, Done, Failed, Interrupted, MAX_STEPS,
-    Orchestrator, Routed, StepComplete, TextChunk, ToolCall, ToolRan, TurnRequest,
+    Orchestrator, Reaction, Routed, StepComplete, TextChunk, ToolCall, ToolRan, TurnRequest,
 )
 from jarvis.policy import Autonomy, Surface
 
@@ -316,6 +316,69 @@ def test_an_interruption_records_what_was_actually_heard(reg):
     assert interrupted[0].spoken_text == "The first part "
     assert orch.state_for("s1").state is State.INTERRUPTED
     assert not any(isinstance(e, Done) for e in events)
+
+
+# --- real vocal laughter (S7) -------------------------------------------------
+
+def test_a_laugh_marker_becomes_a_reaction_and_never_appears_in_text(reg):
+    """The property S7's audit needed: the model can genuinely write `[[laugh]]`
+    (STYLE_FRAMEWORK tells it to, per personality.py), and it must reach the
+    user as a real, separate `reaction` event — never as visible text, and
+    never spoken as words by a voice reading `Chunk`/`Done` text aloud."""
+    model = StubModel([
+        TextChunk("that's hilarious [[laugh]] okay anyway"),
+        StepComplete(text="that's hilarious [[laugh]] okay anyway", model_id="stub"),
+    ])
+    orch = Orchestrator(model, registry=reg, event_bus=EventBus())
+
+    events = run(orch, "tell me something funny")
+
+    reactions = [e for e in events if isinstance(e, Reaction)]
+    assert len(reactions) == 1
+    assert reactions[0].kind == "laugh"
+
+    chunks = [e for e in events if isinstance(e, Chunk)]
+    assert all("[[laugh]]" not in c.text for c in chunks)
+    assert "".join(c.text for c in chunks) == "that's hilarious okay anyway"
+
+    done = next(e for e in events if isinstance(e, Done))
+    assert "[[laugh]]" not in done.text
+    assert done.text == "that's hilarious okay anyway"
+
+    # The stored transcript is what gets read back into future turns and what
+    # a voice would speak from — it must be just as clean.
+    last = conversation.get_messages("s1")[-1]
+    assert "[[laugh]]" not in last["text"]
+
+
+def test_a_marker_split_across_streamed_chunks_is_still_caught(reg):
+    """Some adapters stream a token at a time — the scanner must not depend on
+    a marker arriving whole in one TextChunk."""
+    pieces = ["that's ", "hilarious ", "[[la", "ugh]] ", "okay"]
+    model = StubModel(
+        [TextChunk(piece) for piece in pieces]
+        + [StepComplete(text="that's hilarious [[laugh]] okay", model_id="stub")]
+    )
+    orch = Orchestrator(model, registry=reg, event_bus=EventBus())
+
+    events = run(orch, "go on then")
+
+    assert len([e for e in events if isinstance(e, Reaction)]) == 1
+    chunks = [e for e in events if isinstance(e, Chunk)]
+    assert "".join(c.text for c in chunks) == "that's hilarious okay"
+
+
+def test_text_that_only_resembles_a_marker_is_left_alone(reg):
+    """No false positive: ordinary text that happens to start like a marker
+    but never completes one must reach the user untouched."""
+    model = StubModel(say("he said [[laughing]] out loud, not literally"))
+    orch = Orchestrator(model, registry=reg, event_bus=EventBus())
+
+    events = run(orch, "what happened")
+
+    assert not any(isinstance(e, Reaction) for e in events)
+    done = next(e for e in events if isinstance(e, Done))
+    assert done.text == "he said [[laughing]] out loud, not literally"
 
 
 # --- observability (§25, §38) ------------------------------------------------

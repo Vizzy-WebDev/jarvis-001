@@ -14,8 +14,8 @@ is skipped for the tick; an item whose `check()` throws still advances its own
 schedule, in a `finally`, so a consistently failing check does not retry on every
 tick forever.
 
-Off behind an interlock until cutover: the Node app is still the live one, and
-two builds noticing the same thing would say it twice.
+Off by default behind an interlock, same reasoning as scheduler.engine: a real
+launch (main()) sets JARVIS_HEARTBEAT, a test's own create_app() never does.
 """
 
 from __future__ import annotations

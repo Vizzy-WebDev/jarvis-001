@@ -111,17 +111,22 @@ def start_background_work() -> dict[str, bool]:
     """Switch on the things that run on their own clock.
 
     ONE place, so "what starts itself" is answerable by reading a single
-    function. Every piece here is behind its own environment interlock and does
-    nothing until cutover: the Node app is still the live one on the owner's
-    machine, and two builds firing the same scheduled task, or polling the same
-    provider account, act on shared state twice.
+    function. Every piece here is behind its own environment interlock, off by
+    default — `main()` (the real launch path) is what turns them on, so a
+    test's own `create_app()` never starts a real background thread unasked.
     """
     from .cost import balances, prices
     from .heartbeat import engine as heartbeat
     from .heartbeat.triggers import start_triggers
+    from .improvement import cadence as improvement_cadence
+    from .jobs import orchestrator as job_supervisor
+    from .monitor import engine as monitor_engine
     from .ops.environment import sampler
+    from .scheduler import engine as scheduler_engine
 
-    started = {"balances": False, "prices": False, "sampler": False, "heartbeat": False}
+    started = {"balances": False, "prices": False, "sampler": False, "heartbeat": False,
+              "scheduler": False, "monitor": False, "job_supervisor": False,
+              "improvement_cadence": False}
 
     # Seeding is NOT behind the interlock. The interlock stops two builds acting
     # on the user's behalf; recording that a local model costs nothing is a fact
@@ -139,6 +144,10 @@ def start_background_work() -> dict[str, bool]:
         # Only alongside the tick: the trigger feeds the same pipeline, so
         # arming it while the tick is off would half-start the heartbeat.
         start_triggers(bus)
+    started["scheduler"] = scheduler_engine.start()
+    started["monitor"] = monitor_engine.start(event_bus=bus)
+    started["job_supervisor"] = job_supervisor.start(event_bus=bus)
+    started["improvement_cadence"] = improvement_cadence.start()
     return started
 
 

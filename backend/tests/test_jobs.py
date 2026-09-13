@@ -288,6 +288,72 @@ def test_an_orphan_that_did_something_external_is_never_silently_restarted():
     assert "cannot safely be repeated" in job_store.list_pending_outbox()[0]["summary"]
 
 
+# --- Self-Improvement capture, through the observer wiring (S7) --------------
+#
+# `capture.record_job_outcome()` is correct in isolation, but that was never
+# the gap — the gap was that nothing called it. These drive a real job to a
+# terminal status through the real worker, on the REAL default bus (the one
+# `assembly.get_registry()` itself wires observers onto in production — a
+# job's own turn cannot run without a registry, so this is exactly the path a
+# real job takes, not a test-only shortcut), and read the row back from
+# `improvement/store.py` directly, with NO call from the test into
+# `capture.py` — proving the `JOB_COMPLETED`/`JOB_UPDATED` -> observer wiring
+# itself, not just the function it eventually calls.
+
+def test_a_completed_job_lands_a_real_outcome_row_via_the_observer(stub):
+    from jarvis.improvement import store as improvement_store
+
+    stub.says("Found three flights under 400.")
+    job = job_store.create_job(title="Find flights", goal="find flights to Lagos")
+    worker.run_job(job["id"])
+
+    rows = [r for r in improvement_store.list_unreviewed_outcomes()
+            if r["source"] == "job" and r["source_ref"] == job["id"]]
+    assert len(rows) == 1
+    assert rows[0]["status"] == "done"
+    assert rows[0]["title"] == "Find flights"
+
+
+def test_a_parked_jobs_own_decision_is_not_yet_a_terminal_outcome(stub):
+    """`awaiting_decision` is not in `TERMINAL_JOB_STATUSES` — a job still
+    waiting on a person has not "happened" yet in the sense an outcome
+    records. The `JOB_UPDATED` subscription must not misfire on it."""
+    from jarvis.improvement import store as improvement_store
+
+    assembly.get_registry().register(CapabilitySpec(
+        id="test.send2", name="send_message2", description="send",
+        input_schema={"type": "object", "properties": {}},
+        risk=Risk.HIGH, handler=lambda **_: "sent"))
+    stub.calls_tool("send_message2", {})
+
+    job = job_store.create_job(title="Send the note", goal="send the note")
+    worker.run_job(job["id"])
+
+    rows = [r for r in improvement_store.list_unreviewed_outcomes()
+            if r["source"] == "job" and r["source_ref"] == job["id"]]
+    assert rows == []
+
+
+def test_the_same_terminal_status_reported_twice_is_one_outcome_not_two(stub):
+    """`JOB_COMPLETED` and a later `JOB_UPDATED` can both name the same
+    terminal status — real paths in `worker.py` can emit both. Idempotent on
+    the job id, the same property `capture.record_job_outcome()`'s own
+    docstring states."""
+    from jarvis.events import EventType, bus as default_bus
+    from jarvis.improvement import store as improvement_store
+
+    stub.says("Done.")
+    job = job_store.create_job(title="t", goal="do the thing")
+    worker.run_job(job["id"])
+    # A second, redundant terminal notification for the same job — exactly
+    # the kind of repeat the real system can produce.
+    default_bus.publish(EventType.JOB_UPDATED, {"id": job["id"], "status": "done"})
+
+    rows = [r for r in improvement_store.list_unreviewed_outcomes()
+            if r["source"] == "job" and r["source_ref"] == job["id"]]
+    assert len(rows) == 1
+
+
 # --- the tools ---------------------------------------------------------------
 
 @pytest.fixture

@@ -68,8 +68,10 @@ def create_app() -> FastAPI:
     app.include_router(automation.router)
     app.include_router(sandbox.router)
 
-    # Everything here is behind its own interlock and does nothing until
-    # cutover — see assembly.start_background_work().
+    # Everything here is behind its own interlock — off by default so a test's
+    # own create_app() never starts a real background thread unasked. `main()`
+    # (the real launch path, never called by a test) is what turns them on,
+    # and it does that BEFORE this function runs — see `main()`'s own comment.
     from .assembly import start_background_work
     start_background_work()
 
@@ -80,14 +82,28 @@ def create_app() -> FastAPI:
     return app
 
 
-app = create_app()
+#: Every subsystem that only runs behind an opt-in interlock (see each
+#: module's own `ENABLE_ENV`) — off by default so importing this module for a
+#: test never starts a real background thread. A real launch turns all of
+#: them on; `os.environ.setdefault` so an explicit override (a test's own
+#: `monkeypatch`, or the user's own environment) is never clobbered.
+_BACKGROUND_INTERLOCKS = (
+    "JARVIS_SCHEDULER", "JARVIS_HEARTBEAT", "JARVIS_MONITOR", "JARVIS_JOBS",
+    "JARVIS_COST_REFRESH", "JARVIS_ENV_SAMPLER", "JARVIS_IMPROVEMENT",
+)
 
 
 def main() -> None:
     import uvicorn
 
+    # Set BEFORE create_app() — start_background_work() inside it reads these
+    # once, at construction time, so setting them any later would be too late
+    # for this same process's own app.
+    for var in _BACKGROUND_INTERLOCKS:
+        os.environ.setdefault(var, "1")
+
     port = int(os.environ.get("PORT", "3000"))
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
+    uvicorn.run(create_app(), host="127.0.0.1", port=port, log_level="info")
 
 
 if __name__ == "__main__":

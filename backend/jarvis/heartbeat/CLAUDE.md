@@ -7,7 +7,7 @@ equivalent is the snake_case function doing that job in the same module. Where a
 module had no Python counterpart, the text says so rather than pointing at a file that
 does not exist. -->
 
-# Heartbeat + Trigger + Proactive Attention (`jarvis/heartbeat/*.js`)
+# Heartbeat + Trigger + Proactive Attention (`jarvis/heartbeat/*.py`)
 
 See the root `CLAUDE.md`'s "Heartbeat" section for the decisions that matter beyond this
 file (why the Interruption Broker needed generalizing, the reliability guarantees, the

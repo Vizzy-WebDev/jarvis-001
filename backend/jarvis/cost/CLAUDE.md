@@ -7,7 +7,7 @@ equivalent is the snake_case function doing that job in the same module. Where a
 module had no Python counterpart, the text says so rather than pointing at a file that
 does not exist. -->
 
-# Cost tracking — `jarvis/cost/*.js`
+# Cost tracking — `jarvis/cost/*.py`
 
 See the root `CLAUDE.md`'s "Operational Awareness" section for the decisions that matter
 beyond this file (items 2/Cost-tracking and 6/cost-at-decision-time). This file is the

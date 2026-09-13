@@ -7,7 +7,7 @@ equivalent is the snake_case function doing that job in the same module. Where a
 module had no Python counterpart, the text says so rather than pointing at a file that
 does not exist. -->
 
-# Output/Artifact generation — `jarvis/artifacts/*.js`
+# Output/Artifact generation — `jarvis/artifacts/*.py`
 
 See the root `CLAUDE.md`'s "Operational Awareness" section for the decisions that
 matter beyond this file (item 3 — Output/Artifact generation — and its relationship to

@@ -7,7 +7,7 @@ equivalent is the snake_case function doing that job in the same module. Where a
 module had no Python counterpart, the text says so rather than pointing at a file that
 does not exist. -->
 
-# Self-Model (`jarvis/self/*.js`)
+# Self-Model (`jarvis/self/*.py`)
 
 See the root `CLAUDE.md`'s "Self-Model" section for the decisions that matter beyond this
 file (the grounding rule, the authority ceiling, the hybrid trigger design, why it reads
@@ -19,9 +19,9 @@ Self-Improvement instead of duplicating it). This file is the module-by-module b
 produces prose appended to a delivery instruction and nothing else. Enforced by the
 import graph, not by convention: nothing under `jarvis/self/` imports
 `capabilities/`, `capabilities/registry.py`, `orchestrator/pipeline.py`, `scheduler/*`, or
-`control/session.py` — verified live (`node -e "import('./jarvis/capabilities/registry.py')"`
+`control/session.py` — verified live (`python -c "import jarvis.capabilities.registry"`
 loads cleanly with `check_myself`/`track_goal` both present, and a grep of every
-`jarvis/self/*.js` file for those five module paths turns up only doc-comment mentions,
+`jarvis/self/*.py` file for those five module paths turns up only doc-comment mentions,
 never a real `import`). A self-assessment computed here can inform what Jarvis *says*;
 it structurally cannot reach `memory/policy.py`'s `decide()`, `improvement/policy.py`'s
 `decide()`, the confirm gate, or `orchestrator.py` — there is no import edge for it to
@@ -62,7 +62,7 @@ answer.
   returns which of five triggers fired: `authority`, `knownFailure`, `noTrackRecord`,
   `correction`, `blockedOnBackground`. `anySignalFired()` is the one gate `prompt.py`'s
   `selfFocusSection()` checks before spending any tokens on it. Testable with a bare
-  `node --input-type=module -e "..."` script — no server, no database — same as
+  `python -c "..."` script — no server, no database — same as
   the Node build's style floors' `detectFloors()`.
 - **`self-capture.py`** — leaf-adjacent (imports `self/store.py` and
   `improvement/improvement/store.py`, both leaves). `recordToolOutcome()` is called once

@@ -7,7 +7,7 @@ equivalent is the snake_case function doing that job in the same module. Where a
 module had no Python counterpart, the text says so rather than pointing at a file that
 does not exist. -->
 
-# Memory (`jarvis/memory/*.js`)
+# Memory (`jarvis/memory/*.py`)
 
 See the root `CLAUDE.md`'s "Memory" section for the decisions that matter beyond this
 file (the tiered-approval policy seam and its hard floor, fire-and-forget checkpoints,
@@ -34,7 +34,7 @@ but recalling something said is). This file covers the three modules themselves.
   second round trip to show an old-vs-new comparison.
 - `memory/policy.py` — `decide(candidate, {trust})`, the single seam the trust-level
   system is built on. A pure function (no `db.py` import) on purpose — deterministic,
-  testable with a plain `node -e` truth table, no server needed. `trust` overrides
+  testable with a plain `python -c` truth table, no server needed. `trust` overrides
   `prefs.py`'s saved `memoryTrust`, for tests; every real caller omits it. A candidate
   carrying a `conflictsWithId`, or no usable `confidence` score at all, ALWAYS returns
   `'require-approval'` regardless of trust level — the one thing no setting can override.

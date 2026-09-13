@@ -7,7 +7,7 @@ equivalent is the snake_case function doing that job in the same module. Where a
 module had no Python counterpart, the text says so rather than pointing at a file that
 does not exist. -->
 
-# Operational Awareness — `jarvis/ops/*.js`
+# Operational Awareness — `jarvis/ops/*.py`
 
 See the root `CLAUDE.md`'s "Operational Awareness" section for the decisions that matter
 beyond this file. This file is the module-by-module breakdown for `jarvis/ops/` itself —
@@ -105,7 +105,7 @@ and `ops/diagnostics/`'s own anomaly verdict — never re-derives any of these i
   same shape as `heartbeat/triggers.py`: `registerCheck({id, intervalMs,
   probe(), remedy?()})`. `probe()` returns `{ok, detail?}`; `remedy()` is optional and
   best-effort.
-- **`checks/*.js`** — nine real checks, none with a `remedy()` unless a genuinely safe
+- **`checks/*.py`** — nine real checks, none with a `remedy()` unless a genuinely safe
   automatic fix exists (only the synthetic test checks used to verify the mechanism
   itself have one; every real check here has no safe auto-remedy, so each escalates
   straight from a failed probe): `routes/memory.py` (a real create->read->delete round trip
@@ -129,7 +129,7 @@ and `ops/diagnostics/`'s own anomaly verdict — never re-derives any of these i
   saved. Fixed to read `tts.listProviders().some(p => p.configured)` instead — whether
   ANY configured external service actually resolves, the real question this check
   exists to answer.
-- **`checks/security/*.js`** — detection only, per the owner's own explicit scope; NONE
+- **`checks/security/*.py`** — detection only, per the owner's own explicit scope; NONE
   of these declare a `remedy()`, on purpose. `ops/diagnostics/checks/` watches `.env`,
   `connections.json`, `external-services.json`, `connectors.json` for a change with no
   matching in-app write — see its own extensive header comment for a real,

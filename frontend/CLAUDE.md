@@ -7,26 +7,76 @@ equivalent is the snake_case function doing that job in the same module. Where a
 module had no Python counterpart, the text says so rather than pointing at a file that
 does not exist. -->
 
-# Front-end (`public/`)
+# Front end (`frontend/`)
 
-Plain ES-module front-end, no build step, no framework. `frontend/app/page.tsx` is the shell;
-`frontend/lib/nav.ts`'s `SECTIONS` array is the single source of truth for the drawer, the
-hash router (`routing.py`), and voice navigation (`open_section` skill) — add a
-capability by adding one entry here plus one file in `screens/`. Screens are
-hash-routed (`#/models`) and each exports `async function render(container)`
-that wipes and rebuilds its container from scratch on every change — no
-partial DOM patching anywhere.
+Next.js App Router + React + TypeScript + Tailwind, built to a **static export**
+(`frontend/out`) that the Python backend serves itself — one process, one port, no Node
+at runtime. `npm run build` produces the export; it is committed, so changing the front
+end means rebuilding and committing `out/` alongside the source change.
 
-`frontend/components/ui/Modal.tsx` is the one popup component (add-a-model, create-a-task,
-add-a-briefing-source all use it). **It must be appended to `<body>`, never to
-a screen's own container** — every screen's `render()` starts with
-`container.innerHTML = ''`, so a modal living inside one would be destroyed by
-any re-render that isn't the modal's own close. `api.setSubmitLabel()`
-persists a `currentLabel` so a later `setBusy(false)` doesn't silently revert
-a relabel (e.g. "Test and add" -> "Add selected" after a discovery checklist
-appears) back to the dialog's original button text.
+**Four anchors are fixed; everything else is free to change.** The hamburger is top
+LEFT and reaches every section; the orb stays centred on the stage with the mic beneath
+it and nothing on the page may move or resize it; the conversation panel floats OVER the
+right edge of the stage, reserving no column; and the conversation and composer are ONE
+panel, not two. `tests/test_shell_e2e.py` asserts all four structurally — a redesign
+that quietly breaks one fails there, where a screenshot review would not.
 
-## Voice engine (`public/engines/*.js`)
+`frontend/lib/nav.ts`'s `SECTIONS` array remains the single source of truth for the
+drawer, the hash router (`lib/useHashRoute.ts`) and voice navigation
+(`open_section`). Adding a section is one entry here plus one screen component plus one
+line in `app/page.tsx`'s `screenFor()`.
+
+## Screens (`components/screens/`)
+
+One component per section, rendered into `GenericScreen`, which draws the shell chrome:
+its own hamburger, the section's group label, and the `PageHeader` carrying the title
+and blurb.
+
+**A screen must NOT render its own `PageHeader`.** `GenericScreen` already drew it, so
+doing both puts the title on screen twice and double-pads the column — a real bug that
+shipped across seven screens and was caught only by a Playwright strict-mode violation,
+by accident. There is now a test that walks every section and asserts exactly one `<h1>`.
+
+**The standing rule: if a thing is a thing, it is clickable.** Every list of real
+objects gets a real detail view and real actions. No screen ships as a read-only display
+of rows.
+
+## Shared primitives (`components/ui/`)
+
+Every screen composes from these, and the sameness is most of what makes twelve screens
+feel like one product: `Card`/`Row`, `Button` (three tones, never more), `Field` +
+`inputClass`, `Toggle`, `Modal`, `Popover`, `EmptyState`, `PageHeader`, `AppIcon`,
+`IconButton`, `Icons`. No UI libraries beyond Tailwind.
+
+**`Modal` nests correctly and `Popover` escapes a scrolling modal body** — both were
+real bugs. Every open overlay pushes onto a module-level stack (`ui/overlay-stack.ts`)
+and only the topmost responds to Escape, so a list opened from inside an editor does not
+take the editor down with it. The effect that registers this is keyed on `open` ALONE,
+with the close callback read from a ref: including `onClose` in its dependencies makes it
+re-run on every render (callers pass inline arrows), which silently re-promotes the
+overlay to the top of the stack and reintroduces the bug. `Popover` positions itself
+`fixed` from the trigger's measured rect rather than absolutely, because a modal body
+scrolls and would otherwise clip it.
+
+**`Field` is deliberately a `div`, not a `label`.** A label forwards a click anywhere
+inside it to the first labelable control — found the hard way when a field containing an
+"Add connector" button and a popover full of switches reopened the popover on every
+attempt to close it.
+
+**`Toggle` declares `data-testid` as a real prop.** TypeScript does not check hyphenated
+JSX attributes against a component's props, so passing one to a component that does not
+accept it typechecks cleanly and is then silently dropped.
+
+## The typed client (`lib/api.ts`)
+
+Every route goes here and nowhere else, with its types in `lib/api-types.ts`. Same-origin
+by design: in production the backend serves these files and the API from one port, and in
+development `next.config.mjs` rewrites `/api` to the running backend, so nothing needs a
+base URL and there is no CORS. `ApiRequestError` carries the server's own message —
+backend error strings are written in plain language for the user to read directly, so
+they are surfaced as-is rather than replaced with a generic failure.
+
+## Voice engine (`frontend/lib/voice/`)
 
 `PipelineEngine` (Chrome STT -> any model -> TTS) and `LiveEngine` (Gemini
 Live, audio in/out over WebSocket). Both extend `VoiceEngine`, which provides
@@ -100,16 +150,15 @@ calling `speaker.end()` — now every error path calls it. (3) Chrome's
 `onerror` firing — now has a per-utterance watchdog that force-continues if
 Chrome never confirms.
 
-## The orb (`frontend/components/stage/Orb.tsx`, `public/vendor/three/`)
+## The orb (`components/stage/Orb.tsx`)
 
 Jarvis's face — a single 3D sphere, centered in the app screen, reacting to
 `idle`/`listening`/`thinking`/`speaking` (the same four states the voice
-engines emit; `frontend/components/stage/Orb.tsx` consumes them via one call, `frontend/app/page.tsx`'s
-`setMicVisual()`). Built on **vendored three.js**
-(`three`, pinned 0.185.1, pulled via
-`npm pack three` — the project's one deliberate front-end dependency, chosen
-over a dependency-free raw-WebGL2 shader after an explicit trade-off
-comparison). A custom `ShaderMaterial`'s **vertex** shader displaces an
+engines emit; `Orb.tsx` consumes them via one call from `app/page.tsx`). Built on
+**three.js** — an ordinary npm dependency now, bundled by the build, where the Node
+build hand-vendored it. Still the project's one deliberate front-end 3D dependency,
+chosen over a dependency-free raw-WebGL2 shader after an explicit trade-off
+comparison. A custom `ShaderMaterial`'s **vertex** shader displaces an
 `IcosahedronGeometry`'s surface with domain-warped fBm noise plus an outward
 ripple driven by `getLevel()` (polled once per animated frame, smoothed with
 an attack/release follower) — swirl for `thinking`, pulses for `speaking`,
@@ -118,16 +167,17 @@ parameter presets over ~600ms. Falls back to a CSS-gradient orb
 (`.orb-fallback`, same four state classes) if three.js/WebGL fails to
 initialize.
 
-**Two vendoring facts, worth checking again on the next three.js update:**
-- `three` alone is not a complete vendor — it imports a sibling
-  `three` (three.js's build split, ~r150+). Missing it parses and
-  serves fine (`node --check`, curl, even a same-tab `fetch()` all give zero
-  signal) but fails at browser module-resolution time with a content-free
-  `TypeError: Failed to fetch dynamically imported module` — and because
-  `frontend/app/page.tsx` imports `frontend/components/stage/Orb.tsx` at the top level, that takes the **entire app**
-  down silently (nothing in `frontend/app/page.tsx` runs until its static imports resolve).
-  Only a real browser network tab shows the missing 503. Both files must ship
-  together; `public/vendor/three/README.md` has the update recipe.
+**The hand-vendoring hazard is gone, and worth knowing why it existed.** The Node build
+served three.js as two raw files that had to ship together (`three.module.min.js` plus a
+sibling core, split upstream around r150); missing the sibling parsed and served fine —
+a syntax check, curl, even a same-tab `fetch()` all gave zero signal — and then failed at
+browser module-resolution time with a content-free `TypeError: Failed to fetch
+dynamically imported module`, taking the **entire app** down silently, since nothing in
+the shell runs until its static imports resolve. Only a real browser network tab showed
+the missing 503. Importing `three` as a package removes that whole class of failure: the
+bundler resolves it at build time, so a missing piece is a build error rather than a
+blank page. Keep it that way — do not reintroduce hand-copied vendor files.
+
 - `IcosahedronGeometry`'s second argument is subdivision *detail*, not a
   segment/resolution count. Each `+1` roughly quadruples face count
   (`20 * 4^detail`) — a "high resolution" guess like `48` attempts on the

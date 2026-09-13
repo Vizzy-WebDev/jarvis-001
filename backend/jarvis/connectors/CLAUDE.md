@@ -7,7 +7,7 @@ equivalent is the snake_case function doing that job in the same module. Where a
 module had no Python counterpart, the text says so rather than pointing at a file that
 does not exist. -->
 
-# App Control connectors (`jarvis/connectors/*.js`)
+# App Control connectors (`jarvis/connectors/*.py`)
 
 **This whole area was fully rebuilt** (not patched), including the MCP transport itself
 in a second pass after the first left it as untouched legacy code — see "Standing

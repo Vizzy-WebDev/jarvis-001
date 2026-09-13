@@ -7,7 +7,7 @@ equivalent is the snake_case function doing that job in the same module. Where a
 module had no Python counterpart, the text says so rather than pointing at a file that
 does not exist. -->
 
-# Computer control (`jarvis/control/*.js`)
+# Computer control (`jarvis/control/*.py`)
 
 Lets Jarvis actually operate the desktop — click, type, read windows, launch apps —
 toward a stated goal. Deliberately **not** built on `orchestrator/pipeline.py`'s chat loop: a

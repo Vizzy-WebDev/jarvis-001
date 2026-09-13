@@ -113,9 +113,14 @@ as "passed":
    (`run_in_background: true`) with `JARVIS_DATA_DIR`/`JARVIS_ENV_PATH` pointed at empty
    scratch paths and an unusual `PORT`. Must come up with no unhandled exception.
 3. **Migrations + tool loader** — read the scratch `jarvis.db` read-only and confirm
-   `PRAGMA user_version` reached 19 (the current length of `jarvis/migrations.py`'s
-   `MIGRATION_SQL`); confirm the startup log's `[tools] loaded N` lists every module
-   under `jarvis/tools/` (proves nothing tripped the import invariant below).
+   `PRAGMA user_version` reached 23: `jarvis/migrations.py`'s `MIGRATION_SQL` (19,
+   the ones ported byte-for-byte from the Node build) plus
+   `migrations_extra.py`'s `EXTRA_MIGRATION_SQL` (4, this build's own). Counting only
+   the first file gives 19 and a false failure — the gate caught exactly that mistake
+   in this document. **The database is created lazily on first use**, so hit a route
+   before looking for the file. Then confirm the startup log's `[tools] loaded N`
+   lists every module under `jarvis/tools/` (proves nothing tripped the import
+   invariant below) — currently 60 tools across 33 modules.
 4. **Route smoke test** — `curl` a real GET (200), a route taking an id with a
    nonexistent one (a clean 404, not a crash), and `/` (the real `index.html` from the
    static mount).

@@ -7,7 +7,7 @@ equivalent is the snake_case function doing that job in the same module. Where a
 module had no Python counterpart, the text says so rather than pointing at a file that
 does not exist. -->
 
-# Scheduler + briefing (`jarvis/scheduler/*.js`)
+# Scheduler + briefing (`jarvis/scheduler/*.py`)
 
 - `recurrence.py` — pure `nextRunAt(spec, from)`/`describe(spec)` over `{type: 'once'|
   'daily'|'weekdays'|'weekly'|'interval', ...}`. No state, no I/O — test it directly.

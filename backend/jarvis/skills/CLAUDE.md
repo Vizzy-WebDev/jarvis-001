@@ -7,12 +7,12 @@ equivalent is the snake_case function doing that job in the same module. Where a
 module had no Python counterpart, the text says so rather than pointing at a file that
 does not exist. -->
 
-# Skills (`jarvis/skills/*.js`)
+# Skills (`jarvis/skills/*.py`)
 
 See the root `CLAUDE.md`'s "Skills" section for the PERMANENT RULE governing what may
 ever appear as a Skill in the UI — that rule is cross-cutting (it constrains other
 screens outside this directory) and stays there on purpose. This file covers the
-architecture of `jarvis/skills/*.js` itself: **folder Skills only** — a folder of
+architecture of `jarvis/skills/*.py` itself: **folder Skills only** — a folder of
 `SKILL.md` instructions under `data/skills/<name>/`. Real executable capabilities
 (`get_weather`, `open_app`, `run_code`, ...) live in `jarvis/tools/` — see
 `jarvis/tools/CLAUDE.md` — not here. `jarvis/capabilities/` is the seam that merges

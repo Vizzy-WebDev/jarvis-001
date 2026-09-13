@@ -7,7 +7,7 @@ equivalent is the snake_case function doing that job in the same module. Where a
 module had no Python counterpart, the text says so rather than pointing at a file that
 does not exist. -->
 
-# Self-Improvement (`jarvis/improvement/*.js`)
+# Self-Improvement (`jarvis/improvement/*.py`)
 
 See the root `CLAUDE.md`'s "Self-Improvement" section for the decisions that matter
 beyond this file (the lessons-vs-rules split, the undo refuse-vs-clobber design, the
@@ -62,7 +62,7 @@ whichever coding assistant the user names, never reading the repo itself.
 | Module | Imports | Why |
 |---|---|---|
 | `improvement/store.py` | **leaf** — `db.py` only | Safe for `jarvis/tools/*.py` and `prompt.py` to import directly, same reasoning as `memory/memory/store.py` and `jobs/job_store.py` |
-| `improvement/policy.py` | **pure** — `prefs.py` only | Testable with a bare `node -e` truth table, same as `memory/memory/policy.py` |
+| `improvement/policy.py` | **pure** — `prefs.py` only | Testable with a bare `python -c` truth table, same as `memory/policy.py` |
 | `domains.py` | **zero imports** | Same reasoning as the Node build's style floors (not ported — see the root CLAUDE.md) — a floor, directly testable, no server needed |
 | `capture.py` | `improvement/store.py`, `jobs/job_store.py`, both leaves | Zero model calls, ever — safe to call from `orchestrator/pipeline.py`'s own per-turn loop and `scheduler/engine.py`'s own outcome hook with no latency risk |
 | `apply.py` | `improvement/store.py`, `prefs.py` | Never imports anything that could write to the repo's own source tree — see its own header comment on why that's the one invariant this whole module exists to protect |

@@ -7,7 +7,7 @@ equivalent is the snake_case function doing that job in the same module. Where a
 module had no Python counterpart, the text says so rather than pointing at a file that
 does not exist. -->
 
-# Background Task Orchestration ("Jobs") — `jarvis/jobs/*.js`
+# Background Task Orchestration ("Jobs") — `jarvis/jobs/*.py`
 
 See the root `CLAUDE.md`'s "Background Task Orchestration (Jobs)" section for the
 layered design and the decisions that matter beyond this file (the write-ahead trace,
@@ -88,7 +88,7 @@ testing, not assumed up front — see root `CLAUDE.md`.
 
 ## `policy.py` — pure functions, zero imports
 
-Same discipline as `memory/memory/policy.py`'s `decide()` — testable with a bare `node
+Same discipline as `memory/policy.py`'s `decide()` — testable with a bare `node
 -e` truth table, no server needed. `classifyRecovery(job, trace)` (crash verdict),
 `diagnoseStall(tailTrace)` (five signals: exact repeat, oscillation, repeated failure,
 near-duplicate reasoning, each returning `{cause, detail}` or `null`),

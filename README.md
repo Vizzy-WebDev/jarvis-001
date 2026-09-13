@@ -1,7 +1,7 @@
 # Jarvis
 
-A local, voice/text personal assistant. Node.js + Express server, plain ES-module
-front-end (no build step, no framework), and it only ever listens on
+A local, voice/text personal assistant. Python + FastAPI backend serving a
+Next.js/React front end as one process on one port, and it only ever listens on
 `127.0.0.1` — nothing about it is reachable from anywhere else on your network.
 
 For plain-language usage instructions, see **[`How to Use Jarvis.md`](How%20to%20Use%20Jarvis.md)**.
@@ -9,8 +9,8 @@ This file is the technical overview.
 
 ## Requirements
 
-- **Node.js 24+** (Chat History and Memory use Node's built-in `node:sqlite` — no
-  separate database install).
+- **Python 3.11+.** Nothing else: the front end ships pre-built, so running Jarvis
+  needs no Node, no npm, and no separate database install (SQLite is built in).
 - **Windows.** Computer control, screen recording, and a few OS-level checks are
   Windows-specific; the rest is cross-platform in principle but only tested here.
 - **Google Chrome or Microsoft Edge** for voice input (Firefox doesn't support the
@@ -22,15 +22,15 @@ This file is the technical overview.
 ## Quick start
 
 ```
-Start Jarvis.bat        # what you'd normally double-click: npm install (if needed),
-                         # launch, open your browser
+Start Jarvis.bat        # what you'd normally double-click: first-run setup (if
+                         # needed), launch, open your browser
 ```
 
 or, for development:
 
 ```
-npm install
-npm start
+cd backend
+python -m jarvis.main
 ```
 
 The server listens on `127.0.0.1:3000`. The first run asks for a free Google Gemini
@@ -109,7 +109,7 @@ OpenAI-compatible gateway can all be added afterward from Model Settings.
 ## Configuration and data
 
 - **`.env`** (git-ignored) holds every API key/secret. It's written by
-  `server/config.js` — never hand-edit its format.
+  `backend/jarvis/config.py` — never hand-edit its format.
 - **`data/`** (git-ignored) holds JSON state (models, connections, prefs, tasks) plus
   `jarvis.db`, a SQLite database (Chat History, Memory, Jobs, Self-Improvement,
   Self-Model).
@@ -120,13 +120,18 @@ OpenAI-compatible gateway can all be added afterward from Model Settings.
 ## Architecture
 
 ```
-server/
-  server.js       Express app, all routes, binds 127.0.0.1 only
+backend/jarvis/
+  main.py          FastAPI app + routers + the static mount that serves the front end
+  routes/          One module per area — a surface over the subsystems, no business logic
+  capabilities/    The capability contract, the registry, and the one dispatcher
+  orchestrator/    pipeline.py — the turn loop
+  gateway/         Connections/models registry, routing, availability, probing
   adapters/        One module per wire format: Anthropic, Gemini, OpenAI-compatible
-  models/          Connections/models registry, routing, health, execution
-  conversation.js  Neutral, model-agnostic transcript format
-  db.js            The one SQLite connection + migrations (Chat History, Memory, Jobs, ...)
-  chat-store.js    Conversation/message CRUD + full-text search
+  policy/          The permission layer — decided independently of model behaviour
+  events/          Typed event bus; observers/ subscribe (cost, security, verification)
+  conversation.py  Neutral, model-agnostic transcript format
+  db.py            The one SQLite connection; migrations.py holds the schema history
+  chat_store.py    Conversation/message CRUD + full-text search
   memory/          Memory Manager: extraction, approval policy, checkpoints
   scheduler/       Scheduled Tasks, recurrence, briefing
   jobs/            Background Task Orchestration ("Jobs")
@@ -137,39 +142,46 @@ server/
   cost/            Automatic spend/usage tracking, fed back into model routing
   artifacts/       Real file generation (.docx/.xlsx/.pptx/...), verified on creation
   control/         Computer control: perceive/decide/act loop, screen capture, safety
-  connectors/      MCP/API/CLI/browser/files app connectors
+  connectors/      MCP/API/CLI/browser/files app connectors, the catalogue, OAuth
   tools/           Auto-loaded executable capabilities (weather, open_app, run_code, ...)
-  skills/          Folder Skills (SKILL.md-based instructions) — install/store logic
-  capabilities.js  The composition seam: tools + Skills + connectors -> one invoke()
+  skills/          Folder Skills (SKILL.md-based instructions)
   sandbox/         Isolated code execution backends
   monitor/         "Watch for X, then act" background checks
-public/
-  app.js           UI shell, drawer/router, stream-event handling
-  nav.js           SECTIONS registry — the single source of truth for the drawer/router
-  screens/         One file per drawer section
-  engines/         PipelineEngine (any model) / LiveEngine (Gemini Live)
-  orb.js           The 3D orb (idle/listening/thinking/speaking)
+  voice/ tts/ stt/ Voice options, speech synthesis and recognition provider seams
+backend/tests/     ~1300 tests, plus contract/fixtures/ — 45 recorded HTTP exchanges
+frontend/
+  app/page.tsx     The shell: stage, orb, conversation panel, composer, drawer, router
+  components/      screens/ (one per section), ui/ (shared primitives), conversation/
+  lib/             api.ts (the one typed client), nav.ts (the SECTIONS registry), voice/
+  out/             The BUILT export the backend serves — committed, so running needs no Node
 ```
 
 See `CLAUDE.md` for the full module-by-module design record (this file is the
 condensed version); most subdirectories also carry their own `CLAUDE.md`.
 
-## No automated test suite — how to verify a change
+## How to verify a change
 
-There's exactly one `npm` script (`start`). Verification is manual and deliberate:
+```
+cd backend && python -m pytest tests -q                      # ~1300 tests
+cd backend && python -m pytest tests/test_shell_e2e.py -q     # 65, in a real browser
+cd frontend && npm run typecheck && npm run build             # only if the UI changed
+```
 
-- `node --check <file>` across every changed file (also catches an accidental
-  `require()` inside an ES module).
-- Boot a real, throwaway instance — `JARVIS_DATA_DIR`/`JARVIS_ENV_PATH`/`PORT` pointed
-  at scratch values — via a background process, and confirm it starts cleanly, runs
-  its migrations, and loads every tool with no error.
-- `curl` against real routes directly.
-- Pure-logic modules can be exercised with a one-off `node --input-type=module -e
-  "..."` script, no server needed.
-- To verify what a model actually *did* (not what it claimed), read the real
-  `toolCalls`/`toolResults` straight out of the `messages` table in `data/jarvis.db`
-  (read-only) — a model's own narration of success/failure isn't reliable evidence on
-  its own.
+Three layers, each catching what the others cannot:
+
+- **Unit and integration tests** over the real modules.
+- **The contract harness** replays 45 real HTTP exchanges recorded from the Node
+  implementation this replaced — the durable record of the behaviour promised before
+  the rewrite, which outlived the implementation it was recorded from.
+- **Playwright** drives the built front end in a real browser against a real backend
+  on a scratch port, which is what catches a screen that renders but never calls its
+  route.
+
+Tests never touch your real `data/`, `.env` or port: `JARVIS_DATA_DIR`,
+`JARVIS_ENV_PATH` and `PORT` are wired through the shared fixtures. To verify what a
+model actually *did* (not what it claimed), read the real tool calls and results
+straight out of the `messages` table in `data/jarvis.db` — a model's own narration of
+success or failure isn't reliable evidence on its own.
 
 ## Security posture
 

@@ -41,21 +41,56 @@ connections_router = APIRouter(prefix="/api/connections")
 RECHECK_CONCURRENCY = 3
 
 
+#: The public shape of a model and of a connection, declared rather than
+#: inherited from whatever the store happens to hold.
+#:
+#: These used to be `{**entry}` minus the secret, which made the internal record
+#: the API: a field added to storage appeared on the wire unannounced, a field
+#: renamed there changed the contract silently, and a stray key left in
+#: `models.json` by an older build was served to the browser as though it meant
+#: something. The front end could not catch any of it either — every one of its
+#: model interfaces ends in an index signature that accepts any extra key.
+#:
+#: Listing the fields here does not stop the shape changing. It makes changing
+#: it an edit to a named thing, which `tests/test_models_contract.py` then fails
+#: on. `secretRef` is absent by construction rather than by subtraction.
+MODEL_FIELDS = (
+    "id", "label", "model", "connectionId", "enabled", "caps", "tier", "tags",
+    "notes", "billing", "adapter", "baseUrl", "keyRequired", "kind", "provider",
+    "connectionLabel",
+)
+
+CONNECTION_FIELDS = (
+    "id", "label", "adapter", "baseUrl", "provider", "kind", "keyRequired", "createdAt",
+)
+
+
+def _select(source: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    """The declared fields that are actually present.
+
+    Present-only rather than filled with `None`: a key absent from an older
+    stored record stays absent, so this swap changes nothing for any record the
+    app already holds. The only behaviour it removes is a key nobody declared
+    reaching the wire.
+    """
+    return {name: source[name] for name in fields if name in source}
+
+
 def _public_model(entry: dict[str, Any]) -> dict[str, Any]:
-    rest = {k: v for k, v in entry.items() if k != "secretRef"}
-    return {**rest, "hasSecret": bool(entry.get("secretRef")), "ready": registry.is_ready(entry)}
+    return {**_select(entry, MODEL_FIELDS),
+            "hasSecret": bool(entry.get("secretRef")),
+            "ready": registry.is_ready(entry)}
 
 
 def _public_connection(connection: dict[str, Any], models: list[dict[str, Any]]) -> dict[str, Any]:
     """A connection saved before the provider catalogue existed has no
     provider/kind of its own; it is backfilled at READ time, never migrated —
     the same read-time pattern `registry.hydrate()` already uses."""
-    rest = {k: v for k, v in connection.items() if k != "secretRef"}
     backfill = ({} if connection.get("provider")
                 else providers.provider_for_legacy(connection.get("adapter"),
                                                    connection.get("baseUrl")))
     return {
-        **rest, **backfill,
+        **_select(connection, CONNECTION_FIELDS), **backfill,
         "hasSecret": bool(connection.get("secretRef")),
         "modelCount": sum(1 for m in models if m.get("connectionId") == connection.get("id")),
     }

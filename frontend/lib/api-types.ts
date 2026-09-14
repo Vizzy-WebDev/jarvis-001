@@ -201,6 +201,20 @@ export interface Approval {
 
 // --- models, connections, connectors -------------------------------------------
 
+/**
+ * One model under one connection, exactly as `/api/models` serves it.
+ *
+ * These two interfaces used to end in `[key: string]: unknown`, which meant the
+ * compiler accepted any shape the server sent: a renamed field, a dropped
+ * field, a field that changed type — all of it typechecked, built, and then
+ * rendered wrong in the browser. The server side was spreading its internal
+ * record onto the wire at the same time, so neither end could catch a change
+ * the other made.
+ *
+ * The index signature is gone on purpose. The fields below are the whole
+ * contract, and `backend/tests/test_models_contract.py` pins the same set from
+ * the other side, so the two can only disagree loudly.
+ */
 export interface ModelEntry {
   id: string;
   connectionId: string;
@@ -210,9 +224,18 @@ export interface ModelEntry {
   /** Computed at read time: enabled, and its connection has what it needs. */
   ready: boolean;
   hasSecret: boolean;
+  /** Hydrated in from the owning connection, so present but possibly null. */
+  adapter: string | null;
+  baseUrl: string | null;
+  keyRequired: boolean | null;
+  kind: string | null;
+  provider: string | null;
+  connectionLabel: string | null;
   caps?: Record<string, boolean>;
   tier?: Record<string, number>;
-  [key: string]: unknown;
+  tags?: string[];
+  notes?: string;
+  billing?: string;
 }
 
 export interface ConnectionEntry {
@@ -220,11 +243,12 @@ export interface ConnectionEntry {
   label: string;
   adapter: string;
   baseUrl: string | null;
-  provider?: string;
-  kind?: string;
+  provider?: string | null;
+  kind?: string | null;
+  keyRequired?: boolean | null;
+  createdAt?: string;
   hasSecret: boolean;
   modelCount: number;
-  [key: string]: unknown;
 }
 
 /** Why a model is being skipped right now, keyed by model id. A model nobody

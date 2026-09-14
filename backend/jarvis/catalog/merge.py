@@ -94,6 +94,27 @@ def _as_lifecycle(value: Any) -> Lifecycle | None:
     return None
 
 
+def _as_quality(value: Any) -> int | None:
+    """0-5, or nothing. A number outside the scale is not a weaker opinion — it
+    is a value the scoring formula was never tuned against, and one large enough
+    would outrank the availability bonus and put a dead model first."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value) if 0 <= value <= 5 else None
+
+
+def _as_count(value: Any) -> int | None:
+    """A positive token count, or nothing."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value) if value > 0 else None
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    """Whatever arrived, as something safe to `.get()` on."""
+    return value if isinstance(value, Mapping) else {}
+
+
 def _merge_capabilities(
     user: Mapping[str, Any], discovered: Mapping[str, Any], rule: FamilyRule | None,
 ) -> tuple[Capabilities, dict[str, Source]]:
@@ -103,8 +124,8 @@ def _merge_capabilities(
     every catalog flag beside it — a provider that reports only vision would
     silently erase a known-good tools answer.
     """
-    user_caps = user.get("capabilities") or {}
-    found_caps = discovered.get("capabilities") or {}
+    user_caps = _mapping(user.get("capabilities"))
+    found_caps = _mapping(discovered.get("capabilities"))
     rule_caps = rule.capabilities if rule else Capabilities()
 
     values: dict[str, Support] = {}
@@ -157,8 +178,14 @@ def resolve(
     local server or anything behind a gateway, and the result is a usable
     version with every fact marked unknown rather than a failure or a guess.
     """
-    found: Mapping[str, Any] = discovered or {}
-    given: Mapping[str, Any] = user or {}
+    # Both sides are read straight off a stored deployment, and `overrides` is
+    # reachable from a PATCH body — so neither is trusted to be shaped like
+    # anything. This runs at READ time on every routing pass, so a value that
+    # crashes it does not spoil one request: it takes the roster down, and with
+    # it the models screen, the status route and every turn. A hand-mangled or
+    # hostile field must degrade to "we do not know", never raise.
+    found = _mapping(discovered)
+    given = _mapping(user)
     rule = match(model, rules)
     provenance: dict[str, Source] = {}
 
@@ -190,10 +217,12 @@ def resolve(
         provenance["pinned"] = Source.CATALOG
         pinned = looks_pinned(model)
 
-    context_tokens = _first("context_tokens", (
+    context_tokens = _as_count(_first("context_tokens", (
         (given.get("context_tokens"), Source.USER),
         (found.get("context_tokens"), Source.DISCOVERED),
-    ), provenance)
+    ), provenance))
+    if context_tokens is None:
+        provenance.pop("context_tokens", None)
 
     capabilities, capability_provenance = _merge_capabilities(given, found, rule)
     provenance.update(capability_provenance)
@@ -207,10 +236,12 @@ def resolve(
         effort = UNKNOWN_EFFORT
         provenance.pop("effort", None)
 
-    quality = _first("quality", (
+    quality = _as_quality(_first("quality", (
         (given.get("quality"), Source.USER),
         (rule.quality if rule else None, Source.CATALOG),
-    ), provenance)
+    ), provenance))
+    if quality is None:
+        provenance.pop("quality", None)
 
     lifecycle = _as_lifecycle(_first("lifecycle", (
         (given.get("lifecycle"), Source.USER),

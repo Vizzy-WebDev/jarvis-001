@@ -35,6 +35,7 @@ version in the catalog, not here.
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
 from datetime import datetime, timezone
@@ -45,6 +46,8 @@ from ..config import get_secret
 from ..store import read_json, write_json
 from .connections import get_connection, list_connections
 from .providers import provider_for_legacy
+
+logger = logging.getLogger(__name__)
 
 FILE = "model-deployments"
 
@@ -60,11 +63,86 @@ PATCH_KEYS = ("label", "enabled", "notes", "overrides")
 _lock = threading.RLock()
 
 
+#: The file the flat model rows lived in, and where it goes once read.
+LEGACY_FILE = "models"
+ARCHIVED_FILE = "models.archived"
+
+
 def _load() -> dict[str, Any]:
-    data = read_json(FILE, {"deployments": []})
+    data = read_json(FILE, None)
+    if data is None:
+        # Under the lock: the adoption reads one file, writes another and
+        # renames a third, and two threads arriving here together would have
+        # one of them answer "no models" while the other was mid-rename. That
+        # window is one process start long and lands exactly on the first turn
+        # after an upgrade, which is the worst possible moment to say the
+        # roster is empty.
+        with _lock:
+            data = read_json(FILE, None)
+            if data is None:
+                data = {"deployments": _adopt_model_rows()}
+                if data["deployments"]:
+                    _save(data)
     if not isinstance(data, dict) or not isinstance(data.get("deployments"), list):
         return {"deployments": []}
     return data
+
+
+def _adopt_model_rows() -> list[dict[str, Any]]:
+    """Carry the user's own choices across from the flat model file, once.
+
+    This is not the old record being ported. Of the row's fifteen fields, five
+    come over — which connection, which model, what the user called it, whether
+    it is switched on, and any note they wrote — and every one of those is
+    something a person decided. Everything else on that row was DERIVED:
+    `caps`, `tier`, `tags` and `billing` were all produced by matching regular
+    expressions against the model's name, which is precisely the guessing the
+    catalog exists to replace. Copying them would preserve the wrong answers
+    past the point where a better one became available.
+
+    So the distinction being drawn is between a user's configuration, which is
+    theirs and would be rude to discard, and a build's own inferences, which
+    are not worth a migration. An install whose roster vanished at an upgrade
+    would be a bug however clean the architecture underneath it.
+
+    The old file is renamed rather than deleted — it is the only record of what
+    was configured before this, it costs a few kilobytes, and a rename is the
+    one form of cleanup that can be undone by hand.
+    """
+    from ..store import data_file_path
+
+    rows = read_json(LEGACY_FILE, None)
+    entries = rows.get("entries") if isinstance(rows, dict) else None
+    if not isinstance(entries, list):
+        return []
+
+    adopted: list[dict[str, Any]] = []
+    for row in entries:
+        if not isinstance(row, dict) or not row.get("connectionId") or not row.get("model"):
+            continue
+        adopted.append({
+            "id": _make_id(row.get("label") or row.get("model"), adopted),
+            "connectionId": row["connectionId"],
+            "model": row["model"],
+            # `label or model` was the old default, so a row that never got a
+            # real name arrives here with none rather than with its own id
+            # repeated back as though somebody had typed it.
+            "label": row["label"] if row.get("label") and row["label"] != row["model"] else None,
+            "enabled": bool(row.get("enabled", True)),
+            "notes": str(row.get("notes") or ""),
+            "discovered": {},
+            "overrides": {},
+            "createdAt": row.get("createdAt") or datetime.now(timezone.utc)
+            .isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        })
+
+    try:
+        source = data_file_path(LEGACY_FILE)
+        if source.exists():
+            source.rename(data_file_path(ARCHIVED_FILE))
+    except OSError:  # noqa: PERF203 — an un-renamable file must not stop the app
+        logger.warning("could not archive %s.json; it is no longer read", LEGACY_FILE)
+    return adopted
 
 
 def _save(data: dict[str, Any]) -> None:
@@ -172,7 +250,12 @@ def add_deployment(
             "id": _make_id(label or model, data["deployments"]),
             "connectionId": connection_id,
             "model": model,
-            "label": label or None,
+            # A label equal to the model id is not a label anybody chose. The
+            # old writer defaulted one that way, so a row nobody had named was
+            # indistinguishable from one named after itself — and the discovery
+            # flow still fills it in for the picker, so it arrives here on
+            # every add.
+            "label": label if label and label != model else None,
             "enabled": enabled,
             "notes": notes or "",
             "discovered": dict(discovered or {}),
@@ -190,16 +273,27 @@ def add_deployments(connection_id: str, models: list[Any]) -> dict[str, list[Any
 
     One bad name among fifteen should not lose the other fourteen — the same
     shape the old `add_models` had, kept for the same reason.
+
+    The rows arrive in an adapter's own camelCase wire vocabulary, so they go
+    through `discovery.normalise` — the SAME translator a background refresh
+    uses. A second key list here is how the context window a provider reported
+    at add time got dropped: this function looked for `context_tokens` and the
+    add flow sends `contextTokens`, and nothing failed, the number just
+    silently was not there.
     """
+    from .discovery import normalise
+
     added, failed = [], []
     for item in models or []:
         spec = {"model": item} if isinstance(item, str) else dict(item)
+        listed = normalise([spec])
+        if not listed:
+            failed.append({"model": spec.get("model"), "error": "That needs a model name."})
+            continue
         try:
-            discovered = {k: v for k, v in spec.items()
-                          if k in ("context_tokens", "capabilities", "label", "provider")
-                          and v is not None}
-            added.append(add_deployment(connection_id=connection_id, model=spec["model"],
-                                        label=spec.get("label"), discovered=discovered))
+            added.append(add_deployment(
+                connection_id=connection_id, model=listed[0].model,
+                label=spec.get("label"), discovered=listed[0].discovered))
         except Exception as err:  # noqa: BLE001
             failed.append({"model": spec.get("model"),
                            "error": str(err) or "Could not add this model."})
@@ -255,7 +349,7 @@ def delete_deployment(deployment_id: str) -> None:
     taken — so leaving a cooldown record or a refused-parameter record behind
     would hand somebody else's history to a model that has never been called.
     """
-    from . import availability, effort, slots
+    from . import availability, effort, latency, slots
 
     entry = next((e for e in _load()["deployments"] if e.get("id") == deployment_id), None)
     with _lock:
@@ -264,6 +358,7 @@ def delete_deployment(deployment_id: str) -> None:
         _save(data)
 
     availability.clear(deployment_id)
+    latency.clear(deployment_id)
     slots.forget_deployment(deployment_id)
     if entry:
         hydrated = hydrate(entry)
@@ -305,6 +400,33 @@ def is_ready(entry: dict[str, Any]) -> bool:
     return bool(ref and get_secret(ref))
 
 
-def version_of(entry: dict[str, Any]) -> Version:
+def version_of(entry: dict[str, Any]) -> Version | None:
     """The catalog's answer for a hydrated deployment."""
-    return entry["version"]
+    version = entry.get("version")
+    return version if isinstance(version, Version) else None
+
+
+def provider_of(entry: dict[str, Any]) -> str:
+    """Who MAKES this model — the key every price and every refusal is filed under.
+
+    Not the connection's provider, which is a different fact and is named
+    `connectionProvider` on a hydrated deployment: a gateway reselling
+    somebody else's model is still serving that maker's model, with that
+    maker's parameters and that maker's prices.
+
+    `"unknown"` is what the catalog answers for a model no pattern recognised,
+    and it is a real answer in the catalog — but it is a poor NAME. Filing
+    every unrecognised model from every maker under one word would make a
+    spending report say "unknown" where it could say which endpoint the money
+    went to, so the connection answers instead when the catalog cannot.
+
+    One function because three callers need the same answer and a disagreement
+    between them is silent: the observer records spend under this key, the
+    router reads the recorded price back with it, and the seeder writes a
+    starting price with it. Two of the three agreeing is the same as none.
+    """
+    version = version_of(entry)
+    named = version.provider if version is not None else None
+    if named and named != "unknown":
+        return named
+    return str(entry.get("connectionProvider") or entry.get("adapter") or "unknown")

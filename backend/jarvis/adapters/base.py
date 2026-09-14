@@ -10,11 +10,13 @@ table is a hard GATE: `ai.js` refuses to route a video request to any model whos
 adapter does not declare `video`, which makes video, audio and web search
 permanently Gemini-only no matter what the user knows about their own models.
 
-Here it is a SEED, not a gate. A model's stored `caps` — seeded from this table
-when the model is added, editable by the user afterwards — is what routing reads.
-If an adapter genuinely cannot carry what a model claims, the call fails and is
-classified `unsupported`, which benches that one model for that one thing.
-Getting it wrong costs one failed call; the alternative cost a whole feature.
+Here it is a SEED, not a gate. `CAPABILITIES` says what a wire format can
+CARRY; what a given model can DO is the catalog's answer (`jarvis/catalog/`),
+resolved per version from what the provider reported and what the user
+corrected, and that is what routing reads. If an adapter genuinely cannot carry
+what a version claims, the call fails and is classified `unsupported`, which
+benches that one model for that one thing. Getting it wrong costs one failed
+call; the alternative cost a whole feature.
 """
 
 from __future__ import annotations
@@ -58,6 +60,15 @@ class Adapter(Protocol):
         """
         ...
 
+    def test_connection(self, entry: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+    def list_models(self, entry: dict[str, Any]) -> list[dict[str, Any]]:
+        ...
+
+    def friendly_error(self, err: BaseException) -> str:
+        ...
+
 
 def model_for(entry: dict[str, Any], effort: EffortRequest | None) -> str:
     """The model id to actually call.
@@ -70,15 +81,6 @@ def model_for(entry: dict[str, Any], effort: EffortRequest | None) -> str:
     if effort is not None and effort.kind is EffortKind.VARIANT and effort.native:
         return str(effort.native)
     return str(entry.get("model") or "")
-
-    def test_connection(self, entry: dict[str, Any]) -> dict[str, Any]:
-        ...
-
-    def list_models(self, entry: dict[str, Any]) -> list[dict[str, Any]]:
-        ...
-
-    def friendly_error(self, err: BaseException) -> str:
-        ...
 
 
 def text_of(message: dict[str, Any]) -> str:

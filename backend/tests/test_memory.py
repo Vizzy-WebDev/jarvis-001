@@ -19,7 +19,7 @@ from jarvis import chat_store, conversation
 from jarvis.db import reset_for_tests as reset_db
 from jarvis.events import EventType
 from jarvis.events.bus import EventBus
-from jarvis.gateway import availability, connections, registry
+from jarvis.gateway import availability, connections, deployments
 from jarvis.memory import review, store
 from jarvis.memory.policy import AUTO_APPROVE, REQUIRE_APPROVAL, THRESHOLDS, decide
 
@@ -157,7 +157,7 @@ def stub():
     conn = connections.add_connection(adapter="openai-compatible", base_url=server.base_url,
                                       label="stub", provider="custom", kind="local",
                                       key_required=False)
-    registry.add_model(connection_id=conn["id"], model="stub-model")
+    deployments.add_deployment(connection_id=conn["id"], model="stub-model")
     yield server
     server.stop()
 

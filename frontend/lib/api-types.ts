@@ -233,13 +233,54 @@ export interface ModelEntry {
   baseUrl: string | null;
   keyRequired: boolean | null;
   kind: string | null;
-  provider: string | null;
+  /** The CONNECTION's provider — whose address this is reached at. Who MAKES
+   *  the model is `version.provider`, and they are routinely different: a
+   *  gateway reselling somebody else's model is still serving that maker's
+   *  model. The two used to share one field, which is how the distinction was
+   *  lost. */
+  connectionProvider: string | null;
   connectionLabel: string | null;
-  caps?: Record<string, boolean>;
-  tier?: Record<string, number>;
-  tags?: string[];
   notes?: string;
-  billing?: string;
+  /** What the catalog says this model IS, resolved at read time — so a fact
+   *  learned tomorrow appears without anything being migrated. Null only if a
+   *  record is too damaged to resolve at all. */
+  version: ModelVersion | null;
+}
+
+/** Three states, never two. `unknown` is the honest answer for most models on
+ *  most capabilities, and rendering it as "no" is how a capable model gets
+ *  hidden with no visible reason. */
+export type Support = 'yes' | 'no' | 'unknown';
+
+export type EffortLevel = 'OFF' | 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH' | 'MAX';
+
+export interface ModelVersion {
+  /** Who makes it. `"unknown"` when no catalog pattern recognised the id. */
+  provider: string;
+  /** The id the provider's API expects — what actually goes on the wire. */
+  model: string;
+  label: string;
+  family: string | null;
+  /** Whether `model` names one frozen snapshot rather than a floating alias
+   *  that silently repoints when the vendor ships a successor. */
+  pinned: Support;
+  contextTokens: number | null;
+  capabilities: Record<string, Support>;
+  effort: {
+    /** `tiers` | `budget` | `variant` | `none` | `unknown`. `none` and
+     *  `unknown` are different answers: no reasoning control, versus nobody
+     *  has established whether there is any. */
+    kind: string;
+    default: EffortLevel | null;
+    /** Level -> what this provider wants on the wire for it. */
+    native: Record<string, unknown>;
+  };
+  quality: number | null;
+  lifecycle: 'unknown' | 'current' | 'deprecated' | 'retired';
+  /** field -> `default` | `catalog` | `discovered` | `user`. Per field, because
+   *  a version is almost always a mixture and a single flag cannot say which
+   *  parts to trust. */
+  provenance: Record<string, string>;
 }
 
 export interface ConnectionEntry {

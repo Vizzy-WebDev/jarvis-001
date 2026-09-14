@@ -13,7 +13,7 @@ from starlette.testclient import TestClient
 
 from jarvis import external_services
 from jarvis.voice import options as voice
-from jarvis.gateway import connections, registry
+from jarvis.gateway import connections, deployments
 
 
 @pytest.fixture
@@ -27,7 +27,7 @@ def _connect(adapter: str, *, key: str | None = "k") -> dict:
     conn = connections.add_connection(adapter=adapter, base_url="https://example.test",
                                       label=adapter, secret=key, provider="custom",
                                       kind="first-party", key_required=True)
-    return registry.add_model(connection_id=conn["id"], model=f"{adapter}-model")
+    return deployments.add_deployment(connection_id=conn["id"], model=f"{adapter}-model")
 
 
 def test_with_nothing_configured_every_engine_says_why_not(client):
@@ -70,7 +70,7 @@ def test_a_realtime_capable_model_that_is_not_ready_does_not_count(client):
     conn = connections.add_connection(adapter="gemini", base_url=None, label="g",
                                       provider="gemini", kind="first-party",
                                       key_required=True)
-    registry.add_model(connection_id=conn["id"], model="live-model")  # no key saved
+    deployments.add_deployment(connection_id=conn["id"], model="live-model")  # no key saved
 
     engines = {e["id"]: e for e in client.get("/api/voice/options").json()["engines"]}
     assert engines["realtime"]["available"] is False

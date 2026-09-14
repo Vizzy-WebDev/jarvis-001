@@ -172,6 +172,7 @@ def call_with_effort(
     effort: EffortRequest | None = None,
     provider: str | None = None,
     model: str | None = None,
+    on_first_token: Any = None,
 ) -> Iterator[Any]:
     """Stream from an adapter, dropping the effort parameter if it is refused.
 
@@ -188,19 +189,25 @@ def call_with_effort(
 
     The refusal is recorded, so the failed round trip is paid once rather than
     on every turn for the life of the install.
+
+    `on_first_token(elapsed_ms)` is called once per ATTEMPT, with the clock
+    restarted for the retry. The timing lives here rather than at the call site
+    because this is the only layer that knows a retry happened: measured from
+    outside, a refused first attempt would be added to the successful one and
+    recorded as the model being slow, which is the opposite of what happened.
     """
     from .error_kind import refused_parameter
 
-    produced = False
+    # A one-slot list rather than a local: `_timed` is what actually pulls from
+    # the adapter, so it is the only thing that can know anything was streamed.
+    produced = [False]
     try:
-        for event in adapter.stream(entry, messages, system=system, tools=tools,
-                                    effort=effort):
-            produced = True
-            yield event
+        yield from _timed(adapter.stream(entry, messages, system=system, tools=tools,
+                                         effort=effort), on_first_token, produced)
         return
     except Exception as err:  # noqa: BLE001 — the classifier decides what this was
         name = refused_parameter(err)
-        if effort is None or name is None or produced:
+        if effort is None or name is None or produced[0]:
             raise
         logger.info("%s refused %s; retrying without it", model or "model", name)
         mark_unsupported(provider, model, detail=str(err))
@@ -208,4 +215,17 @@ def call_with_effort(
     # Outside the except block: a failure in the retry should surface as itself
     # rather than chained to an error we already decided was not the model's
     # fault, which is what a reader of the log would otherwise be handed.
-    yield from adapter.stream(entry, messages, system=system, tools=tools, effort=None)
+    yield from _timed(adapter.stream(entry, messages, system=system, tools=tools,
+                                     effort=None), on_first_token, produced)
+
+
+def _timed(events: Iterator[Any], on_first_token: Any, produced: list[bool]) -> Iterator[Any]:
+    """Pass events through, reporting how long the first one took to arrive."""
+    started = time.monotonic()
+    first = True
+    for event in events:
+        if first and on_first_token is not None:
+            on_first_token((time.monotonic() - started) * 1000)
+        first = False
+        produced[0] = True
+        yield event

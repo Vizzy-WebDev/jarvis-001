@@ -2,10 +2,10 @@
 
 This is the layer the rebuild exists to create. Before it, a model was a name
 string and everything else about it was inferred by matching regular
-expressions against that string (`gateway/name_guess.py`, still live until the
-registry stops reading it). A name is not a fact, and treating it as one is why
-an unbounded `mini` matched inside "ge**mini**" and scored every Gemini model,
-Pro included, as a cheap fast one.
+expressions against that string, in a module called `gateway/name_guess.py`
+that was deleted at the switchover once nothing read it any more. A name is not
+a fact, and treating it as one is why an unbounded `mini` matched inside
+"ge**mini**" and scored every Gemini model, Pro included, as a cheap fast one.
 
 Three decisions here are load-bearing.
 
@@ -32,6 +32,7 @@ truth and a version quietly reporting its family's stale answer.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
 from typing import Any, Mapping
@@ -149,6 +150,10 @@ class Source(IntEnum):
     USER = 3
 
 
+#: The boundary in a camelCase name, so `webSearch` reads as `web_search`.
+_SNAKE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
 @dataclass(frozen=True)
 class Capabilities:
     """What a version can be asked to do. Everything unknown until told."""
@@ -162,12 +167,23 @@ class Capabilities:
     def get(self, name: str) -> Support:
         """Read by capability name, for a caller holding a string.
 
-        An unrecognised name answers `UNKNOWN` rather than raising: a routing
-        need that names something this build has never heard of should exclude
-        nothing and crash nothing.
+        `webSearch` and `web_search` are the same capability. The routing
+        `need` dict is populated from names that travel over the wire and is
+        therefore camelCase, while the fields here are Python; normalising in
+        the one place a capability is read by string is what stops a real
+        requirement from silently answering `UNKNOWN` and excluding nothing.
+
+        An unrecognised name still answers `UNKNOWN` rather than raising: a
+        routing need that names something this build has never heard of should
+        exclude nothing and crash nothing.
         """
-        value = getattr(self, name, None)
+        value = getattr(self, self.normalise(name), None)
         return value if isinstance(value, Support) else Support.UNKNOWN
+
+    @staticmethod
+    def normalise(name: str) -> str:
+        """`webSearch` and `web_search` spell the same capability."""
+        return _SNAKE.sub("_", name).lower() if name else ""
 
 
 @dataclass(frozen=True)
@@ -369,6 +385,39 @@ class Version:
 
     def source_of(self, field_name: str) -> Source:
         return self.provenance.get(field_name, Source.DEFAULT)
+
+    def as_dict(self) -> dict[str, Any]:
+        """A plain, JSON-safe form, for a route or a screen.
+
+        Declared here rather than built in the route module for the same reason
+        `EffortScheme.as_dict` is: a version is the thing whose shape matters,
+        and a serialiser that lives beside a handler ends up being written a
+        second time the next route that needs one.
+
+        `capabilities` keeps all three states as their own names — flattening
+        `UNKNOWN` into `false` on the way to a screen would put the old build's
+        confident-boolean problem back at the last possible moment, where the
+        interface says "cannot see images" about a model nobody has asked.
+
+        `provenance` travels too, because "we matched this from the name" and
+        "the provider told us" look identical once they are both just values,
+        and the first is the one a person may want to correct.
+        """
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "label": self.label,
+            "family": self.family,
+            "pinned": self.pinned.value,
+            "contextTokens": self.context_tokens,
+            "capabilities": {name: getattr(self.capabilities, name).value
+                             for name in ("tools", "vision", "video", "audio", "web_search")},
+            "effort": self.effort.as_dict(),
+            "quality": self.quality,
+            "lifecycle": self.lifecycle.value,
+            "provenance": {name: source.name.lower()
+                           for name, source in self.provenance.items()},
+        }
 
     def is_guessed(self, field_name: str) -> bool:
         """Whether this field is a pattern match rather than something observed.

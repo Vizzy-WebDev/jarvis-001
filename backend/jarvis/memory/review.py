@@ -25,6 +25,7 @@ from ..events import EventType, bus as default_bus
 from ..events.bus import EventBus
 from ..gateway.client import NoModelAvailable, ask
 from ..gateway.routing import Task
+from ..gateway.slots import Role
 from . import store
 from .policy import AUTO_APPROVE, decide
 
@@ -120,7 +121,7 @@ def extract_and_file(transcript: str, *, conversation_id: str | None = None,
             _prompt(transcript, memories, categories, pending_before),
             system=SYSTEM, want_json=True,
             # Nothing is waiting on this, so cost matters more than latency.
-            task=Task(text="extract durable facts", background=True, needs_tools=False),
+            task=Task(text="extract durable facts", role=Role.UTILITY, needs_tools=False),
         )
     except NoModelAvailable as err:
         # Losing the material silently is the failure mode that matters here: the

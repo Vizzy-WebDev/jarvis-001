@@ -195,6 +195,23 @@ def _navigate_of(value: Any) -> dict[str, Any] | None:
     return {"section": str(section)} if section else None
 
 
+#: Which job the provider layer should rank this turn as, by where it came
+#: from. Plain strings because the port is deliberately neutral — the turn loop
+#: imports no part of the gateway (`model_port.py`).
+#:
+#: This mapping is the whole of what the switchover needed from the turn loop,
+#: and it closes a gap rather than adding a feature: before it, every turn
+#: reached the router as a default text conversation however it had started, so
+#: a spoken reply and an overnight scheduled task were ranked identically.
+ROLE_FOR_SURFACE: dict[Surface, str] = {
+    Surface.TEXT: "conversation",
+    Surface.VOICE: "voice",
+    Surface.CONTROL: "control",
+    Surface.JOB: "background",
+    Surface.SCHEDULED: "background",
+}
+
+
 @dataclass(frozen=True)
 class TurnRequest:
     text: str
@@ -428,6 +445,7 @@ class Orchestrator:
                     messages=assembled.messages, system=assembled.system,
                     tools=tools, session_id=request.session_id,
                     model_id=request.model_id,
+                    role=ROLE_FOR_SURFACE.get(request.surface, "conversation"),
                     need=needs or None,
                 ):
                     if cancel.is_set():

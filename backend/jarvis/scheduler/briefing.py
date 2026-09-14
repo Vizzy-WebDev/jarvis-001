@@ -20,6 +20,7 @@ from typing import Any
 
 from ..gateway.client import NoModelAvailable, ask
 from ..gateway.routing import Task as RoutingTask
+from ..gateway.slots import Role
 from ..memory import store as memory_store
 from .briefing_config import get_config
 from .recurrence import describe
@@ -184,7 +185,7 @@ def compose_briefing(now: datetime | None = None) -> Briefing:
             answer = ask(
                 prompt, system=NARRATOR,
                 # Nobody is waiting in real time, so cost matters more than latency.
-                task=RoutingTask(text="briefing", background=True, needs_tools=False),
+                task=RoutingTask(text="briefing", role=Role.BACKGROUND, needs_tools=False),
             )
         except NoModelAvailable as err:
             return Briefing(ok=False, facts=facts, error=str(err))

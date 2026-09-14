@@ -28,6 +28,8 @@ the test author believed it would.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from jarvis.adapters import anthropic_adapter, gemini_adapter, openai_compatible
@@ -455,3 +457,37 @@ def test_the_second_turn_does_not_pay_for_the_refusal_again(scratch):
 
     assert len(server.requests) == 3, "two calls on the first turn, one on the second"
     assert "reasoning_effort" not in server.requests[2]["body"]
+
+
+def test_a_refused_first_attempt_is_not_timed_as_the_model_being_slow():
+    """The retry restarts the clock, and the caller cannot do that itself.
+
+    Measured from outside `call_with_effort`, a refused first attempt would be
+    added to the successful second one and recorded as latency — so a model
+    that answered promptly on the retry would be ranked slow for it, on exactly
+    the one turn where the refusal is discovered. The clock lives here because
+    this is the only layer that knows a retry happened.
+    """
+    readings: list[float] = []
+
+    class RefusesOnce:
+        def __init__(self):
+            self.calls = 0
+
+        def stream(self, entry, messages, *, system="", tools=None, effort=None):
+            self.calls += 1
+            if effort is not None:
+                time.sleep(0.05)
+                raise RuntimeError("Unrecognized request argument supplied: reasoning_effort")
+            yield "answered"
+
+    adapter = RefusesOnce()
+    events = list(call_with_effort(
+        adapter, {"model": "m"}, [],
+        effort=_request(Effort.HIGH, TIERS),
+        provider="p", model="m", on_first_token=readings.append))
+
+    assert events == ["answered"]
+    assert adapter.calls == 2
+    assert len(readings) == 1, "only the attempt that produced something is timed"
+    assert readings[0] < 50, "the refused attempt's 50ms is not counted"

@@ -119,5 +119,6 @@ def verify_semantic_match(*, request: str, result_summary: str,
 
 def _background_task(text: str) -> Any:
     from ..gateway.routing import Task
+    from ..gateway.slots import Role
 
-    return Task(text=text, background=True, needs_tools=False)
+    return Task(text=text, role=Role.UTILITY, needs_tools=False)

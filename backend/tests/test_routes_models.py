@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from starlette.testclient import TestClient
 
-from jarvis.gateway import availability, connections, registry
+from jarvis.gateway import availability, connections, deployments
 
 
 @pytest.fixture
@@ -31,8 +31,8 @@ def test_a_connection_reports_how_many_models_hang_off_it(client):
     conn = connections.add_connection(adapter="openai-compatible", base_url="http://localhost:1234",
                                       label="local", provider="local", kind="local",
                                       key_required=False)
-    registry.add_model(connection_id=conn["id"], model="one")
-    registry.add_model(connection_id=conn["id"], model="two")
+    deployments.add_deployment(connection_id=conn["id"], model="one")
+    deployments.add_deployment(connection_id=conn["id"], model="two")
 
     body = client.get("/api/models").json()
     assert [c["modelCount"] for c in body["connections"]] == [2]
@@ -45,7 +45,7 @@ def test_a_secret_never_leaves_the_process(client):
     conn = connections.add_connection(adapter="openai-compatible", base_url="https://api.example",
                                       label="cloud", provider="custom", kind="gateway",
                                       key_required=True, secret="sk-not-a-real-key-000")
-    registry.add_model(connection_id=conn["id"], model="paid-model")
+    deployments.add_deployment(connection_id=conn["id"], model="paid-model")
 
     raw = client.get("/api/models").text
     assert "sk-not-a-real-key-000" not in raw
@@ -59,7 +59,7 @@ def test_a_model_being_skipped_says_so_and_says_for_how_long(client):
     conn = connections.add_connection(adapter="openai-compatible", base_url="http://localhost:1234",
                                       label="local", provider="local", kind="local",
                                       key_required=False)
-    model = registry.add_model(connection_id=conn["id"], model="flaky")
+    model = deployments.add_deployment(connection_id=conn["id"], model="flaky")
     availability.record(model["id"], "unreachable", detail="the connection was refused")
 
     health = client.get("/api/models").json()["health"]

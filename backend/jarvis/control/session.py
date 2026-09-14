@@ -466,7 +466,7 @@ def _decide(client: Any, session: ControlSession, observation: str, history: lis
     step: Any = None
     for event in client.stream(messages=[{"role": "user", "text": message}],
                                system=SYSTEM_INSTRUCTION, tools=tools,
-                               session_id=f"control:{session.id}", background=True):
+                               session_id=f"control:{session.id}", role="control"):
         if isinstance(event, StepComplete):
             step = event
     return step

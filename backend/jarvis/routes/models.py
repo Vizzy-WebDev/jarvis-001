@@ -26,7 +26,7 @@ import threading
 from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 
-from ..gateway import availability, connections, providers, registry, setup
+from ..gateway import availability, connections, deployments, providers, setup
 from ..gateway.error_kind import availability_state_for
 from ..gateway.probe import probe_endpoint
 
@@ -55,10 +55,23 @@ RECHECK_CONCURRENCY = 3
 #: it an edit to a named thing, which `tests/test_models_contract.py` then fails
 #: on. `secretRef` is absent by construction rather than by subtraction.
 MODEL_FIELDS = (
-    "id", "label", "model", "connectionId", "enabled", "caps", "tier", "tags",
-    "notes", "billing", "adapter", "baseUrl", "keyRequired", "kind", "provider",
-    "connectionLabel",
+    "id", "model", "connectionId", "enabled", "notes", "adapter", "baseUrl",
+    "keyRequired", "kind", "connectionProvider", "connectionLabel",
 )
+
+#: Four keys the flat model row served and this one does not: `caps`, `tier`,
+#: `tags` and `billing`. Every one of them was produced by matching regular
+#: expressions against the model's NAME and then served to the browser as
+#: though it were a fact — which is how a paid-tier model wore a "free" badge
+#: and how everything with "mini" inside it, Gemini Pro included, was ranked
+#: cheap and fast. What a model can do now travels under `version`, with three
+#: states instead of two and with per-field provenance saying which parts were
+#: matched and which were observed.
+#:
+#: Nothing in the front end read any of the four. `test_models_contract.py`
+#: measured that before the rebuild started, which is what made removing them
+#: a decision rather than a gamble.
+REMOVED_MODEL_FIELDS = ("caps", "tier", "tags", "billing", "provider")
 
 CONNECTION_FIELDS = (
     "id", "label", "adapter", "baseUrl", "provider", "kind", "keyRequired", "createdAt",
@@ -77,15 +90,26 @@ def _select(source: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
 
 
 def _public_model(entry: dict[str, Any]) -> dict[str, Any]:
+    """One deployment: what the user made, plus what the catalog says it is.
+
+    `label` falls back to the model id here rather than being stored that way.
+    The old row defaulted `label` to the model name at write time, so a row
+    nobody had named was indistinguishable from one somebody had named after
+    itself — and renaming the model later left the old name behind as though it
+    had been chosen.
+    """
+    version = entry.get("version")
     return {**_select(entry, MODEL_FIELDS),
+            "label": entry.get("label") or entry.get("model"),
+            "version": version.as_dict() if version is not None else None,
             "hasSecret": bool(entry.get("secretRef")),
-            "ready": registry.is_ready(entry)}
+            "ready": deployments.is_ready(entry)}
 
 
 def _public_connection(connection: dict[str, Any], models: list[dict[str, Any]]) -> dict[str, Any]:
     """A connection saved before the provider catalogue existed has no
     provider/kind of its own; it is backfilled at READ time, never migrated —
-    the same read-time pattern `registry.hydrate()` already uses."""
+    the same read-time pattern `deployments.hydrate()` already uses."""
     backfill = ({} if connection.get("provider")
                 else providers.provider_for_legacy(connection.get("adapter"),
                                                    connection.get("baseUrl")))
@@ -120,7 +144,7 @@ def _health(models: list[dict[str, Any]]) -> dict[str, Any]:
 
 @router.get("")
 def listed() -> dict[str, Any]:
-    models = registry.list_models()
+    models = deployments.list_deployments()
     return {
         "connections": [_public_connection(c, models) for c in connections.list_connections()],
         "models": [_public_model(m) for m in models],
@@ -155,7 +179,7 @@ def add(body: dict[str, Any] = Body(default_factory=dict)):
     if not result.get("ok"):
         return JSONResponse(result, status_code=400)
 
-    models = registry.list_models()
+    models = deployments.list_deployments()
     return {"ok": True, "connection": _public_connection(result["connection"], models),
             "added": [_public_model(m) for m in result["added"]],
             "failed": result["failed"], "steps": result.get("steps")}
@@ -193,15 +217,17 @@ def edit_connection(connection_id: str, body: dict[str, Any] = Body(default_fact
         return JSONResponse({"ok": False, "error": "Unknown connection."}, status_code=404)
     except ValueError as err:
         return JSONResponse({"ok": False, "error": str(err)}, status_code=400)
-    return {"ok": True, "connection": _public_connection(conn, registry.list_models())}
+    return {"ok": True, "connection": _public_connection(conn, deployments.list_deployments())}
 
 
 @connections_router.delete("/{connection_id}")
 def remove_connection(connection_id: str) -> dict[str, Any]:
     """Removing a connection removes the models that hung off it — they cannot
     answer without it. The count is reported so the screen can say so."""
-    removed = registry.delete_connection(connection_id)
-    connections.remove_connection(connection_id)
+    # `delete_connection` cascades and removes the connection itself, so there
+    # is no second call here. There used to be one, and it was harmless only
+    # because removing an already-removed connection is a no-op.
+    removed = deployments.delete_connection(connection_id)
     return {"ok": True, "removedModels": removed}
 
 
@@ -218,7 +244,7 @@ def add_models(body: dict[str, Any] = Body(default_factory=dict)):
         return JSONResponse({"ok": False, "error": "Pick a connection and at least one model."},
                             status_code=400)
     try:
-        result = registry.add_models(connection_id, models)
+        result = deployments.add_deployments(connection_id, models)
     except KeyError:
         return JSONResponse({"ok": False, "error": "Unknown connection."}, status_code=404)
     return {"ok": True, "added": [_public_model(m) for m in result["added"]],
@@ -228,7 +254,7 @@ def add_models(body: dict[str, Any] = Body(default_factory=dict)):
 @router.patch("/{model_id}")
 def edit_model(model_id: str, body: dict[str, Any] = Body(default_factory=dict)):
     try:
-        entry = registry.update_model(model_id, body or {})
+        entry = deployments.update_deployment(model_id, body or {})
     except KeyError:
         return JSONResponse({"ok": False, "error": "Unknown model."}, status_code=404)
     return {"ok": True, "model": _public_model(entry)}
@@ -236,7 +262,7 @@ def edit_model(model_id: str, body: dict[str, Any] = Body(default_factory=dict))
 
 @router.delete("/{model_id}")
 def remove_model(model_id: str) -> dict[str, Any]:
-    registry.delete_model(model_id)
+    deployments.delete_deployment(model_id)
     return {"ok": True}
 
 
@@ -272,7 +298,7 @@ def _test_and_record(entry: dict[str, Any]) -> dict[str, Any]:
 
 @router.post("/{model_id}/test")
 def test_model(model_id: str):
-    entry = registry.get_model(model_id)
+    entry = deployments.get_deployment(model_id)
     if entry is None:
         return JSONResponse({"ok": False, "error": "Unknown model."}, status_code=404)
     return _test_and_record(entry)
@@ -287,7 +313,7 @@ def recheck_preview() -> dict[str, Any]:
     """
     from ..cost import store as cost_store
 
-    enabled = [e for e in registry.list_models() if e.get("enabled")]
+    enabled = [e for e in deployments.list_deployments() if e.get("enabled")]
     not_working = [e for e in enabled if not availability.is_eligible(e["id"])]
 
     by_connection = []
@@ -307,7 +333,7 @@ def recheck(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]
     """`scope: "all"` checks every enabled model; anything else checks only the
     ones not currently working — the cheap default, since a model already
     answering needs no proof."""
-    enabled = [e for e in registry.list_models() if e.get("enabled")]
+    enabled = [e for e in deployments.list_deployments() if e.get("enabled")]
     entries = (enabled if body.get("scope") == "all"
                else [e for e in enabled if not availability.is_eligible(e["id"])])
 
@@ -332,4 +358,4 @@ def recheck(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]
     for thread in lanes:
         thread.join()
 
-    return {"ok": True, "models": [_public_model(m) for m in registry.list_models()]}
+    return {"ok": True, "models": [_public_model(m) for m in deployments.list_deployments()]}

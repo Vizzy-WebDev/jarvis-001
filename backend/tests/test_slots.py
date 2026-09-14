@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import pytest
 
+from conftest import candidate
 from jarvis.catalog import Effort
-from jarvis.gateway import availability, routing, slots
+from jarvis.gateway import availability, latency, routing, slots
 from jarvis.gateway.slots import Role
 
 
@@ -25,20 +26,19 @@ from jarvis.gateway.slots import Role
 def _isolated(scratch):
     slots.reset_for_tests()
     availability.reset_for_tests()
+    latency.reset_for_tests()
+    # Speed is measured now rather than authored, so the roster below has to
+    # have actually been timed for the ranking to prefer one over the other.
+    for _ in range(latency.MIN_SAMPLES):
+        latency.record("quick", 120)
+        latency.record("careful", 6000)
     yield
     slots.reset_for_tests()
     availability.reset_for_tests()
+    latency.reset_for_tests()
 
 
-def _entry(entry_id: str, *, speed: int = 3, quality: int = 3) -> dict:
-    """A candidate shaped the way the ranking function reads them."""
-    return {
-        "id": entry_id, "model": entry_id, "enabled": True, "keyRequired": False,
-        "caps": {"tools": True}, "tier": {"speed": speed, "quality": quality, "cost": 1},
-    }
-
-
-ROSTER = [_entry("quick", speed=5, quality=2), _entry("careful", speed=1, quality=5)]
+ROSTER = [candidate("quick", quality=2), candidate("careful", quality=5)]
 
 
 # --- the shape of an assignment --------------------------------------------
@@ -111,8 +111,7 @@ def test_an_assignment_moves_its_model_to_the_front():
     assert unpinned[0]["id"] == "quick", "ranking alone prefers the fast one"
 
     slots.assign(Role.CONVERSATION, deployment_id="careful")
-    pinned = routing.build_candidates(
-        task, entries=ROSTER, manual_model_id=slots.pin_for(Role.CONVERSATION))
+    pinned = routing.build_candidates(task, entries=ROSTER)
 
     assert pinned[0]["id"] == "careful"
 
@@ -122,9 +121,7 @@ def test_an_assignment_does_not_remove_the_others():
     mid-turn failure recoverable rather than fatal."""
     slots.assign(Role.CONVERSATION, deployment_id="careful")
 
-    ranked = routing.build_candidates(
-        routing.Task(text="hello"), entries=ROSTER,
-        manual_model_id=slots.pin_for(Role.CONVERSATION))
+    ranked = routing.build_candidates(routing.Task(text="hello"), entries=ROSTER)
 
     assert [e["id"] for e in ranked] == ["careful", "quick"]
 
@@ -140,8 +137,7 @@ def test_a_benched_assignment_still_leaves_a_turn_answerable():
     availability.record("careful", "quota", detail="out of credit")
 
     ranked = routing.build_candidates(
-        routing.Task(text="say something"), entries=ROSTER,
-        manual_model_id=slots.pin_for(Role.VOICE))
+        routing.Task(text="say something", role=Role.VOICE), entries=ROSTER)
 
     assert [e["id"] for e in ranked] == ["quick"], "the turn is still answerable"
 
@@ -151,20 +147,16 @@ def test_an_assignment_to_something_that_no_longer_exists_degrades_quietly():
     user deleted, or an old model-row id adopted from a dormant preference."""
     slots.assign(Role.CONVERSATION, deployment_id="deleted-long-ago")
 
-    ranked = routing.build_candidates(
-        routing.Task(text="hello"), entries=ROSTER,
-        manual_model_id=slots.pin_for(Role.CONVERSATION))
+    ranked = routing.build_candidates(routing.Task(text="hello"), entries=ROSTER)
 
     assert [e["id"] for e in ranked] == ["quick", "careful"], "ordinary ranking"
 
 
 def test_an_assignment_to_a_switched_off_model_degrades_too():
-    roster = [_entry("quick", speed=5, quality=2), {**_entry("careful"), "enabled": False}]
+    roster = [candidate("quick", quality=2), {**candidate("careful"), "enabled": False}]
     slots.assign(Role.CONVERSATION, deployment_id="careful")
 
-    ranked = routing.build_candidates(
-        routing.Task(text="hello"), entries=roster,
-        manual_model_id=slots.pin_for(Role.CONVERSATION))
+    ranked = routing.build_candidates(routing.Task(text="hello"), entries=roster)
 
     assert [e["id"] for e in ranked] == ["quick"]
 
@@ -272,7 +264,7 @@ def test_filtering_instead_of_pinning_would_leave_the_turn_unanswerable():
     """
     slots.assign(Role.VOICE, deployment_id="careful")
     availability.record("careful", "quota", detail="out of credit")
-    task = routing.Task(text="say something")
+    task = routing.Task(text="say something", role=Role.VOICE)
     pin = slots.pin_for(Role.VOICE)
 
     # The tempting implementation: restrict the roster to the assigned model.
@@ -281,5 +273,5 @@ def test_filtering_instead_of_pinning_would_leave_the_turn_unanswerable():
     assert filtered == [], "this is the bug: a rate-limited assignment kills the turn"
 
     # What this build does: lead the ranking, never restrict it.
-    ranked = routing.build_candidates(task, entries=ROSTER, manual_model_id=pin)
+    ranked = routing.build_candidates(task, entries=ROSTER)
     assert [e["id"] for e in ranked] == ["quick"]

@@ -15,7 +15,7 @@ from jarvis import conversation
 from jarvis.capabilities import CapabilityRegistry, CapabilitySpec, Risk
 from jarvis.db import reset_for_tests as reset_db
 from jarvis.events.bus import EventBus
-from jarvis.gateway import availability, connections, registry
+from jarvis.gateway import availability, connections, deployments
 from jarvis.gateway.client import Gateway
 from jarvis.orchestrator import Chunk, Done, Orchestrator, ToolRan, TurnRequest
 
@@ -40,7 +40,7 @@ def stub():
     conn = connections.add_connection(adapter="openai-compatible", base_url=server.base_url,
                                       label="stub", provider="custom", kind="local",
                                       key_required=False)
-    registry.add_model(connection_id=conn["id"], model="stub-model")
+    deployments.add_deployment(connection_id=conn["id"], model="stub-model")
     yield server
     server.stop()
 

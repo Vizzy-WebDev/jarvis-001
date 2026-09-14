@@ -11,8 +11,8 @@ This package exists so that logic lives once.
 """
 
 from . import (
-    availability, connections, deployments, discovery, effort, error_kind, name_guess,
-    probe, providers, registry, routing, slots,
+    availability, connections, deployments, discovery, effort, error_kind,
+    latency, probe, providers, routing, slots,
 )
 from .client import Gateway, NoModelAvailable
 from .routing import Task, build_candidates, explain_exclusions
@@ -24,8 +24,8 @@ __all__ = [
     "availability",
     "build_candidates",
     "connections",
-    # One model version reached through one connection — the routable unit.
-    # Read by nothing yet; the router moves onto it at the switchover.
+    # One model version reached through one connection — the routable unit,
+    # and what the router now ranks.
     "deployments",
     # Asking a provider what it has, and reconciling that with what is
     # configured — including noticing a model that stopped being listed.
@@ -35,12 +35,11 @@ __all__ = [
     "effort",
     "error_kind",
     "explain_exclusions",
-    # The name-derived guessing the catalog replaces. Still the live path until
-    # the registry and the setup flow stop reading it.
-    "name_guess",
+    # How quickly a deployment starts answering, measured — what replaced the
+    # authored `tier.speed` the catalog deleted.
+    "latency",
     "probe",
     "providers",
-    "registry",
     "routing",
     # Which model does which job — a preference that leads the ranking.
     "slots",

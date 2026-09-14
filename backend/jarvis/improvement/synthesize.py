@@ -19,6 +19,7 @@ from typing import Any
 
 from ..gateway.client import NoModelAvailable, ask
 from ..gateway.routing import Task
+from ..gateway.slots import Role
 from . import store
 from .domains import is_excluded
 
@@ -75,7 +76,7 @@ def synthesize(force: bool = False) -> dict[str, Any]:
 
     try:
         answer = ask(_prompt(lessons), system=SYSTEM, want_json=True,
-                     task=Task(text="look for patterns", background=True, needs_tools=False))
+                     task=Task(text="look for patterns", role=Role.UTILITY, needs_tools=False))
     except NoModelAvailable as err:
         logger.info("synthesis skipped — no model available: %s", err)
         return {"ran": False, "reason": "no model available"}

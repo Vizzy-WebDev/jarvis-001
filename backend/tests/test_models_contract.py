@@ -1,10 +1,10 @@
 """The public shape of the models API, pinned so a change to it cannot be silent.
 
-Nothing in this suite currently fails when the models routes change shape. They
-answer by spreading the internal record verbatim (`{**entry}` minus the secret,
-`routes/models.py`), and the TypeScript client closes every one of these
+Before this file, nothing in the suite failed when the models routes changed
+shape. They answered by spreading the internal record verbatim (`{**entry}`
+minus the secret), and the TypeScript client closes every one of these
 interfaces with `[key: string]: unknown` — so a renamed or dropped field
-compiles cleanly on both sides and arrives in the browser as wrong rendering
+compiled cleanly on both sides and arrived in the browser as wrong rendering
 rather than as a failure. The three recorded contract fixtures that touch this
 area do not close the gap either: two of them were recorded against an empty
 roster and pin only the envelope, so they stay green whether or not the row
@@ -14,11 +14,15 @@ This file is the missing failure. It asserts the exact SET of keys each models
 route returns — not their values, which legitimately vary run to run — because
 the set is what the front end is written against.
 
-It is deliberately a characterisation test: it describes what the code does
-today, not what it ought to do. Several of the keys it pins are ones the
-rebuild will remove on purpose. When that happens this test fails, and editing
-it is how the removal gets made deliberately and reviewably, rather than
-discovered later in a browser.
+**It has now done its job once.** It was written as a characterisation test
+before the rebuild, describing what the code did rather than what it ought to,
+specifically so that the keys the rebuild meant to remove would have to be
+removed here by hand. At the switchover five of them were: `caps`, `tier`,
+`tags`, `billing` and a `provider` that meant the connection's. Every one was
+produced by matching regular expressions against the model's NAME and served to
+the browser as fact. The list below was also what proved the removal safe —
+`MODEL_KEYS_THE_UI_READS` was measured from the front-end source, and not one
+of the five was in it.
 """
 
 from __future__ import annotations
@@ -26,14 +30,26 @@ from __future__ import annotations
 import pytest
 from starlette.testclient import TestClient
 
-from jarvis.gateway import availability, connections, registry
+from jarvis.gateway import availability, connections, deployments
 
-#: Every key `_public_model` puts on the wire today. `secretRef` is absent on
-#: purpose and there is a separate test below that keeps it that way.
+#: Every key `_public_model` puts on the wire. `secretRef` is absent on purpose
+#: and there is a separate test below that keeps it that way.
+#:
+#: `connectionProvider` is named for what it is. The row used to carry
+#: `provider`, meaning the connection's, while the model's own maker had nowhere
+#: to live at all — which is how the two axes quietly collapsed into one. The
+#: maker is now `version.provider`, and the two can be told apart.
 MODEL_KEYS = {
-    "id", "label", "model", "connectionId", "enabled", "caps", "tier", "tags",
-    "notes", "billing", "adapter", "baseUrl", "keyRequired", "kind", "provider",
-    "connectionLabel", "hasSecret", "ready",
+    "id", "label", "model", "connectionId", "enabled", "notes", "adapter",
+    "baseUrl", "keyRequired", "kind", "connectionProvider", "connectionLabel",
+    "version", "hasSecret", "ready",
+}
+
+#: What the catalog's answer looks like on the wire. Pinned for the same reason
+#: as the row itself: this is what the rebuilt screens are written against.
+VERSION_KEYS = {
+    "provider", "model", "label", "family", "pinned", "contextTokens",
+    "capabilities", "effort", "quality", "lifecycle", "provenance",
 }
 
 #: Every key `_public_connection` puts on the wire for a connection saved WITH a
@@ -55,16 +71,17 @@ TILE_KEYS = {
 PREVIEW_KEYS = {"total", "notWorking", "byConnection"}
 PREVIEW_CONNECTION_KEYS = {"id", "label", "count", "isFreeTier", "remaining"}
 
-#: What the front end actually reads off a model, today, across every screen.
-#: Measured from the source rather than assumed, and the gap is large: `caps`,
-#: `tier`, `tags`, `notes`, `billing`, `adapter`, `baseUrl`, `keyRequired`,
-#: `kind`, `provider`, `connectionLabel` and `hasSecret` are all served on every
-#: model row and not one of them is looked at.
+#: What the front end actually reads off a model, across every screen. Measured
+#: from the source rather than assumed, and the gap was large: `caps`, `tier`,
+#: `tags`, `notes`, `billing`, `adapter`, `baseUrl`, `keyRequired`, `kind`,
+#: `provider`, `connectionLabel` and `hasSecret` were all served on every model
+#: row and not one of them was looked at. That measurement is what made removing
+#: five of them at the switchover a decision rather than a gamble.
 #:
-#: `billing` is the trap worth naming — the front end does read `model.billing`,
-#: but on a `DiscoveredModel` in the add-a-model flow, which is a different
-#: shape from a different route. Grepping for the field name alone says this
-#: list should contain it; following the type says it should not.
+#: `billing` was the trap worth naming — the front end does read
+#: `model.billing`, but on a `DiscoveredModel` in the add-a-model flow, which is
+#: a different shape from a different route. Grepping for the field name alone
+#: said this list should contain it; following the type said it should not.
 MODEL_KEYS_THE_UI_READS = {
     "id", "connectionId", "label", "model", "enabled", "ready",
 }
@@ -94,7 +111,7 @@ def populated(client):
     conn = connections.add_connection(
         adapter="openai-compatible", base_url="https://api.example", label="cloud",
         provider="custom", kind="gateway", key_required=True, secret="sk-not-a-real-key-000")
-    model = registry.add_model(connection_id=conn["id"], model="demo-model")
+    model = deployments.add_deployment(connection_id=conn["id"], model="demo-model")
     availability.record(model["id"], "quota", detail="out of quota until later")
     return client
 
@@ -102,6 +119,20 @@ def populated(client):
 def test_a_model_row_carries_exactly_these_keys(populated):
     row = populated.get("/api/models").json()["models"][0]
     assert set(row) == MODEL_KEYS
+
+
+def test_the_version_block_carries_exactly_these_keys(populated):
+    version = populated.get("/api/models").json()["models"][0]["version"]
+    assert set(version) == VERSION_KEYS
+
+
+def test_a_capability_nobody_has_established_is_served_as_unknown(populated):
+    """Not as `false`. The old `caps` dict had two states, so a screen could
+    only ever say "cannot see images" about a model nobody had asked — and the
+    router read the same lie. All three states reach the browser."""
+    capabilities = populated.get("/api/models").json()["models"][0]["version"]["capabilities"]
+    assert capabilities["vision"] == "unknown"
+    assert set(capabilities) == {"tools", "vision", "video", "audio", "web_search"}
 
 
 def test_a_connection_row_carries_exactly_these_keys(populated):
@@ -148,6 +179,21 @@ def test_the_ui_reads_only_keys_that_are_actually_served(populated):
     assert MODEL_KEYS_THE_UI_READS <= MODEL_KEYS
     assert CONNECTION_KEYS_THE_UI_READS <= CONNECTION_KEYS
     assert set(body["models"][0]) == MODEL_KEYS
+
+
+def test_a_field_the_rebuild_removed_does_not_quietly_come_back(populated):
+    """The removals, asserted rather than remembered.
+
+    Each of these was a regex over the model's name served to the browser as a
+    fact. The obvious way for one to return is somebody adding `caps` back
+    because a screen wanted a boolean — which is the exact shape of the mistake,
+    since the honest answer has three states and lives under `version`.
+    """
+    from jarvis.routes.models import REMOVED_MODEL_FIELDS
+
+    row = populated.get("/api/models").json()["models"][0]
+    assert set(REMOVED_MODEL_FIELDS) & set(row) == set()
+    assert set(REMOVED_MODEL_FIELDS) & MODEL_KEYS == set()
 
 
 def test_no_secret_reaches_any_models_route(populated):

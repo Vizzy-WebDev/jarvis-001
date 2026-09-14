@@ -64,6 +64,24 @@ class Role(Enum):
     UTILITY = "utility"
 
 
+def role_from(name: Any) -> Role:
+    """A role from whatever a caller is holding, defaulting to conversation.
+
+    The orchestrator names the role for a turn but may not import this module —
+    the turn loop imports no part of the gateway — so it says "voice" or
+    "control" as a plain string across the port and this is where that becomes
+    a Role. An unrecognised name is not an error: a turn whose origin nobody
+    classified is an ordinary conversation, and failing it over a label would
+    be a routing decision made by a typo.
+    """
+    if isinstance(name, Role):
+        return name
+    try:
+        return Role(str(name).strip().lower())
+    except ValueError:
+        return Role.CONVERSATION
+
+
 @dataclass(frozen=True)
 class Slot:
     """A role, and what the user has said about how it should be served."""

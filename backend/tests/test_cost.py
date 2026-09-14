@@ -18,12 +18,14 @@ from jarvis.cost import advisor, prices, report, store
 from jarvis.db import reset_for_tests as reset_db
 from jarvis.events import EventType
 from jarvis.events.bus import Event, EventBus
-from jarvis.gateway import availability, connections, registry
+from jarvis.gateway import availability, connections, deployments
 from jarvis.gateway.client import Gateway
 from jarvis.jscompat import to_iso_z
 from jarvis.observers.cost import record_model_call
 from jarvis.orchestrator.model_port import StepComplete
 
+from conftest import candidate
+from jarvis.gateway.slots import Role
 from stub_openai_server import StubModelServer
 
 
@@ -108,7 +110,7 @@ def test_a_real_turn_records_the_usage_the_provider_actually_sent():
         conn = connections.add_connection(adapter="openai-compatible", base_url=base_url,
                                           label="stub", provider="custom", kind="local",
                                           key_required=False)
-        model = registry.add_model(connection_id=conn["id"], model="stub-model")
+        model = deployments.add_deployment(connection_id=conn["id"], model="stub-model")
         stub.says("done")
 
         bus = EventBus()
@@ -226,22 +228,18 @@ def test_a_measured_price_lands_in_the_same_zero_to_four_domain_the_guess_used(
 def test_the_router_prefers_the_measured_price_over_the_catalogs_guess():
     from jarvis.gateway.routing import Task, build_candidates
 
-    entries = [
-        {"id": "guessed-cheap", "enabled": True, "provider": "p", "model": "cheap",
-         "adapter": "openai-compatible", "keyRequired": False, "kind": "local",
-         "caps": {"tools": True}, "tier": {"speed": 3, "quality": 3, "cost": 0}},
-        {"id": "guessed-dear", "enabled": True, "provider": "p", "model": "dear",
-         "adapter": "openai-compatible", "keyRequired": False, "kind": "local",
-         "caps": {"tools": True}, "tier": {"speed": 3, "quality": 3, "cost": 4}},
-    ]
-    task = Task(text="hello", background=True)
-    assert [e["id"] for e in build_candidates(task, entries=entries)][0] == "guessed-cheap"
+    entries = [candidate("a", provider="p", model="one"),
+               candidate("b", provider="p", model="two")]
+    task = Task(text="hello", role=Role.BACKGROUND)
+    # Nothing is measured yet, so neither can be preferred on price and the
+    # deterministic tie-break decides. There is no authored guess left to beat:
+    # `tier.cost` was a name regex and was deleted with the rest of them.
+    assert [e["id"] for e in build_candidates(task, entries=entries)] == ["a", "b"]
 
-    # Now measure the opposite of what the names suggested.
-    prices.set_user_price(provider="p", model_id="cheap", price_in=0.001, price_out=0.002)
-    prices.set_user_price(provider="p", model_id="dear", price_in=0.0, price_out=0.0)
+    prices.set_user_price(provider="p", model_id="one", price_in=0.001, price_out=0.002)
+    prices.set_user_price(provider="p", model_id="two", price_in=0.0, price_out=0.0)
     advisor.reset_cache()
-    assert [e["id"] for e in build_candidates(task, entries=entries)][0] == "guessed-dear"
+    assert [e["id"] for e in build_candidates(task, entries=entries)][0] == "b"
 
 
 # --- balances stay separate ---------------------------------------------------
@@ -322,13 +320,21 @@ def _register(model: str, *, kind: str = "local", key_required: bool = False,
     conn = connections.add_connection(adapter="openai-compatible", base_url=base_url,
                                       label=model, provider="custom", kind=kind,
                                       key_required=key_required)
-    return registry.add_model(connection_id=conn["id"], model=model)
+    return deployments.add_deployment(connection_id=conn["id"], model=model)
 
 
 def test_a_local_model_is_seeded_at_zero_rather_than_left_unpriced():
+    """Seeded under the same key the spend observer writes, which it was not.
+
+    The seeder filed a price under the ADAPTER ("openai-compatible") while the
+    observer recorded spend under the connection's provider ("custom"), so the
+    $0 rows this function wrote were read back by nothing — a real bug the
+    switchover found by making both sides call one function
+    (`deployments.provider_of`) instead of each deriving the key themselves.
+    """
     _register("llama3")
     assert prices.seed_known_free_prices() == 1
-    price = store.get_price("openai-compatible", "llama3")
+    price = store.get_price("custom", "llama3")
     assert (price["priceIn"], price["priceOut"], price["source"]) == (0.0, 0.0, "built_in")
 
 
@@ -342,16 +348,16 @@ def test_a_provider_labelled_free_variant_is_seeded_but_a_guessed_one_is_not():
               base_url="https://generativelanguage.googleapis.com")
 
     prices.seed_known_free_prices()
-    assert store.get_price("openai-compatible", "meta-llama/llama-3-8b:free")["priceIn"] == 0.0
-    assert store.get_price("openai-compatible", "gemini-3.5-flash") is None
+    assert store.get_price("custom", "meta-llama/llama-3-8b:free")["priceIn"] == 0.0
+    assert store.get_price("custom", "gemini-3.5-flash") is None
 
 
 def test_seeding_never_overwrites_a_price_someone_actually_set():
     _register("llama3")
-    prices.set_user_price(provider="openai-compatible", model_id="llama3",
+    prices.set_user_price(provider="custom", model_id="llama3",
                           price_in=0.5, price_out=0.5)
     assert prices.seed_known_free_prices() == 0
-    assert store.get_price("openai-compatible", "llama3")["source"] == "user"
+    assert store.get_price("custom", "llama3")["source"] == "user"
 
 
 def test_seeding_happens_with_the_network_interlock_off(monkeypatch):
@@ -363,7 +369,7 @@ def test_seeding_happens_with_the_network_interlock_off(monkeypatch):
     _register("llama3")
     started = assembly.start_background_work()
     assert started["prices"] is False, "the network refresh must stay off"
-    assert store.get_price("openai-compatible", "llama3")["priceIn"] == 0.0
+    assert store.get_price("custom", "llama3")["priceIn"] == 0.0
 
 
 def test_free_usage_is_reported_as_free_and_unpriced_usage_as_unknown():
@@ -408,17 +414,13 @@ def test_the_router_treats_free_as_cheapest_and_unpriced_as_no_opinion():
     assert advisor.observed_cost_tier("p", "free-one") == 0
     assert advisor.observed_cost_tier("p", "unknown-one") is None
 
-    entries = [
-        {"id": "free", "enabled": True, "provider": "p", "model": "free-one",
-         "adapter": "openai-compatible", "keyRequired": False, "kind": "local",
-         "caps": {"tools": True}, "tier": {"speed": 3, "quality": 3, "cost": 4}},
-        {"id": "unknown", "enabled": True, "provider": "p", "model": "unknown-one",
-         "adapter": "openai-compatible", "keyRequired": False, "kind": "local",
-         "caps": {"tools": True}, "tier": {"speed": 3, "quality": 3, "cost": 0}},
-    ]
-    # The free model's catalog guess says "expensive"; the measured $0 overrides
-    # it, and the unpriced model keeps its guess.
-    ranked = [e["id"] for e in build_candidates(Task(text="hi", background=True), entries=entries)]
+    entries = [candidate("free", provider="p", model="free-one"),
+               candidate("unknown", provider="p", model="unknown-one")]
+    # A measured $0 beats "nothing has been measured", which is not the same as
+    # beating a cheap guess — there is no guess any more. The unpriced model
+    # gets the neutral reading rather than an invented one.
+    ranked = [e["id"] for e in build_candidates(
+        Task(text="hi", role=Role.BACKGROUND), entries=entries)]
     assert ranked[0] == "free"
 
 

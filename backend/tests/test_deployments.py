@@ -318,3 +318,150 @@ def test_keying_on_the_model_would_bench_both_routes():
     availability.record(b["id"], "quota", detail="the gateway is out of credit")
     assert availability.is_eligible(a["id"]) is True
     assert availability.is_eligible(b["id"]) is False
+
+
+# --- the roster that already existed ----------------------------------------
+
+def _legacy_models_file(*rows):
+    """Write a `models.json` in the shape the flat registry stored."""
+    from jarvis.store import write_json
+
+    write_json("models", {"entries": list(rows)})
+
+
+def test_an_existing_roster_is_carried_across_rather_than_lost(scratch):
+    """The upgrade a real install goes through.
+
+    An architecture that starts clean by emptying somebody's configured roster
+    is a bug however tidy the result is. The user chose these models; that is
+    their data, not this build's inference.
+    """
+    conn = _connection("cloud")
+    _legacy_models_file(
+        {"id": "kept", "connectionId": conn["id"], "model": "some-model",
+         "label": "The good one", "enabled": True, "notes": "my favourite"},
+        {"id": "off", "connectionId": conn["id"], "model": "other-model",
+         "label": "other-model", "enabled": False, "notes": ""},
+    )
+
+    rows = deployments.list_deployments()
+
+    assert [r["model"] for r in rows] == ["some-model", "other-model"]
+    kept = rows[0]
+    assert kept["label"] == "The good one"
+    assert kept["notes"] == "my favourite"
+    assert rows[1]["enabled"] is False, "a model switched off stays switched off"
+
+
+def test_what_the_old_build_guessed_is_not_carried_across(scratch):
+    """The other half, and the one that makes this a rebuild rather than a port.
+
+    `caps`, `tier`, `tags` and `billing` were all produced by matching regular
+    expressions against the model's name. Copying them would preserve the wrong
+    answers past the point where a better one became available — this row's own
+    `caps` claims the model cannot see, which is exactly the confident-boolean
+    the catalog exists to stop.
+    """
+    conn = _connection("cloud")
+    _legacy_models_file({
+        "id": "old", "connectionId": conn["id"], "model": "some-model",
+        "label": "some-model", "enabled": True,
+        "caps": {"tools": True, "vision": False}, "tier": {"speed": 5, "quality": 2, "cost": 1},
+        "tags": ["fast", "cheap"], "billing": "free",
+    })
+
+    [row] = deployments.list_deployments()
+
+    for gone in ("caps", "tier", "tags", "billing"):
+        assert gone not in row, f"{gone} was a guess and must not survive"
+    assert row["version"].capabilities.vision is Support.UNKNOWN, (
+        "an unasked capability reads as unknown, not as the old confident False")
+    assert row["discovered"] == {} and row["overrides"] == {}
+
+
+def test_a_label_nobody_actually_chose_does_not_come_across_as_one(scratch):
+    """The old writer defaulted `label` to the model name, so a row nobody had
+    named was indistinguishable from one named after itself — and renaming the
+    model later left the old name behind as though somebody had picked it."""
+    conn = _connection("cloud")
+    _legacy_models_file({"id": "x", "connectionId": conn["id"], "model": "some-model",
+                         "label": "some-model", "enabled": True})
+
+    [row] = deployments.list_deployments()
+
+    assert row["label"] is None
+
+
+def test_the_old_file_is_archived_rather_than_deleted_or_left_in_place(scratch):
+    """Renamed: it is the only record of what was configured before this, it
+    costs a few kilobytes, and a rename is the one cleanup a person can undo.
+    Left in place it would be re-adopted on every read."""
+    from jarvis.store import data_file_path
+
+    conn = _connection("cloud")
+    _legacy_models_file({"id": "x", "connectionId": conn["id"], "model": "some-model",
+                         "enabled": True})
+    deployments.list_deployments()
+
+    assert not data_file_path("models").exists()
+    assert data_file_path("models.archived").exists()
+
+    # And a deletion afterwards stays deleted rather than being undone by a
+    # second adoption on the next read.
+    deployments.delete_deployment(deployments.list_deployments()[0]["id"])
+    assert deployments.list_deployments() == []
+
+
+def test_a_fresh_install_gains_nothing_from_an_adoption_it_has_no_use_for(scratch):
+    assert deployments.list_deployments() == []
+    from jarvis.store import data_file_path
+    assert not data_file_path("model-deployments").exists()
+
+
+def test_what_a_provider_reported_at_add_time_is_not_dropped_on_the_way_in():
+    """The rows arrive in the adapter's camelCase, the catalog reads snake_case.
+
+    This had its own key list and looked for `context_tokens` while the add flow
+    sends `contextTokens`, so the context window a provider had just told us
+    about was silently discarded — nothing failed, the number simply was not
+    there, and the router's "too small for this much text" check had nothing to
+    read. Both sides now go through one translator.
+    """
+    conn = _connection("cloud")
+
+    result = deployments.add_deployments(conn["id"], [
+        {"model": "big-model", "contextTokens": 200_000},
+        {"model": "described", "capabilities": ["vision", "tool_use"]},
+        "just-a-name",
+    ])
+
+    assert result["failed"] == []
+    by_model = {d["model"]: d for d in result["added"]}
+    assert by_model["big-model"]["version"].context_tokens == 200_000
+    assert by_model["described"]["version"].capabilities.vision is Support.YES
+    assert by_model["described"]["version"].capabilities.tools is Support.YES
+    assert by_model["just-a-name"]["version"].model == "just-a-name"
+
+
+def test_a_label_the_picker_filled_in_is_not_recorded_as_one_somebody_chose():
+    """The discovery flow defaults a row's label to its model id so the picker
+    has something to show, and that default arrives here on every add."""
+    conn = _connection("cloud")
+
+    result = deployments.add_deployments(conn["id"], [
+        {"model": "some-model", "label": "some-model"},
+        {"model": "other-model", "label": "The good one"},
+    ])
+
+    by_model = {d["model"]: d for d in result["added"]}
+    assert by_model["some-model"]["label"] is None
+    assert by_model["other-model"]["label"] == "The good one"
+
+
+def test_a_row_with_no_model_name_fails_alone_rather_than_losing_the_batch():
+    conn = _connection("cloud")
+
+    result = deployments.add_deployments(conn["id"], [{"label": "nameless"}, "real-model"])
+
+    assert [d["model"] for d in result["added"]] == ["real-model"]
+    assert len(result["failed"]) == 1

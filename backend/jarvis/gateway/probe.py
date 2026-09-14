@@ -26,7 +26,6 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ..adapters import anthropic_adapter, gemini_adapter, openai_compatible
-from .name_guess import infer_billing
 from .error_kind import classify_error
 
 _LOCAL_HOST = re.compile(r"^(localhost|127\.0\.0\.1|::1|0\.0\.0\.0)$", re.I)
@@ -170,10 +169,11 @@ def _confirm_generation(adapter, base_url: str, secret: str | None,
     result.kind = kind
     # Only now is this a FACT: it generated with exactly the credential supplied.
     result.key_required = bool(secret)
-    result.models = [
-        {**m, "billing": m.get("billing") or infer_billing(adapter.name, base_url, m.get("model"), kind)}
-        for m in models
-    ]
+    # Exactly what the provider said, plus an explicit "we do not know" where
+    # it said nothing about billing. The name regex that used to fill this in
+    # is gone: it answered "free" for any id containing "flash", including on a
+    # paid-tier key.
+    result.models = [{**m, "billing": m.get("billing")} for m in models]
     result.steps.append("  it answered. This connection works.")
     return result
 

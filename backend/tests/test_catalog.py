@@ -353,3 +353,59 @@ def test_no_shipped_rule_claims_a_capability_it_cannot_know_per_version():
 
 def test_matching_returns_nothing_for_an_unrecognised_id():
     assert match("totally-unknown-thing") is None
+
+
+# --- what arrives from outside ----------------------------------------------
+
+HOSTILE = [
+    "not a mapping at all", 12, ["a", "list"],
+    {"capabilities": "not a mapping"},
+    {"capabilities": {"vision": "maybe", "no_such_capability": True}},
+    {"capabilities": {"vision": None}},
+    {"lifecycle": 12},
+    {"effort": [1, 2]},
+    {"effort": {"kind": "tiers"}},
+    {"quality": "five"},
+    {"quality": 9999},
+    {"quality": True},
+    {"context_tokens": {"a": 1}},
+    {"context_tokens": -5},
+    {"provider": None},
+]
+
+
+@pytest.mark.parametrize("nonsense", HOSTILE)
+def test_a_malformed_field_degrades_to_unknown_rather_than_raising(nonsense):
+    """`overrides` reaches this from a PATCH body, and resolution runs at READ
+    time on every routing pass. A value that raises here does not spoil one
+    request — it empties the roster, and with it the models screen, the status
+    route and every turn. Degrading to "we do not know" is the only safe answer.
+    """
+    version = resolve(model="some-model", discovered=nonsense, user=nonsense)
+
+    assert version.model == "some-model"
+    assert version.capabilities.vision is Support.UNKNOWN
+    assert version.lifecycle is Lifecycle.UNKNOWN
+    assert version.quality is None
+    assert version.context_tokens is None
+
+
+def test_a_quality_outside_the_scale_is_refused_rather_than_clamped():
+    """Not a stricter validation for its own sake. `routing._score` multiplies
+    quality by up to 3 and the availability bonus is sized against the spread
+    that produces — a quality of 9999 from a hand-edited file would outrank the
+    bonus and put a model known to be dead at the front of every turn."""
+    assert resolve(model="m", user={"quality": 5}).quality == 5
+    assert resolve(model="m", user={"quality": 0}).quality == 0
+    assert resolve(model="m", user={"quality": 6}).quality is None
+    assert resolve(model="m", user={"quality": -1}).quality is None
+
+
+def test_a_refused_value_is_not_reported_as_having_come_from_the_user():
+    """Provenance says where a value came from. A field that was thrown away
+    has no value to have come from anywhere, and saying `user` about one would
+    make a screen offer to "correct" a setting that is not in effect."""
+    version = resolve(model="m", user={"quality": 9999, "context_tokens": -5})
+
+    assert "quality" not in version.provenance
+    assert "context_tokens" not in version.provenance

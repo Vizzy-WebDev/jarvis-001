@@ -65,10 +65,9 @@ what a future "has anything gone wrong with you lately?" answer reads across eve
   fabricated zero. `sampleNow({record})` is the on-demand path `check_environment.py`
   uses for a "right now" reading without waiting for the next tick.
 - **`ops/diagnostics/checks/`** — a single read across three subsystems that each already track
-  their own reachability fact, never a new probe of its own: models (`gateway/availability.py`'s
-  in-memory breaker AND `registry.py`'s persisted `availability.state`, reported as two
-  separate fields on purpose — see root CLAUDE.md's Model system section on why those
-  two are deliberately not collapsed into one), connectors (`connectors/store.py`'s own
+  their own reachability fact, never a new probe of its own: models (`gateway/availability.py`,
+  which is the one store this build keeps that fact in — the Node original had an in-memory
+  breaker AND a persisted state on the model row, and the two could disagree), connectors (`connectors/store.py`'s own
   `status.state` — a stale record of the last human-triggered test, not a live probe),
   voice services (`tts/matching.py`/`stt/deepgram.py`'s own `isConfigured()`).
 - **`ops/diagnostics/`** — "unusually high or climbing without a clear cause," defined

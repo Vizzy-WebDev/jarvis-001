@@ -1,6 +1,6 @@
 """Adding a connection, and finding out what it can do.
 
-The orchestration between the stores (`connections.py`, `registry.py`) and the
+The orchestration between the stores (`connections.py`, `deployments.py`) and the
 adapters: discovery, the reachability check, and the one call that creates a
 connection with its first models. Kept out of the route module so the logic is
 testable without HTTP, and out of the stores so they stay leaves.
@@ -21,12 +21,11 @@ from typing import Any
 
 from ..adapters import get_adapter
 from ..redact import redact
-from .name_guess import infer_billing
 from .connections import add_connection, get_connection
 from .error_kind import find_message
 from .probe import probe_endpoint
-from .providers import get_provider, provider_for_legacy
-from .registry import add_models, list_models
+from .providers import get_provider
+from .deployments import add_deployments, list_deployments
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +58,7 @@ def _entry_for(adapter: str | None, base_url: str | None, secret: str | None,
     return entry
 
 
-def _normalise(models: Any, adapter: str | None, base_url: str | None,
-               kind: str | None) -> list[dict[str, Any]]:
+def _normalise(models: Any) -> list[dict[str, Any]]:
     out = []
     for raw in models or []:
         item = {"model": raw} if isinstance(raw, str) else dict(raw)
@@ -68,8 +66,12 @@ def _normalise(models: Any, adapter: str | None, base_url: str | None,
             continue
         item.setdefault("label", item["model"])
         item.setdefault("contextTokens", None)
-        if item.get("billing") is None:
-            item["billing"] = infer_billing(adapter, base_url, item["model"], kind)
+        # Nothing is inferred from the name here any more. The old build filled
+        # in a billing tier by matching the id against a few regexes, and showed
+        # the result to the user as a "free" badge on a model a paid-tier key
+        # was about to be billed for. `None` is the honest answer to a question
+        # a listing did not answer.
+        item.setdefault("billing", None)
         out.append(item)
     return out
 
@@ -89,15 +91,13 @@ def discover_models(*, adapter: str | None = None, base_url: str | None = None,
     (connection, model) is the uniqueness rule. The same model under a different
     connection is untouched and still offered.
     """
-    resolved_adapter, resolved_base, secret_ref, kind = adapter, base_url, None, None
+    resolved_adapter, resolved_base, secret_ref = adapter, base_url, None
     if connection_id:
         conn = get_connection(connection_id)
         if conn is not None:
             resolved_adapter = conn.get("adapter")
             resolved_base = conn.get("baseUrl")
             secret_ref = conn.get("secretRef")
-            kind = conn.get("kind") or provider_for_legacy(conn.get("adapter"),
-                                                           conn.get("baseUrl"))["kind"]
 
     module = get_adapter(resolved_adapter or "openai-compatible")
     try:
@@ -107,9 +107,10 @@ def discover_models(*, adapter: str | None = None, base_url: str | None = None,
         return {"models": [],
                 "error": _plain(module, err, "Could not discover models at that address.")}
 
-    items = _normalise(found, resolved_adapter, resolved_base, kind)
+    items = _normalise(found)
     if connection_id:
-        already = {e.get("model") for e in list_models() if e.get("connectionId") == connection_id}
+        already = {e.get("model") for e in list_deployments()
+                   if e.get("connectionId") == connection_id}
         items = [item for item in items if item["model"] not in already]
     return {"models": items, "error": None}
 
@@ -215,4 +216,5 @@ def create_connection_with_models(*, provider: str | None = None, adapter: str |
     conn = add_connection(adapter=resolved_adapter, base_url=resolved_base, label=label,
                           secret=secret, provider=provider, kind=kind,
                           key_required=key_required)
-    return {"ok": True, "connection": conn, **add_models(conn["id"], wanted), "steps": steps}
+    return {"ok": True, "connection": conn,
+            **add_deployments(conn["id"], wanted), "steps": steps}

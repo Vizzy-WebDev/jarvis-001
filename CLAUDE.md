@@ -175,7 +175,8 @@ backend/
     personality.py    The Adaptive Communication Register — tone floors, sticky style, real vocal laughter.
     capabilities/     The contract (spec.py), the registry, and execute.py — the one dispatcher.
     orchestrator/     pipeline.py: the turn loop. context.py, model_port.py.
-    gateway/          Model registry, connections, routing, availability, probing.
+    catalog/          What a model IS: family, version, capabilities, effort scheme. Owns nothing.
+    gateway/          Deployments, connections, slots, routing, effort, availability, latency, probing.
     adapters/         One module per wire format: anthropic, gemini, openai_compatible.
     policy/           approvals.py, decide.py — the permission layer, independent of model behaviour.
     events/           The typed event bus. observers/ subscribe to it (cost, security, verification, improvement...).

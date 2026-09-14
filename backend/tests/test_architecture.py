@@ -179,6 +179,34 @@ def test_the_orchestrator_does_not_import_a_provider_sdk_or_an_adapter():
             assert sdk not in source, f"{path.name} reaches for a provider SDK"
 
 
+def test_the_catalog_knows_nothing_about_calling_a_model():
+    """`jarvis/catalog/` answers what a model IS. It owns nothing and calls nothing.
+
+    Asserted rather than trusted because the pull the other way is constant: the
+    obvious place to put "and here is how to reach it" is beside "and here is
+    what it can do". An edge from here to the gateway is also a real cycle — the
+    gateway imports the catalog, and so do the adapters, which is why the
+    catalog was moved out of `gateway/` in the first place.
+    """
+    assert offending(files_under("catalog"), (
+        "jarvis.gateway", "jarvis.adapters", "jarvis.orchestrator",
+        "jarvis.capabilities", "jarvis.assembly", "jarvis.store", "jarvis.db",
+    )) == []
+
+
+def test_an_adapter_does_not_import_the_gateway():
+    """The dependency runs one way: the gateway chooses a candidate and hands it
+    to an adapter, never the reverse.
+
+    Probed live rather than assumed during the rebuild — adding the import to
+    one adapter produced `ImportError: cannot import name 'get_capabilities'
+    from partially initialized module 'jarvis.adapters'`, which is the shape a
+    cycle takes here. Retry policy, clamping and the learned-refusal record all
+    live on the gateway side for this reason.
+    """
+    assert offending(files_under("adapters"), ("jarvis.gateway",)) == []
+
+
 def test_only_adapters_import_provider_sdks():
     """One place per wire format. Two callers in the Node app bypassed the
     adapter layer entirely to construct a provider SDK directly, which is how

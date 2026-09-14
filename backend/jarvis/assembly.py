@@ -19,7 +19,6 @@ from .events import bus
 from .observers import start_observers
 from .gateway.client import Gateway
 from .orchestrator import Orchestrator
-from .prefs import get_prefs
 from .tools import load_tools
 from .voice import ConversationMode, WakeDetector
 
@@ -80,9 +79,12 @@ def get_orchestrator() -> Orchestrator:
     global _orchestrator
     with _lock:
         if _orchestrator is None:
-            balance = str(get_prefs().get("balance") or "balanced")
+            # No routing settings passed in. `balance` used to be read here and
+            # baked into the gateway for the life of the process, so changing
+            # the Fast/Balanced/Quality dial did nothing until a restart; the
+            # router reads it per turn now.
             _orchestrator = Orchestrator(
-                Gateway(balance=balance, event_bus=bus),
+                Gateway(event_bus=bus),
                 registry=get_registry(),
                 event_bus=bus,
             )

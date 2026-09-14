@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.gateway import connections, registry
+from jarvis.gateway import connections, deployments
 
 from stub_oauth_server import StubOAuthServer
 from stub_openai_server import StubModelServer
@@ -60,7 +60,7 @@ def stub(scratch):
     conn = connections.add_connection(adapter="openai-compatible", base_url=base_url,
                                       label="stub", provider="custom", kind="local",
                                       key_required=False)
-    registry.add_model(connection_id=conn["id"], model="stub-model")
+    deployments.add_deployment(connection_id=conn["id"], model="stub-model")
     yield server
     server.stop()
 
@@ -467,7 +467,7 @@ def test_a_model_can_be_added_through_the_screen_and_then_answers(page, stub):
     """The front door: nothing works until a model is added, so this walks the
     real three steps — pick a provider, give the address, choose models — and
     then proves the thing that was added can actually hold a conversation."""
-    from jarvis.gateway import registry
+    from jarvis.gateway import deployments
 
     stub.models = [{"id": "alpha"}, {"id": "beta"}]
 
@@ -487,7 +487,7 @@ def test_a_model_can_be_added_through_the_screen_and_then_answers(page, stub):
     page.wait_for_selector("[data-testid=connection-list] >> text=alpha", timeout=15_000)
     # Beside the one the fixture already registered — "alpha" is the one this
     # test actually added, through the real screen.
-    assert "alpha" in [m["model"] for m in registry.list_models()]
+    assert "alpha" in [m["model"] for m in deployments.list_deployments()]
 
     # And it is a real, usable model, not just a row: ask it something.
     stub.says("Hello from alpha.")
@@ -511,7 +511,7 @@ def test_an_address_with_nothing_at_it_says_what_it_tried(page):
 
 
 def test_removing_a_connection_says_what_goes_with_it(page, stub):
-    from jarvis.gateway import registry
+    from jarvis.gateway import deployments
 
     page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
     page.wait_for_selector("[data-testid=connection-card]")
@@ -521,7 +521,7 @@ def test_removing_a_connection_says_what_goes_with_it(page, stub):
     assert "1 model" in page.locator("[data-testid=modal]").inner_text()
     page.click("[data-testid=confirm-remove]")
     page.wait_for_selector("[data-testid=connection-card]", state="detached")
-    assert registry.list_models() == []
+    assert deployments.list_deployments() == []
 
 
 def test_a_service_key_is_saved_and_never_shown_again(page):
@@ -691,12 +691,12 @@ def test_the_realtime_engine_is_offered_from_a_capability_and_fails_honestly(voi
     resolved on the socket merely opening, so a session that could never start
     took the microphone first and mentioned the problem afterwards.
     """
-    from jarvis.gateway import connections, registry
+    from jarvis.gateway import connections, deployments
 
     conn = connections.add_connection(adapter="gemini", base_url=None, label="realtime",
                                       provider="gemini", kind="first-party", key_required=True,
                                       secret="not-a-real-key")
-    registry.add_model(connection_id=conn["id"], model="a-realtime-model")
+    deployments.add_deployment(connection_id=conn["id"], model="a-realtime-model")
 
     voice_page.reload(wait_until="networkidle")
     voice_page.click("[data-testid=settings]")

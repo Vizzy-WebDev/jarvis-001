@@ -31,7 +31,7 @@ def ask_model(prompt: str, *, system: str = "", want_json: bool = False,
               media: list[dict[str, Any]] | None = None,
               need: dict[str, bool] | None = None,
               model_id: str | None = None, only: bool = False,
-              background: bool = True) -> Reply:
+              role: str = "utility") -> Reply:
     """Ask once. Returns a Reply rather than raising.
 
     A tool's caller is a model mid-turn, and "no model was available" is
@@ -40,8 +40,13 @@ def ask_model(prompt: str, *, system: str = "", want_json: bool = False,
     """
     from .gateway.client import ask
     from .gateway.routing import Task
+    from .gateway.slots import role_from
 
-    task = Task(text=prompt, needs_tools=False, background=background,
+    # `utility` by default rather than `background`: these are the small,
+    # frequent, JSON-shaped asks a tool makes mid-turn, which is a different
+    # job from an overnight scheduled run and the reason the two roles are
+    # separate. Both are unwatched, so both still rank on price over latency.
+    task = Task(text=prompt, needs_tools=False, role=role_from(role),
                 need=dict(need or {}))
     try:
         answer = ask(prompt, system=system, want_json=want_json, task=task,

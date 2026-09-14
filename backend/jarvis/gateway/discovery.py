@@ -192,6 +192,44 @@ def normalise(raw: Iterable[dict[str, Any]] | None) -> list[Listed]:
     return out
 
 
+def for_picker(rows: Iterable[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """A provider's listing as the add-a-model picker shows it.
+
+    Distinct from `normalise` above, which produces what gets STORED: this is
+    camelCase, keeps the provider's own wording, and adds only what a person
+    needs to choose between two hundred ids from a gateway — the lineage each
+    one belongs to.
+
+    Shared by the two places that produce a picker list (the discovery call and
+    the custom-address probe) because they feed the same screen. A second copy
+    would let the two disagree about how a model is grouped depending on which
+    route the user came in by, which reads as a bug in the catalog rather than
+    in the duplication that caused it.
+
+    `family` and `provider` are `None` when no pattern matched. That is a real
+    group the picker shows rather than hides — an unrecognised local model has
+    to be pickable.
+    """
+    from ..catalog import resolve
+
+    out: list[dict[str, Any]] = []
+    for raw in rows or []:
+        item = {"model": raw} if isinstance(raw, str) else dict(raw)
+        if not item.get("model"):
+            continue
+        item.setdefault("label", item["model"])
+        item.setdefault("contextTokens", None)
+        # Never guessed from the name. The old build answered "free" for any id
+        # containing "flash", including on a paid-tier key, and showed it as a
+        # badge. `None` is the honest answer to a question a listing did not ask.
+        item.setdefault("billing", None)
+        version = resolve(model=str(item["model"]))
+        item["family"] = version.family
+        item["provider"] = version.provider if version.provider != "unknown" else None
+        out.append(item)
+    return out
+
+
 def fetch(connection_id: str, *, secret: str | None = None) -> tuple[list[Listed], str | None]:
     """What this connection's provider says it has.
 

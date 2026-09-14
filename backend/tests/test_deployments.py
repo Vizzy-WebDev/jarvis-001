@@ -465,3 +465,18 @@ def test_a_row_with_no_model_name_fails_alone_rather_than_losing_the_batch():
 
     assert [d["model"] for d in result["added"]] == ["real-model"]
     assert len(result["failed"]) == 1
+
+
+def test_a_model_cannot_take_an_id_the_api_already_uses_for_something_else():
+    """`/api/models/<id>` shares its path space with the static segments beside
+    it. A model called "Catalog" slugifies to `catalog`, and that deployment
+    would then be impossible to edit or delete — `/api/models/catalog` answers
+    with the browse route instead, and nothing reports a problem."""
+    conn = _connection("cloud")
+
+    one = deployments.add_deployment(connection_id=conn["id"], model="m1", label="Catalog")
+    two = deployments.add_deployment(connection_id=conn["id"], model="m2", label="Recheck")
+
+    assert one["id"] not in deployments.RESERVED_IDS
+    assert two["id"] not in deployments.RESERVED_IDS
+    assert deployments.get_deployment(one["id"]) is not None

@@ -504,3 +504,23 @@ def test_a_record_too_damaged_to_resolve_is_not_waved_through(stub):
 
     assert [e["id"] for e in build_candidates(Task(), entries=[broken])] == ["broken"]
     assert build_candidates(Task(need={"webSearch": True}), entries=[broken]) == []
+
+
+def test_a_task_s_own_pin_beats_the_role_s_standing_choice():
+    """Two pins, and the order between them matters.
+
+    A scheduled task naming its model is a one-off decision about THIS run; the
+    role's slot is a standing preference about that kind of work. The specific
+    one has to win, or a task that names a model would silently run on whatever
+    the background job was set to — which reads as the task's setting being
+    ignored.
+
+    Both are still pins, so the rest of the roster stays behind them.
+    """
+    a, b, c = entry("a"), entry("b"), entry("c")
+    slots.assign(Role.BACKGROUND, deployment_id="b")
+
+    ranked = build_candidates(Task(text="run it", role=Role.BACKGROUND),
+                              model_id="c", entries=[a, b, c])
+
+    assert [e["id"] for e in ranked] == ["c", "b", "a"]

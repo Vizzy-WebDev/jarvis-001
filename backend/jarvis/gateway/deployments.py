@@ -205,9 +205,21 @@ def get_deployment(deployment_id: str) -> dict[str, Any] | None:
     return hydrate(entry) if entry else None
 
 
+#: Ids a deployment may not take, because `/api/models/<id>` shares its path
+#: space with the static segments beside it. A model called "catalog" would
+#: slugify to `catalog`, and `/api/models/catalog` would then answer with the
+#: browse route forever — leaving that one deployment impossible to edit or
+#: delete through the API, with nothing anywhere reporting a problem.
+#:
+#: Refused at the source rather than guarded at each route: the routes are
+#: where the collision shows up, but the id is where it is created, and a new
+#: static segment added later is a one-line edit here.
+RESERVED_IDS = frozenset({"catalog", "providers", "recheck", "slots", "roles", "health"})
+
+
 def _make_id(seed: str, existing: list[dict[str, Any]]) -> str:
     base = re.sub(r"(^-|-$)", "", re.sub(r"[^a-z0-9]+", "-", str(seed or "model").lower().strip())) or "model"
-    taken = {e.get("id") for e in existing}
+    taken = {e.get("id") for e in existing} | RESERVED_IDS
     candidate, n = base, 2
     while candidate in taken:
         candidate = f"{base}-{n}"

@@ -26,6 +26,7 @@ from .error_kind import find_message
 from .probe import probe_endpoint
 from .providers import get_provider
 from .deployments import add_deployments, list_deployments
+from .discovery import for_picker
 
 logger = logging.getLogger(__name__)
 
@@ -56,24 +57,6 @@ def _entry_for(adapter: str | None, base_url: str | None, secret: str | None,
     if model:
         entry["model"] = model
     return entry
-
-
-def _normalise(models: Any) -> list[dict[str, Any]]:
-    out = []
-    for raw in models or []:
-        item = {"model": raw} if isinstance(raw, str) else dict(raw)
-        if not item.get("model"):
-            continue
-        item.setdefault("label", item["model"])
-        item.setdefault("contextTokens", None)
-        # Nothing is inferred from the name here any more. The old build filled
-        # in a billing tier by matching the id against a few regexes, and showed
-        # the result to the user as a "free" badge on a model a paid-tier key
-        # was about to be billed for. `None` is the honest answer to a question
-        # a listing did not answer.
-        item.setdefault("billing", None)
-        out.append(item)
-    return out
 
 
 def discover_models(*, adapter: str | None = None, base_url: str | None = None,
@@ -107,7 +90,7 @@ def discover_models(*, adapter: str | None = None, base_url: str | None = None,
         return {"models": [],
                 "error": _plain(module, err, "Could not discover models at that address.")}
 
-    items = _normalise(found)
+    items = for_picker(found)
     if connection_id:
         already = {e.get("model") for e in list_deployments()
                    if e.get("connectionId") == connection_id}

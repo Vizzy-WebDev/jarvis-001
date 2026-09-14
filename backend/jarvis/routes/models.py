@@ -152,6 +152,79 @@ def listed() -> dict[str, Any]:
     }
 
 
+#: One node of the browse tree. Declared for the same reason the row above is:
+#: a screen is written against these names, and a rename that compiles on both
+#: sides arrives in the browser as wrong rendering rather than as a failure.
+CATALOG_PROVIDER_KEYS = ("id", "label", "families")
+CATALOG_FAMILY_KEYS = ("id", "label", "versions")
+CATALOG_VERSION_KEYS = ("model", "label", "version", "deployments")
+
+
+def _catalog_deployment(entry: dict[str, Any]) -> dict[str, Any]:
+    """How one version is actually reachable — the crossing axis, made visible.
+
+    The same model offered by two connections is ONE version with two routes,
+    not two unrelated rows. That is the whole reason this tree exists: the flat
+    list could not say it, so a person looking at their own roster could not
+    tell a duplicate from a genuine second route with its own key and its own
+    rate limit.
+    """
+    return {
+        "id": entry["id"],
+        "label": entry.get("label") or entry.get("model"),
+        "connectionId": entry.get("connectionId"),
+        "connectionLabel": entry.get("connectionLabel"),
+        "enabled": bool(entry.get("enabled", True)),
+        "ready": deployments.is_ready(entry),
+    }
+
+
+@router.get("/catalog")
+def catalog() -> dict[str, Any]:
+    """The roster as provider -> family -> version, for browsing.
+
+    Built from the deployments this install actually has, never from a shipped
+    model list. A catalog route that enumerated models Jarvis knows about would
+    be a hardcoded roster wearing a hat, and it would go stale the week after
+    it was written.
+
+    Grouping is by the VERSION's provider — who makes the model — not by the
+    connection it is reached through, so a model resold by a gateway appears
+    under its maker beside the same maker's models reached directly. `unknown`
+    is a real group and is sorted last: a local or unlisted model belongs
+    somewhere a person can find it, not nowhere.
+    """
+    by_provider: dict[str, dict[str, Any]] = {}
+    for entry in deployments.list_deployments():
+        version = deployments.version_of(entry)
+        if version is None:
+            continue
+        provider = by_provider.setdefault(version.provider, {"id": version.provider,
+                                                             "label": version.provider,
+                                                             "families": {}})
+        # A version with no family is its own group, keyed by the model id, so
+        # it is listed rather than silently dropped for not matching a pattern.
+        family_id = version.family or version.model
+        family = provider["families"].setdefault(
+            family_id, {"id": family_id, "label": version.family or version.model,
+                        "versions": {}})
+        node = family["versions"].setdefault(
+            version.model,
+            {"model": version.model, "label": version.label,
+             "version": version.as_dict(), "deployments": []})
+        node["deployments"].append(_catalog_deployment(entry))
+
+    def sorted_provider(row: dict[str, Any]) -> dict[str, Any]:
+        families = [
+            {**family, "versions": sorted(family["versions"].values(), key=lambda v: v["model"])}
+            for family in sorted(row["families"].values(), key=lambda f: f["label"])
+        ]
+        return {**row, "families": families}
+
+    ordered = sorted(by_provider.values(), key=lambda p: (p["id"] == "unknown", p["id"]))
+    return {"providers": [sorted_provider(row) for row in ordered]}
+
+
 @router.get("/providers")
 def provider_tiles() -> dict[str, Any]:
     """The five user-facing tiles the "add a model" flow shows.

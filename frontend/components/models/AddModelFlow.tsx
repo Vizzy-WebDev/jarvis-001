@@ -24,6 +24,12 @@ import type { DiscoveredModel, Provider } from '@/lib/api-types';
  *
  * **Nothing is saved until models are chosen.** The key is held in this
  * component until the final step, and only then does it leave the browser.
+ *
+ * **The list is grouped by lineage**, because a gateway routinely answers with
+ * two hundred ids and a flat alphabetical wall is not something anyone picks
+ * from. The grouping is the catalog's, computed server-side, so the same model
+ * lands in the same group whether it was found through a known provider or a
+ * custom address.
  */
 type Step = 'provider' | 'connect' | 'models';
 
@@ -245,35 +251,42 @@ export function AddModelFlow({
             </p>
           ) : (
             <div className="-mx-1" data-testid="found-models">
-              {found.map((model) => {
-                const on = picked.includes(model.model);
-                return (
-                  <button
-                    key={model.model}
-                    type="button"
-                    data-testid={`found-${model.model}`}
-                    onClick={() => setPicked(on
-                      ? picked.filter((m) => m !== model.model)
-                      : [...picked, model.model])}
-                    className={`flex w-full items-center gap-3 rounded px-2.5 py-2 text-left
-                                transition ${on ? 'bg-accent/[0.10]' : 'hover:bg-white/[0.04]'}`}
-                  >
-                    <span
-                      aria-hidden
-                      className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border
-                                  text-[10px] ${on ? 'border-accent bg-accent text-surface' : 'border-surface-border-strong'}`}
-                    >
-                      {on ? '✓' : ''}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{model.label}</span>
-                    {model.billing === 'free' && (
-                      <span className="rounded-pill bg-state-ok/10 px-2 py-0.5 text-[10px] text-state-ok">
-                        free
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
+              {groupByFamily(found).map(([family, entries]) => (
+                <div key={family} className="mb-2 last:mb-0">
+                  <p className="px-2.5 pb-1 pt-2 text-[11px] text-ink-faint">{family}</p>
+                  {entries.map((model) => {
+                    const on = picked.includes(model.model);
+                    return (
+                      <button
+                        key={model.model}
+                        type="button"
+                        data-testid={`found-${model.model}`}
+                        onClick={() => setPicked(on
+                          ? picked.filter((m) => m !== model.model)
+                          : [...picked, model.model])}
+                        className={`flex w-full items-center gap-3 rounded px-2.5 py-2 text-left
+                                    transition ${on ? 'bg-accent/[0.10]' : 'hover:bg-white/[0.04]'}`}
+                      >
+                        <span
+                          aria-hidden
+                          className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border
+                                      text-[10px] ${on ? 'border-accent bg-accent text-surface' : 'border-surface-border-strong'}`}
+                        >
+                          {on ? '✓' : ''}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-[13px] text-ink">
+                          {model.label}
+                        </span>
+                        {model.contextTokens ? (
+                          <span className="shrink-0 text-[10px] text-ink-faint">
+                            {Math.round(model.contextTokens / 1000)}k
+                          </span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
             </div>
           )}
           {steps.length > 0 && <Attempts steps={steps} />}
@@ -281,6 +294,26 @@ export function AddModelFlow({
       )}
     </Modal>
   );
+}
+
+/**
+ * Models under the lineage they belong to, in the order the server listed them.
+ *
+ * Unrecognised ids are their own group and sort last — a local or unlisted
+ * model has to stay pickable, and it is the group most likely to be large on a
+ * roster pointed at a gateway.
+ */
+function groupByFamily(found: DiscoveredModel[]): [string, DiscoveredModel[]][] {
+  const groups = new Map<string, DiscoveredModel[]>();
+  for (const model of found) {
+    const key = model.family ?? 'Not recognised';
+    groups.set(key, [...(groups.get(key) ?? []), model]);
+  }
+  return [...groups.entries()].sort(([a], [b]) => {
+    if (a === 'Not recognised') return 1;
+    if (b === 'Not recognised') return -1;
+    return a.localeCompare(b);
+  });
 }
 
 /** What the probe actually tried. Shown on success as well as failure: knowing

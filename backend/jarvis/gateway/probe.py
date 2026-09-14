@@ -169,11 +169,12 @@ def _confirm_generation(adapter, base_url: str, secret: str | None,
     result.kind = kind
     # Only now is this a FACT: it generated with exactly the credential supplied.
     result.key_required = bool(secret)
-    # Exactly what the provider said, plus an explicit "we do not know" where
-    # it said nothing about billing. The name regex that used to fill this in
-    # is gone: it answered "free" for any id containing "flash", including on a
-    # paid-tier key.
-    result.models = [{**m, "billing": m.get("billing")} for m in models]
+    # The same shaping the discovery route applies, from the one function that
+    # does it: a custom address and a known provider must group a model the
+    # same way, or the grouping reads as a bug in the catalog.
+    from .discovery import for_picker
+
+    result.models = for_picker(models)
     result.steps.append("  it answered. This connection works.")
     return result
 

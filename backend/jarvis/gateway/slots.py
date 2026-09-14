@@ -203,6 +203,36 @@ def assign(role: Role, *, deployment_id: str | None = None,
     return get(role)
 
 
+def clear_model(role: Role) -> Slot:
+    """Forget which model, keeping any effort.
+
+    A separate function rather than `assign(deployment_id=None)` because `None`
+    already means "leave this half alone" there — that is what makes the two
+    halves independently settable, and overloading it to also mean "remove"
+    would make one of the two impossible to express.
+    """
+    return _drop(role, "deploymentId")
+
+
+def clear_effort(role: Role) -> Slot:
+    """Forget the level, keeping any model. The version's own default returns."""
+    return _drop(role, "effort")
+
+
+def _drop(role: Role, key: str) -> Slot:
+    with _lock:
+        rows = _load()
+        row = rows.get(role.value)
+        if row and key in row:
+            rest = {k: v for k, v in row.items() if k != key}
+            if rest:
+                rows[role.value] = rest
+            else:
+                rows.pop(role.value)
+            _flush()
+    return get(role)
+
+
 def clear(role: Role) -> None:
     """Hand a role back to ordinary ranking."""
     with _lock:

@@ -296,6 +296,67 @@ export interface ConnectionEntry {
   modelCount: number;
 }
 
+/** One job a model gets asked to do. Every role is optional and unassigned is
+ *  the normal state — a fresh install with one model needs no configuration. */
+export interface ModelRole {
+  id: string;
+  label: string;
+  description: string;
+  /** May name a deployment that no longer exists. A stale preference is not an
+   *  error: the router honours a pin by moving it to the front of the ranking,
+   *  never by removing everything else, so it degrades to ordinary ranking. */
+  deploymentId: string | null;
+  /** Null when `deploymentId` names nothing that is currently here. The id is
+   *  still reported, so a screen can say what it was. */
+  deployment: {
+    id: string;
+    label: string;
+    model: string;
+    connectionLabel: string | null;
+    enabled: boolean;
+    ready: boolean;
+  } | null;
+  effort: EffortLevel | null;
+  /** The levels the ASSIGNED model actually takes, not a fixed ladder — the
+   *  ladders genuinely differ between providers. Empty means this model has no
+   *  reasoning control, or nobody has established that it has any. */
+  effortChoices: { id: EffortLevel; label: string }[];
+  assigned: boolean;
+}
+
+/** The roster as provider -> family -> version. Built from the deployments this
+ *  install actually has, never from a shipped model list. */
+export interface CatalogProvider {
+  id: string;
+  label: string;
+  families: CatalogFamily[];
+}
+
+export interface CatalogFamily {
+  id: string;
+  label: string;
+  versions: CatalogVersion[];
+}
+
+export interface CatalogVersion {
+  model: string;
+  label: string;
+  version: ModelVersion;
+  /** How this one version is actually reachable. Two entries means two routes
+   *  to the same model — separate keys, separate prices, separate rate limits —
+   *  which the flat list could not express at all. */
+  deployments: CatalogRoute[];
+}
+
+export interface CatalogRoute {
+  id: string;
+  label: string;
+  connectionId: string | null;
+  connectionLabel: string | null;
+  enabled: boolean;
+  ready: boolean;
+}
+
 /** Why a model is being skipped right now, keyed by model id. A model nobody
  *  has had trouble with is simply absent. */
 export type ModelHealth = Record<string, { reason: string | null; kind: string | null; retryInMs: number }>;
@@ -391,7 +452,16 @@ export interface DiscoveredModel {
   model: string;
   label: string;
   contextTokens: number | null;
+  /** Always null now. The old build filled this in from a name regex and the
+   *  picker showed a "free" badge from it — on a paid-tier key, for any id
+   *  containing "flash". Kept on the wire as an explicit "we do not know"
+   *  rather than removed, since a listing genuinely does not answer it. */
   billing: string | null;
+  /** What the catalog makes of the id: the lineage it belongs to, and who
+   *  makes it. Null when no pattern matched — a real group the picker shows
+   *  rather than hides, since an unrecognised local model has to be pickable. */
+  family: string | null;
+  provider: string | null;
 }
 
 /** What a probe tried, and what it found. `steps` is the point: a failure that

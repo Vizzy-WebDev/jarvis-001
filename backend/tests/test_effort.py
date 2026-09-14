@@ -12,9 +12,10 @@ because the first draft of this comment overstated it. Most phrasings
 name "thinking_config"') fell through to `other`, which is a 20-minute
 cooldown. One shape — a message carrying "invalid request" or "invalid
 argument" alongside the field name — matched `_INVALID_ARGUMENT_TEXT` and
-landed on `unsupported`, which is six hours. `test_the_old_classifier_benched_a
-_healthy_model` pins both, so the claim stays anchored to something checkable
-instead of drifting into folklore.
+landed on `unsupported`, which is six hours. Those numbers are recorded in the
+comment on `REFUSAL_MESSAGES` below rather than re-measured by a test: a test
+that reads the old code out of git compares against a moving target, and began
+comparing the new classifier with itself as soon as this work was committed.
 
 Twenty minutes is not six hours, and it is still wrong: the model is fine, the
 request was the problem, and the next request would not have reproduced it.
@@ -97,35 +98,39 @@ def test_a_refused_parameter_is_not_treated_as_a_broken_model():
     assert benches_the_model(err) is False
 
 
-def test_the_old_classifier_benched_a_healthy_model():
-    """The regression this change fixes, measured rather than described.
+#: Real refusal phrasings, one per wire format, plus the one that used to be
+#: expensive. Each is a message a provider actually sends when it does not
+#: recognise a field.
+#:
+#: The historical cost of each was measured against the pre-change classifier
+#: while this work was done: the first three fell through to `other`, a
+#: twenty-minute cooldown, and the last matched `_INVALID_ARGUMENT_TEXT` and
+#: drew the six-hour `unsupported` state. Those numbers are recorded here rather
+#: than re-derived by a test, because a test that reads the previous version out
+#: of git anchors itself to a moving target — the first draft of this file did
+#: exactly that, and started comparing the new classifier against itself the
+#: moment the change was committed.
+REFUSAL_MESSAGES = (
+    "Unrecognized request argument supplied: reasoning_effort",
+    "Extra inputs are not permitted: thinking",
+    'Invalid JSON payload received. Unknown name "thinking_config"',
+    "thinking: invalid request, no such field",
+)
 
-    Runs the PREVIOUS version of the classifier — read out of git, not
-    reimplemented — over the real refusal messages, and records what each one
-    used to cost. Two different penalties, both wrong, and the harsher one is
-    rarer than the first draft of this file claimed.
+
+@pytest.mark.parametrize("message", REFUSAL_MESSAGES)
+def test_no_refusal_of_one_of_our_parameters_ever_benches_the_model(message):
+    """The invariant, stated forwards rather than as a historical comparison.
+
+    Whatever a provider's phrasing, a complaint about a field we sent is a fact
+    about the request. The last message is the one that used to cost six hours,
+    and the one the first version of the fix still missed.
     """
-    import importlib.util
-    import subprocess
+    err = _Refusal(message)
 
-    source = subprocess.run(
-        ["git", "show", "HEAD:backend/jarvis/gateway/error_kind.py"],
-        capture_output=True, text=True, cwd="/home/user/jarvis-001", check=True).stdout
-    spec = importlib.util.spec_from_loader("old_error_kind", loader=None)
-    old = importlib.util.module_from_spec(spec)
-    exec(compile(source, "old_error_kind", "exec"), old.__dict__)
-
-    twenty_minutes = _Refusal("Unrecognized request argument supplied: reasoning_effort")
-    six_hours = _Refusal("thinking: invalid request, no such field")
-
-    # What it used to do.
-    assert old.availability_state_for(twenty_minutes) == "error"
-    assert old.availability_state_for(six_hours) == "unsupported"
-
-    # What it does now: neither is evidence about the model at all.
-    for err in (twenty_minutes, six_hours):
-        assert classify_error(err) == "parameter_unsupported"
-        assert benches_the_model(err) is False
+    assert classify_error(err) == "parameter_unsupported", message
+    assert benches_the_model(err) is False, message
+    assert availability_state_for(err) != "unsupported", message
 
 
 def test_even_if_something_records_it_anyway_it_is_not_the_harshest_cooldown():

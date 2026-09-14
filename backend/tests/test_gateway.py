@@ -16,7 +16,7 @@ import pytest
 
 from jarvis.adapters import get_capabilities
 from jarvis.gateway import availability, connections, probe, registry, routing
-from jarvis.gateway.catalog import catalog_defaults, with_capability_defaults
+from jarvis.gateway.name_guess import catalog_defaults, with_capability_defaults
 from jarvis.gateway.client import Gateway, NoModelAvailable
 from jarvis.gateway.error_kind import classify_error
 from jarvis.gateway.routing import Task, build_candidates, explain_exclusions

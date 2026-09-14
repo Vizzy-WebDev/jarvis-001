@@ -24,7 +24,7 @@ from typing import Any
 
 from ..config import get_secret
 from ..store import read_json, write_json
-from .catalog import catalog_defaults, infer_billing, with_capability_defaults
+from .name_guess import catalog_defaults, infer_billing, with_capability_defaults
 from .connections import get_connection, list_connections
 from .providers import provider_for_legacy
 

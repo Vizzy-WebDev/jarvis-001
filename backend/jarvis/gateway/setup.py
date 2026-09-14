@@ -21,7 +21,7 @@ from typing import Any
 
 from ..adapters import get_adapter
 from ..redact import redact
-from .catalog import infer_billing
+from .name_guess import infer_billing
 from .connections import add_connection, get_connection
 from .error_kind import find_message
 from .probe import probe_endpoint

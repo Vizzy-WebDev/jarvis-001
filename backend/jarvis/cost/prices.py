@@ -20,7 +20,7 @@ faster than any publicly verifiable pricing this build could stand behind, and a
 plausible-looking invented number is precisely the failure this whole subsystem
 exists to prevent.
 
-**A billing tier this build GUESSED is never a price.** `catalog.py` infers
+**A billing tier this build GUESSED is never a price.** `name_guess.py` infers
 `billing: "free"` from a name regex ("flash"), which a paid-tier key matches just
 as well. That inference is good enough to rank a model and nowhere near good
 enough to assert what it costs, so only `:free` — which the provider itself put
@@ -61,7 +61,7 @@ def is_known_free(entry: dict[str, Any]) -> bool:
 
     True for a local model (nothing is paid to run it here) and for a model whose
     id carries the provider's own `:free` suffix. Deliberately NOT true for
-    `billing == "free"` on its own: that comes from a name regex in the catalog,
+    `billing == "free"` on its own: that comes from a name regex in `name_guess.py`,
     and a paid-tier key matches the same names.
     """
     if entry.get("kind") == "local" or entry.get("billing") == "local":

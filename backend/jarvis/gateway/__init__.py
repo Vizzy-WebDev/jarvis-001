@@ -10,7 +10,10 @@ all, so a model that fails during computer control is never benched.
 This package exists so that logic lives once.
 """
 
-from . import availability, catalog, connections, error_kind, probe, providers, registry, routing
+from . import (
+    availability, catalog, connections, error_kind, name_guess, probe, providers, registry,
+    routing,
+)
 from .client import Gateway, NoModelAvailable
 from .routing import Task, build_candidates, explain_exclusions
 
@@ -20,10 +23,16 @@ __all__ = [
     "Task",
     "availability",
     "build_candidates",
+    # What a model IS: provider, family, version. Read by nothing yet — it is
+    # built before it is wired, so the phase that introduces it cannot break a
+    # running app.
     "catalog",
     "connections",
     "error_kind",
     "explain_exclusions",
+    # The name-derived guessing the catalog replaces. Still the live path until
+    # the registry and the setup flow stop reading it.
+    "name_guess",
     "probe",
     "providers",
     "registry",

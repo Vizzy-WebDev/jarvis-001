@@ -26,7 +26,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ..adapters import anthropic_adapter, gemini_adapter, openai_compatible
-from .catalog import infer_billing
+from .name_guess import infer_billing
 from .error_kind import classify_error
 
 _LOCAL_HOST = re.compile(r"^(localhost|127\.0\.0\.1|::1|0\.0\.0\.0)$", re.I)

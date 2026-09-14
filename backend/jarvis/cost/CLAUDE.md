@@ -67,7 +67,7 @@ connection attempt is never billed time it didn't use.
 ## `prices.py` — three sources, write-time precedence
 
 **Deliberately does NOT hardcode dollar figures for cloud models.** This project's model
-catalog (`gateway/catalog.py`) names models ahead of any publicly documented, verifiable
+catalog (`gateway/name_guess.py`) names models ahead of any publicly documented, verifiable
 pricing this build could honestly stand behind (`claude-opus-5`, `gemini-3.6-flash`,
 `gpt-5.6-luna`, ...) — inventing a plausible-looking number for one of these would
 violate the exact "never invented a number" requirement this whole subsystem exists to
@@ -90,7 +90,7 @@ judge at all.
 **Most of item 6 already existed** — `gateway/routing.py`'s `scoreFor()` already weighs
 `entry.tier.cost` in every scoring branch (background work is already the
 cost-heaviest, at `-2x`). What was missing was that `tier.cost` was always a 1-5
-name-regex GUESS (`catalog.py`'s `guessFromName()`), never a measured fact.
+name-regex GUESS (`name_guess.py`'s `_guess()`), never a measured fact.
 `observedCostTier(provider, modelId)` returns a real-price-derived value in the **exact
 same 0-4 domain** the guess already used — never a new scale, never a raw dollar
 adjustment — so it's a same-domain drop-in substitution `scoreFor()` was already tuned

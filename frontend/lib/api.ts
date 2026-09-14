@@ -202,7 +202,7 @@ export const api = {
       }>('/connections', { method: 'POST', ...json(body) }),
     probe: (baseUrl: string, secret?: string) =>
       request<ProbeResult>('/connections/probe', { method: 'POST', ...json({ baseUrl, secret }) }),
-    discover: (body: { adapter?: string; baseUrl?: string; secret?: string; connectionId?: string }) =>
+    discover: (body: { provider?: string; adapter?: string; baseUrl?: string; secret?: string; connectionId?: string }) =>
       request<{ models: DiscoveredModel[]; error: string | null }>('/connections/discover', {
         method: 'POST',
         ...json(body),

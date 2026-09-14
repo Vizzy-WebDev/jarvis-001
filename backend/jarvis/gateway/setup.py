@@ -59,8 +59,8 @@ def _entry_for(adapter: str | None, base_url: str | None, secret: str | None,
     return entry
 
 
-def discover_models(*, adapter: str | None = None, base_url: str | None = None,
-                    secret: str | None = None,
+def discover_models(*, provider: str | None = None, adapter: str | None = None,
+                    base_url: str | None = None, secret: str | None = None,
                     connection_id: str | None = None) -> dict[str, Any]:
     """What models are available at an address. Always answers.
 
@@ -69,12 +69,29 @@ def discover_models(*, adapter: str | None = None, base_url: str | None = None,
     different fixes, and a caller that cannot tell them apart shows the wrong
     advice.
 
+    `provider` resolves to a preset's adapter/address the same way
+    `create_connection_with_models()` already resolves it for Save — so
+    discovery for a first-party provider (Gemini, Anthropic, ...) talks to THAT
+    provider's real API rather than silently falling back to the
+    openai-compatible default just because no address was typed (their presets
+    have none; the SDK needs none). Custom has no preset to resolve, and an
+    unrecognised `provider` is not an error — `adapter`/`base_url` stand as
+    given, same as Save.
+
     `connection_id` reuses a saved connection's key instead of asking for it
     again — and filters out models already added under THAT connection, since
     (connection, model) is the uniqueness rule. The same model under a different
-    connection is untouched and still offered.
+    connection is untouched and still offered. It is resolved after `provider`
+    so a refresh of an already-saved connection always wins on its own facts.
     """
     resolved_adapter, resolved_base, secret_ref = adapter, base_url, None
+
+    if provider and provider != "custom":
+        row = get_provider(provider)
+        if row is not None:
+            resolved_adapter = row["adapter"]
+            resolved_base = base_url or row["baseUrl"] if row.get("urlEditable") else row["baseUrl"]
+
     if connection_id:
         conn = get_connection(connection_id)
         if conn is not None:

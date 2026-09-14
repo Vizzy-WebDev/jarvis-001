@@ -277,8 +277,9 @@ def probe(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
 @connections_router.post("/discover")
 def discover(body: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
     return setup.discover_models(
-        adapter=body.get("adapter") or "openai-compatible", base_url=body.get("baseUrl"),
-        secret=body.get("secret"), connection_id=body.get("connectionId"))
+        provider=body.get("provider"), adapter=body.get("adapter") or "openai-compatible",
+        base_url=body.get("baseUrl"), secret=body.get("secret"),
+        connection_id=body.get("connectionId"))
 
 
 @connections_router.patch("/{connection_id}")

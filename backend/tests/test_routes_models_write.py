@@ -102,6 +102,35 @@ def test_discovery_distinguishes_found_nothing_from_could_not_reach(client, stub
     assert unreachable["error"], "an unreachable address answered like an empty one"
 
 
+def test_discovery_resolves_a_named_providers_own_adapter_not_openai_compatible(client, monkeypatch):
+    """Gemini's and Anthropic's own catalog presets have no base URL — their SDKs
+    need none — so before this fix, discovery with no adapter/baseUrl supplied
+    silently defaulted to the openai-compatible adapter, which meant a Gemini or
+    Anthropic key typed into "Add a model" was sent to OpenAI's real API instead
+    of the provider actually chosen. `provider` must resolve the same real
+    adapter the Save endpoint (`/api/connections`) already resolves for a fixed
+    provider, rather than falling back to openai-compatible just because no
+    address was typed."""
+    resolved: list[str | None] = []
+
+    class _FakeModule:
+        def list_models(self, entry):
+            return []
+
+    def fake_get_adapter(adapter):
+        resolved.append(adapter)
+        return _FakeModule()
+
+    monkeypatch.setattr(setup, "get_adapter", fake_get_adapter)
+
+    client.post("/api/connections/discover", json={"provider": "gemini", "secret": "fake-key"})
+    client.post("/api/connections/discover", json={"provider": "anthropic", "secret": "fake-key"})
+
+    assert resolved == ["gemini", "anthropic"], (
+        "discovery defaulted to the openai-compatible adapter instead of resolving "
+        "the chosen provider's own adapter")
+
+
 def test_discovery_against_a_saved_connection_hides_what_is_already_added(client, stub):
     """(connection, model) is the uniqueness rule, so offering a model that is
     already there just to have it refused is noise. Scoped to THAT connection —

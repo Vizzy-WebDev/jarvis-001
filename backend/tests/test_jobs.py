@@ -17,7 +17,7 @@ import json
 import pytest
 
 from jarvis import assembly, conversation
-from jarvis.capabilities import CapabilityRegistry, CapabilitySpec, Risk
+from jarvis.capabilities import CapabilityKind, CapabilityRegistry, CapabilitySpec, Risk
 from jarvis.capabilities.execute import ExecOutcome, execute
 from jarvis.db import reset_for_tests as reset_db
 from jarvis.events import EventType
@@ -286,6 +286,53 @@ def test_an_orphan_that_did_something_external_is_never_silently_restarted():
     assert outcome["recovery"] == "unrecoverable"
     assert job_store.get_job(job["id"])["status"] == "awaiting_decision"
     assert "cannot safely be repeated" in job_store.list_pending_outbox()[0]["summary"]
+
+
+# --- a crash reaching Self-Improvement (S9) -----------------------------------
+#
+# A real, disclosed gap until now: `recover_orphans()` used to move a crashed
+# job on and publish nothing, so the crash itself never reached
+# Self-Improvement, whatever the job went on to do next. These call
+# `recover_orphans()` directly — the real path, not a call into `capture.py` —
+# and read the row back from `improvement/store.py`.
+
+def test_a_crashed_orphan_lands_its_own_outcome_row():
+    from jarvis.improvement import store as improvement_store
+
+    job = job_store.create_job(title="Sent something", goal="g", status="running")
+    job_store.append_trace(job["id"], phase="intent", effect="external", kind="tool",
+                           summary="send email")
+    orchestrator.recover_orphans(event_bus=EventBus())
+
+    rows = [r for r in improvement_store.list_unreviewed_outcomes()
+            if r["source"] == "job_crash" and r["entity_ref"] == job["id"]]
+    assert len(rows) == 1
+    assert rows[0]["status"] == "crashed:unrecoverable"
+
+
+def test_a_crash_outcome_never_collides_with_the_jobs_own_terminal_outcome():
+    """`record_job_outcome()`'s dedup key is the job's own id under
+    `source: "job"` — a crash row must live under a different source entirely,
+    or a job that crashes and later finishes normally would have one of those
+    two real facts silently dropped as a "duplicate" of the other. Uses the
+    `unrecoverable` verdict (an `external`-effect trace row) so recovery stays
+    synchronous — the other two verdicts start a real background worker."""
+    from jarvis.improvement import capture, store as improvement_store
+
+    job = job_store.create_job(title="Sent something", goal="g", status="running")
+    job_store.append_trace(job["id"], phase="intent", effect="external", kind="tool",
+                           summary="send email")
+    orchestrator.recover_orphans(event_bus=EventBus())
+    assert job_store.get_job(job["id"])["status"] == "awaiting_decision"
+
+    capture.record_job_outcome({**job_store.get_job(job["id"]), "status": "done"})
+
+    crash_rows = [r for r in improvement_store.list_unreviewed_outcomes()
+                 if r["source"] == "job_crash" and r["entity_ref"] == job["id"]]
+    done_rows = [r for r in improvement_store.list_unreviewed_outcomes()
+                if r["source"] == "job" and r["source_ref"] == job["id"]]
+    assert len(crash_rows) == 1
+    assert len(done_rows) == 1
 
 
 # --- Self-Improvement capture, through the observer wiring (S7) --------------
@@ -627,6 +674,56 @@ def test_a_restricted_job_can_still_ask_to_split():
     jobs — leaving it out of the fenced kinds would get that backwards."""
     for kind in ("research", "files"):
         assert "request_job_split" in worker.TOOLS_BY_KIND[kind]
+
+
+# --- a restricted kind can still reach an installed Skill (S9) ---------------
+#
+# A real, disclosed gap until now: `TOOLS_BY_KIND`'s hardcoded lists for
+# `research`/`files` never included a Skill, however well it matched the
+# job's own goal — a Skill is the user's own packaged process, not a raw
+# capability the kind restriction exists to fence off.
+
+def _allowed_for(kind: str) -> list[str]:
+    """What `run_job()` itself computes before building `allowed_names`."""
+    return [*worker.TOOLS_BY_KIND[kind], *worker._installed_skill_names()]
+
+
+def test_an_installed_skill_is_offered_to_every_restricted_kind():
+    assembly.get_registry().register(CapabilitySpec(
+        id="skill.count_words", name="count_words", description="counts words",
+        input_schema={"type": "object", "properties": {}}, risk=Risk.LOW,
+        kind=CapabilityKind.SKILL, handler=lambda **_: {"count": 3}))
+
+    assert worker._installed_skill_names() == ["count_words"]
+    for kind in ("research", "files"):
+        allowed = _allowed_for(kind)
+        assert "count_words" in allowed
+        # The fix is additive, never a replacement for the kind's own list.
+        assert "request_job_split" in allowed
+
+
+def test_a_restricted_job_can_actually_run_an_installed_skill(stub):
+    """Through the real worker: proves the tool that ran was not refused, not
+    just that its name appears in some computed list."""
+    assembly.get_registry().register(CapabilitySpec(
+        id="skill.count_words", name="count_words", description="counts words",
+        input_schema={"type": "object", "properties": {}}, risk=Risk.LOW,
+        kind=CapabilityKind.SKILL, handler=lambda **_: {"count": 3}))
+    stub.calls_tool("count_words", {})
+    stub.says("Counted them.")
+
+    job = job_store.create_job(title="Count", goal="count the words", kind="research")
+    worker.run_job(job["id"], event_bus=EventBus())
+
+    tool_rows = [row for row in job_store.get_trace(job["id"]) if row["kind"] == "tool"]
+    detail = json.loads(tool_rows[0]["detail"])
+    assert detail == {"name": "count_words", "ok": True, "error": None}
+
+
+def test_generic_jobs_are_unrestricted_and_unaffected():
+    """`'generic'` maps to `None` — no restriction at all — so there is
+    nothing for the Skill fix to append onto."""
+    assert worker.TOOLS_BY_KIND.get("generic") is None
 
 
 def test_a_real_worker_turn_can_split_its_own_job(stub, judge):

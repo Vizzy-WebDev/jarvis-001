@@ -69,20 +69,27 @@ whichever coding assistant the user names, never reading the repo itself.
 | `reflect.py`, `synthesize.py`, `improvement/reflect.py`, `improvement/synthesize.py`, `improvement/implementation_prompt.py` | + `ai.py` (and, for `improvement/reflect.py`, `research.py`) | Not leaf — safe to import from `improvement/reflect.py` only |
 | `improvement/reflect.py` | everything above | The only non-leaf top-level module; `startImprovementCycle()` called once from `main.py`, beside `startScheduler()`/`startOrchestrator()` |
 
-**Two different wiring shapes reach `capture.py`, not one.** `scheduler/engine.py` calls
-`record_task_outcome()` directly — a scheduled task run has no event of its own to
-subscribe to, and the call site already has both `run` and `task` in hand right where
-`record_run()` builds them. Jobs and corrections do NOT reach `capture.py` the same
-way: `orchestrator/pipeline.py`'s own header states it deliberately never imports
-`jarvis.improvement` at all (`test_architecture.py`'s
-`test_the_turn_loop_imports_no_subsystem_that_watches_it` enforces this), so
-`observers/improvement.py` subscribes to the event bus instead —
+**Three different wiring shapes reach `capture.py`, not one.** `scheduler/engine.py`
+calls `record_task_outcome()` directly — a scheduled task run has no event of its own
+to subscribe to, and the call site already has both `run` and `task` in hand right
+where `record_run()` builds them. `jobs/orchestrator.py`'s `recover_orphans()` calls
+`observers/improvement.py`'s `_record_job_crash()` directly the same way, for the
+same reason — a crash has no event of its own either. Ordinary job completions and
+corrections do NOT reach `capture.py` either of those ways: `orchestrator/pipeline.py`'s
+own header states it deliberately never imports `jarvis.improvement` at all
+(`test_architecture.py`'s `test_the_turn_loop_imports_no_subsystem_that_watches_it`
+enforces this), so `observers/improvement.py` subscribes to the event bus instead —
 `JOB_COMPLETED`/`JOB_UPDATED` (re-reading the job and its trace at event time rather
 than trusting the event's own thin payload) feed `record_job_outcome()`, and
 `ASSISTANT_INPUT` (which now carries the turn's raw `text`, added specifically for
-this) feeds `note_correction()`, gated on the turn not being `background`. Either way
-`capture.py` itself stays a leaf three hops from any model call — the wiring differs,
-the zero-cost property doesn't.
+this) feeds `note_correction()`, gated on the turn not being `background`. A tool
+call notable enough on its own — a real failure, a refused-allowlist call, a parked
+confirmation — reaches it a fourth way: `observers/recording.py`'s
+`_record_notable_tool_outcome()` subscribes to `TOOL_FAILED`/`TOOL_REFUSED`/
+`TOOL_ESCALATED` and calls `record_notable_tool_outcome()`, separate from that same
+file's `_record_tool_outcome()`, which only ever feeds the Self-Model tally (see
+`self/CLAUDE.md`). Whichever way it arrives, `capture.py` itself stays a leaf three
+hops from any model call — the wiring differs, the zero-cost property doesn't.
 
 ## The hook points — verified against the real code, not assumed
 
@@ -95,15 +102,22 @@ That function's own `TERMINAL_JOB_STATUSES` guard plus `improvement_outcomes.UNI
 source_ref)` (`INSERT OR IGNORE` under the hood) make it safe to call on every
 `JOB_UPDATED`, not just a terminal one, and safe to call twice for the same job.
 
-**A real, disclosed gap: a crash-classified orphan is NOT currently captured as an
-outcome at all.** `orchestrator.py`'s `recover_orphans()` moves a crashed job to
-`queued` (resumable/restartable) or `awaiting_decision` (unrecoverable) — none of
-those are in `TERMINAL_JOB_STATUSES`, and `recover_orphans()` publishes no event
-either, so nothing about an orphan's crash ever reaches Self-Improvement's capture
-step today. The Node original's equivalent (`improvement/reflect.py`'s own tick
-sweeping `jobStore.listJobs({status: 'orphaned'})`) does not exist here — there is no
-periodic sweep for this case in the Python port. Worth closing if orphan recoveries
-turn out to be common enough to be worth learning from; not yet built.
+**A crash-classified orphan IS captured as an outcome, distinct from the job's own
+eventual terminal status.** `jobs/orchestrator.py`'s `recover_orphans()` calls
+`observers/improvement.py`'s `_record_job_crash()` (a plain function, not a bus
+subscriber — a crash has no event of its own, same reasoning `_record_task_outcome`
+below already gives) for every job it finds `running` with nothing actually running
+it, whatever verdict `classify_recovery()` reaches. That in turn calls
+`capture.record_job_crash()`, which writes under its own `source: "job_crash"`
+(never `"job"`) with a fresh, never-repeating `source_ref` — a crash is a new event
+every time it happens, and must never collide with `record_job_outcome()`'s own
+per-job dedup key, or a job that later finishes normally (or crashes twice) would
+have one of those two facts silently dropped as a "duplicate" of the other.
+`entity_ref` stays the job's own id either way, so both rows still group under the
+same job. Closed; previously the process moved a crashed job to `queued`
+(resumable/restartable) or `awaiting_decision` (unrecoverable) — none of those are
+in `TERMINAL_JOB_STATUSES` — and published no event, so nothing about the crash
+itself ever reached Self-Improvement.
 
 **A split completion must never become an outcome.**
 `jarvis/tools/job_split.py` marks the ORIGINAL job `status:'done'` with

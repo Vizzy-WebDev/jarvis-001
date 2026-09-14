@@ -221,6 +221,15 @@ def execute(
 
     verdict = decide(spec, ctx, grants=grants, allowed_names=allowed_names)
     if verdict.outcome is Outcome.REFUSED:
+        # Never reaches _run(), so TOOL_FAILED would never fire for this on its
+        # own — Self-Improvement's capture needs to hear about it anyway (a
+        # real, disclosed gap; see improvement/capture.py's
+        # record_notable_tool_outcome()).
+        ebus.publish(
+            EventType.TOOL_REFUSED,
+            {"capability": name, "reason": verdict.reason, "sessionId": ctx.session_id,
+             "operationId": ctx.operation_id},
+        )
         return ExecutionResult(
             ok=False, outcome=ExecOutcome.REFUSED, capability=name,
             operation_id=ctx.operation_id, error=verdict.reason,
@@ -228,6 +237,14 @@ def execute(
     if verdict.outcome is Outcome.NEEDS_APPROVAL:
         approval = approvals_store.request(
             spec, args, ctx, _ask_text(spec, args, verdict.reason), event_bus=ebus)
+        if verdict.escalate:
+            # Parked, not asked — nobody is present to answer inline. Same
+            # capture gap as REFUSED above: this never reaches _run() either.
+            ebus.publish(
+                EventType.TOOL_ESCALATED,
+                {"capability": name, "reason": verdict.reason, "approvalId": approval.id,
+                 "sessionId": ctx.session_id, "operationId": ctx.operation_id},
+            )
         return ExecutionResult(
             ok=False, outcome=ExecOutcome.NEEDS_APPROVAL, capability=name,
             operation_id=ctx.operation_id, error=verdict.reason,

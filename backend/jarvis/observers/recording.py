@@ -29,12 +29,35 @@ def _record_tool_outcome(event: Event) -> None:
     self_store.record_attempt("tool", capability, ok)
 
 
+def _record_notable_tool_outcome(event: Event) -> None:
+    """A tool call worth Self-Improvement seeing on its own, not just folded
+    into the rolling reliability tally `_record_tool_outcome` above already
+    keeps — a real, disclosed gap until now (self/CLAUDE.md's "No separate
+    self-capture.py" entry). A SEPARATE subscriber rather than one more branch
+    in `_record_tool_outcome`: `TOOL_REFUSED`/`TOOL_ESCALATED` cover calls that
+    never reached `_run()` at all, so they never raise
+    `TOOL_COMPLETED`/`TOOL_FAILED` and would never be seen there."""
+    from ..improvement.capture import record_notable_tool_outcome
+
+    capability = event.payload.get("capability")
+    if not capability:
+        return
+    if event.type is EventType.TOOL_ESCALATED:
+        record_notable_tool_outcome(capability, reason=event.payload.get("reason"),
+                                    escalated=True)
+    else:
+        record_notable_tool_outcome(capability, reason=event.payload.get("error")
+                                    or event.payload.get("reason"))
+
+
 def start_observers(event_bus: EventBus | None = None) -> None:
     """Subscribe the recorders. Idempotent — calling twice does not double-count."""
     stop_observers()
     ebus = event_bus or default_bus
     for event_type in (EventType.TOOL_COMPLETED, EventType.TOOL_FAILED):
         _unsubscribes.append(ebus.subscribe(event_type, _record_tool_outcome))
+    for event_type in (EventType.TOOL_FAILED, EventType.TOOL_REFUSED, EventType.TOOL_ESCALATED):
+        _unsubscribes.append(ebus.subscribe(event_type, _record_notable_tool_outcome))
 
     from .cost import record_model_call
     _unsubscribes.append(

@@ -170,14 +170,17 @@ and `'files'` each map to a small hardcoded raw-tool list (`look_it_up`,
 `read_web_page`, etc.) plus `request_job_split` (`JOB_OWN_TOOLS`, appended to every
 restricted kind). `'computer'` never calls this at all (see `driveComputerJob` above).
 
-**A real, disclosed gap, not a stale doc issue alone: `research`/`files`-kind jobs
-cannot reach an installed Skill, at all, regardless of how well it matches the job's
-own goal.** The Node original fixed exactly this (`c.kind === 'skill'` unconditionally
-added back into a restricted kind's tool list, reasoning that a Skill is the user's
-own packaged process, not a raw capability the kind is trying to fence off) — that
-fix was never carried over into `TOOLS_BY_KIND`. Confirmed by reading the dict, not
-assumed. Worth building if a `research`/`files`-kind job ever needs to use a Skill;
-not yet built.
+**`research`/`files`-kind jobs can now reach an installed Skill, closing what used to
+be a real, disclosed gap.** `worker.py`'s `_installed_skill_names()` reads every
+currently-installed Skill straight from the registry (`assembly.get_registry().list(kind=
+CapabilityKind.SKILL)`, imported lazily for the same reason `run_job()` itself defers
+its own `assembly` import) and `run_job()` appends those names onto a restricted
+kind's own `TOOLS_BY_KIND` list before building `allowed_names` — the same fix the
+Node original had (`c.kind === 'skill'` unconditionally added back into a restricted
+kind's tool list, reasoning that a Skill is the user's own packaged process, not a raw
+capability the kind is trying to fence off), never carried over into `TOOLS_BY_KIND`
+until now. `'generic'` is untouched (`allowed` stays `None` there, meaning no
+restriction at all — nothing to append onto).
 
 **`report_job_done`/`report_job_stuck` do not exist in this port, and that is by
 design, not an omission** — see root `CLAUDE.md`'s own note on this: the Python

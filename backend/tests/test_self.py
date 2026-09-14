@@ -11,7 +11,10 @@ from __future__ import annotations
 import pytest
 
 from jarvis.db import reset_for_tests as reset_db
+from jarvis.events import EventType
+from jarvis.events.bus import EventBus
 from jarvis.improvement import store as improvement_store
+from jarvis.observers import start_observers, stop_observers
 from jarvis.self import model, signals, store, verify
 
 
@@ -19,6 +22,7 @@ from jarvis.self import model, signals, store, verify
 def _isolate(scratch):
     reset_db()
     yield
+    stop_observers()
     reset_db()
 
 
@@ -180,3 +184,76 @@ def test_the_goal_is_reported_as_a_reading_not_a_verified_account():
                        source_turn_text="their words")
     doing = model.build(["doing_now"], session_id="s1")["doing_now"]
     assert "not a verified account" in doing["declaredGoal"]["note"]
+
+
+# --- notable tool outcomes reaching Self-Improvement --------------------------
+#
+# `record_attempt()`'s own rolling tally survived the S6 cutover intact; the
+# OTHER half of the Node original's self-capture.js — a NOTABLE outcome also
+# becoming `improvement_outcomes` material — did not, until now (see
+# self/CLAUDE.md's own entry on this). These drive real events through the
+# real observer wiring (`start_observers()`), not a direct call into
+# `capture.py`, so they prove the bus -> observer edge itself, the same
+# discipline test_jobs.py already uses for job/task capture.
+
+def test_a_real_tool_failure_becomes_an_improvement_outcome():
+    bus = EventBus()
+    start_observers(bus)
+    bus.publish(EventType.TOOL_FAILED, {"capability": "send_email",
+                                        "error": "the mail server refused it"})
+
+    rows = [r for r in improvement_store.list_unreviewed_outcomes()
+            if r["source"] == "turn" and r["entity_ref"] == "send_email"]
+    assert len(rows) == 1
+    assert rows[0]["error"] == "the mail server refused it"
+    assert rows[0]["escalations"] == 0
+
+
+def test_a_refused_allowlist_call_becomes_an_improvement_outcome():
+    """Never reaches `TOOL_COMPLETED`/`TOOL_FAILED` at all — `TOOL_REFUSED` is
+    the only event a call turned away before it ever ran can raise."""
+    bus = EventBus()
+    start_observers(bus)
+    bus.publish(EventType.TOOL_REFUSED,
+               {"capability": "run_code", "reason": "run_code is not available for this task."})
+
+    rows = [r for r in improvement_store.list_unreviewed_outcomes()
+            if r["source"] == "turn" and r["entity_ref"] == "run_code"]
+    assert len(rows) == 1
+    assert rows[0]["escalations"] == 0
+
+
+def test_a_parked_confirmation_becomes_an_improvement_outcome_with_an_escalation():
+    bus = EventBus()
+    start_observers(bus)
+    bus.publish(EventType.TOOL_ESCALATED,
+               {"capability": "send_message", "reason": "needs your go-ahead",
+                "approvalId": "apr_1"})
+
+    rows = [r for r in improvement_store.list_unreviewed_outcomes()
+            if r["source"] == "turn" and r["entity_ref"] == "send_message"]
+    assert len(rows) == 1
+    assert rows[0]["escalations"] == 1
+
+
+def test_an_ordinary_success_never_becomes_an_improvement_outcome():
+    """Only a notable outcome is worth the backlog — every routine success
+    staying off it is what keeps reflect.py's own backlog signal, not noise."""
+    bus = EventBus()
+    start_observers(bus)
+    bus.publish(EventType.TOOL_COMPLETED, {"capability": "get_time"})
+
+    rows = [r for r in improvement_store.list_unreviewed_outcomes()
+            if r["entity_ref"] == "get_time"]
+    assert rows == []
+
+
+def test_a_notable_outcome_still_bumps_the_ordinary_reliability_tally_too():
+    """The two capture paths are additive, not a replacement for one another —
+    `_record_tool_outcome` (the tally) and `_record_notable_tool_outcome` (this
+    file's new outcome row) both subscribe to the same `TOOL_FAILED`."""
+    bus = EventBus()
+    start_observers(bus)
+    bus.publish(EventType.TOOL_FAILED, {"capability": "send_email", "error": "nope"})
+
+    assert store.get_stat("tool", "send_email")["failures"] == 1

@@ -51,6 +51,25 @@ def session_for(job_id: str) -> str:
     return f"job:{job_id}"
 
 
+def _installed_skill_names() -> list[str]:
+    """Every Skill currently installed. A real, disclosed gap until now (see
+    `jobs/CLAUDE.md`'s "A real, disclosed gap" entry, right under
+    `TOOLS_BY_KIND`): a `research`/`files`-kind job could not reach an
+    installed Skill at all, however well it matched the job's own goal,
+    because `TOOLS_BY_KIND`'s hardcoded lists never included one. The Node
+    original fixed exactly this — a Skill is the user's own packaged process,
+    not a raw capability the kind restriction exists to fence off — and that
+    fix never carried over into this port until now.
+
+    A lazy import, same reason `run_job()` below defers its own `assembly`
+    import: the registry is built by `assembly.py`, which this module must
+    stay safe to import without pulling in at module load time."""
+    from ..assembly import get_registry
+    from ..capabilities import CapabilityKind
+
+    return [spec.name for spec in get_registry().list(kind=CapabilityKind.SKILL)]
+
+
 def run_job(job_id: str, *, event_bus: EventBus | None = None,
             max_steps: int | None = None) -> dict[str, Any]:
     """Drive one job to a conclusion, or to the point where a person is needed."""
@@ -67,6 +86,10 @@ def run_job(job_id: str, *, event_bus: EventBus | None = None,
     ebus.publish(EventType.JOB_UPDATED, {"id": job_id, "status": "running"})
 
     allowed = TOOLS_BY_KIND.get(job["kind"], None)
+    if allowed is not None:
+        # A restricted kind's own fence was never meant to keep out a Skill —
+        # see _installed_skill_names()'s own header comment.
+        allowed = [*allowed, *_installed_skill_names()]
     request = TurnRequest(
         text=job["goal"],
         session_id=session_for(job_id),

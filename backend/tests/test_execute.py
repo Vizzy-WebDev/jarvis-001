@@ -254,6 +254,46 @@ def test_a_failure_publishes_started_then_failed(reg):
     assert [e.type for e in seen] == [EventType.TOOL_STARTED, EventType.TOOL_FAILED]
 
 
+def test_the_allowlist_refusal_publishes_tool_refused(reg):
+    """Never reaches `_run()`, so `TOOL_STARTED`/`TOOL_FAILED` alone could never
+    tell Self-Improvement's capture apart from an ordinary success — this is
+    the event that exists specifically so it can."""
+    eb = EventBus()
+    seen = []
+    eb.subscribe(EventType.TOOL_REFUSED, seen.append)
+    add(reg, "get_time")
+    result = execute("get_time", {}, ctx(), registry=reg, event_bus=eb,
+                     allowed_names=frozenset({"read_file"}))
+    assert result.outcome is ExecOutcome.REFUSED
+    assert seen[0].payload["capability"] == "get_time"
+
+
+def test_a_parked_confirmation_publishes_tool_escalated(reg):
+    add(reg, "send_message", risk=Risk.MEDIUM)
+    eb = EventBus()
+    seen = []
+    eb.subscribe(EventType.TOOL_ESCALATED, seen.append)
+    result = execute("send_message", {}, ctx(autonomy=Autonomy.ESCALATE), registry=reg,
+                     event_bus=eb)
+    assert result.outcome is ExecOutcome.NEEDS_APPROVAL
+    assert seen[0].payload["capability"] == "send_message"
+    assert seen[0].payload["approvalId"] == result.approval_id
+
+
+def test_an_ordinary_inline_confirmation_never_publishes_tool_escalated(reg):
+    """Only a PARKED confirmation is notable — an ordinary live ask-and-answer
+    is ESCALATE's own reason for existing, ported from the same distinction the
+    Node original's `result.escalated` field drew."""
+    add(reg, "send_message", risk=Risk.MEDIUM)
+    eb = EventBus()
+    seen = []
+    eb.subscribe(EventType.TOOL_ESCALATED, seen.append)
+    result = execute("send_message", {}, ctx(autonomy=Autonomy.INTERACTIVE), registry=reg,
+                     event_bus=eb)
+    assert result.outcome is ExecOutcome.NEEDS_APPROVAL
+    assert seen == []
+
+
 def test_published_arguments_are_redacted(reg):
     """§25: never log secrets."""
     eb = EventBus()

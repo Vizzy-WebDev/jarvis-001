@@ -55,6 +55,16 @@ def _check_for_correction(event: Event) -> None:
     note_correction(event.payload.get("text") or "")
 
 
+def _record_job_crash(job: dict, trace: list[dict] | None, verdict: str) -> None:
+    """Called directly by `jobs/orchestrator.py`'s `recover_orphans()` — a
+    crash has no event of its own to subscribe to any more than a scheduled
+    task run does (see `_record_task_outcome` below), so this is a plain
+    function too, not a bus subscriber."""
+    from ..improvement import capture
+
+    capture.record_job_crash(job, trace, verdict)
+
+
 def _record_task_outcome(run: dict) -> None:
     """Called directly by scheduler.engine.run_task_now() — a scheduled task
     run has no event of its own to subscribe to (unlike jobs, which already

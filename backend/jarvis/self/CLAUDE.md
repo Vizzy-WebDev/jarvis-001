@@ -72,19 +72,30 @@ answer.
   wired up unconditionally at real startup via `start_observers()`, never by a direct
   call from the turn loop (`orchestrator/pipeline.py` deliberately never imports
   `jarvis.self`, the same invariant that keeps it clear of `jarvis.improvement`,
-  `jarvis.cost`, `jarvis.observers`; `test_architecture.py` asserts it). **What did
-  NOT survive the port: the other half.** The Node original's `recordToolOutcome()`
-  also wrote a fresh `improvement_outcomes` row (`source: 'turn'`) for a *notable*
-  outcome (a real failure, a refused-allowlist call, an escalated confirm), feeding
-  Self-Improvement's pipeline from live tool activity in the same turn it happened.
-  Nothing in this Python port does that — a tool's failure bumps the Self-Model tally
-  and nothing else; Self-Improvement's own capture (`observers/improvement.py`) only
-  ever hears about a job's or a scheduled task's terminal status, never a single
-  notable tool call inside an ordinary live turn. A real, disclosed gap, not yet
-  built. **`record_attempt()`'s own error handling did survive the port intact**:
-  wrapped in its own local `try/except`, and either branch logs to `self/store.py`'s
-  `capture_health` table (`record_capture_health()`) — the health of the SENSOR,
-  distinct from what it measures, still read by `ops/diagnostics/checks/capture_health.py`.
+  `jarvis.cost`, `jarvis.observers`; `test_architecture.py` asserts it). **The other
+  half — a NOTABLE tool outcome also becoming Self-Improvement material — is now
+  built too, closing what used to be a real, disclosed gap.** The Node original's
+  `recordToolOutcome()` wrote a fresh `improvement_outcomes` row (`source: 'turn'`)
+  for a *notable* outcome only: a real failure, a call refused because it wasn't in
+  this turn's allowed tools, or a confirmation parked rather than asked inline. This
+  port's version lives in the same file as the tally, as a second, separate
+  subscriber: `observers/recording.py`'s `_record_notable_tool_outcome()`, listening
+  for `EventType.TOOL_FAILED`/`TOOL_REFUSED`/`TOOL_ESCALATED` and calling
+  `improvement/capture.py`'s `record_notable_tool_outcome()`. It had to be a second
+  subscriber rather than one more branch in `_record_tool_outcome()`, because a
+  refused-allowlist call or a parked escalation never reaches `capabilities/execute.py`'s
+  `_run()` at all — `capabilities/execute.py`'s `execute()` now publishes
+  `TOOL_REFUSED`/`TOOL_ESCALATED` at the exact two points (`decide()` returning
+  `REFUSED`, and `NEEDS_APPROVAL` with `escalate=True`) that used to publish nothing,
+  specifically so this had something to subscribe to. Self-Improvement's own capture
+  (`observers/improvement.py`) still separately hears a job's or a scheduled task's
+  terminal status (and now a job's crash too — see `improvement/CLAUDE.md`'s "hook
+  points"); this is the third, narrower stream, one notable tool call at a time,
+  inside an ordinary live turn. **`record_attempt()`'s own error handling did survive
+  the port intact**: wrapped in its own local `try/except`, and either branch logs to
+  `self/store.py`'s `capture_health` table (`record_capture_health()`) — the health of
+  the SENSOR, distinct from what it measures, still read by
+  `ops/diagnostics/checks/capture_health.py`.
 - **`self/model.py`** — the assembler. Not a leaf (imports several stores), but every one
   of those is itself leaf or leaf-adjacent, which is what keeps this file safe for
   `jarvis/tools/self_tools.py` to import directly. `buildSelfModel({ only, ... })`

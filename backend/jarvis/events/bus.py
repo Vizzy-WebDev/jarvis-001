@@ -57,6 +57,17 @@ class EventType(str, Enum):
     TOOL_STARTED = "tool.started"
     TOOL_COMPLETED = "tool.completed"
     TOOL_FAILED = "tool.failed"
+    #: Turned away before it ever ran — not in this turn's allowed tools, the
+    #: only way `policy/decide.py`'s `decide()` itself returns REFUSED today.
+    #: Never published by `_run()`, since a refused call never reaches it —
+    #: `TOOL_FAILED` alone can't tell "it ran and failed" apart from "it was
+    #: never allowed to run", and Self-Improvement's capture (below) needs to.
+    TOOL_REFUSED = "tool.refused"
+    #: A confirmation that had to be PARKED rather than asked inline —
+    #: `decide()`'s own `escalate=True` (nobody present to answer a live
+    #: ask). Distinct from the ordinary interactive confirm flow, which just
+    #: asks and is not "notable" the way a park is.
+    TOOL_ESCALATED = "tool.escalated"
 
     # Approval (§8) — a first-class flow, not a tool-result field
     APPROVAL_REQUESTED = "approval.requested"

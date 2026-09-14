@@ -196,8 +196,20 @@ def recover_orphans(event_bus: EventBus | None = None) -> list[dict[str, Any]]:
     ebus = event_bus or default_bus
     out: list[dict[str, Any]] = []
     for job in job_store.list_jobs(status="running"):
-        verdict = classify_recovery(job, job_store.get_trace(job["id"]))
+        trace = job_store.get_trace(job["id"])
+        verdict = classify_recovery(job, trace)
         job_store.update_job(job["id"], {"recovery": verdict})
+        # A crash is worth learning from in its own right — whatever the job
+        # goes on to do next. A real, disclosed gap until now: this used to
+        # publish no event and call nothing, so the crash itself never reached
+        # Self-Improvement (see improvement/CLAUDE.md's "hook points").
+        try:
+            from ..observers.improvement import _record_job_crash
+
+            _record_job_crash(job, trace, verdict)
+        except Exception:  # noqa: BLE001 — capture must never block real recovery
+            logger.exception("could not record the crash of job %s for Self-Improvement",
+                             job["id"])
         if verdict == "resumable":
             job_store.update_job(job["id"], {"status": "queued"})
             worker.run_in_background(job["id"], event_bus=ebus)

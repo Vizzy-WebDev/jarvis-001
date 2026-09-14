@@ -9,6 +9,7 @@ this is safe to call from anywhere, including the hot path of a live turn.
 from __future__ import annotations
 
 import re
+import uuid
 from typing import Any
 
 from . import store
@@ -66,6 +67,60 @@ def record_job_outcome(job: dict[str, Any], trace: list[dict[str, Any]] | None =
         error=job.get("error"),
         tool_summary={"totalToolCalls": len(tool_rows), "failedToolCalls": failed},
         escalations=escalations)
+
+
+def record_job_crash(job: dict[str, Any], trace: list[dict[str, Any]] | None = None,
+                     verdict: str = "unrecoverable") -> dict[str, Any] | None:
+    """A job was found `running` with nothing actually running it — the process
+    that owned it is gone. A real, disclosed gap until now (see
+    `jobs/CLAUDE.md`'s "Crash recovery" and `improvement/CLAUDE.md`'s own
+    "hook points" entry): `jobs/orchestrator.py`'s `recover_orphans()` moved the
+    job to `queued`/`awaiting_decision` and published no event, so nothing about
+    the crash itself ever reached Self-Improvement, whatever became of the job
+    afterward.
+
+    Deliberately its own `source` (`"job_crash"`, never `"job"`) with a fresh,
+    never-repeating `source_ref` — a crash is a genuinely new event each time it
+    happens, not a repeat of one seen before, so it must never collide with
+    `record_job_outcome()`'s own per-job dedup key. Without that separation, a
+    job that crashes once and later finishes normally (or crashes twice) would
+    have one of those two facts silently dropped as a "duplicate" of the other.
+    `entity_ref` stays the job's own id, so the two rows are still visibly about
+    the same job to anything that groups on it later.
+    """
+    trace = trace or []
+    return store.record_outcome(
+        source="job_crash", source_ref=f"{job['id']}:{uuid.uuid4().hex[:8]}",
+        entity_ref=job["id"], title=job.get("title") or "Background work",
+        goal=job.get("goal"), kind=job.get("kind"), status=f"crashed:{verdict}",
+        retries=job.get("retries") or 0, error=job.get("error"))
+
+
+def record_notable_tool_outcome(name: str, *, reason: str | None = None,
+                                escalated: bool = False) -> dict[str, Any] | None:
+    """A single tool call worth Self-Improvement seeing on its own, separate
+    from the rolling reliability tally `observers/recording.py` already keeps.
+
+    Ported from the Node build's `self-capture.js` — the half of it that did
+    NOT survive the S6 cutover (see `self/CLAUDE.md`'s "No separate
+    self-capture.py" entry). There, `recordToolOutcome()` bumped the tally for
+    every call but wrote one of these only for a NOTABLE outcome: a real
+    failure, a call refused because it wasn't in this turn's allowed tools, or
+    a confirmation that had to be parked rather than asked inline. All three
+    reach here today: a real failure via `TOOL_FAILED`, the other two via the
+    dedicated `TOOL_REFUSED`/`TOOL_ESCALATED` events `capabilities/execute.py`
+    now publishes (neither call ever reaches `_run()`, so neither could ever
+    have raised `TOOL_COMPLETED`/`TOOL_FAILED` in the first place).
+
+    No `source_ref`: like a correction, each notable call is a new event, never
+    a repeat of an earlier one. `entity_ref` is the tool's own name — the
+    stable key `reflect.py`/`synthesize.py` group "this tool tends to fail this
+    way" under, the same role a job's id or a task's saved id plays for those
+    two sources.
+    """
+    return store.record_outcome(
+        source="turn", entity_ref=name, title=f"Tool call: {name}", kind="tool",
+        status="failed", error=reason, escalations=1 if escalated else 0)
 
 
 def record_task_outcome(run: dict[str, Any], task: dict[str, Any] | None = None,

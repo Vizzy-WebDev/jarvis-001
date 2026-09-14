@@ -11,8 +11,8 @@ This package exists so that logic lives once.
 """
 
 from . import (
-    availability, connections, deployments, effort, error_kind, name_guess, probe,
-    providers, registry, routing,
+    availability, connections, deployments, discovery, effort, error_kind, name_guess,
+    probe, providers, registry, routing,
 )
 from .client import Gateway, NoModelAvailable
 from .routing import Task, build_candidates, explain_exclusions
@@ -27,6 +27,9 @@ __all__ = [
     # One model version reached through one connection — the routable unit.
     # Read by nothing yet; the router moves onto it at the switchover.
     "deployments",
+    # Asking a provider what it has, and reconciling that with what is
+    # configured — including noticing a model that stopped being listed.
+    "discovery",
     # Resolving a reasoning level against what a version actually accepts, and
     # remembering what a version has refused.
     "effort",

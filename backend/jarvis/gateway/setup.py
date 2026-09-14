@@ -163,8 +163,18 @@ def create_connection_with_models(*, provider: str | None = None, adapter: str |
     if provider:
         row = get_provider(provider)
         if row is None:
-            raise ValueError(f"Unknown provider: {provider}")
-        if provider == "custom":
+            # An unrecognised provider is not an error when the caller has said
+            # how to talk to it. The five entries in `providers.py` are setup
+            # PRESETS — a shortcut that fills in an address and a wire format
+            # for the common cases — and treating them as the complete set of
+            # providers that may exist is the hardcoding this rebuild is
+            # removing. A name nobody shipped is just a name nobody shipped.
+            if not adapter:
+                raise ValueError(
+                    f"I don't know a provider called {provider!r}, and no address was "
+                    "given either — so there's nothing to connect to.")
+            row = None
+        elif provider == "custom":
             if (resolved and resolved.get("adapter") and resolved.get("baseUrl")
                     and isinstance(resolved.get("keyRequired"), bool)):
                 # The PROBE's base url, not the raw one: normalising it (trying

@@ -30,7 +30,7 @@ from typing import Any, Mapping
 
 from .known import SEED, FamilyRule, match
 from .spec import (
-    UNKNOWN_EFFORT, Capabilities, EffortScheme, Lifecycle, Source, Support, Version,
+    UNKNOWN_EFFORT, Capabilities, Lifecycle, Source, Support, Version, effort_scheme_from,
 )
 
 #: An id ending in a date is a frozen snapshot; a bare one floats to whatever
@@ -68,6 +68,27 @@ def _as_support(value: Any) -> Support | None:
     if isinstance(value, str):
         try:
             return Support(value.lower())
+        except ValueError:
+            return None
+    return None
+
+
+def _as_lifecycle(value: Any) -> Lifecycle | None:
+    """Read a lifecycle from a source that may speak strings.
+
+    Strings matter because these facts round-trip through JSON on their way to
+    and from a deployment's stored record: an enum written to disk comes back as
+    its value, and a version of this function that only accepted the enum
+    silently turned every restored "retired" into "unknown" — which is to say it
+    forgot, on restart, exactly the thing retirement exists to remember.
+    """
+    if value is None:
+        return None
+    if isinstance(value, Lifecycle):
+        return value
+    if isinstance(value, str):
+        try:
+            return Lifecycle(value.lower())
         except ValueError:
             return None
     return None
@@ -177,12 +198,12 @@ def resolve(
     capabilities, capability_provenance = _merge_capabilities(given, found, rule)
     provenance.update(capability_provenance)
 
-    effort = _first("effort", (
-        (given.get("effort"), Source.USER),
-        (found.get("effort"), Source.DISCOVERED),
+    effort = effort_scheme_from(_first("effort", (
+        (effort_scheme_from(given.get("effort")), Source.USER),
+        (effort_scheme_from(found.get("effort")), Source.DISCOVERED),
         (rule.effort if rule else None, Source.CATALOG),
-    ), provenance)
-    if not isinstance(effort, EffortScheme):
+    ), provenance))
+    if effort is None:
         effort = UNKNOWN_EFFORT
         provenance.pop("effort", None)
 
@@ -191,11 +212,11 @@ def resolve(
         (rule.quality if rule else None, Source.CATALOG),
     ), provenance)
 
-    lifecycle = _first("lifecycle", (
+    lifecycle = _as_lifecycle(_first("lifecycle", (
         (given.get("lifecycle"), Source.USER),
         (found.get("lifecycle"), Source.DISCOVERED),
-    ), provenance)
-    if not isinstance(lifecycle, Lifecycle):
+    ), provenance))
+    if lifecycle is None:
         lifecycle = Lifecycle.UNKNOWN
         provenance.pop("lifecycle", None)
 

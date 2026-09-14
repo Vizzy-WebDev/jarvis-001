@@ -187,3 +187,36 @@ def test_probing_an_unknown_address_reports_what_it_tried(client, stub):
     nothing = client.post("/api/connections/probe",
                           json={"baseUrl": "http://127.0.0.1:19999"}).json()
     assert nothing["ok"] is False and nothing["steps"]
+
+
+def test_a_provider_nobody_shipped_is_accepted_when_an_address_is_given(client, stub):
+    """The five entries in `providers.py` are setup PRESETS, not the set of
+    providers that may exist.
+
+    Treating them as a closed enum is the same hardcoding this rebuild removes
+    one layer down — a person running something nobody has heard of should not
+    need an entry in our source to name it.
+    """
+    stub.says("ready")
+
+    added = client.post("/api/connections", json={
+        "provider": "something-nobody-shipped",
+        "adapter": "openai-compatible",
+        "baseUrl": stub.base_url,
+        "models": ["stub-model"],
+    }).json()
+
+    assert added["ok"] is True
+    assert added["connection"]["provider"] == "something-nobody-shipped"
+
+
+def test_an_unknown_provider_with_no_address_still_says_what_is_missing(client):
+    """Relaxing the check must not turn a real mistake into a silent one: with
+    neither a known preset nor an address there is genuinely nothing to call."""
+    answer = client.post("/api/connections", json={
+        "provider": "something-nobody-shipped",
+        "models": ["some-model"],
+    })
+
+    assert answer.status_code == 400
+    assert "something-nobody-shipped" in answer.json()["error"]

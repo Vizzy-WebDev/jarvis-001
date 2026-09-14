@@ -300,12 +300,33 @@ def test_connection(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_models(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """What this server says it has.
+
+    The standard listing carries almost nothing — an id and some timestamps —
+    but servers speaking this format routinely add to it, and the additions are
+    the only machine-readable answers available for questions no first-party API
+    answers at all. `context_length` is one such (an aggregator's, not OpenAI's);
+    `supported_parameters` is the other and the more valuable, because a list
+    that names no reasoning parameter settles whether this model can be asked to
+    think without spending a rejected request to find out.
+
+    Read straight off the model object: the SDK keeps unmodelled fields rather
+    than discarding them, so a server that volunteers more is not silently
+    flattened to the lowest common denominator.
+    """
     _require_key(entry)
     client = _client(entry)
     out = []
     for model in client.models.list():
-        out.append({"model": model.id,
-                    "contextTokens": getattr(model, "context_length", None)})
+        row: dict[str, Any] = {
+            "model": model.id,
+            "contextTokens": getattr(model, "context_length", None),
+        }
+        for extra in ("supported_parameters", "capabilities"):
+            value = getattr(model, extra, None)
+            if value:
+                row[extra] = value
+        out.append(row)
     return out
 
 

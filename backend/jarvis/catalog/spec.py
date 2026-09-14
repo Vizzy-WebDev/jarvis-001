@@ -220,6 +220,69 @@ class EffortScheme:
     def supports(self, level: Effort) -> bool:
         return level in self.levels
 
+    def as_dict(self) -> dict[str, Any]:
+        """A plain, JSON-safe form.
+
+        Needed because these facts are stored: a scheme learned from a
+        provider's parameter list is written to a deployment's record, and a
+        scheme a user sets by hand arrives as JSON from a browser. Both ends of
+        that round trip have to be ordinary data.
+
+        Levels are keyed by NAME rather than by their integer value — JSON has
+        no integer keys, and a file someone opens should say `"MEDIUM"` rather
+        than `"3"`.
+        """
+        return {
+            "kind": self.kind.value,
+            "default": self.default.name if self.default is not None else None,
+            "native": {level.name: self.native.get(level) for level in self.levels},
+        }
+
+
+def effort_scheme_from(value: Any) -> EffortScheme | None:
+    """Read a scheme from a stored record, or None if there isn't one.
+
+    Accepts an `EffortScheme` unchanged so a caller holding a real one does not
+    have to care, and a dict as written by `as_dict`. Anything malformed answers
+    None rather than raising: this reads user-editable stored data, and a
+    hand-mangled file should degrade to "we do not know" rather than stop the
+    app from starting.
+    """
+    if value is None:
+        return None
+    if isinstance(value, EffortScheme):
+        return value
+    if not isinstance(value, dict):
+        return None
+    try:
+        kind = EffortKind(str(value.get("kind", "")).lower())
+    except ValueError:
+        return None
+    if kind in (EffortKind.NONE, EffortKind.UNKNOWN):
+        return EffortScheme(kind=kind)
+
+    native: dict[Effort, Any] = {}
+    for name, native_value in (value.get("native") or {}).items():
+        try:
+            native[Effort[str(name).upper()]] = native_value
+        except KeyError:
+            continue
+    if not native:
+        return None
+
+    default_name = value.get("default")
+    try:
+        default = Effort[str(default_name).upper()] if default_name else None
+    except KeyError:
+        default = None
+    levels = tuple(sorted(native))
+    if default not in levels:
+        default = levels[len(levels) // 2]
+    try:
+        return EffortScheme(kind=kind, levels=levels, default=default, native=native)
+    except ValueError:
+        return None
+
 
 #: A version that has told us nothing. Not a placeholder for a real one — this
 #: is what most models legitimately are, and the system is built to route them.

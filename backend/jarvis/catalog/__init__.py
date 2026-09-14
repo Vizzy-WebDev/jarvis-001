@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from .known import SEED, BUDGET_TOKENS, FamilyRule, match
 from .merge import looks_pinned, resolve
+from .spec import effort_scheme_from
 from .spec import (
     UNKNOWN_EFFORT,
     Capabilities,
@@ -47,6 +48,7 @@ __all__ = [
     "Support",
     "UNKNOWN_EFFORT",
     "Version",
+    "effort_scheme_from",
     "looks_pinned",
     "match",
     "resolve",

@@ -222,6 +222,32 @@ def update_deployment(deployment_id: str, patch: dict[str, Any]) -> dict[str, An
         return hydrate(entry)
 
 
+def record_discovery(deployment_id: str, facts: dict[str, Any]) -> dict[str, Any] | None:
+    """Merge in what the provider has just told us about this model.
+
+    Deliberately NOT reachable through `update_deployment`: `discovered` is what
+    a provider said, `overrides` is what a person said, and a single patch
+    surface that could write either would let a screen quietly overwrite the
+    first with the second. They are separate fields because they answer to
+    different authorities, and the merge order between them only means anything
+    while that stays true.
+
+    Returns None for an id that no longer exists, since discovery runs against a
+    roster that can change underneath it.
+    """
+    with _lock:
+        data = _load()
+        index = next((i for i, e in enumerate(data["deployments"])
+                      if e.get("id") == deployment_id), -1)
+        if index == -1:
+            return None
+        entry = dict(data["deployments"][index])
+        entry["discovered"] = {**(entry.get("discovered") or {}), **(facts or {})}
+        data["deployments"][index] = entry
+        _save(data)
+        return hydrate(entry)
+
+
 def delete_deployment(deployment_id: str) -> None:
     """Remove it, and everything learned about it.
 

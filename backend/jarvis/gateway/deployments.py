@@ -255,7 +255,7 @@ def delete_deployment(deployment_id: str) -> None:
     taken — so leaving a cooldown record or a refused-parameter record behind
     would hand somebody else's history to a model that has never been called.
     """
-    from . import availability, effort
+    from . import availability, effort, slots
 
     entry = next((e for e in _load()["deployments"] if e.get("id") == deployment_id), None)
     with _lock:
@@ -264,6 +264,7 @@ def delete_deployment(deployment_id: str) -> None:
         _save(data)
 
     availability.clear(deployment_id)
+    slots.forget_deployment(deployment_id)
     if entry:
         hydrated = hydrate(entry)
         effort.clear(hydrated["version"].provider, entry.get("model"))

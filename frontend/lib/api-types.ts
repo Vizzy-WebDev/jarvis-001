@@ -73,13 +73,17 @@ export interface QuietHours {
   end: string;
 }
 
+/**
+ * Three fields are absent on purpose: `autoSelect`, `manualModelId` and
+ * `voiceModelId`. All three were served and read by nothing, so setting one
+ * silently did nothing; the two pins are now role slots. `verifyChatAnswers`
+ * was the opposite problem — served by the API and missing from this type.
+ */
 export interface Prefs {
-  autoSelect: boolean;
   balance: 'fast' | 'balanced' | 'quality';
-  manualModelId: string | null;
   clarifySensitivity: 'more' | 'balanced' | 'less';
-  voiceModelId: string | null;
   ttsProvider: string | null;
+  verifyChatAnswers: boolean;
   memoryTrust: 'ask' | 'balanced' | 'auto';
   maxBackgroundJobs: number;
   improvementEnabled: boolean;

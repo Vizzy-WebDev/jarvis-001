@@ -12,7 +12,7 @@ This package exists so that logic lives once.
 
 from . import (
     availability, connections, deployments, discovery, effort, error_kind, name_guess,
-    probe, providers, registry, routing,
+    probe, providers, registry, routing, slots,
 )
 from .client import Gateway, NoModelAvailable
 from .routing import Task, build_candidates, explain_exclusions
@@ -42,4 +42,6 @@ __all__ = [
     "providers",
     "registry",
     "routing",
+    # Which model does which job — a preference that leads the ranking.
+    "slots",
 ]

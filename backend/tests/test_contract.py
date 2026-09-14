@@ -102,6 +102,27 @@ ADDED_KEYS: dict[tuple[str, str], set[str]] = {
 }
 
 
+#: Keys this build REMOVES from a recorded response, per route, because the
+#: thing behind them has been deliberately taken out.
+#:
+#: The mirror of ADDED_KEYS and held to the same standard: the removal must be
+#: named here to pass, so a field cannot go missing by accident. Every other key
+#: in the recording is still compared byte for byte, which is what keeps this
+#: from becoming a way to wave away a response that quietly stopped answering.
+#:
+#: Removing anything at all needs a better reason than tidiness. These three
+#: qualify: `autoSelect`, `manualModelId` and `voiceModelId` were served by the
+#: preferences route and read by NOTHING in either build, so a person who set
+#: one had been running with a control that silently did nothing. The two pins
+#: are now role slots, where they are actually consulted; `autoSelect` is gone
+#: outright, since "use the manual pick rather than ranking" is a question a pin
+#: existing or not already answers, and a separate boolean for it could only
+#: ever disagree with the thing it described.
+REMOVED_KEYS: dict[tuple[str, str], set[str]] = {
+    ("GET", "/api/prefs"): {"autoSelect", "manualModelId", "voiceModelId"},
+}
+
+
 def _load(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -222,14 +243,21 @@ def test_route_matches_recorded_node_response(client, fixture_path):
             c for c in want["body"].get("connectors", [])
             if c.get("type") not in ABSENT_CONNECTOR_TYPES]}
 
-    added = ADDED_KEYS.get((req["method"].upper(), req["path"]))
-    if added and isinstance(got["body"], dict) and isinstance(want["body"], dict):
+    route = (req["method"].upper(), req["path"])
+    added = ADDED_KEYS.get(route, set())
+    removed = REMOVED_KEYS.get(route, set())
+    if (added or removed) and isinstance(got["body"], dict) and isinstance(want["body"], dict):
         extra = set(got["body"]) - set(want["body"])
         assert extra == added, (
             f"{req['path']} added {sorted(extra)}, but only {sorted(added)} is a declared "
             "divergence — add it to ADDED_KEYS deliberately or take it back out")
+        missing = set(want["body"]) - set(got["body"])
+        assert missing == removed, (
+            f"{req['path']} no longer answers {sorted(missing)}, but only {sorted(removed)} "
+            "is a declared removal — add it to REMOVED_KEYS deliberately or put it back")
         got_body = {k: v for k, v in got["body"].items() if k not in added}
-        assert got_body == want["body"], f"body differs for {req['method']} {req['path']}"
+        want_body = {k: v for k, v in want["body"].items() if k not in removed}
+        assert got_body == want_body, f"body differs for {req['method']} {req['path']}"
     else:
         assert got["body"] == want["body"], f"body differs for {req['method']} {req['path']}"
 

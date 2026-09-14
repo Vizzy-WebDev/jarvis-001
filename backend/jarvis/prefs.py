@@ -19,15 +19,22 @@ from .store import read_json, write_json
 
 FILE = "prefs"
 
+#: Three preferences that used to live here are gone: `autoSelect`,
+#: `manualModelId` and `voiceModelId`.
+#:
+#: All three were stored, served by this route, and read by absolutely nothing —
+#: so anyone who set one had been running with a control that silently did not
+#: work. The two pins are now role slots (`gateway/slots.py`), where they are
+#: actually consulted, and existing values are adopted once on the way past
+#: rather than dropped.
+#:
+#: `autoSelect` is deleted outright rather than moved. It expressed "use the
+#: manual pick instead of ranking", which a pin either exists or does not
+#: already says — a separate boolean for it could only ever disagree with the
+#: thing it described.
 DEFAULTS: dict[str, Any] = {
-    "autoSelect": True,
     "balance": "balanced",          # 'fast' | 'balanced' | 'quality'
-    "manualModelId": None,          # used when autoSelect is off; leads the candidate list either way
     "clarifySensitivity": "balanced",  # 'more' | 'balanced' | 'less'
-    # One model pinned specifically for voice turns, outranking manualModelId
-    # for voice so a spoken conversation never lands on whatever wins the
-    # router's speed/cost tie-break.
-    "voiceModelId": None,
     # Last-resort fallback only — in practice the client always sends its own
     # choice. None rather than a provider name: no provider is guaranteed
     # configured, and the TTS seam handles None cleanly.
@@ -72,3 +79,24 @@ def set_prefs(partial: dict[str, Any]) -> dict[str, Any]:
     nxt = {**get_prefs(), **(partial or {})}
     write_json(FILE, nxt)
     return nxt
+
+
+def forget(*names: str) -> dict[str, Any]:
+    """Remove preferences that no longer exist from the stored file.
+
+    `set_prefs` merges, so it can change a value but never drop one: a key
+    written by an older build survives every subsequent write and goes on being
+    served by the preferences route forever. That is how a setting nothing reads
+    stays visible to a screen that might still offer it.
+
+    Only touches keys actually present, so this is a no-op on a fresh install
+    and writes nothing when there is nothing to remove.
+    """
+    saved = read_json(FILE, {}) or {}
+    doomed = [name for name in names if name in saved]
+    if not doomed:
+        return get_prefs()
+    for name in doomed:
+        saved.pop(name, None)
+    write_json(FILE, saved)
+    return get_prefs()

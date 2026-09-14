@@ -1,14 +1,18 @@
 """The gateway: pick a model, call it, and be honest when none of them work.
 
-This is the `ModelClient` the orchestrator talks to. It owns exactly three
+This is the `ModelClient` the orchestrator talks to. It owns exactly four
 things the Node implementation spreads across three separate loops that disagree:
 
 1. **Building the candidate list** — one function, `routing.build_candidates`,
    used by every caller rather than re-derived per call site.
-2. **Marking a failure** — every failure records the model's availability, so a
-   model that just 401'd is not offered again on the next turn. The control loop
-   in the Node app never did this, so it re-tried dead models forever.
-3. **Saying what went wrong** — when nothing can serve the turn, the error names
+2. **Deciding how hard to think** — the role's slot asks for a level, the
+   version's own scheme says what it can take, and `effort.plan` resolves the
+   two. An adapter is handed the answer; it never chooses and never clamps.
+3. **Marking a failure** — every failure records the deployment's availability,
+   so a model that just 401'd is not offered again on the next turn. The
+   control loop in the Node app never did this, so it re-tried dead models
+   forever.
+4. **Saying what went wrong** — when nothing can serve the turn, the error names
    the real reasons and the soonest retry, rather than a generic apology.
 
 **Every switch is announced**, with a `ModelSwitched` event carrying which model
@@ -16,6 +20,11 @@ gave up and why. A silent swap is cheap to implement and dishonest in both
 directions: when text has already reached the user the reply visibly changes
 course with no explanation, and when it has not, a turn that took three attempts
 looks identical to one that took none.
+
+**A clamp is announced too**, on the call-started event. Asking for MAX and
+getting HIGH because this version's ladder stops there is the normal case
+rather than an error, but a clamp nobody can see is indistinguishable from the
+setting being ignored — which is how a control teaches people it does not work.
 """
 
 from __future__ import annotations
@@ -31,10 +40,11 @@ from ..orchestrator.model_port import (
     ModelEvent, ModelSwitched, ModelUnavailable, StepComplete, TextChunk,
 )
 from ..redact import redact_text
-from . import availability
+from . import availability, deployments, effort as effort_store, latency, slots
 from .error_kind import availability_state_for, classify_error
 from .jsonish import extract_json
 from .routing import Task, build_candidates, explain_exclusions
+from .slots import Role, role_from
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +62,43 @@ class NoModelAvailable(ModelUnavailable):
     """
 
 
+def _effort_for(entry: dict[str, Any], role: Role):
+    """What to ask this deployment for, resolved against what it can take.
+
+    The slot says how hard to think in this role, the version's own scheme says
+    what it can be asked, and `plan` resolves the two — clamping down where they
+    disagree, and answering None where there is nothing to send.
+    """
+    version = deployments.version_of(entry)
+    if version is None:
+        return None
+    return effort_store.plan(
+        slots.effort_for(role), version.effort,
+        provider=deployments.provider_of(entry), model=str(entry.get("model") or ""))
+
+
+def _effort_facts(plan: Any) -> dict[str, Any]:
+    """The part of a call-started event that describes the reasoning request."""
+    if plan is None:
+        return {}
+    facts: dict[str, Any] = {"effort": plan.level.name}
+    if plan.clamped:
+        facts["effortRequested"] = plan.requested.name
+        facts["effortClamped"] = True
+    return facts
+
+
 class Gateway:
-    def __init__(self, *, balance: str = "balanced", event_bus: EventBus | None = None) -> None:
-        self.balance = balance
+    """Constructed with no routing settings of its own, on purpose.
+
+    `balance` used to be read once here, when the orchestrator singleton was
+    built, so changing the Fast/Balanced/Quality dial did nothing until the
+    process restarted. It is read per turn now, inside the ranking function, by
+    the same argument that keeps a deployment's address out of its stored row:
+    a copy taken at construction is a copy that can be wrong.
+    """
+
+    def __init__(self, *, event_bus: EventBus | None = None) -> None:
         self._bus = event_bus or default_bus
 
     def stream(
@@ -66,13 +110,12 @@ class Gateway:
         session_id: str,
         task: Task | None = None,
         model_id: str | None = None,
-        manual_model_id: str | None = None,
-        background: bool = False,
+        role: Any = Role.CONVERSATION,
         need: dict[str, bool] | None = None,
     ) -> Iterator[ModelEvent]:
-        task = task or Task(text=_last_user_text(messages), need=dict(need or {}))
-        candidates = build_candidates(task, balance=self.balance,
-                                      model_id=model_id, manual_model_id=manual_model_id)
+        task = task or Task(text=_last_user_text(messages), role=role_from(role),
+                            need=dict(need or {}))
+        candidates = build_candidates(task, model_id=model_id)
         if not candidates:
             raise NoModelAvailable(_nothing_available_message(task), explain_exclusions(task))
 
@@ -88,19 +131,33 @@ class Gateway:
                 errors.append((entry["id"], str(err)))
                 continue
 
+            provider = deployments.provider_of(entry)
+            plan = _effort_for(entry, task.role)
+            if plan is not None and plan.clamped:
+                logger.info("%s takes at most %s; asked for %s", entry["id"],
+                            plan.level.name, plan.requested.name)
+
             self._bus.publish(EventType.MODEL_CALL_STARTED, {
                 "sessionId": session_id, "modelId": entry["id"], "model": entry.get("model"),
-                "provider": entry.get("provider") or entry.get("adapter")})
+                "provider": provider, "role": task.role.value, **_effort_facts(plan)})
 
             if previous is not None:
                 yield ModelSwitched(to_model=entry["id"], from_model=previous,
                                     reason=errors[-1][1] if errors else "the previous model failed")
 
-            step_text = False
             try:
-                for event in adapter.stream(entry, messages, system=system, tools=tools):
+                # Time to the FIRST thing the model said, not to the whole
+                # answer: total duration mostly measures how long the reply was,
+                # so ranking on it would learn the shape of recent questions
+                # rather than anything about the model. The clock is kept by
+                # `call_with_effort` because that is the only layer that knows
+                # whether a first attempt was refused and retried.
+                for event in effort_store.call_with_effort(
+                        adapter, entry, messages, system=system, tools=tools,
+                        effort=plan, provider=provider, model=entry.get("model"),
+                        on_first_token=lambda ms, _id=entry["id"]: latency.record(_id, ms)):
                     if isinstance(event, TextChunk):
-                        step_text = produced_text = True
+                        produced_text = True
                     yield event
                     if isinstance(event, StepComplete):
                         availability.record(entry["id"], "working")
@@ -111,9 +168,10 @@ class Gateway:
                         # would count every turn twice.
                         self._bus.publish(EventType.MODEL_CALL_COMPLETED, {
                             "sessionId": session_id, "modelId": entry["id"],
-                            "provider": entry.get("provider") or entry.get("adapter"),
+                            "provider": provider,
                             "model": entry.get("model"),
-                            "background": background,
+                            "role": task.role.value,
+                            "background": task.background,
                             "toolCalls": len(event.tool_calls),
                             **({"usage": event.usage} if event.usage else {})})
                         return
@@ -131,10 +189,6 @@ class Gateway:
                 logger.warning("model %s failed (%s): %s", entry["id"], kind, detail)
                 errors.append((entry["id"], detail))
                 previous = entry["id"]
-                # `step_text` matters only for the message at the end: a turn
-                # that already showed the user text reads differently from one
-                # that never started.
-                del step_text
 
         raise NoModelAvailable(
             _all_failed_message(errors, produced_text),
@@ -193,6 +247,7 @@ def _reason_text(reason: str) -> str:
         "busy": "busy at the provider",
         "unreachable": "unreachable",
         "unsupported": "unable to handle this kind of request",
+        "retired": "no longer offered by the provider",
         "error": "recently failed",
         "no_tools": "unable to use tools",
         "context_too_small": "too small for this much text",
@@ -215,14 +270,13 @@ def ask(
     system: str = "",
     want_json: bool = False,
     task: Task | None = None,
-    balance: str = "balanced",
     model_id: str | None = None,
     media: list[dict[str, Any]] | None = None,
     only: bool = False,
     event_bus: EventBus | None = None,
 ) -> Answer:
     """A single question with no tools and no transcript — the third way to drive
-    a model, alongside a turn and (later) the control loop.
+    a model, alongside a turn and the control loop.
 
     It walks the SAME candidate list as everything else, which is the point: in
     the Node app this was a separate implementation that never marked a failing
@@ -241,8 +295,8 @@ def ask(
     right to read, and would fail in a way that looks like the file being bad.
     """
     ebus = event_bus or default_bus
-    task = task or Task(text=prompt, needs_tools=False)
-    candidates = build_candidates(task, balance=balance, model_id=model_id)
+    task = task or Task(text=prompt, needs_tools=False, role=Role.UTILITY)
+    candidates = build_candidates(task, model_id=model_id)
     if not candidates:
         raise NoModelAvailable(_nothing_available_message(task), explain_exclusions(task))
 
@@ -261,11 +315,16 @@ def ask(
             errors.append((entry["id"], str(err)))
             continue
 
+        provider = deployments.provider_of(entry)
+        plan = _effort_for(entry, task.role)
         tried.append(entry["id"])
         text = ""
         usage: dict[str, Any] | None = None
         try:
-            for event in adapter.stream(entry, messages, system=system, tools=[]):
+            for event in effort_store.call_with_effort(
+                    adapter, entry, messages, system=system, tools=[],
+                    effort=plan, provider=provider, model=entry.get("model"),
+                    on_first_token=lambda ms, _id=entry["id"]: latency.record(_id, ms)):
                 if isinstance(event, TextChunk):
                     text += event.text
                 elif isinstance(event, StepComplete):
@@ -288,8 +347,9 @@ def ask(
         # usage the owner has least visibility into.
         ebus.publish(EventType.MODEL_CALL_COMPLETED, {
             "modelId": entry["id"],
-            "provider": entry.get("provider") or entry.get("adapter"),
-            "model": entry.get("model"), "background": True, "toolCalls": 0,
+            "provider": provider,
+            "model": entry.get("model"), "role": task.role.value,
+            "background": task.background, "toolCalls": 0,
             **({"usage": usage} if usage else {})})
         if not want_json:
             return Answer(text=text, model_id=entry["id"], tried=tried)

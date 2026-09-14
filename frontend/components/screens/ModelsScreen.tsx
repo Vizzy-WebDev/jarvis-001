@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { AddModelFlow } from '@/components/models/AddModelFlow';
+import { CatalogView, VersionFacts } from '@/components/models/CatalogView';
+import { RoleAssignments } from '@/components/models/RoleAssignments';
 import { AppIcon } from '@/components/ui/AppIcon';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -27,6 +29,12 @@ import type {
  * The badges come from real, measured availability — a model this build has
  * actually failed to reach, with the reason and how long until it is retried —
  * never a guess from the model's name.
+ *
+ * **Two views, because there are two real questions.** "By connection" answers
+ * whose key and address this is — a problem is almost always the connection's
+ * rather than any one model's. "By model" answers what these things ARE, and
+ * is the only place the crossing axis is visible: the same model reached two
+ * ways is one version with two routes, not two unrelated rows.
  */
 export function ModelsScreen() {
   const [models, setModels] = useState<ModelEntry[] | null>(null);
@@ -36,6 +44,10 @@ export function ModelsScreen() {
   const [adding, setAdding] = useState(false);
   const [open, setOpen] = useState<ModelEntry | null>(null);
   const [checking, setChecking] = useState(false);
+  const [view, setView] = useState<'connection' | 'model'>('connection');
+  // Bumped on every reload so the catalog view refetches with the rest rather
+  // than keeping a copy that quietly disagrees with the list beside it.
+  const [reloadKey, setReloadKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -53,6 +65,7 @@ export function ModelsScreen() {
     } catch {
       /* the models half of this screen still works without it */
     }
+    setReloadKey((n) => n + 1);
   }, []);
 
   useEffect(() => {
@@ -99,6 +112,24 @@ export function ModelsScreen() {
         >
           {checking ? 'Checking…' : 'Check what is not working'}
         </Button>
+        {(models ?? []).length > 0 && (
+          <div className="ml-auto flex gap-1" role="group" aria-label="How to group models">
+            <Button
+              data-testid="view-connection"
+              tone={view === 'connection' ? 'primary' : undefined}
+              onClick={() => setView('connection')}
+            >
+              By connection
+            </Button>
+            <Button
+              data-testid="view-model"
+              tone={view === 'model' ? 'primary' : undefined}
+              onClick={() => setView('model')}
+            >
+              By model
+            </Button>
+          </div>
+        )}
       </div>
 
       {error && <p className="mb-4 text-[13px] text-state-danger">{error}</p>}
@@ -110,6 +141,11 @@ export function ModelsScreen() {
           title="Jarvis has nothing to think with yet."
           body="Add a model and it can answer. Anything OpenAI-shaped works, including a server running on this machine — and nothing leaves the machine unless the model you pick lives somewhere else."
           action={<Button tone="primary" onClick={() => setAdding(true)}>Add a model</Button>}
+        />
+      ) : view === 'model' ? (
+        <CatalogView
+          reloadKey={reloadKey}
+          onOpen={(id) => setOpen((models ?? []).find((m) => m.id === id) ?? null)}
         />
       ) : (
         <div className="space-y-3" data-testid="connection-list">
@@ -126,6 +162,8 @@ export function ModelsScreen() {
           ))}
         </div>
       )}
+
+      {(models ?? []).length > 0 && <RoleAssignments models={models ?? []} />}
 
       <ServiceKeys services={services} onChanged={load} />
 
@@ -329,11 +367,27 @@ function ModelDetail({
 
       <dl className="mt-2 space-y-2 border-t border-surface-border pt-3 text-[12px]">
         <Detail term="Model" value={model.model} />
+        <Detail term="Reached at" value={model.connectionLabel || model.baseUrl || '—'} />
         <Detail term="Ready" value={model.ready ? 'Yes' : 'No — its connection needs a key'} />
         {trouble && (
           <Detail term="Last problem" value={trouble.reason || trouble.kind || 'Not answering'} />
         )}
       </dl>
+
+      {/* What the catalog resolved this id to. Shown here rather than only in
+          the by-model view because this is where someone comes to ask "is this
+          the model I think it is" — and an unestablished capability says so
+          rather than reading as a flat no. */}
+      {model.version && (
+        <div className="mt-3 border-t border-surface-border pt-3">
+          <p className="mb-2 text-[12px] text-ink-faint">
+            {model.version.family
+              ? `Recognised as ${model.version.family}`
+              : 'Not recognised — everything below is unestablished'}
+          </p>
+          <VersionFacts version={model.version} />
+        </div>
+      )}
 
       {result && <p className="mt-3 text-[13px] text-ink">{result}</p>}
     </Modal>

@@ -183,6 +183,7 @@ def _examine_media(record: dict[str, Any], request: str) -> dict[str, Any]:
     can fail for the top-ranked model specifically while the next is fine."""
     from ..gateway.client import ask
     from ..gateway.routing import Task, build_candidates
+    from ..gateway.slots import Role
 
     source = record["source"]
     if source.get("kind") == "youtube":
@@ -193,7 +194,7 @@ def _examine_media(record: dict[str, Any], request: str) -> dict[str, Any]:
         need = ({"video": True} if is_pdf or kind == "video"
                 else {"audio": True} if kind == "audio" else {"vision": True})
 
-    task = Task(text=request, needs_tools=False, background=True, need=need)
+    task = Task(text=request, needs_tools=False, role=Role.UTILITY, need=need)
     candidates = build_candidates(task)
     if not candidates:
         return {"ok": False,
@@ -246,6 +247,7 @@ def _youtube_fallback(record: dict[str, Any], request: str,
     about which of the two actually happened."""
     from ..gateway.client import ask
     from ..gateway.routing import Task
+    from ..gateway.slots import Role
 
     fallback = fetch_youtube_text(record["source"]["url"])
     if not fallback.get("ok"):
@@ -277,7 +279,7 @@ def _youtube_fallback(record: dict[str, Any], request: str,
               "heard it. Be explicit in the answer about how little you actually have.")
     answered = ask(f"{_context_line(record)}\n\nContent:\n{text}\n\nQuestion: \"{request}\"",
                    system=TEXT_SYSTEM + caveat,
-                   task=Task(text=request, needs_tools=False, background=True))
+                   task=Task(text=request, needs_tools=False, role=Role.UTILITY))
     return {"ok": True, "answer": answered.text, "intake": intake, "sources": [],
             "downgradedReason": last_error}
 
@@ -285,6 +287,7 @@ def _youtube_fallback(record: dict[str, Any], request: str,
 def _run_examine(record: dict[str, Any], request: str) -> dict[str, Any]:
     from ..gateway.client import ask
     from ..gateway.routing import Task
+    from ..gateway.slots import Role
 
     if _is_text_shaped(record["source"]):
         text = _text_for(record)
@@ -292,7 +295,7 @@ def _run_examine(record: dict[str, Any], request: str) -> dict[str, Any]:
             return text
         answered = ask(
             f"{_context_line(record)}\n\nContent:\n{text['text']}\n\nQuestion: \"{request}\"",
-            system=TEXT_SYSTEM, task=Task(text=request, needs_tools=False, background=True))
+            system=TEXT_SYSTEM, task=Task(text=request, needs_tools=False, role=Role.UTILITY))
         return {"ok": True, "answer": answered.text, "intake": text["intake"], "sources": []}
 
     observations = (record.get("material") or {}).get("observations")
@@ -300,7 +303,7 @@ def _run_examine(record: dict[str, Any], request: str) -> dict[str, Any]:
         quick = ask(f"{_context_line(record)}\n\nWorking notes from when I looked at this:\n"
                     f"{observations}\n\nNew question: \"{request}\"",
                     system=CACHED_FOLLOWUP_SYSTEM, want_json=True,
-                    task=Task(text=request, needs_tools=False, background=True))
+                    task=Task(text=request, needs_tools=False, role=Role.UTILITY))
         data = quick.data if isinstance(quick.data, dict) else None
         if data and not data.get("needsAnotherLook") and data.get("answer"):
             return {"ok": True, "answer": data["answer"],
@@ -421,6 +424,7 @@ def judge_claim(claim: str, *, context: str | None = None,
     top, with no path around it — that is the entire point of this function."""
     from ..gateway.client import ask
     from ..gateway.routing import Task
+    from ..gateway.slots import Role
 
     question = (claim or "").strip()
     if not question:
@@ -456,7 +460,7 @@ def judge_claim(claim: str, *, context: str | None = None,
         '  "whatsLeftOut": "what is being left out, or null",\n'
         '  "breakdown": "markdown, step by step" or null\n}',
         system=JUDGE_SYSTEM, want_json=True,
-        task=Task(text=question, needs_tools=False, background=True))
+        task=Task(text=question, needs_tools=False, role=Role.UTILITY))
 
     data = judged.data if isinstance(judged.data, dict) else {}
     verdict = str(data.get("verdict", "")).lower()

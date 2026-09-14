@@ -12,7 +12,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from jarvis import external_services
-from jarvis.gateway import connections, registry
+from jarvis.gateway import connections, deployments
 
 
 @pytest.fixture
@@ -42,7 +42,7 @@ def test_a_realtime_capable_model_with_no_key_still_does_not_open(client):
     conn = connections.add_connection(adapter="gemini", base_url=None, label="g",
                                       provider="gemini", kind="first-party",
                                       key_required=True)
-    registry.add_model(connection_id=conn["id"], model="live-model")
+    deployments.add_deployment(connection_id=conn["id"], model="live-model")
 
     with client.websocket_connect("/api/live") as socket:
         assert socket.receive_json()["code"] == "NO_API_KEY"

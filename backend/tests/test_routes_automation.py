@@ -12,7 +12,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from jarvis.events import EventType, bus
-from jarvis.gateway import connections, registry
+from jarvis.gateway import connections, deployments
 from jarvis.monitor import store as monitor_store
 from jarvis.scheduler import briefing, briefing_config
 
@@ -33,7 +33,7 @@ def stub(scratch):
     conn = connections.add_connection(adapter="openai-compatible", base_url=server.base_url,
                                       label="stub", provider="custom", kind="local",
                                       key_required=False)
-    registry.add_model(connection_id=conn["id"], model="stub-model")
+    deployments.add_deployment(connection_id=conn["id"], model="stub-model")
     yield server
     server.stop()
 

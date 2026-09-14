@@ -65,10 +65,9 @@ what a future "has anything gone wrong with you lately?" answer reads across eve
   fabricated zero. `sampleNow({record})` is the on-demand path `check_environment.py`
   uses for a "right now" reading without waiting for the next tick.
 - **`ops/diagnostics/checks/`** — a single read across three subsystems that each already track
-  their own reachability fact, never a new probe of its own: models (`gateway/availability.py`'s
-  in-memory breaker AND `registry.py`'s persisted `availability.state`, reported as two
-  separate fields on purpose — see root CLAUDE.md's Model system section on why those
-  two are deliberately not collapsed into one), connectors (`connectors/store.py`'s own
+  their own reachability fact, never a new probe of its own: models (`gateway/availability.py`,
+  which is the one store this build keeps that fact in — the Node original had an in-memory
+  breaker AND a persisted state on the model row, and the two could disagree), connectors (`connectors/store.py`'s own
   `status.state` — a stale record of the last human-triggered test, not a live probe),
   voice services (`tts/matching.py`/`stt/deepgram.py`'s own `isConfigured()`).
 - **`ops/diagnostics/`** — "unusually high or climbing without a clear cause," defined
@@ -141,10 +140,10 @@ and `ops/diagnostics/`'s own anomaly verdict — never re-derives any of these i
   in-memory, per-process) rather than a timestamp. `observers/security.py` watches for a
   SPIKE (a fixed count-in-window threshold, not a median — a rare discrete event has no
   meaningful "typical" to compare against) of real auth failures
-  (`gateway/availability.py`'s `markUnhealthy(..., 'auth')`) or same-turn confirm-gate bypass
+  (`gateway/availability.py`'s `record(..., 'auth')`) or same-turn confirm-gate bypass
   attempts (`capabilities/`'s `consumePendingToken()`) — both write into
   `observers/security.py`'s own `ops_security_events` table (migration 18) via a
-  one-directional leaf dependency (gateway/availability.py/capabilities/registry.py call it; it never imports
+  one-directional leaf dependency (gateway/availability.py and capabilities/registry.py call it; it never imports
   either back). `events/bus.py` watches for a genuinely NEW local TCP listener via
   PowerShell's `Get-NetTCPConnection` (never `netstat` text parsing), first-seen-is-
   baseline the same way `ops/diagnostics/checks/` establishes its own hash baseline.

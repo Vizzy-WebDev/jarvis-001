@@ -31,6 +31,7 @@ import httpx
 
 from .gateway.client import NoModelAvailable, ask
 from .gateway.routing import Task
+from .gateway.slots import Role
 from .webtext import to_text
 
 logger = logging.getLogger(__name__)
@@ -199,7 +200,7 @@ def _synthesise(question: str, sources: list[Source]) -> tuple[str, str | None]:
         system=("You answer questions from supplied sources. You never assert "
                 "anything the sources do not support, and you say when they are "
                 "silent or disagree."),
-        task=Task(text=question, needs_tools=False, background=True),
+        task=Task(text=question, needs_tools=False, role=Role.UTILITY),
     )
     return answer.text.strip(), answer.model_id
 

@@ -23,11 +23,12 @@ from typing import Any
 
 from .. import stt, tts
 from ..adapters import get_capabilities
-from ..gateway import connections, registry
+from ..gateway import connections, deployments
 
 
 def _ready_models() -> list[dict[str, Any]]:
-    return [m for m in registry.list_models() if m.get("enabled") and registry.is_ready(m)]
+    return [d for d in deployments.list_deployments()
+            if d.get("enabled") and deployments.is_ready(d)]
 
 
 def realtime_models() -> list[dict[str, Any]]:
@@ -68,7 +69,8 @@ def list_engines() -> list[dict[str, Any]]:
             "available": bool(realtime),
             # Named from the models themselves, so this stays true if the set of
             # realtime-capable providers ever changes.
-            "models": [{"id": m["id"], "label": m["label"]} for m in realtime],
+            "models": [{"id": m["id"], "label": m.get("label") or m.get("model")}
+                       for m in realtime],
             "reason": None if realtime else
                       "None of your models offers a realtime voice session.",
         },

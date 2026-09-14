@@ -175,7 +175,8 @@ backend/
     personality.py    The Adaptive Communication Register — tone floors, sticky style, real vocal laughter.
     capabilities/     The contract (spec.py), the registry, and execute.py — the one dispatcher.
     orchestrator/     pipeline.py: the turn loop. context.py, model_port.py.
-    gateway/          Model registry, connections, routing, availability, probing.
+    catalog/          What a model IS: family, version, capabilities, effort scheme. Owns nothing.
+    gateway/          Deployments, connections, slots, routing, effort, availability, latency, probing.
     adapters/         One module per wire format: anthropic, gemini, openai_compatible.
     policy/           approvals.py, decide.py — the permission layer, independent of model behaviour.
     events/           The typed event bus. observers/ subscribe to it (cost, security, verification, improvement...).
@@ -186,6 +187,7 @@ backend/
     memory/ jobs/ scheduler/ improvement/ self/ heartbeat/ ops/ cost/ artifacts/
     control/ monitor/ sandbox/ content/ projects/ documents/ tts/ stt/ voice/
                       Each has its own CLAUDE.md — read it when working in that directory.
+                      So do catalog/ and gateway/ — read both before touching either.
   tests/              ~1300 tests, plus contract/fixtures/ (45 recorded Node exchanges).
 frontend/
   app/page.tsx        The shell: stage, orb, conversation panel, composer, drawer, router.
@@ -250,6 +252,38 @@ explicit direct/playful/devil's-advocate requests) shape delivery only; they're 
 from a turn with nobody listening (`background=True` — a scheduled task's or a job
 worker's own turn), matching `prompt.py`'s `has_audience` gate on `stable_instruction()`.
 
+## The model system — `jarvis/catalog/` and `jarvis/gateway/`
+
+Two axes cross, and neither contains the other. The **catalog** says what a model IS —
+provider, family, version, capabilities, what reasoning control it offers. A **connection**
+says how to REACH one — address, credential, wire format. They meet at a **deployment**:
+one version through one connection, which is the thing the router chooses between and the
+thing a person actually created.
+
+That crossing is the whole point. The same model reached with your own key and through a
+gateway reselling it is ONE version with TWO routes — separate keys, separate prices,
+separate rate limits — and the flat model row it replaced could not express that at all.
+
+Four facts follow from it, and each is asserted somewhere rather than trusted:
+
+- **Cooldowns and latency are keyed on the deployment**, so one rate-limited reseller
+  cannot take a model offline on the key that still works. Refused-parameter facts are
+  keyed on the VERSION instead, because that is a fact about the model, not the route.
+- **A capability has three states.** Only a definite `NO` excludes a candidate;
+  `UNKNOWN` is offered and allowed to fail honestly, because that is the only way anyone
+  finds out. `routing.MUST_BE_CERTAIN` names the one exception — web search, whose
+  absence fails silently rather than visibly.
+- **A role's slot leads the ranking and never restricts it.** Five roles (conversation,
+  voice, control, background, utility); each resolves to a PIN the router moves to the
+  front, so an assignment that is benched, switched off or deleted degrades to ordinary
+  ranking instead of taking the turn down.
+- **Nothing is guessed from a model's name.** Price comes from recorded spend, speed from
+  recorded time-to-first-token, quality from the catalog, and every remaining unknown
+  stays unknown. The build that inferred these from regexes matched `mini` inside
+  "ge**mini**" and ranked Gemini Pro as cheap and fast.
+
+Read `catalog/CLAUDE.md` and `gateway/CLAUDE.md` before changing any of it.
+
 ## The Adaptive Communication Register — `jarvis/personality.py`
 
 The tone/delivery layer, ported after the S6 cutover (S7) — a real gap the migration
@@ -272,11 +306,11 @@ plays when it fires.
   API — not a fetched doc page, which described an API that did not exist in the SDK.
 - **Free-tier quota varies wildly by model and drifts over time.** Some models are
   retired entirely for new keys. Verify against the live API rather than a remembered
-  number. On `autoSelect`, prompt-driven behaviour is only as reliable as whichever
-  candidate actually answers — frequently a weak free-tier fallback, not the preferred
-  model. The technique that separates "is the code broken" from "is the model just not
-  following instructions": a small read-only script that calls one specific, known-working
-  model entry through the real adapter with the exact failing text.
+  number. Whenever a role is left unassigned, prompt-driven behaviour is only as reliable
+  as whichever candidate actually answers — frequently a weak free-tier fallback, not the
+  preferred model. The technique that separates "is the code broken" from "is the model
+  just not following instructions": a small read-only script that calls one specific,
+  known-working deployment through the real adapter with the exact failing text.
 - **Gemini's `thought_signature` must round-trip verbatim** on tool-calling turns — push
   the model's own response content back, not a hand-rebuilt object, or follow-up calls
   get rejected with a 400.

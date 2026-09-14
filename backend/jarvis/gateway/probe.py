@@ -26,7 +26,6 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ..adapters import anthropic_adapter, gemini_adapter, openai_compatible
-from .catalog import infer_billing
 from .error_kind import classify_error
 
 _LOCAL_HOST = re.compile(r"^(localhost|127\.0\.0\.1|::1|0\.0\.0\.0)$", re.I)
@@ -170,10 +169,12 @@ def _confirm_generation(adapter, base_url: str, secret: str | None,
     result.kind = kind
     # Only now is this a FACT: it generated with exactly the credential supplied.
     result.key_required = bool(secret)
-    result.models = [
-        {**m, "billing": m.get("billing") or infer_billing(adapter.name, base_url, m.get("model"), kind)}
-        for m in models
-    ]
+    # The same shaping the discovery route applies, from the one function that
+    # does it: a custom address and a known provider must group a model the
+    # same way, or the grouping reads as a bug in the catalog.
+    from .discovery import for_picker
+
+    result.models = for_picker(models)
     result.steps.append("  it answered. This connection works.")
     return result
 

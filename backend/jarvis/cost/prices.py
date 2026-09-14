@@ -20,7 +20,7 @@ faster than any publicly verifiable pricing this build could stand behind, and a
 plausible-looking invented number is precisely the failure this whole subsystem
 exists to prevent.
 
-**A billing tier this build GUESSED is never a price.** `catalog.py` infers
+**A billing tier this build GUESSED is never a price.** The old build inferred
 `billing: "free"` from a name regex ("flash"), which a paid-tier key matches just
 as well. That inference is good enough to rank a model and nowhere near good
 enough to assert what it costs, so only `:free` — which the provider itself put
@@ -59,12 +59,14 @@ FREE_MODEL_SUFFIX = ":free"
 def is_known_free(entry: dict[str, Any]) -> bool:
     """Whether this model is free as a FACT rather than as an inference.
 
-    True for a local model (nothing is paid to run it here) and for a model whose
-    id carries the provider's own `:free` suffix. Deliberately NOT true for
-    `billing == "free"` on its own: that comes from a name regex in the catalog,
-    and a paid-tier key matches the same names.
+    True for a model on a local connection (nothing is paid to run it here) and
+    for one whose id carries the provider's own `:free` suffix. There used to be
+    a third case, `billing == "free"`, and it was already refused here: that
+    field came from a name regex, and a paid-tier key matches the same names. It
+    no longer exists at all — the guess it came from is gone — which leaves this
+    function saying exactly what it always claimed to.
     """
-    if entry.get("kind") == "local" or entry.get("billing") == "local":
+    if entry.get("kind") == "local":
         return True
     return str(entry.get("model") or "").lower().endswith(FREE_MODEL_SUFFIX)
 
@@ -76,13 +78,16 @@ def seed_known_free_prices() -> int:
     one, must not be downgraded back to a built-in, even to the same number.
     Needs no network and writes a fact, so it is safe to run on every start.
     """
-    from ..gateway.registry import list_models
+    from ..gateway.deployments import list_deployments, provider_of
 
     seeded = 0
-    for entry in list_models():
+    for entry in list_deployments():
         if not is_known_free(entry):
             continue
-        provider = entry.get("adapter") or "local"
+        # The same key the gateway publishes on a completed call, and therefore
+        # the key every recorded price is already filed under. Deriving it a
+        # second way here would write rows nothing ever reads.
+        provider = provider_of(entry)
         model = entry.get("model")
         if not model or store.get_price(provider, model, "tokens"):
             continue

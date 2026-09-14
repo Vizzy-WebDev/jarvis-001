@@ -20,11 +20,12 @@ from __future__ import annotations
 
 from typing import Any, Iterator
 
+from ..catalog import EffortKind, EffortRequest
 from ..config import get_secret
 from ..conversation import assistant_text_of
 from ..orchestrator.model_port import ModelEvent, StepComplete, TextChunk, ToolCall
 from . import usage as usage_read
-from .base import AdapterError
+from .base import AdapterError, model_for
 
 name = "gemini"
 
@@ -104,17 +105,43 @@ def _response_of(result_row: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {"result": value}
 
 
+def _thinking_config(effort: EffortRequest | None) -> dict[str, Any] | None:
+    """The `thinkingConfig` block. This wire carries BOTH shapes.
+
+    Checked against the installed SDK: `ThinkingConfig` has a `thinking_level`
+    taking a `ThinkingLevel` (MINIMAL/LOW/MEDIUM/HIGH — note there is no OFF and
+    no rung above HIGH) and a `thinking_budget` taking an integer. The camelCase
+    spelling is used to match the rest of this config dict, and was verified to
+    resolve rather than be silently ignored — the config model rejects unknown
+    keys, so a mistake here surfaces instead of quietly dropping the setting.
+
+    A zero budget means OFF, which sends nothing at all.
+    """
+    if effort is None:
+        return None
+    if effort.kind is EffortKind.TIERS and effort.native:
+        return {"thinkingLevel": effort.native}
+    if effort.kind is EffortKind.BUDGET:
+        budget = effort.native
+        return {"thinkingBudget": int(budget)} if budget else None
+    return None
+
+
 def stream(
     entry: dict[str, Any],
     messages: list[dict[str, Any]],
     *,
     system: str = "",
     tools: list[dict[str, Any]] | None = None,
+    effort: EffortRequest | None = None,
 ) -> Iterator[ModelEvent]:
     client = _client(entry)
     config: dict[str, Any] = {"systemInstruction": system} if system else {}
     if tools:
         config["tools"] = [{"functionDeclarations": tools}]
+    thinking = _thinking_config(effort)
+    if thinking:
+        config["thinkingConfig"] = thinking
 
     turn_parts: list[Any] = []
     calls: list[Any] = []
@@ -122,7 +149,7 @@ def stream(
     usage: dict[str, int] | None = None
 
     for chunk in client.models.generate_content_stream(
-        model=entry["model"], contents=to_wire(messages), config=config or None
+        model=model_for(entry, effort), contents=to_wire(messages), config=config or None
     ):
         # Gemini reports the turn's CUMULATIVE totals on each chunk, so the
         # last one seen is the whole turn — summing would multiply one turn's

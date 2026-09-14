@@ -67,7 +67,7 @@ connection attempt is never billed time it didn't use.
 ## `prices.py` — three sources, write-time precedence
 
 **Deliberately does NOT hardcode dollar figures for cloud models.** This project's model
-catalog (`gateway/catalog.py`) names models ahead of any publicly documented, verifiable
+catalog (`jarvis/catalog/`) names models ahead of any publicly documented, verifiable
 pricing this build could honestly stand behind (`claude-opus-5`, `gemini-3.6-flash`,
 `gpt-5.6-luna`, ...) — inventing a plausible-looking number for one of these would
 violate the exact "never invented a number" requirement this whole subsystem exists to
@@ -87,17 +87,28 @@ judge at all.
 
 ## `advisor.py` — item 6, cost-at-decision-time
 
-**Most of item 6 already existed** — `gateway/routing.py`'s `scoreFor()` already weighs
-`entry.tier.cost` in every scoring branch (background work is already the
-cost-heaviest, at `-2x`). What was missing was that `tier.cost` was always a 1-5
-name-regex GUESS (`catalog.py`'s `guessFromName()`), never a measured fact.
-`observedCostTier(provider, modelId)` returns a real-price-derived value in the **exact
-same 0-4 domain** the guess already used — never a new scale, never a raw dollar
-adjustment — so it's a same-domain drop-in substitution `scoreFor()` was already tuned
-and proven safe around, comfortably inside the `±20` `AVAILABILITY_SCORE_BONUS` spread
-`routing.py`'s own header comment documents as the bound nothing may ever exceed. Returns
-`null` (never a guess of its own) when no real price is on record yet, and `scoreFor()`
-falls back to the catalog's own `tier.cost` exactly as it always did.
+**Most of item 6 already existed** — `gateway/routing.py`'s `_score()` already weighed a
+cost term in every scoring branch (background work is the cost-heaviest, at `-2x`). What
+was missing was that the term was a 1-5 name-regex GUESS, never a measured fact.
+`observed_cost_tier(provider, model_id)` returns a real-price-derived value in the **exact
+same 0-4 domain** the guess used — never a new scale, never a raw dollar adjustment — so
+it was a same-domain drop-in substitution `_score()` was already tuned and proven safe
+around, comfortably inside the `±20` `AVAILABILITY_BONUS` spread `routing.py`'s own
+header comment documents as the bound nothing may ever exceed.
+
+**At the switchover the guess it substituted for was DELETED rather than kept as a
+fallback**, so this is now the only cost input there is. `None` still means "nothing has
+been measured" and the router uses `routing.NEUTRAL_COST` — the middle of the scale, so
+an unpriced model is neither rewarded nor punished for having no history. It is not a
+fallback guess; there is no longer anything to fall back to.
+
+**`provider` here means who MAKES the model, and it is one function's answer.**
+`gateway/deployments.py`'s `provider_of()` is called by all three sides — the observer
+that records spend, the router that reads a price back, and `prices.seed_known_free_prices()`
+that writes a starting row — because two of the three agreeing is the same as none. They
+did not agree before the switchover: the seeder filed under the adapter name while the
+observer recorded under the connection's provider, so every `$0` row seeded for a local
+model was read back by nothing.
 
 ## `report.py` + `check_spending.py`
 

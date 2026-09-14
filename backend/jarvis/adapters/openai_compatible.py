@@ -24,11 +24,12 @@ import json
 import re
 from typing import Any, Iterator
 
+from ..catalog import EffortKind, EffortRequest
 from ..config import get_secret
 from ..conversation import assistant_text_of
 from ..orchestrator.model_port import ModelEvent, StepComplete, TextChunk, ToolCall
 from . import usage as usage_read
-from .base import AdapterError
+from .base import AdapterError, model_for
 
 name = "openai-compatible"
 
@@ -153,21 +154,40 @@ def _tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
             for t in tools]
 
 
+def _reasoning_kwargs(effort: EffortRequest | None) -> dict[str, Any]:
+    """`reasoning_effort`, when this version speaks that shape.
+
+    The SDK's own literal type accepts none/minimal/low/medium/high/xhigh/max,
+    which is where Jarvis's ladder names came from. A BUDGET scheme is skipped
+    rather than converted: this endpoint has no field for a token budget, and
+    inventing one produces a rejection that reads like a broken model.
+
+    VARIANT needs nothing here — it changes which model is called, which
+    `model_for` has already handled.
+    """
+    if effort is None or effort.kind is not EffortKind.TIERS:
+        return {}
+    native = effort.native
+    return {"reasoning_effort": native} if native else {}
+
+
 def stream(
     entry: dict[str, Any],
     messages: list[dict[str, Any]],
     *,
     system: str = "",
     tools: list[dict[str, Any]] | None = None,
+    effort: EffortRequest | None = None,
 ) -> Iterator[ModelEvent]:
     _require_key(entry)
     client = _client(entry)
 
     response = client.chat.completions.create(
-        model=entry["model"],
+        model=model_for(entry, effort),
         messages=to_wire(messages, system),
         tools=_tools(tools),
         stream=True,
+        **_reasoning_kwargs(effort),
         # Without this an OpenAI-shaped stream never sends usage at all — it is
         # not discarded, it is never requested. A backend that does not know the
         # option ignores it, and usage simply stays absent; never fabricated.
@@ -280,12 +300,33 @@ def test_connection(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_models(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """What this server says it has.
+
+    The standard listing carries almost nothing — an id and some timestamps —
+    but servers speaking this format routinely add to it, and the additions are
+    the only machine-readable answers available for questions no first-party API
+    answers at all. `context_length` is one such (an aggregator's, not OpenAI's);
+    `supported_parameters` is the other and the more valuable, because a list
+    that names no reasoning parameter settles whether this model can be asked to
+    think without spending a rejected request to find out.
+
+    Read straight off the model object: the SDK keeps unmodelled fields rather
+    than discarding them, so a server that volunteers more is not silently
+    flattened to the lowest common denominator.
+    """
     _require_key(entry)
     client = _client(entry)
     out = []
     for model in client.models.list():
-        out.append({"model": model.id,
-                    "contextTokens": getattr(model, "context_length", None)})
+        row: dict[str, Any] = {
+            "model": model.id,
+            "contextTokens": getattr(model, "context_length", None),
+        }
+        for extra in ("supported_parameters", "capabilities"):
+            value = getattr(model, extra, None)
+            if value:
+                row[extra] = value
+        out.append(row)
     return out
 
 

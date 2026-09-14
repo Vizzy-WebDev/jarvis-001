@@ -25,8 +25,8 @@ from fastapi.staticfiles import StaticFiles
 
 from .routes import (
     approvals, artifacts, automation, connectors, control, conversations, core, events,
-    external_services, improvement, jobs, memory, models, notifications, realtime, sandbox,
-    skills, speech, tasks, turn, uploads, voice,
+    external_services, improvement, jobs, memory, models, notifications, realtime, roles,
+    sandbox, skills, speech, tasks, turn, uploads, voice,
 )
 
 # The built Next.js export. Committed to the repo (see root CLAUDE.md's "Run it"),
@@ -62,6 +62,7 @@ def create_app() -> FastAPI:
     app.include_router(speech.router)
     app.include_router(realtime.router)
     app.include_router(models.connections_router)
+    app.include_router(roles.router)
     app.include_router(notifications.router)
     app.include_router(tasks.router)
     app.include_router(memory.router)

@@ -28,8 +28,8 @@ it structurally cannot reach `memory/policy.py`'s `decide()`, `improvement/polic
 travel through even if a future edit tried.
 
 **Zero model calls, anywhere in this directory.** Every read is a cheap SQLite query or
-an in-memory registry lookup — grep confirms no file here imports `ai.py`,
-`gateway/registry.py`'s `getAdapter`, or calls `adapter.stream`/`askModel`. This matters
+an in-memory registry lookup — grep confirms no file here imports `ai.py`, the gateway's
+adapter lookup, or calls `adapter.stream`/`ask_model`. This matters
 given how often every model in this project is rate-limited (see the "Free-tier quota"
 Gotcha in root `CLAUDE.md`) — the self-model has to work even when nothing else can
 answer.

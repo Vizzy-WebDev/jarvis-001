@@ -11,10 +11,10 @@ from typing import Any
 
 
 def models() -> dict[str, Any]:
-    from ...gateway import availability, registry
-    from ...gateway.registry import is_ready
+    from ...gateway import availability, deployments
+    from ...gateway.deployments import is_ready
 
-    entries = registry.list_models()
+    entries = deployments.list_deployments()
     usable, blocked = [], []
     for entry in entries:
         if not entry.get("enabled", True):

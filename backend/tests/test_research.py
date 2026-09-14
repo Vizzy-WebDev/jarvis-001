@@ -12,7 +12,7 @@ import pytest
 
 from jarvis import research as research_module
 from jarvis.db import reset_for_tests as reset_db
-from jarvis.gateway import availability, connections, registry
+from jarvis.gateway import availability, connections, deployments
 from jarvis.research import Source, research, search, to_search_query
 
 from stub_openai_server import StubModelServer
@@ -34,7 +34,7 @@ def stub():
     conn = connections.add_connection(adapter="openai-compatible", base_url=server.base_url,
                                       label="stub", provider="custom", kind="local",
                                       key_required=False)
-    registry.add_model(connection_id=conn["id"], model="stub-model")
+    deployments.add_deployment(connection_id=conn["id"], model="stub-model")
     yield server
     server.stop()
 
@@ -121,11 +121,12 @@ def test_readable_sources_are_answered_from_the_web(stub, monkeypatch):
 def test_a_thin_web_result_escalates_to_a_model_that_can_search(stub, monkeypatch):
     """The order is deliberate: on a free tier, one provider request is a
     meaningful slice of a day."""
-    # A model only qualifies if it actually declares web search. Setting that
-    # here also exercises the §26 fix: capabilities are a model's own overridable
-    # facts, not a hard ceiling imposed by whichever adapter it happens to use.
-    searcher = registry.list_models()[0]
-    registry.update_model(searcher["id"], {"caps": {**searcher["caps"], "webSearch": True}})
+    # A model only qualifies if it actually declares web search — and for THIS
+    # capability, "nobody has asked" is not good enough (`routing.MUST_BE_CERTAIN`).
+    # Setting it as a user override also exercises the §26 fix: what a model can
+    # do is its own correctable fact, not a ceiling imposed by its adapter.
+    searcher = deployments.list_deployments()[0]
+    deployments.update_deployment(searcher["id"], {"overrides": {"capabilities": {"web_search": "yes"}}})
     monkeypatch.setattr(research_module, "search", lambda q: [])
     stub.says("I looked it up: it's large.")
 
@@ -135,7 +136,14 @@ def test_a_thin_web_result_escalates_to_a_model_that_can_search(stub, monkeypatc
 
 def test_nothing_escalates_to_a_model_that_cannot_search(stub, monkeypatch):
     """The honest outcome on a roster where nothing declares web search: say so,
-    rather than asking a plain model to pretend it looked."""
+    rather than asking a plain model to pretend it looked.
+
+    Note what this asserts after the switchover. Everywhere else an unproven
+    capability is offered and allowed to fail, because a failure is visible and
+    trying is the only way to learn. A model that cannot search does not fail —
+    it answers from memory, citing nothing — so here, and only here, unproven is
+    excluded too. See `routing.MUST_BE_CERTAIN`.
+    """
     monkeypatch.setattr(research_module, "search", lambda q: [])
     result = research("how big is Lagos")
     assert result.ok is False

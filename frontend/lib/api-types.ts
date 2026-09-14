@@ -73,13 +73,17 @@ export interface QuietHours {
   end: string;
 }
 
+/**
+ * Three fields are absent on purpose: `autoSelect`, `manualModelId` and
+ * `voiceModelId`. All three were served and read by nothing, so setting one
+ * silently did nothing; the two pins are now role slots. `verifyChatAnswers`
+ * was the opposite problem — served by the API and missing from this type.
+ */
 export interface Prefs {
-  autoSelect: boolean;
   balance: 'fast' | 'balanced' | 'quality';
-  manualModelId: string | null;
   clarifySensitivity: 'more' | 'balanced' | 'less';
-  voiceModelId: string | null;
   ttsProvider: string | null;
+  verifyChatAnswers: boolean;
   memoryTrust: 'ask' | 'balanced' | 'auto';
   maxBackgroundJobs: number;
   improvementEnabled: boolean;
@@ -201,6 +205,20 @@ export interface Approval {
 
 // --- models, connections, connectors -------------------------------------------
 
+/**
+ * One model under one connection, exactly as `/api/models` serves it.
+ *
+ * These two interfaces used to end in `[key: string]: unknown`, which meant the
+ * compiler accepted any shape the server sent: a renamed field, a dropped
+ * field, a field that changed type — all of it typechecked, built, and then
+ * rendered wrong in the browser. The server side was spreading its internal
+ * record onto the wire at the same time, so neither end could catch a change
+ * the other made.
+ *
+ * The index signature is gone on purpose. The fields below are the whole
+ * contract, and `backend/tests/test_models_contract.py` pins the same set from
+ * the other side, so the two can only disagree loudly.
+ */
 export interface ModelEntry {
   id: string;
   connectionId: string;
@@ -210,9 +228,59 @@ export interface ModelEntry {
   /** Computed at read time: enabled, and its connection has what it needs. */
   ready: boolean;
   hasSecret: boolean;
-  caps?: Record<string, boolean>;
-  tier?: Record<string, number>;
-  [key: string]: unknown;
+  /** Hydrated in from the owning connection, so present but possibly null. */
+  adapter: string | null;
+  baseUrl: string | null;
+  keyRequired: boolean | null;
+  kind: string | null;
+  /** The CONNECTION's provider — whose address this is reached at. Who MAKES
+   *  the model is `version.provider`, and they are routinely different: a
+   *  gateway reselling somebody else's model is still serving that maker's
+   *  model. The two used to share one field, which is how the distinction was
+   *  lost. */
+  connectionProvider: string | null;
+  connectionLabel: string | null;
+  notes?: string;
+  /** What the catalog says this model IS, resolved at read time — so a fact
+   *  learned tomorrow appears without anything being migrated. Null only if a
+   *  record is too damaged to resolve at all. */
+  version: ModelVersion | null;
+}
+
+/** Three states, never two. `unknown` is the honest answer for most models on
+ *  most capabilities, and rendering it as "no" is how a capable model gets
+ *  hidden with no visible reason. */
+export type Support = 'yes' | 'no' | 'unknown';
+
+export type EffortLevel = 'OFF' | 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH' | 'MAX';
+
+export interface ModelVersion {
+  /** Who makes it. `"unknown"` when no catalog pattern recognised the id. */
+  provider: string;
+  /** The id the provider's API expects — what actually goes on the wire. */
+  model: string;
+  label: string;
+  family: string | null;
+  /** Whether `model` names one frozen snapshot rather than a floating alias
+   *  that silently repoints when the vendor ships a successor. */
+  pinned: Support;
+  contextTokens: number | null;
+  capabilities: Record<string, Support>;
+  effort: {
+    /** `tiers` | `budget` | `variant` | `none` | `unknown`. `none` and
+     *  `unknown` are different answers: no reasoning control, versus nobody
+     *  has established whether there is any. */
+    kind: string;
+    default: EffortLevel | null;
+    /** Level -> what this provider wants on the wire for it. */
+    native: Record<string, unknown>;
+  };
+  quality: number | null;
+  lifecycle: 'unknown' | 'current' | 'deprecated' | 'retired';
+  /** field -> `default` | `catalog` | `discovered` | `user`. Per field, because
+   *  a version is almost always a mixture and a single flag cannot say which
+   *  parts to trust. */
+  provenance: Record<string, string>;
 }
 
 export interface ConnectionEntry {
@@ -220,11 +288,73 @@ export interface ConnectionEntry {
   label: string;
   adapter: string;
   baseUrl: string | null;
-  provider?: string;
-  kind?: string;
+  provider?: string | null;
+  kind?: string | null;
+  keyRequired?: boolean | null;
+  createdAt?: string;
   hasSecret: boolean;
   modelCount: number;
-  [key: string]: unknown;
+}
+
+/** One job a model gets asked to do. Every role is optional and unassigned is
+ *  the normal state — a fresh install with one model needs no configuration. */
+export interface ModelRole {
+  id: string;
+  label: string;
+  description: string;
+  /** May name a deployment that no longer exists. A stale preference is not an
+   *  error: the router honours a pin by moving it to the front of the ranking,
+   *  never by removing everything else, so it degrades to ordinary ranking. */
+  deploymentId: string | null;
+  /** Null when `deploymentId` names nothing that is currently here. The id is
+   *  still reported, so a screen can say what it was. */
+  deployment: {
+    id: string;
+    label: string;
+    model: string;
+    connectionLabel: string | null;
+    enabled: boolean;
+    ready: boolean;
+  } | null;
+  effort: EffortLevel | null;
+  /** The levels the ASSIGNED model actually takes, not a fixed ladder — the
+   *  ladders genuinely differ between providers. Empty means this model has no
+   *  reasoning control, or nobody has established that it has any. */
+  effortChoices: { id: EffortLevel; label: string }[];
+  assigned: boolean;
+}
+
+/** The roster as provider -> family -> version. Built from the deployments this
+ *  install actually has, never from a shipped model list. */
+export interface CatalogProvider {
+  id: string;
+  label: string;
+  families: CatalogFamily[];
+}
+
+export interface CatalogFamily {
+  id: string;
+  label: string;
+  versions: CatalogVersion[];
+}
+
+export interface CatalogVersion {
+  model: string;
+  label: string;
+  version: ModelVersion;
+  /** How this one version is actually reachable. Two entries means two routes
+   *  to the same model — separate keys, separate prices, separate rate limits —
+   *  which the flat list could not express at all. */
+  deployments: CatalogRoute[];
+}
+
+export interface CatalogRoute {
+  id: string;
+  label: string;
+  connectionId: string | null;
+  connectionLabel: string | null;
+  enabled: boolean;
+  ready: boolean;
 }
 
 /** Why a model is being skipped right now, keyed by model id. A model nobody
@@ -322,7 +452,16 @@ export interface DiscoveredModel {
   model: string;
   label: string;
   contextTokens: number | null;
+  /** Always null now. The old build filled this in from a name regex and the
+   *  picker showed a "free" badge from it — on a paid-tier key, for any id
+   *  containing "flash". Kept on the wire as an explicit "we do not know"
+   *  rather than removed, since a listing genuinely does not answer it. */
   billing: string | null;
+  /** What the catalog makes of the id: the lineage it belongs to, and who
+   *  makes it. Null when no pattern matched — a real group the picker shows
+   *  rather than hides, since an unrecognised local model has to be pickable. */
+  family: string | null;
+  provider: string | null;
 }
 
 /** What a probe tried, and what it found. `steps` is the point: a failure that

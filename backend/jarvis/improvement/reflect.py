@@ -18,6 +18,7 @@ from typing import Any
 
 from ..gateway.client import NoModelAvailable, ask
 from ..gateway.routing import Task
+from ..gateway.slots import Role
 from . import store
 from .domains import is_excluded
 
@@ -82,7 +83,7 @@ def reflect(force: bool = False) -> dict[str, Any]:
 
     try:
         answer = ask(_prompt(outcomes), system=SYSTEM, want_json=True,
-                     task=Task(text="reflect on recent work", background=True,
+                     task=Task(text="reflect on recent work", role=Role.UTILITY,
                                needs_tools=False))
     except NoModelAvailable as err:
         # The outcomes stay unreviewed on purpose: losing real material because

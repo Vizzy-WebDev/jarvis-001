@@ -16,7 +16,7 @@ from jarvis import assembly, conversation
 from jarvis.capabilities import CapabilitySpec, Risk
 from jarvis.db import reset_for_tests as reset_db
 from jarvis.events import EventType, bus
-from jarvis.gateway import availability, connections, registry
+from jarvis.gateway import availability, connections, deployments
 from jarvis.main import create_app
 from jarvis.policy import approvals as approval_store
 from jarvis.session import get_active_session_id
@@ -45,7 +45,7 @@ def stub():
     conn = connections.add_connection(adapter="openai-compatible", base_url=server.base_url,
                                       label="stub", provider="custom", kind="local",
                                       key_required=False)
-    registry.add_model(connection_id=conn["id"], model="stub-model")
+    deployments.add_deployment(connection_id=conn["id"], model="stub-model")
     yield server
     server.stop()
 
@@ -73,7 +73,7 @@ def test_status_is_configured_only_when_a_model_can_actually_be_used(client, stu
     keyed = connections.add_connection(adapter="anthropic", label="needs a key",
                                        provider="anthropic", kind="first-party",
                                        key_required=True)
-    registry.add_model(connection_id=keyed["id"], model="claude-sonnet-5")
+    deployments.add_deployment(connection_id=keyed["id"], model="claude-sonnet-5")
     # Still configured: one of the two is usable, which is the question asked.
     assert client.get("/api/status").json() == {"configured": True}
 

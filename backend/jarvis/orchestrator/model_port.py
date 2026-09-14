@@ -107,6 +107,7 @@ class ModelClient(Protocol):
         system: str,
         tools: list[dict[str, Any]],
         session_id: str,
+        role: str | None = None,
         need: dict[str, bool] | None = None,
     ) -> Iterator[ModelEvent]:
         """`need` is what this turn REQUIRES — vision, video, audio, web search.
@@ -115,5 +116,17 @@ class ModelClient(Protocol):
         the side that knows an image was attached. A model that cannot see one
         must be excluded BEFORE it is called, not discovered to be blind by
         being handed bytes it cannot read.
+
+        `role` is the same kind of knowledge: the orchestrator is the side that
+        knows whether this turn was spoken, scheduled or typed, and the provider
+        layer is the side that knows a spoken turn should be ranked for latency
+        and a scheduled one for price. A plain string rather than the gateway's
+        own enum, because the orchestrator may not import the gateway — the
+        shared vocabulary has to live at the seam they already share, exactly as
+        `ModelUnavailable` does.
+
+        An unrecognised role is not an error. The provider layer treats it as an
+        ordinary conversation, so a caller that has not classified its turn gets
+        sensible routing rather than a failure.
         """
         ...

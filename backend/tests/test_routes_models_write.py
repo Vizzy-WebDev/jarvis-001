@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from starlette.testclient import TestClient
 
-from jarvis.gateway import availability, connections, registry, setup
+from jarvis.gateway import availability, connections, deployments, setup
 
 from stub_openai_server import StubModelServer
 
@@ -122,11 +122,11 @@ def test_removing_a_connection_removes_the_models_that_hung_off_it(client, stub)
         "adapter": "openai-compatible", "baseUrl": stub.base_url, "label": "stub",
         "models": ["one", "two"]}).json()["connection"]["id"]
     # Two models: the multi-add path, so nothing was generated with.
-    assert len(registry.list_models()) == 2
+    assert len(deployments.list_deployments()) == 2
 
     answer = client.delete(f"/api/connections/{conn_id}").json()
     assert answer == {"ok": True, "removedModels": 2}
-    assert registry.list_models() == []
+    assert deployments.list_deployments() == []
 
 
 def test_testing_a_model_updates_its_badge_both_ways(client, stub):
@@ -187,3 +187,71 @@ def test_probing_an_unknown_address_reports_what_it_tried(client, stub):
     nothing = client.post("/api/connections/probe",
                           json={"baseUrl": "http://127.0.0.1:19999"}).json()
     assert nothing["ok"] is False and nothing["steps"]
+
+
+def test_a_provider_nobody_shipped_is_accepted_when_an_address_is_given(client, stub):
+    """The five entries in `providers.py` are setup PRESETS, not the set of
+    providers that may exist.
+
+    Treating them as a closed enum is the same hardcoding this rebuild removes
+    one layer down — a person running something nobody has heard of should not
+    need an entry in our source to name it.
+    """
+    stub.says("ready")
+
+    added = client.post("/api/connections", json={
+        "provider": "something-nobody-shipped",
+        "adapter": "openai-compatible",
+        "baseUrl": stub.base_url,
+        "models": ["stub-model"],
+    }).json()
+
+    assert added["ok"] is True
+    assert added["connection"]["provider"] == "something-nobody-shipped"
+
+
+def test_an_unknown_provider_with_no_address_still_says_what_is_missing(client):
+    """Relaxing the check must not turn a real mistake into a silent one: with
+    neither a known preset nor an address there is genuinely nothing to call."""
+    answer = client.post("/api/connections", json={
+        "provider": "something-nobody-shipped",
+        "models": ["some-model"],
+    })
+
+    assert answer.status_code == 400
+    assert "something-nobody-shipped" in answer.json()["error"]
+
+
+@pytest.mark.parametrize("hostile", [
+    {"overrides": {"capabilities": "not a mapping"}},
+    {"overrides": {"capabilities": {"vision": "maybe"}}},
+    {"overrides": {"quality": 99999}},
+    {"overrides": {"context_tokens": -1}},
+    {"overrides": {"lifecycle": 12}},
+    {"overrides": {"effort": [1, 2]}},
+    {"overrides": "not a mapping at all"},
+])
+def test_a_malformed_override_cannot_take_the_whole_roster_down(client, stub, hostile):
+    """`overrides` is user-owned data by design — Source.USER beats everything —
+    and it is reachable straight from a PATCH body.
+
+    What makes it worth a test of its own is WHEN it is read. A deployment
+    resolves its version at read time, on every routing pass, so a value that
+    raises during resolution does not spoil the request that set it: it empties
+    the roster on the next read, taking the models screen, the status route and
+    every turn with it. One bad PATCH, and the app reports having no models.
+    """
+    stub.says("ready")
+    added = client.post("/api/connections", json={
+        "provider": "custom", "adapter": "openai-compatible",
+        "baseUrl": stub.base_url, "models": ["some-model"],
+        "resolved": {"adapter": "openai-compatible", "baseUrl": stub.base_url,
+                     "keyRequired": False, "kind": "local"}}).json()
+    model_id = added["added"][0]["id"]
+
+    assert client.patch(f"/api/models/{model_id}", json=hostile).status_code == 200
+
+    listed = client.get("/api/models")
+    assert listed.status_code == 200
+    assert len(listed.json()["models"]) == 1
+    assert client.get("/api/status").json() == {"configured": True}

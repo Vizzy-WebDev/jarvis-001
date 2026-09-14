@@ -235,14 +235,38 @@ def get_db() -> sqlite3.Connection:
 
 
 def reset_for_tests() -> None:
-    """Test-only escape hatch: closes and forgets the cached connection so a
-    fresh JARVIS_DATA_DIR takes effect on the next get_db() call. Production code
-    never calls this — the connection lives for the process lifetime."""
+    """Test-only escape hatch: forgets the cached connection so a fresh
+    JARVIS_DATA_DIR takes effect on the next get_db() call. Production code
+    never calls this — the connection lives for the process lifetime.
+
+    **It deliberately does NOT close the connection, and that is the whole
+    point of this function's current shape.** It used to, and the result was an
+    intermittent interpreter SEGFAULT — not an exception, a hard crash that
+    took the whole test run down with it:
+
+        Fatal Python error: Segmentation fault
+          chat_store.py in get_messages_since
+          memory/review.py in checkpoint_conversation
+          session.py in _run                      <- a daemon thread, mid-query
+          db.py in reset_for_tests                <- the main thread, closing
+
+    `_lock` guards handing the connection OUT; it does not guard using it.
+    `get_db()` returns the handle and releases the lock, and every caller then
+    executes with no lock held — so a background thread (Memory's own
+    checkpoint runs on one, by design) can be inside `execute()` at the exact
+    moment a test's teardown closes the handle underneath it. Closing a
+    sqlite3 connection while another thread is executing on it is undefined
+    behaviour, and this is what it looks like.
+
+    Dropping the reference instead gets the guarantee for free: CPython closes
+    the connection in its deallocator once the last reference is gone, and a
+    thread that called `get_db()` holds one for as long as it is using it. So
+    the close happens exactly when it is safe — after every thread that got the
+    handle has finished with it — rather than whenever teardown happens to run.
+
+    The alternative, a lock held across every query, would serialise all
+    database access in a process that deliberately does real work on background
+    threads. That is a large cost to fix a hazard only the test hook creates.
+    """
     global _db
-    with _lock:
-        if _db is not None:
-            try:
-                _db.close()
-            except sqlite3.Error:
-                pass
-        _db = None
+    _db = None

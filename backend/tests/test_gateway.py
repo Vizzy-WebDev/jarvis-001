@@ -14,23 +14,30 @@ from __future__ import annotations
 
 import pytest
 
-from jarvis.adapters import get_capabilities
-from jarvis.gateway import availability, connections, probe, registry, routing
-from jarvis.gateway.catalog import catalog_defaults, with_capability_defaults
+from jarvis.catalog import Capabilities, Effort, Lifecycle, Support
+from jarvis.gateway import (
+    availability, connections, deployments, effort as effort_store, latency,
+    probe, routing, slots,
+)
+from jarvis.gateway.slots import Role
 from jarvis.gateway.client import Gateway, NoModelAvailable
 from jarvis.gateway.error_kind import classify_error
 from jarvis.gateway.routing import Task, build_candidates, explain_exclusions
 from jarvis.orchestrator.model_port import ModelSwitched, StepComplete, TextChunk
+from jarvis.events import EventType
 from jarvis.events.bus import EventBus
 
+from conftest import candidate
 from stub_openai_server import StubModelServer
 
 
 @pytest.fixture(autouse=True)
 def _isolate(scratch):
-    availability.reset_for_tests()
+    for module in (availability, effort_store, latency, slots):
+        module.reset_for_tests()
     yield
-    availability.reset_for_tests()
+    for module in (availability, effort_store, latency, slots):
+        module.reset_for_tests()
 
 
 @pytest.fixture
@@ -45,24 +52,26 @@ def connect(stub, *, label="stub", secret=None, models=("stub-model",), key_requ
     conn = connections.add_connection(
         adapter="openai-compatible", base_url=stub.base_url, label=label,
         secret=secret, provider="custom", kind="local", key_required=key_required)
-    return [registry.add_model(connection_id=conn["id"], model=m) for m in models]
+    return [deployments.add_deployment(connection_id=conn["id"], model=m) for m in models]
 
 
 # --- connections and models --------------------------------------------------
 
 def test_a_model_inherits_its_connection_s_facts_at_read_time(stub):
     [model] = connect(stub)
-    fresh = registry.get_model(model["id"])
+    fresh = deployments.get_deployment(model["id"])
     assert fresh["baseUrl"] == stub.base_url
     assert fresh["adapter"] == "openai-compatible"
     assert fresh["kind"] == "local"
-    # Capability flags a saved model predates appear without a migration.
-    assert set(fresh["caps"]) >= {"vision", "video", "audio", "webSearch"}
+    # What the model IS is resolved at read time too, so a fact the catalog
+    # learns tomorrow appears on a deployment saved today with no migration.
+    assert fresh["version"].model == "stub-model"
+    assert fresh["version"].capabilities.get("vision") is Support.UNKNOWN
 
 
 def test_a_model_cannot_be_repointed_at_another_connection_by_patching_it(stub):
     [model] = connect(stub)
-    patched = registry.update_model(model["id"], {"baseUrl": "http://evil", "label": "renamed"})
+    patched = deployments.update_deployment(model["id"], {"baseUrl": "http://evil", "label": "renamed"})
     assert patched["label"] == "renamed"
     assert patched["baseUrl"] == stub.base_url, "adapter/address must come from the connection"
 
@@ -70,84 +79,111 @@ def test_a_model_cannot_be_repointed_at_another_connection_by_patching_it(stub):
 def test_the_same_model_name_may_exist_under_two_connections(stub):
     a = connections.add_connection(adapter="openai-compatible", base_url=stub.base_url, label="one")
     b = connections.add_connection(adapter="openai-compatible", base_url=stub.base_url, label="two")
-    registry.add_model(connection_id=a["id"], model="stub-model")
-    registry.add_model(connection_id=b["id"], model="stub-model")
-    assert len(registry.list_models()) == 2
+    deployments.add_deployment(connection_id=a["id"], model="stub-model")
+    deployments.add_deployment(connection_id=b["id"], model="stub-model")
+    assert len(deployments.list_deployments()) == 2
     with pytest.raises(ValueError):
-        registry.add_model(connection_id=a["id"], model="stub-model")
+        deployments.add_deployment(connection_id=a["id"], model="stub-model")
 
 
 def test_deleting_a_connection_takes_its_models_with_it(stub):
     [model] = connect(stub)
-    removed = registry.delete_connection(registry.get_model(model["id"])["connectionId"])
-    assert removed == 1 and registry.list_models() == []
-
-
-# --- the catalog fixes -------------------------------------------------------
-
-def test_mini_inside_gemini_no_longer_scores_a_pro_model_as_fast():
-    """The real defect: an unbounded `mini` matched every Gemini model."""
-    pro = catalog_defaults("gemini", "gemini-4-pro-preview")
-    assert pro["tier"]["quality"] == 5 and pro["tier"]["speed"] == 2
-    genuinely_small = catalog_defaults("openai-compatible", "gpt-4o-mini")
-    assert genuinely_small["tier"]["speed"] == 5
-
-
-def test_a_guessed_entry_says_it_is_a_guess():
-    assert catalog_defaults("gemini", "something-nobody-knows").get("guessed") is True
-    assert "guessed" not in catalog_defaults("gemini", "gemini-3-pro")
-
-
-def test_an_adapter_ceiling_seeds_capabilities_and_the_user_can_override():
-    """§26: the ceiling must not be a permanent gate — that is what made video
-    and web search Gemini-only regardless of what the user knew."""
-    assert get_capabilities("openai-compatible")["video"] is False
-    seeded = with_capability_defaults(None, "openai-compatible", "some-model")
-    assert seeded["video"] is False
-    overridden = with_capability_defaults({"video": True}, "openai-compatible", "some-model")
-    assert overridden["video"] is True, "an explicit user value must survive"
-
-
-def test_a_gateway_hosted_model_is_not_assumed_to_see_images():
-    caps = with_capability_defaults(None, "openai-compatible", "some/music-model",
-                                    "https://openrouter.ai/api/v1", "gateway")
-    assert caps["vision"] is False
-    named = with_capability_defaults(None, "openai-compatible", "some/llava-vl",
-                                     "https://openrouter.ai/api/v1", "gateway")
-    assert named["vision"] is True
+    removed = deployments.delete_connection(deployments.get_deployment(model["id"])["connectionId"])
+    assert removed == 1 and deployments.list_deployments() == []
 
 
 # --- routing -----------------------------------------------------------------
 
 def entry(model_id, **kw):
-    base = {"id": model_id, "model": model_id, "enabled": True, "keyRequired": False,
-            "caps": {"tools": True}, "tier": {"speed": 3, "quality": 3, "cost": 2}}
-    base.update(kw)
+    """A candidate. `caps` and `tier` are gone — see `conftest.candidate`."""
+    base = candidate(model_id, **{k: v for k, v in kw.items()
+                                  if k in ("capabilities", "quality", "lifecycle",
+                                           "context_tokens", "effort", "provider")})
+    base.update({k: v for k, v in kw.items() if k not in (
+        "capabilities", "quality", "lifecycle", "context_tokens", "effort", "provider")})
     return base
 
 
+def sighted(**extra):
+    return Capabilities(tools=Support.YES, vision=Support.YES, **extra)
+
+
 def test_a_known_bad_model_never_outranks_one_that_works():
-    good = entry("good", tier={"speed": 1, "quality": 1, "cost": 4})
-    bad = entry("bad", tier={"speed": 5, "quality": 5, "cost": 0})
+    good = entry("good", quality=1)
+    bad = entry("bad", quality=5)
     availability.record("bad", "quota", detail="out of quota")
     ranked = build_candidates(Task(text="hello"), entries=[bad, good])
     assert [e["id"] for e in ranked] == ["good"], "a benched model must not be offered"
 
 
+@pytest.mark.parametrize("role", list(Role))
+@pytest.mark.parametrize("balance", ["fast", "balanced", "quality"])
+def test_the_availability_bonus_still_outweighs_every_scoring_branch(role, balance):
+    """`AVAILABILITY_BONUS` claims to exceed the widest spread `_score` can
+    produce. Every input the formula reads changed at the switchover — quality
+    now comes from the catalog, price from recorded spend, speed from recorded
+    latency — so the claim has to be re-established rather than inherited.
+
+    The worst case is the best conceivable dead model against the worst
+    conceivable working one, in each branch.
+    """
+    best = entry("dead-but-perfect", quality=5,
+                 capabilities=Capabilities(tools=Support.YES, vision=Support.YES))
+    worst = entry("alive-but-poor", quality=0,
+                  capabilities=Capabilities(tools=Support.YES, vision=Support.NO))
+    for _ in range(latency.MIN_SAMPLES):
+        latency.record("dead-but-perfect", 10)      # fastest bucket
+        latency.record("alive-but-poor", 60_000)    # slowest bucket
+    availability.record("dead-but-perfect", "quota", detail="out of quota")
+
+    ranked = build_candidates(Task(text="write an essay", role=role),
+                              balance=balance, entries=[best, worst])
+
+    assert [e["id"] for e in ranked] == ["alive-but-poor"]
+
+
 def test_ties_break_deterministically_not_on_file_order():
-    a = entry("zeta", tier={"speed": 5, "quality": 3, "cost": 1})
-    b = entry("alpha", tier={"speed": 5, "quality": 3, "cost": 1})
+    a, b = entry("zeta", quality=3), entry("alpha", quality=3)
     assert [e["id"] for e in build_candidates(Task(), entries=[a, b])] == ["alpha", "zeta"]
 
 
 def test_a_need_is_enforced_by_the_router_itself():
     """In the Node version the router had no concept of this, so the check lived
     in one caller and was missing from another entirely."""
-    blind = entry("blind", caps={"tools": True, "vision": False})
-    seeing = entry("seeing", caps={"tools": True, "vision": True})
+    blind = entry("blind", capabilities=Capabilities(tools=Support.YES, vision=Support.NO))
+    seeing = entry("seeing", capabilities=sighted())
     task = Task(text="what's in this picture", need={"vision": True})
     assert [e["id"] for e in build_candidates(task, entries=[blind, seeing])] == ["seeing"]
     assert explain_exclusions(task, entries=[blind, seeing])["counts"] == {"no_vision": 1}
+
+
+def test_a_model_nobody_has_asked_about_is_still_offered_for_an_image():
+    """The switchover's own change, and the one worth stating out loud.
+
+    The old `caps` dict had two states, so "we have never established whether
+    this model can see" arrived as `False` and the model was hidden with no
+    visible reason — which is what made video and web search effectively
+    Gemini-only whatever the user knew about their own roster. `UNKNOWN` is now
+    offered and allowed to fail honestly, which is the only way anybody finds
+    out. Only a definite NO excludes.
+    """
+    unasked = entry("unasked")                       # everything UNKNOWN
+    refused = entry("refused", capabilities=Capabilities(vision=Support.NO))
+    task = Task(text="what's in this picture", needs_tools=False, need={"vision": True})
+
+    ranked = build_candidates(task, entries=[unasked, refused])
+
+    assert [e["id"] for e in ranked] == ["unasked"]
+    assert explain_exclusions(task, entries=[unasked, refused])["counts"] == {"no_vision": 1}
+
+
+def test_a_model_the_provider_has_retired_is_not_offered_at_all():
+    """A dropped model used to be invisible: it failed, cooled down, and was
+    rediscovered as a dead end every few hours, forever."""
+    gone = entry("gone", lifecycle=Lifecycle.RETIRED)
+    here = entry("here")
+    assert [e["id"] for e in build_candidates(Task(), entries=[gone, here])] == ["here"]
+    assert explain_exclusions(Task(), entries=[gone, here])["counts"] == {"retired": 1}
 
 
 def test_a_pin_leads_but_does_not_become_a_single_point_of_failure():
@@ -158,9 +194,48 @@ def test_a_pin_leads_but_does_not_become_a_single_point_of_failure():
 
 def test_exclusions_are_explained_with_the_same_predicate_that_excluded():
     off = entry("off", enabled=False)
-    toolless = entry("toolless", caps={"tools": False})
+    toolless = entry("toolless", capabilities=Capabilities(tools=Support.NO))
     counts = explain_exclusions(Task(), entries=[off, toolless])["counts"]
     assert counts == {"disabled": 1, "no_tools": 1}
+
+
+def test_a_measured_latency_is_what_makes_the_fast_dial_mean_anything():
+    """`tier.speed` was a name regex and was deleted with the rest of them.
+
+    Nothing replaced it until this: without a measured reading, "fast" and
+    "balanced" would rank identically and the preference would silently do
+    nothing. Both models here are equal on every other term, so the ordering is
+    the measurement and nothing else.
+    """
+    quick, slow = entry("quick"), entry("slow")
+    for _ in range(latency.MIN_SAMPLES):
+        latency.record("quick", 150)
+        latency.record("slow", 8000)
+
+    ranked = build_candidates(Task(text="hi"), balance="fast", entries=[quick, slow])
+    assert [e["id"] for e in ranked] == ["quick", "slow"]
+
+
+def test_an_unmeasured_model_is_neither_rewarded_nor_punished_for_it():
+    """A model nobody has timed sits at the neutral reading, so it competes on
+    the terms something IS known about rather than being ranked last for having
+    no history — which would mean a newly added model never got a first turn."""
+    fresh, measured = entry("fresh"), entry("measured")
+    for _ in range(latency.MIN_SAMPLES):
+        latency.record("measured", 3000)            # slower than neutral
+
+    ranked = build_candidates(Task(text="hi"), balance="fast", entries=[fresh, measured])
+    assert [e["id"] for e in ranked] == ["fresh", "measured"]
+
+
+def test_one_cold_start_does_not_decide_how_a_model_is_ranked():
+    """A first call to a cold endpoint is routinely several times slower than
+    every call after it, and a tier taken from that one reading would bench a
+    fast model on its own warm-up."""
+    latency.record("cold", 9000)
+    assert latency.speed_tier("cold") is None, "one sample is not an average"
+    latency.record("cold", 200)
+    assert latency.speed_tier("cold") is not None
 
 
 # --- error classification ----------------------------------------------------
@@ -286,3 +361,166 @@ def test_a_probe_shows_its_working_even_when_it_fails():
     result = probe.probe_endpoint("http://127.0.0.1:19999")
     assert result.ok is False
     assert len(result.steps) >= 2, "every attempt must be narrated, not swallowed"
+
+
+# --- effort, end to end ------------------------------------------------------
+
+def test_the_level_a_role_asks_for_reaches_the_wire(stub):
+    """The whole point of the slot's second half.
+
+    Nothing between the setting and the request re-decides it: the slot names a
+    level, the version's scheme says what that means here, and the adapter
+    spells it. A control that stops somewhere in the middle is worse than no
+    control, because it looks like it worked.
+    """
+    stub.says("thought about it")
+    connect(stub, models=("gpt-5-mini",))
+    slots.assign(Role.CONVERSATION, effort=Effort.HIGH)
+
+    collect(Gateway(event_bus=EventBus()))
+
+    sent = [r["body"] for r in stub.requests if r["path"].endswith("/chat/completions")]
+    assert sent and sent[-1]["reasoning_effort"] == "high"
+
+
+def test_nothing_is_sent_for_a_version_that_has_no_reasoning_control(stub):
+    """An UNKNOWN scheme is not a scheme with a default. Sending a parameter on
+    the chance it works would spend a failed round trip per turn on exactly the
+    rosters — local, small, unlisted — least able to afford one."""
+    stub.says("fine")
+    connect(stub, models=("stub-model",))          # matches no catalog rule
+    slots.assign(Role.CONVERSATION, effort=Effort.HIGH)
+
+    collect(Gateway(event_bus=EventBus()))
+
+    sent = [r["body"] for r in stub.requests if r["path"].endswith("/chat/completions")]
+    assert sent and "reasoning_effort" not in sent[-1]
+
+
+def test_a_clamp_is_announced_rather_than_applied_quietly(stub):
+    """Asking for more than a version can take is the NORMAL case — the ladders
+    genuinely differ between providers — so it lowers the request rather than
+    failing the turn. But a clamp nobody can see is indistinguishable from the
+    setting being ignored, which is how a control teaches people it does not
+    work. Gemini's level enum stops at HIGH; the ladder does not.
+    """
+    stub.says("ok")
+    connect(stub, models=("gemini-3-pro",))
+    slots.assign(Role.CONVERSATION, effort=Effort.MAX)
+
+    started = []
+    ebus = EventBus()
+    ebus.subscribe(EventType.MODEL_CALL_STARTED, lambda e: started.append(e.payload))
+    collect(Gateway(event_bus=ebus))
+
+    assert started[-1]["effort"] == "HIGH"
+    assert started[-1]["effortRequested"] == "MAX"
+    assert started[-1]["effortClamped"] is True
+
+
+def test_an_honoured_level_is_reported_without_claiming_a_clamp(stub):
+    """Guards the test above: a payload that always said `clamped` would make it
+    pass while proving nothing."""
+    stub.says("ok")
+    connect(stub, models=("gemini-3-pro",))
+    slots.assign(Role.CONVERSATION, effort=Effort.LOW)
+
+    started = []
+    ebus = EventBus()
+    ebus.subscribe(EventType.MODEL_CALL_STARTED, lambda e: started.append(e.payload))
+    collect(Gateway(event_bus=ebus))
+
+    assert started[-1]["effort"] == "LOW"
+    assert "effortClamped" not in started[-1]
+
+
+def test_a_refused_parameter_is_paid_for_once_rather_than_every_turn(stub):
+    """The learned refusal, through the real gateway rather than in isolation.
+
+    A version whose scheme says TIERS can still be served by an endpoint that
+    rejects the parameter. The retry costs one round trip; not remembering it
+    would cost one on every turn for the life of the install.
+    """
+    stub.fails(400, "Unrecognized request argument supplied: reasoning_effort").says("second try")
+    connect(stub, models=("gpt-5-mini",))
+    slots.assign(Role.CONVERSATION, effort=Effort.HIGH)
+
+    events = collect(Gateway(event_bus=EventBus()))
+    assert "".join(e.text for e in events if isinstance(e, TextChunk)) == "second try"
+
+    sent = [r["body"] for r in stub.requests if r["path"].endswith("/chat/completions")]
+    assert "reasoning_effort" in sent[0] and "reasoning_effort" not in sent[1]
+
+    # And the next turn does not re-learn it.
+    stub.says("third")
+    collect(Gateway(event_bus=EventBus()))
+    sent = [r["body"] for r in stub.requests if r["path"].endswith("/chat/completions")]
+    assert "reasoning_effort" not in sent[-1]
+
+
+# --- the role reaches the routing -------------------------------------------
+
+def test_a_spoken_turn_is_ranked_for_latency_and_a_typed_one_is_not(stub):
+    """Before the switchover every turn arrived as a default text conversation
+    however it had started, so the voice scoring branch was unreachable."""
+    quick, careful = entry("quick", quality=1), entry("careful", quality=5)
+    for _ in range(latency.MIN_SAMPLES):
+        latency.record("quick", 100)
+        latency.record("careful", 7000)
+
+    # One question, asked two ways. `compare` is a reasoning hint, so the typed
+    # branch weighs quality; the spoken branch never reaches that test at all.
+    asked = "compare the two settlements and why the difference mattered"
+    spoken = build_candidates(Task(text=asked, role=Role.VOICE), entries=[careful, quick])
+    typed = build_candidates(Task(text=asked, role=Role.CONVERSATION), entries=[careful, quick])
+
+    assert spoken[0]["id"] == "quick", "latency is most of a spoken reply's experience"
+    assert typed[0]["id"] == "careful", "a typed question this long wants the better answer"
+
+
+def test_the_balance_dial_is_read_per_turn_rather_than_at_startup(stub):
+    """It used to be baked into the gateway when the orchestrator singleton was
+    built, so changing it did nothing until the process restarted."""
+    from jarvis import prefs
+
+    quick, careful = entry("quick", quality=1), entry("careful", quality=5)
+    for _ in range(latency.MIN_SAMPLES):
+        latency.record("quick", 100)
+        latency.record("careful", 7000)
+
+    prefs.set_prefs({"balance": "quality"})
+    assert build_candidates(Task(text="hi"), entries=[quick, careful])[0]["id"] == "careful"
+
+    prefs.set_prefs({"balance": "fast"})
+    assert build_candidates(Task(text="hi"), entries=[quick, careful])[0]["id"] == "quick"
+
+
+def test_a_record_too_damaged_to_resolve_is_not_waved_through(stub):
+    """A deployment with no resolvable version reads as "everything unknown",
+    which is the same state as a model nobody has asked about — so it is still
+    offered for an ordinary turn, and still refused for the one capability
+    where unknown is not good enough."""
+    broken = {"id": "broken", "model": "x", "enabled": True, "keyRequired": False}
+
+    assert [e["id"] for e in build_candidates(Task(), entries=[broken])] == ["broken"]
+    assert build_candidates(Task(need={"webSearch": True}), entries=[broken]) == []
+
+
+def test_a_task_s_own_pin_beats_the_role_s_standing_choice():
+    """Two pins, and the order between them matters.
+
+    A scheduled task naming its model is a one-off decision about THIS run; the
+    role's slot is a standing preference about that kind of work. The specific
+    one has to win, or a task that names a model would silently run on whatever
+    the background job was set to — which reads as the task's setting being
+    ignored.
+
+    Both are still pins, so the rest of the roster stays behind them.
+    """
+    a, b, c = entry("a"), entry("b"), entry("c")
+    slots.assign(Role.BACKGROUND, deployment_id="b")
+
+    ranked = build_candidates(Task(text="run it", role=Role.BACKGROUND),
+                              model_id="c", entries=[a, b, c])
+
+    assert [e["id"] for e in ranked] == ["c", "b", "a"]

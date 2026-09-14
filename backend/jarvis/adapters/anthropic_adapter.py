@@ -21,12 +21,13 @@ from __future__ import annotations
 import json
 from typing import Any, Iterator
 
+from ..catalog import EffortKind, EffortRequest
 from ..config import get_secret
 from ..conversation import assistant_text_of
 from ..orchestrator.model_port import ModelEvent, StepComplete, TextChunk, ToolCall
 from ..prompt_format import CACHE_BREAK
 from . import usage as usage_read
-from .base import AdapterError
+from .base import AdapterError, model_for
 
 name = "anthropic"
 
@@ -116,20 +117,45 @@ def _tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
             for t in tools or []]
 
 
+def _thinking(effort: EffortRequest | None) -> dict[str, Any] | None:
+    """The `thinking` block, when this version speaks a token budget.
+
+    Confirmed against the installed SDK rather than remembered: `messages.create`
+    takes `thinking`, and its enabled form carries `budget_tokens`.
+
+    A budget of zero means OFF, and OFF sends no block at all. "Think with a
+    budget of nothing" is not a request any provider accepts, and it is not what
+    the person meant either — they meant don't.
+
+    A TIERS scheme is skipped rather than converted into some invented number of
+    tokens: guessing what a tier is worth here would be inventing the one thing
+    the catalog exists to stop being invented.
+    """
+    if effort is None or effort.kind is not EffortKind.BUDGET:
+        return None
+    budget = effort.native
+    if not budget:
+        return None
+    return {"type": "enabled", "budget_tokens": int(budget)}
+
+
 def stream(
     entry: dict[str, Any],
     messages: list[dict[str, Any]],
     *,
     system: str = "",
     tools: list[dict[str, Any]] | None = None,
+    effort: EffortRequest | None = None,
 ) -> Iterator[ModelEvent]:
     client = _client(entry)
+    thinking = _thinking(effort)
     with client.messages.stream(
-        model=entry["model"],
+        model=model_for(entry, effort),
         max_tokens=MAX_TOKENS,
         system=_system_blocks(system),
         messages=to_wire(messages),
         tools=_tools(tools),
+        **({"thinking": thinking} if thinking else {}),
     ) as running:
         for event in running:
             if (getattr(event, "type", None) == "content_block_delta"

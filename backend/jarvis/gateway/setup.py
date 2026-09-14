@@ -1,6 +1,6 @@
 """Adding a connection, and finding out what it can do.
 
-The orchestration between the stores (`connections.py`, `registry.py`) and the
+The orchestration between the stores (`connections.py`, `deployments.py`) and the
 adapters: discovery, the reachability check, and the one call that creates a
 connection with its first models. Kept out of the route module so the logic is
 testable without HTTP, and out of the stores so they stay leaves.
@@ -21,12 +21,12 @@ from typing import Any
 
 from ..adapters import get_adapter
 from ..redact import redact
-from .catalog import infer_billing
 from .connections import add_connection, get_connection
 from .error_kind import find_message
 from .probe import probe_endpoint
-from .providers import get_provider, provider_for_legacy
-from .registry import add_models, list_models
+from .providers import get_provider
+from .deployments import add_deployments, list_deployments
+from .discovery import for_picker
 
 logger = logging.getLogger(__name__)
 
@@ -59,21 +59,6 @@ def _entry_for(adapter: str | None, base_url: str | None, secret: str | None,
     return entry
 
 
-def _normalise(models: Any, adapter: str | None, base_url: str | None,
-               kind: str | None) -> list[dict[str, Any]]:
-    out = []
-    for raw in models or []:
-        item = {"model": raw} if isinstance(raw, str) else dict(raw)
-        if not item.get("model"):
-            continue
-        item.setdefault("label", item["model"])
-        item.setdefault("contextTokens", None)
-        if item.get("billing") is None:
-            item["billing"] = infer_billing(adapter, base_url, item["model"], kind)
-        out.append(item)
-    return out
-
-
 def discover_models(*, adapter: str | None = None, base_url: str | None = None,
                     secret: str | None = None,
                     connection_id: str | None = None) -> dict[str, Any]:
@@ -89,15 +74,13 @@ def discover_models(*, adapter: str | None = None, base_url: str | None = None,
     (connection, model) is the uniqueness rule. The same model under a different
     connection is untouched and still offered.
     """
-    resolved_adapter, resolved_base, secret_ref, kind = adapter, base_url, None, None
+    resolved_adapter, resolved_base, secret_ref = adapter, base_url, None
     if connection_id:
         conn = get_connection(connection_id)
         if conn is not None:
             resolved_adapter = conn.get("adapter")
             resolved_base = conn.get("baseUrl")
             secret_ref = conn.get("secretRef")
-            kind = conn.get("kind") or provider_for_legacy(conn.get("adapter"),
-                                                           conn.get("baseUrl"))["kind"]
 
     module = get_adapter(resolved_adapter or "openai-compatible")
     try:
@@ -107,9 +90,10 @@ def discover_models(*, adapter: str | None = None, base_url: str | None = None,
         return {"models": [],
                 "error": _plain(module, err, "Could not discover models at that address.")}
 
-    items = _normalise(found, resolved_adapter, resolved_base, kind)
+    items = for_picker(found)
     if connection_id:
-        already = {e.get("model") for e in list_models() if e.get("connectionId") == connection_id}
+        already = {e.get("model") for e in list_deployments()
+                   if e.get("connectionId") == connection_id}
         items = [item for item in items if item["model"] not in already]
     return {"models": items, "error": None}
 
@@ -163,8 +147,18 @@ def create_connection_with_models(*, provider: str | None = None, adapter: str |
     if provider:
         row = get_provider(provider)
         if row is None:
-            raise ValueError(f"Unknown provider: {provider}")
-        if provider == "custom":
+            # An unrecognised provider is not an error when the caller has said
+            # how to talk to it. The five entries in `providers.py` are setup
+            # PRESETS — a shortcut that fills in an address and a wire format
+            # for the common cases — and treating them as the complete set of
+            # providers that may exist is the hardcoding this rebuild is
+            # removing. A name nobody shipped is just a name nobody shipped.
+            if not adapter:
+                raise ValueError(
+                    f"I don't know a provider called {provider!r}, and no address was "
+                    "given either — so there's nothing to connect to.")
+            row = None
+        elif provider == "custom":
             if (resolved and resolved.get("adapter") and resolved.get("baseUrl")
                     and isinstance(resolved.get("keyRequired"), bool)):
                 # The PROBE's base url, not the raw one: normalising it (trying
@@ -205,4 +199,5 @@ def create_connection_with_models(*, provider: str | None = None, adapter: str |
     conn = add_connection(adapter=resolved_adapter, base_url=resolved_base, label=label,
                           secret=secret, provider=provider, kind=kind,
                           key_required=key_required)
-    return {"ok": True, "connection": conn, **add_models(conn["id"], wanted), "steps": steps}
+    return {"ok": True, "connection": conn,
+            **add_deployments(conn["id"], wanted), "steps": steps}

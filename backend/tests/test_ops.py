@@ -503,7 +503,7 @@ def test_a_job_that_finishes_the_wrong_thing_is_treated_exactly_like_a_stall(mon
     retry, on the same counter, and escalates the same way a stall does."""
     from jarvis import assembly, conversation
     from jarvis.gateway import availability, connections
-    from jarvis.gateway import registry as model_registry
+    from jarvis.gateway import deployments as model_registry
     from jarvis.jobs import job_store, orchestrator, worker
 
     from stub_openai_server import StubModelServer
@@ -514,7 +514,7 @@ def test_a_job_that_finishes_the_wrong_thing_is_treated_exactly_like_a_stall(mon
         conn = connections.add_connection(adapter="openai-compatible", base_url=base_url,
                                           label="stub", provider="custom", kind="local",
                                           key_required=False)
-        model_registry.add_model(connection_id=conn["id"], model="stub-model")
+        model_registry.add_deployment(connection_id=conn["id"], model="stub-model")
         monkeypatch.setattr("jarvis.ops.verify.verify_semantic_match",
                             lambda **kw: verify.Verdict(True, False, "it answered something else"))
 
@@ -544,7 +544,7 @@ def test_a_job_that_finishes_the_wrong_thing_is_treated_exactly_like_a_stall(mon
 def test_a_job_whose_result_could_not_be_checked_still_completes(monkeypatch):
     from jarvis import assembly, conversation
     from jarvis.gateway import availability, connections
-    from jarvis.gateway import registry as model_registry
+    from jarvis.gateway import deployments as model_registry
     from jarvis.jobs import job_store, worker
 
     from stub_openai_server import StubModelServer
@@ -555,7 +555,7 @@ def test_a_job_whose_result_could_not_be_checked_still_completes(monkeypatch):
         conn = connections.add_connection(adapter="openai-compatible", base_url=base_url,
                                           label="stub", provider="custom", kind="local",
                                           key_required=False)
-        model_registry.add_model(connection_id=conn["id"], model="stub-model")
+        model_registry.add_deployment(connection_id=conn["id"], model="stub-model")
         monkeypatch.setattr("jarvis.ops.verify.verify_semantic_match",
                             lambda **kw: verify.Verdict(False, None))
         stub.says("Finished.")

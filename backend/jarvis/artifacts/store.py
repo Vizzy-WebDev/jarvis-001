@@ -28,7 +28,7 @@ from ..store import data_dir
 
 logger = logging.getLogger(__name__)
 
-VERIFIABLE = {".docx", ".xlsx"}
+VERIFIABLE = {".docx", ".xlsx", ".pptx"}
 MAX_FILENAME = 80
 
 
@@ -75,6 +75,7 @@ def safe_name(name: str, default: str = "artifact") -> str:
 MIME_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".txt": "text/plain", ".md": "text/markdown", ".csv": "text/csv",
     ".json": "application/json", ".html": "text/html", ".svg": "image/svg+xml",
     ".png": "image/png", ".pdf": "application/pdf",

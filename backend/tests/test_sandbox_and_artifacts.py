@@ -18,10 +18,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from jarvis import artifacts, sandbox
-from jarvis.artifacts.office import entry_names, write_docx, write_xlsx
+from jarvis.artifacts.office import entry_names, write_docx, write_pptx, write_xlsx
 from jarvis.capabilities import CapabilityRegistry, Risk
 from jarvis.db import reset_for_tests as reset_db
-from jarvis.documents import read_docx, read_xlsx
+from jarvis.documents import read_docx, read_pptx, read_xlsx
 from jarvis.main import create_app
 from jarvis.sandbox.runner import child_environment
 from jarvis.tools import load_tools
@@ -112,7 +112,8 @@ def test_every_zip_entry_name_uses_forward_slashes(staging):
     on Windows that produces a file with the right signature that Word will not
     open at all. Read back from a real archive rather than assumed."""
     for path in (write_docx(staging / "a.docx", ["Hi"]),
-                 write_xlsx(staging / "b.xlsx", [["a", 1]])):
+                 write_xlsx(staging / "b.xlsx", [["a", 1]]),
+                 write_pptx(staging / "c.pptx", [{"title": "T", "bullets": []}])):
         names = entry_names(path)
         assert names and all("\\" not in name for name in names)
         assert "[Content_Types].xml" in names
@@ -132,6 +133,43 @@ def test_a_spreadsheet_round_trips_with_numbers_still_numbers(staging):
 def test_special_characters_do_not_corrupt_the_package(staging):
     path = write_docx(staging / "x.docx", ['5 < 6 & "quoted" > done'])
     assert read_docx(path) == '5 < 6 & "quoted" > done'
+
+
+# --- .pptx: writing, and the master/theme chain a real earlier build disclosed
+# as its own verification gap --------------------------------------------------
+
+def test_a_presentation_round_trips_through_an_independently_written_reader(staging):
+    path = write_pptx(staging / "p.pptx", [
+        {"title": "Welcome", "bullets": ["First point", "Second & third <ok>"]},
+        {"title": "Thanks", "bullets": []},
+    ])
+    assert read_pptx(path) == ["Welcome\nFirst point\nSecond & third <ok>", "Thanks"]
+
+
+def test_a_broken_master_theme_chain_fails_verification(staging):
+    """The exact gap a real, earlier build's own pptx writer disclosed: a
+    slide's own text parsing fine is not evidence the deck actually opens —
+    its master must really resolve to a real layout too. Read back from a
+    deliberately corrupted archive rather than asserted from the writer's own
+    code, the same discipline every test in this file already follows."""
+    path = write_pptx(staging / "d.pptx", [{"title": "Hi", "bullets": ["one"]}])
+    with zipfile.ZipFile(path) as archive:
+        entries = {name: archive.read(name) for name in archive.namelist()}
+    rels_name = "ppt/slideMasters/_rels/slideMaster1.xml.rels"
+    entries[rels_name] = entries[rels_name].decode().replace(
+        "../slideLayouts/slideLayout1.xml", "../slideLayouts/does-not-exist.xml").encode()
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, data in entries.items():
+            archive.writestr(name, data)
+
+    with pytest.raises(KeyError, match="missing part"):
+        read_pptx(path)
+
+
+def test_a_presentation_passes_verification_when_kept(staging):
+    kept = artifacts.keep(
+        write_pptx(staging / "ok.pptx", [{"title": "Hi", "bullets": ["a point"]}]))
+    assert artifacts.get(kept.id).verified is True
 
 
 # --- keeping and verifying ---------------------------------------------------
@@ -176,6 +214,32 @@ def test_creating_a_document_produces_something_that_opens(reg):
     result = _run(filename="Report.docx", paragraphs=["One.", "Two."])
     assert result["ok"] and result["verified"] is True
     assert read_docx(artifacts.get(result["id"]).path) == "One.\nTwo."
+
+
+def test_creating_a_presentation_produces_something_that_opens(reg):
+    from jarvis.tools.create_artifact import _run
+
+    result = _run(filename="Deck.pptx",
+                  slides=[{"title": "Intro", "bullets": ["Point one", "Point two"]}])
+    assert result["ok"] and result["verified"] is True
+    assert read_pptx(artifacts.get(result["id"]).path) == ["Intro\nPoint one\nPoint two"]
+
+
+def test_a_presentation_falls_back_to_plain_text_slides(reg):
+    """No `slides` argument — a model that just sent `content` still gets a
+    real deck, the same fallback `.docx`/`.xlsx` already offer."""
+    from jarvis.tools.create_artifact import _run
+
+    result = _run(filename="Deck.pptx", content="Intro\n- Point one\n- Point two\n\nThanks")
+    assert result["ok"] and result["verified"] is True
+    assert read_pptx(artifacts.get(result["id"]).path) == ["Intro\nPoint one\nPoint two", "Thanks"]
+
+
+def test_a_presentation_with_nothing_to_say_is_refused(reg):
+    from jarvis.tools.create_artifact import _run
+
+    result = _run(filename="Empty.pptx", content="")
+    assert result["ok"] is False and "nothing to put" in result["error"]
 
 
 def test_image_generation_is_refused_plainly(reg):

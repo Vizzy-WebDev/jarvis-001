@@ -13,18 +13,20 @@ nothing, and saying so up front is better than producing an empty file.
 
 from __future__ import annotations
 
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
 
-from ..artifacts import keep, safe_name, write_docx, write_xlsx
+from ..artifacts import keep, safe_name, write_docx, write_pptx, write_xlsx
 from ..capabilities import CapabilitySpec, Risk
 
 TEXT_FORMATS = {".txt", ".md", ".csv", ".json", ".html", ".svg"}
 
 
 def _run(filename: str = "", content: str = "", rows: list[Any] | None = None,
-         paragraphs: list[str] | None = None) -> dict[str, Any]:
+         paragraphs: list[str] | None = None,
+         slides: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     name = safe_name(filename)
     if not name or "." not in name:
         return {"ok": False, "error": "I need a filename with an extension."}
@@ -42,6 +44,11 @@ def _run(filename: str = "", content: str = "", rows: list[Any] | None = None,
             if not grid:
                 return {"ok": False, "error": "There's nothing to put in the spreadsheet."}
             write_xlsx(staging, grid)
+        elif suffix == ".pptx":
+            deck = slides or _slides_from_text(content)
+            if not deck:
+                return {"ok": False, "error": "There's nothing to put in the presentation."}
+            write_pptx(staging, deck)
         elif suffix in TEXT_FORMATS:
             # Written exactly as given: for these, the content IS the file, and
             # reformatting it would be changing what was asked for.
@@ -50,7 +57,8 @@ def _run(filename: str = "", content: str = "", rows: list[Any] | None = None,
         else:
             return {"ok": False,
                     "error": f"I can't make a {suffix} file. I can do documents (.docx), "
-                             "spreadsheets (.xlsx), and plain text formats."}
+                             "spreadsheets (.xlsx), presentations (.pptx), and plain text "
+                             "formats."}
     except Exception as err:  # noqa: BLE001
         return {"ok": False, "error": f"I couldn't build that file: {err}"}
 
@@ -71,17 +79,40 @@ def _rows_from_csv(content: str) -> list[list[str]]:
     return [row for row in csv.reader(io.StringIO(content))]
 
 
+def _slides_from_text(content: str) -> list[dict[str, Any]]:
+    """The same fallback-from-plain-text convention `.docx`'s blank-line split
+    and `.xlsx`'s `_rows_from_csv` already use: a model that just sends
+    `content` with no structured `slides` still gets a real deck. Each
+    blank-line-separated block becomes one slide — its first line the title,
+    the rest its bullets (a leading `-`/`*` stripped if the model wrote one)."""
+    blocks = [b.strip() for b in (content or "").split("\n\n") if b.strip()]
+    slides = []
+    for block in blocks:
+        lines = [line.strip() for line in block.split("\n") if line.strip()]
+        if not lines:
+            continue
+        title, *rest = lines
+        slides.append({"title": title, "bullets": [re.sub(r"^[-*]\s*", "", line) for line in rest]})
+    return slides
+
+
 SPEC = CapabilitySpec(
     id="builtin.create_artifact", name="create_artifact",
     description=("Produce a real file the user can open — a document (.docx), a spreadsheet "
-                 "(.xlsx), or plain text (.txt, .md, .csv, .json, .html, .svg). Cannot make "
-                 "images or photographs: there is no image generation here at all."),
+                 "(.xlsx), a presentation (.pptx), or plain text (.txt, .md, .csv, .json, "
+                 ".html, .svg). Cannot make images or photographs: there is no image "
+                 "generation here at all."),
     input_schema={"type": "object", "properties": {
         "filename": {"type": "string", "description": "Including the extension."},
         "content": {"type": "string",
-                    "description": "The text. For .xlsx, CSV rows if `rows` is not given."},
+                    "description": "The text. For .xlsx, CSV rows if `rows` is not given. "
+                                   "For .pptx, blank-line-separated slides (first line of "
+                                   "each is the title) if `slides` is not given."},
         "rows": {"type": "array", "description": "For .xlsx: a list of rows, each a list."},
-        "paragraphs": {"type": "array", "description": "For .docx: one string per paragraph."}},
+        "paragraphs": {"type": "array", "description": "For .docx: one string per paragraph."},
+        "slides": {"type": "array",
+                   "description": "For .pptx: a list of slides, each "
+                                  "{title: string, bullets: list of strings}."}},
         "required": ["filename"]},
     # It writes a file into the user's own space, and a wrong one is clutter
     # rather than damage — but it is still a write, so it is not LOW.

@@ -22,7 +22,15 @@ W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 S = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
-R = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+#: The namespace an `r:id`/`r:embed` ATTRIBUTE lives in wherever a content part
+#: references a relationship by id (a `<sheet r:id="...">`, a `<p:sldId r:id="...">`).
+#: Not the same URI as a `.rels` file's own root element namespace
+#: (`.../package/2006/relationships`, no `r:id` attribute ever uses it) — found
+#: while building the .pptx writer's own verification reader, which has no
+#: positional fallback to silently mask this the way `_sheet_parts()`'s
+#: `targets.get(rel_id or "", f"worksheets/sheet{index}.xml")` and
+#: `_slide_order()`'s final `sorted(...)` fallback both happened to here.
+R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 
 OFFICE_SUFFIXES = frozenset({".docx", ".xlsx", ".pptx"})
 

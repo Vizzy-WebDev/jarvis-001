@@ -30,24 +30,10 @@ artifact takes: never left behind pretending to be a real deliverable.
 
 Format-agnostic BY CONSTRUCTION — `create_artifact.py`'s `name` argument's own
 extension decides everything; most formats need no "writer" at all (the given content
-is just written as bytes). Only `.docx`/`.xlsx` need real assembly, and both writers
-(`write_docx`, `write_xlsx`) live together in this one file, not a `writers/`
-subdirectory and not one file per format the way the Node original split them —
-there was never enough writer-specific logic here to justify the split.
-
-**PowerPoint (`.pptx`) can be READ but never WRITTEN — no writer exists under any
-name, at any point in this port.** Reading one already works:
-`documents/office.py`'s `pptx_to_markdown()` is wired into `extract_document()`
-exactly like the docx/xlsx readers, so Jarvis can already summarise a `.pptx` it is
-handed. Producing one is a different story: `create_artifact.py` does not
-special-case `.pptx` at all — an unrecognised suffix falls straight through to its
-generic refusal, "I can't make a {suffix} file. I can do documents (.docx),
-spreadsheets (.xlsx), and plain text formats." — which is the accurate, complete
-list of what this build can PRODUCE. (An earlier version of this doc, carried over
-mechanically from the Node build at the S6 cutover, described a `pptx.py` writer
-with real OOXML DrawingML/PresentationML assembly and a disclosed master/theme
-verification gap — no such writer exists in the Python port. If PowerPoint writing
-is ever wanted, it is new work, not a gap to close in code that is already there.)
+is just written as bytes). `.docx`/`.xlsx`/`.pptx` need real assembly, and all three
+writers (`write_docx`, `write_xlsx`, `write_pptx`) live together in this one file, not
+a `writers/` subdirectory and not one file per format the way the Node original split
+them — there was never enough writer-specific logic here to justify the split.
 
 - **This file's own header comment documents a real, live-caught bug** this build's
   own verification found: PowerShell's `Compress-Archive` (and even .NET's
@@ -64,10 +50,36 @@ is ever wanted, it is new work, not a gap to close in code that is already there
   (headings, bold, tables, images, formulas) — these are writers for Jarvis's OWN
   generated text output, not a general document-authoring engine. **Both verified by
   round-tripping their own output through this project's REAL, independently-built
-  reader** (`documents/office.py`'s `docx_to_markdown()`/`xlsx_to_markdown()`) — the
-  honest verification technique available in an environment with no real Word/Excel
-  to open a file in, and the exact technique that caught the backslash-path bug above
-  before it ever shipped.
+  reader** (`documents/reader.py`'s `read_docx()`/`read_xlsx()`) — the honest
+  verification technique available in an environment with no real Word/Excel to open a
+  file in, and the exact technique that caught the backslash-path bug above before it
+  ever shipped.
+- **`write_pptx`** — a real OOXML PresentationML writer, closing what used to be a
+  disclosed gap ("PowerPoint can be read but never written"). One fixed slide layout
+  (title + body text, plain paragraphs — no real bulleted-list glyphs, same honesty
+  `write_docx` already practices by never emitting `<w:numPr>` list numbering either),
+  one fixed theme, widescreen. A real presentation needs more parts than a `.docx`/
+  `.xlsx` ever did — `[Content_Types].xml`, `_rels/.rels`, `ppt/presentation.xml` (+
+  its own `_rels`), a slideMaster/slideLayout/theme chain, and one `ppt/slides/slideN.xml`
+  (+ its own `_rels`) per slide — but the master/layout/theme are CONSTANT boilerplate
+  every deck, the same way `write_docx`'s own `[Content_Types].xml` never changes
+  either; only `presentation.xml`, its rels, and the per-slide parts vary with content.
+  No `docProps/` — `write_docx`/`write_xlsx` already omit it and open fine, so this
+  stays consistent rather than starting a new convention. **Verified by round-tripping
+  through `documents/reader.py`'s own `read_pptx()`** — see that file's own header for
+  why this one does more than confirm a slide's XML parses: an earlier build's own
+  pptx writer disclosed a real master/theme verification gap (a slide's text checking
+  out was never proof the master it depends on actually resolved to a real layout),
+  and `read_pptx()` walks that whole chain specifically so the same gap can't recur
+  silently here. **A related, pre-existing bug found and fixed while building this**:
+  `documents/office.py`'s own `R` namespace constant (used to resolve an `r:id`
+  attribute like `<p:sldId r:id="...">`) was set to a `.rels` FILE's own root
+  namespace, not the namespace an `r:id` attribute actually lives in — silently
+  masked for xlsx/pptx reading by a positional/sorted fallback that happened to still
+  land on the right part for a well-formed, sequentially-named file. `write_pptx`'s
+  own verification reader has no such fallback (a broken chain must raise, not
+  silently resolve to a plausible guess), which is what surfaced it. Fixed in both
+  `documents/office.py` and the new `documents/reader.py` constant.
 
 ## `create_artifact.py` (`jarvis/tools/`) — the write path
 

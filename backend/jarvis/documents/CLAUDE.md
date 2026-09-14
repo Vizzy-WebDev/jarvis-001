@@ -26,11 +26,19 @@ helpers. Here:
   composition exactly like a plain text document — every model can read an Office
   document, no capability gate.
 - **`reader.py`** — a second, deliberately minimal, independently-written reader
-  (`read_docx()`, `read_xlsx()`, `read_document()`). Its only job is being the
-  thing the artifact WRITERS (`artifacts/office.py`'s `write_docx()`/`write_xlsx()`)
-  are verified against — round-tripping a written file back through the same
-  reader that wrote it proves nothing, so this file exists specifically to be a
-  second, unrelated implementation.
+  (`read_docx()`, `read_xlsx()`, `read_pptx()`, `read_document()`). Its only job is
+  being the thing the artifact WRITERS (`artifacts/office.py`'s `write_docx()`/
+  `write_xlsx()`/`write_pptx()`) are verified against — round-tripping a written file
+  back through the same reader that wrote it proves nothing, so this file exists
+  specifically to be a second, unrelated implementation. **`read_pptx()` does more
+  than confirm a slide's own XML parses, on purpose**: it walks
+  `presentation.xml`'s declared master and slide relationships, then the master's
+  OWN relationships to its layout and theme, raising the moment any hop points at
+  something missing or unparseable — this is exactly the "master/theme chain" a
+  real, disclosed gap in an earlier build's own pptx writer never actually checked
+  (a slide's text looking fine was never evidence the deck as a whole would open
+  cleanly). `read_docx()`/`read_xlsx()` don't need this: a `.docx`/`.xlsx` has one
+  content part, not a chain of parts that can independently disagree.
 
 `office.py`'s `xlsx_to_markdown()` places every cell by its own `r=` reference
 rather than by iteration order (a real workbook's blank cells are usually absent
@@ -41,6 +49,19 @@ note pointing at `jarvis/tools/analyze_spreadsheet.py`, which renders the FULL
 sheet to CSV and runs a model-written script against it in `jarvis/sandbox/` —
 the real ingest-once/compute-properly answer to a big spreadsheet, not more
 truncation.
+
+**A real, pre-existing bug, found while building `.pptx` writing (`artifacts/CLAUDE.md`)
+and fixed here too:** `office.py`'s own `R` namespace constant — used to resolve an
+`r:id` ATTRIBUTE like `<sheet r:id="...">` or `<p:sldId r:id="...">` — was set to a
+`.rels` FILE's own root element namespace, not the (different) namespace an `r:id`
+attribute actually lives in. `_sheet_parts()`'s own positional fallback
+(`targets.get(rel_id or "", f"worksheets/sheet{index}.xml")`) and `_slide_order()`'s
+final `sorted(...)` fallback both silently masked this for any well-formed,
+sequentially-named workbook/deck — the wrong lookup returned nothing, the fallback
+guessed correctly anyway, and multi-sheet/multi-slide real relationship order was
+never actually being read. Fixed; `documents/reader.py`'s own `read_pptx()` has no
+such fallback (a broken relationship must raise, not silently guess), which is what
+surfaced this while it was being written.
 
 ## What did not carry over from the Node original — disclosed, not silently missing
 

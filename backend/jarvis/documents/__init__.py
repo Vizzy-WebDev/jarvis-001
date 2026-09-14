@@ -10,10 +10,10 @@ from .office import (
     docx_to_markdown, extract_document, is_office_document, pptx_to_markdown,
     sheet_names, sheet_rows, xlsx_to_markdown,
 )
-from .reader import read_docx, read_document, read_xlsx
+from .reader import read_docx, read_document, read_pptx, read_xlsx
 
 __all__ = [
     "docx_to_markdown", "extract_document", "is_office_document", "pptx_to_markdown",
-    "read_docx", "read_document", "read_xlsx", "sheet_names", "sheet_rows",
+    "read_docx", "read_document", "read_pptx", "read_xlsx", "sheet_names", "sheet_rows",
     "xlsx_to_markdown",
 ]

@@ -43,38 +43,63 @@ from .spec import Capabilities, Effort, EffortKind, EffortScheme, Support
 
 #: Token budgets for the levels of a BUDGET-shaped scheme.
 #:
-#: These are a mapping decision rather than a fact about any provider: the
-#: provider takes a number, and what Jarvis's "medium" is worth in tokens is
-#: ours to choose. Named here so the choice is in one place and legible, rather
-#: than scattered as literals through the rules below.
+#: A mapping decision rather than a fact about any provider: the provider takes
+#: a number, and what Jarvis's "medium" is worth in tokens is ours to choose.
+#: Named here so the choice is in one place and legible, rather than scattered
+#: as literals through the rules below.
+#:
+#: OFF is zero, and the adapter reads zero as "send no thinking block at all"
+#: rather than "a budget of nothing" — the two are the same intent, and only
+#: one of them is a request a provider will accept.
 BUDGET_TOKENS = {
+    Effort.OFF: 0,
     Effort.MINIMAL: 1024,
     Effort.LOW: 4096,
     Effort.MEDIUM: 16384,
     Effort.HIGH: 32768,
+    Effort.MAX: 65536,
 }
 
-#: The ladder as the OpenAI-shaped wire spells it. The words match Jarvis's own
-#: because the ecosystem converged there, not because this maps one provider's
-#: vocabulary onto everyone else.
-_TIER_NAMES = {
+#: The OpenAI-shaped `reasoning_effort` values, taken from the installed SDK's
+#: own literal type rather than from memory. It accepts an `xhigh` between high
+#: and max which Jarvis does not expose as a rung — see `Effort` for why.
+_OPENAI_TIERS = {
+    Effort.OFF: "none",
     Effort.MINIMAL: "minimal",
     Effort.LOW: "low",
     Effort.MEDIUM: "medium",
     Effort.HIGH: "high",
+    Effort.MAX: "max",
 }
 
-_FOUR = (Effort.MINIMAL, Effort.LOW, Effort.MEDIUM, Effort.HIGH)
+#: Gemini's `ThinkingLevel` enum, which has no OFF and stops at HIGH. A version
+#: using it therefore offers a SHORTER ladder than an OpenAI-shaped one, which
+#: is the case the clamp exists for.
+_GEMINI_LEVELS = {
+    Effort.MINIMAL: "MINIMAL",
+    Effort.LOW: "LOW",
+    Effort.MEDIUM: "MEDIUM",
+    Effort.HIGH: "HIGH",
+}
 
 
-def _tiers(default: Effort = Effort.MEDIUM) -> EffortScheme:
-    return EffortScheme(kind=EffortKind.TIERS, levels=_FOUR, default=default,
-                        native=dict(_TIER_NAMES))
+def _scheme(kind: EffortKind, native: dict[Effort, object], default: Effort) -> EffortScheme:
+    """Build a scheme from its native mapping, so the levels it claims and the
+    levels it can actually send are the same set by construction."""
+    return EffortScheme(kind=kind, levels=tuple(sorted(native)), default=default,
+                        native=dict(native))
+
+
+def _openai_tiers(default: Effort = Effort.MEDIUM) -> EffortScheme:
+    return _scheme(EffortKind.TIERS, _OPENAI_TIERS, default)
+
+
+def _gemini_levels(default: Effort = Effort.MEDIUM) -> EffortScheme:
+    return _scheme(EffortKind.TIERS, _GEMINI_LEVELS, default)
 
 
 def _budget(default: Effort = Effort.MEDIUM) -> EffortScheme:
-    return EffortScheme(kind=EffortKind.BUDGET, levels=_FOUR, default=default,
-                        native=dict(BUDGET_TOKENS))
+    return _scheme(EffortKind.BUDGET, BUDGET_TOKENS, default)
 
 
 @dataclass(frozen=True)
@@ -128,21 +153,21 @@ SEED: tuple[FamilyRule, ...] = (
     FamilyRule(
         provider="google", family="gemini-pro", label="Gemini Pro",
         pattern=re.compile(r"(^|/)gemini[-.\d]*-pro", re.I),
-        effort=_tiers(Effort.MEDIUM),
+        effort=_gemini_levels(Effort.MEDIUM),
         capabilities=Capabilities(tools=Support.YES),
         quality=5,
     ),
     FamilyRule(
         provider="google", family="gemini-flash", label="Gemini Flash",
         pattern=re.compile(r"(^|/)gemini[-.\d]*-flash", re.I),
-        effort=_tiers(Effort.LOW),
+        effort=_gemini_levels(Effort.LOW),
         capabilities=Capabilities(tools=Support.YES),
         quality=3,
     ),
     FamilyRule(
         provider="openai", family="gpt", label="GPT",
         pattern=re.compile(r"(^|/)gpt-", re.I),
-        effort=_tiers(Effort.MEDIUM),
+        effort=_openai_tiers(Effort.MEDIUM),
         capabilities=Capabilities(tools=Support.YES),
         quality=4,
     ),

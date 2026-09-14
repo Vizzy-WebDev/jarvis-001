@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import Any, Iterator, Protocol, runtime_checkable
 
+from ..catalog import EffortKind, EffortRequest
 from ..orchestrator.model_port import ModelEvent
 
 
@@ -41,8 +42,34 @@ class Adapter(Protocol):
         *,
         system: str = "",
         tools: list[dict[str, Any]] | None = None,
+        effort: EffortRequest | None = None,
     ) -> Iterator[ModelEvent]:
+        """`effort` is already resolved against this version's own scheme.
+
+        An adapter translates it to its wire format and sends it; it never
+        decides which level to use, and never clamps. It may find the parameter
+        refused, in which case it raises like any other failure and the gateway
+        retries without it — retry policy stays in one place, the same reason
+        every SDK here is constructed with `max_retries=0`.
+
+        A scheme whose shape this wire cannot carry is SKIPPED rather than
+        approximated. Sending a token budget to an endpoint that wants a tier
+        name produces an error that reads like the model being broken.
+        """
         ...
+
+
+def model_for(entry: dict[str, Any], effort: EffortRequest | None) -> str:
+    """The model id to actually call.
+
+    Almost always the entry's own. The exception is a VARIANT scheme, where the
+    provider expresses reasoning by publishing a SEPARATE model rather than by
+    taking a parameter — common enough to need handling, and wire-agnostic, so
+    it lives here rather than three times over.
+    """
+    if effort is not None and effort.kind is EffortKind.VARIANT and effort.native:
+        return str(effort.native)
+    return str(entry.get("model") or "")
 
     def test_connection(self, entry: dict[str, Any]) -> dict[str, Any]:
         ...

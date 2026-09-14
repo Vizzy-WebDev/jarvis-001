@@ -34,6 +34,59 @@ AVAILABILITY_STATE_FOR_KIND: dict[str, str] = {
     "unsupported": "unsupported",
 }
 
+#: Kinds that say something about the MODEL. A kind absent from this set is
+#: about the REQUEST, and benching a model for it punishes it for something the
+#: next request will not do.
+#:
+#: `parameter_unsupported` is the one deliberately outside it, and the reason
+#: this set exists. Without it, a request carrying a reasoning parameter to a
+#: model that does not accept one benches a perfectly healthy model for having
+#: been asked a question it did not understand — and, since nothing remembered
+#: the refusal, does it again every turn.
+#:
+#: The penalty varied by phrasing, which is worth knowing because it is the
+#: kind of detail that gets rounded up in the retelling: most refusals
+#: ("Unrecognized request argument…", "Extra inputs are not permitted…") fell
+#: through to `other` at twenty minutes, while a message pairing the field name
+#: with "invalid request" matched `_INVALID_ARGUMENT_TEXT` and drew the
+#: six-hour `unsupported` state. Both are measured in
+#: `tests/test_effort.py::test_the_old_classifier_benched_a_healthy_model`,
+#: against the previous classifier read out of git.
+MODEL_LEVEL_KINDS = frozenset({
+    "quota", "auth", "no_access", "network", "transient", "unsupported", "other",
+})
+
+#: The parameter names Jarvis sends to control reasoning, across all three wire
+#: formats. Read off the installed SDKs rather than remembered: `reasoning_effort`
+#: on the OpenAI-shaped wire, `thinking` on Anthropic's, `thinking_config` with
+#: its `thinking_level`/`thinking_budget` on Gemini's.
+EFFORT_PARAMETER_NAMES: tuple[str, ...] = (
+    "reasoning_effort", "thinking_config", "thinking_level", "thinking_budget",
+    "thinking", "reasoning",
+)
+
+#: How a provider says it does not know a field. Several shapes because all
+#: three say it differently, and a local server speaking the OpenAI format says
+#: it in a fourth way.
+#:
+#: The last alternative is the important one and was added after a test caught
+#: its absence. A generic "invalid request" that also names a field we sent is
+#: the exact phrasing that used to reach `_INVALID_ARGUMENT_TEXT` below and draw
+#: the six-hour `unsupported` state — so the one refusal shape carrying the
+#: harshest penalty was the one the first version of this pattern did not
+#: recognise. It is only safe here because `refused_parameter` additionally
+#: requires the message to name a parameter we actually send: an "invalid
+#: request" about anything else still falls through and is still treated as a
+#: fact about the model.
+_PARAMETER_REFUSAL_TEXT = re.compile(
+    r"unrecognized request argument|unknown parameter|unsupported parameter"
+    r"|extra inputs are not permitted|unexpected keyword|unknown field"
+    r"|unknown name|no such (field|parameter|argument)"
+    r"|not a valid (field|argument|parameter)"
+    r"|does not support (extended )?thinking|is not supported"
+    r"|invalid argument|invalid request",
+    re.I)
+
 _NETWORK_NAMES = ("ConnectError", "ConnectTimeout", "ReadTimeout", "ConnectionRefusedError",
                   "TimeoutError", "gaierror", "APIConnectionError")
 _NETWORK_CODES = {"ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND"}
@@ -121,13 +174,46 @@ def find_message(err: BaseException) -> str:
     return " ".join(parts)
 
 
+def refused_parameter(err: BaseException | None,
+                      names: tuple[str, ...] = EFFORT_PARAMETER_NAMES) -> str | None:
+    """The parameter this error is complaining about not knowing, or None.
+
+    Requires BOTH a refusal-shaped phrase AND the name of a parameter we
+    actually send. The conjunction is the whole point: "is not supported" on
+    its own appears in plenty of errors that mean the MODEL is unusable, and
+    reading one of those as a parameter problem would keep a dead model in the
+    rotation being retried forever. Demanding that the message name a field we
+    sent makes a false positive require the provider to be talking about our
+    parameter while meaning something else entirely.
+    """
+    if err is None:
+        return None
+    try:
+        text = find_message(err)
+        if not text or not _PARAMETER_REFUSAL_TEXT.search(text):
+            return None
+        for name in names:
+            if re.search(rf"\b{re.escape(name)}\b", text, re.I):
+                return name
+        return None
+    except Exception:
+        return None
+
+
 def classify_error(err: BaseException | None) -> str:
-    """'quota' | 'auth' | 'no_access' | 'network' | 'transient' | 'unsupported' | 'other'."""
+    """'quota' | 'auth' | 'no_access' | 'network' | 'transient' | 'unsupported'
+    | 'parameter_unsupported' | 'other'."""
     if err is None:
         return "other"
     try:
         if _is_network(err):
             return "network"
+
+        # Checked before anything text-based: a refusal of one field is a fact
+        # about the request, and every classifier below it would read it as a
+        # fact about the model.
+        if refused_parameter(err):
+            return "parameter_unsupported"
 
         status = find_status(err)
         if status == 429:
@@ -165,4 +251,21 @@ def classify_error(err: BaseException | None) -> str:
 
 
 def availability_state_for(err: BaseException | None) -> str:
+    """The state to persist for a failure.
+
+    `parameter_unsupported` is absent from the mapping on purpose and lands on
+    the moderate default. Callers should not be recording it at all — see
+    `benches_the_model` — but if one does, the fallback must not be the harshest
+    cooldown in the table.
+    """
     return AVAILABILITY_STATE_FOR_KIND.get(classify_error(err), "error")
+
+
+def benches_the_model(err: BaseException | None) -> bool:
+    """Whether this failure is evidence about the MODEL rather than the request.
+
+    The gateway asks this before recording availability. A request-level
+    failure that gets recorded anyway removes a working model from the roster
+    for a reason the next request would not reproduce.
+    """
+    return classify_error(err) in MODEL_LEVEL_KINDS

@@ -15,11 +15,11 @@ from __future__ import annotations
 
 import pytest
 
-from jarvis.gateway.catalog import (
+from jarvis.catalog import (
     Capabilities, Effort, EffortKind, EffortScheme, Lifecycle, Source, Support,
     looks_pinned, match, resolve,
 )
-from jarvis.gateway.catalog.known import SEED
+from jarvis.catalog.known import SEED
 
 
 # --- the binding constraint ------------------------------------------------
@@ -223,7 +223,33 @@ def test_the_user_can_correct_a_pin_reading():
 # --- the effort scheme -----------------------------------------------------
 
 def test_the_ladder_is_ordered_so_a_ceiling_can_be_clamped_to():
-    assert Effort.OFF < Effort.MINIMAL < Effort.LOW < Effort.MEDIUM < Effort.HIGH
+    assert (Effort.OFF < Effort.MINIMAL < Effort.LOW < Effort.MEDIUM
+            < Effort.HIGH < Effort.MAX)
+
+
+def test_versions_from_different_providers_offer_different_ladders():
+    """The reason clamping is real work rather than a formality.
+
+    Read out of the installed SDKs: the OpenAI-shaped wire accepts a value
+    above `high`, and Gemini's level enum does not — so two models a user might
+    switch between genuinely cannot be asked the same question.
+    """
+    gpt = resolve(model="gpt-5.6-luna").effort
+    gemini = resolve(model="gemini-3-pro").effort
+
+    assert gpt.ceiling is Effort.MAX
+    assert gemini.ceiling is Effort.HIGH
+    assert gpt.supports(Effort.OFF) is True
+    assert gemini.supports(Effort.OFF) is False, "Gemini's level enum has no off"
+
+
+def test_every_level_a_scheme_offers_has_something_to_send():
+    """A level with no native value would put an empty parameter on the wire,
+    which providers reject in ways that read like the model being broken."""
+    for rule in SEED:
+        for level in rule.effort.levels:
+            assert level in rule.effort.native, (
+                f"{rule.family} offers {level.name} with no native value")
 
 
 def test_a_scheme_that_offers_nothing_may_not_claim_levels():

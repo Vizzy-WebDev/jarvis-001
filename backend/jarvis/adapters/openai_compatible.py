@@ -24,11 +24,12 @@ import json
 import re
 from typing import Any, Iterator
 
+from ..catalog import EffortKind, EffortRequest
 from ..config import get_secret
 from ..conversation import assistant_text_of
 from ..orchestrator.model_port import ModelEvent, StepComplete, TextChunk, ToolCall
 from . import usage as usage_read
-from .base import AdapterError
+from .base import AdapterError, model_for
 
 name = "openai-compatible"
 
@@ -153,21 +154,40 @@ def _tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
             for t in tools]
 
 
+def _reasoning_kwargs(effort: EffortRequest | None) -> dict[str, Any]:
+    """`reasoning_effort`, when this version speaks that shape.
+
+    The SDK's own literal type accepts none/minimal/low/medium/high/xhigh/max,
+    which is where Jarvis's ladder names came from. A BUDGET scheme is skipped
+    rather than converted: this endpoint has no field for a token budget, and
+    inventing one produces a rejection that reads like a broken model.
+
+    VARIANT needs nothing here — it changes which model is called, which
+    `model_for` has already handled.
+    """
+    if effort is None or effort.kind is not EffortKind.TIERS:
+        return {}
+    native = effort.native
+    return {"reasoning_effort": native} if native else {}
+
+
 def stream(
     entry: dict[str, Any],
     messages: list[dict[str, Any]],
     *,
     system: str = "",
     tools: list[dict[str, Any]] | None = None,
+    effort: EffortRequest | None = None,
 ) -> Iterator[ModelEvent]:
     _require_key(entry)
     client = _client(entry)
 
     response = client.chat.completions.create(
-        model=entry["model"],
+        model=model_for(entry, effort),
         messages=to_wire(messages, system),
         tools=_tools(tools),
         stream=True,
+        **_reasoning_kwargs(effort),
         # Without this an OpenAI-shaped stream never sends usage at all — it is
         # not discarded, it is never requested. A backend that does not know the
         # option ignores it, and usage simply stays absent; never fabricated.

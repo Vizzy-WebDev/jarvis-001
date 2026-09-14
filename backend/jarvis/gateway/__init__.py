@@ -11,7 +11,7 @@ This package exists so that logic lives once.
 """
 
 from . import (
-    availability, catalog, connections, error_kind, name_guess, probe, providers, registry,
+    availability, connections, effort, error_kind, name_guess, probe, providers, registry,
     routing,
 )
 from .client import Gateway, NoModelAvailable
@@ -23,11 +23,10 @@ __all__ = [
     "Task",
     "availability",
     "build_candidates",
-    # What a model IS: provider, family, version. Read by nothing yet — it is
-    # built before it is wired, so the phase that introduces it cannot break a
-    # running app.
-    "catalog",
     "connections",
+    # Resolving a reasoning level against what a version actually accepts, and
+    # remembering what a version has refused.
+    "effort",
     "error_kind",
     "explain_exclusions",
     # The name-derived guessing the catalog replaces. Still the live path until

@@ -57,17 +57,36 @@ class Effort(IntEnum):
     comparison, so these have to be comparable.
 
     The names are the ones the providers themselves converged on rather than a
-    vocabulary invented here — three of the four native schemes already use
-    these exact words, so translating is a lookup rather than a mapping anyone
-    has to reason about. `OFF` is a real level, not the absence of one: where a
-    provider allows thinking to be switched off, that is a different request
-    from asking it to think a little.
+    vocabulary invented here, so translating is a lookup rather than a mapping
+    anyone has to reason about. Read out of the installed SDKs rather than
+    remembered, because this is exactly the kind of detail that rots:
 
-    The ladder stops at HIGH deliberately. A level above it would be identical
-    to HIGH on every tier-based provider, which is a choice in the interface
-    that does nothing — the kind of control that teaches people the settings
-    don't matter. If a budget-based provider ever justifies a finer top end it
-    is additive, and nothing below has to move.
+    * the OpenAI-shaped `reasoning_effort` accepts
+      none / minimal / low / medium / high / xhigh / max
+    * Gemini's `ThinkingLevel` enum offers MINIMAL / LOW / MEDIUM / HIGH
+    * Anthropic takes a token budget, which is continuous and so maps to
+      whatever ladder sits above it
+
+    MINIMAL through HIGH is therefore the span every one of them can express,
+    and the ends are where they differ.
+
+    `OFF` is a real level, not the absence of one: switching thinking off is a
+    different request from asking for a little, and the OpenAI-shaped wire has
+    a distinct value for it.
+
+    `MAX` exists because two of the three can genuinely go beyond HIGH. An
+    earlier draft of this file stopped at HIGH, arguing that anything above it
+    would be indistinguishable on tier-based providers — the SDKs say
+    otherwise, so the argument was wrong and the level is here. Gemini's level
+    enum has no equivalent, which is not a problem to solve: a Gemini version
+    simply does not list MAX among its levels, and a request for it clamps to
+    that version's ceiling. That is the clamp earning its place rather than
+    being hypothetical.
+
+    `xhigh` is deliberately not a rung. One provider's intermediate step does
+    not need to become vocabulary everything else has to pretend to have — and
+    a version that wants it can map its own MAX onto it, since the native
+    values are per-version data rather than a table here.
     """
 
     OFF = 0
@@ -75,6 +94,7 @@ class Effort(IntEnum):
     LOW = 2
     MEDIUM = 3
     HIGH = 4
+    MAX = 5
 
 
 class EffortKind(Enum):
@@ -204,6 +224,36 @@ class EffortScheme:
 #: A version that has told us nothing. Not a placeholder for a real one — this
 #: is what most models legitimately are, and the system is built to route them.
 UNKNOWN_EFFORT = EffortScheme()
+
+
+@dataclass(frozen=True)
+class EffortRequest:
+    """A reasoning level resolved against one version's terms.
+
+    Lives here rather than with the code that produces it because an ADAPTER is
+    its consumer, and an adapter cannot import from the gateway — the gateway
+    imports adapters, so the dependency only runs one way. Keeping this beside
+    the scheme it is resolved against is also simply where it belongs: it is a
+    value, not a step.
+
+    `requested` is carried alongside `level` so a caller can say what it did. A
+    clamp nobody can see is indistinguishable from the setting being ignored,
+    which is how a control teaches people it does not work.
+    """
+
+    level: Effort
+    scheme: EffortScheme
+    requested: Effort
+    clamped: bool
+
+    @property
+    def kind(self) -> EffortKind:
+        return self.scheme.kind
+
+    @property
+    def native(self) -> Any:
+        """What this provider wants on the wire for this level."""
+        return self.scheme.native.get(self.level)
 
 
 @dataclass(frozen=True)

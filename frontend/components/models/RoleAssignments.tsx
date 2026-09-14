@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { inputClass } from '@/components/ui/Field';
 import { api } from '@/lib/api';
-import type { ModelEntry, ModelRole } from '@/lib/api-types';
+import type { ModelEntry, ModelRole, Prefs } from '@/lib/api-types';
 
 /**
  * Which model does which job.
@@ -25,9 +25,15 @@ import type { ModelEntry, ModelRole } from '@/lib/api-types';
  * **The thinking levels come from the chosen model, not from a fixed list.**
  * The ladders genuinely differ between providers, so a dropdown offering one
  * list for every model would be offering a setting that silently clamps.
+ *
+ * **The balance dial sits here because it answers the same question.** It is
+ * what decides between models for every job left on Auto, and the router reads
+ * it fresh on each turn — so a change takes effect on the next thing you say,
+ * with no restart.
  */
 export function RoleAssignments({ models }: { models: ModelEntry[] }) {
   const [roles, setRoles] = useState<ModelRole[] | null>(null);
+  const [balance, setBalance] = useState<Prefs['balance'] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -35,6 +41,11 @@ export function RoleAssignments({ models }: { models: ModelEntry[] }) {
       setRoles((await api.roles.list()).roles);
     } catch {
       setRoles([]);
+    }
+    try {
+      setBalance((await api.prefs.get()).balance);
+    } catch {
+      /* the roles half of this section still works without it */
     }
   }, []);
 
@@ -66,6 +77,32 @@ export function RoleAssignments({ models }: { models: ModelEntry[] }) {
           Jarvis unable to answer.
         </p>
       </div>
+
+      {balance !== null && (
+        <Card className="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2"
+              data-testid="balance-row">
+          <div className="min-w-0 flex-1">
+            <p className="text-[14px] text-ink">When Jarvis chooses for itself</p>
+            <p className="mt-0.5 text-[12px] text-ink-muted">
+              What to favour for any job left on Auto. Takes effect on your next message.
+            </p>
+          </div>
+          <select
+            className={`${inputClass} w-auto`}
+            data-testid="balance"
+            value={balance}
+            onChange={async (event) => {
+              const next = event.target.value as Prefs['balance'];
+              setBalance(next);
+              await api.prefs.update({ balance: next }).catch(() => void load());
+            }}
+          >
+            <option value="fast">Answer quickly</option>
+            <option value="balanced">Balanced</option>
+            <option value="quality">Answer well</option>
+          </select>
+        </Card>
+      )}
 
       <Card className="p-0" data-testid="role-list">
         {roles.map((role) => (

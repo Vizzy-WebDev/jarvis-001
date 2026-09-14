@@ -62,29 +62,55 @@ address and key once, no matter how many models you're adding. One broken model 
 large list no longer blocks the rest — Jarvis checks the address itself, not every
 individual model, so the good ones still get added even if one of them doesn't work.
 
-**Your models are grouped by where they came from.** Each address/key you've
-added is shown as its own group, with the models that share it listed underneath.
-**"Add models"** on a group adds more to that same saved connection without
-re-entering the address or key. **"Remove connection"** removes the whole group —
-every model in it, and the saved key — in one action (click it twice to confirm).
-Removing or disabling a single model, and testing its connection, still works the
-same as before, per model.
+**Your models can be read two ways**, using the buttons at the top of the screen:
+
+- **By connection** (the default) — each address/key you've added is its own group,
+  with the models that share it listed underneath. This is the view to use when
+  something is wrong, because a problem is almost always the connection's rather
+  than any one model's. **"Add models"** on a group adds more to that same saved
+  connection without re-entering the address or key, and **"Remove connection"**
+  removes the whole group — every model in it, and the saved key — in one action
+  (click it twice to confirm).
+- **By model** — grouped by who actually makes each model, and which family it
+  belongs to. This is the view that shows you when the *same* model is reachable
+  more than one way (say, your own key and a gateway that resells it). Those are
+  two separate routes with their own keys, prices and rate limits, and Jarvis
+  treats them that way. Click any model to see what it can do — and what nobody
+  has established yet, which is shown as its own answer rather than as a "no".
+
+Removing or disabling a single model, and testing its connection, works per model
+in either view.
 
 ---
 
-## 2. Auto or manual — who picks the model
+## 2. Which model does which job
 
-Still on the Model Settings screen, under "How Jarvis picks a model":
+Further down the Model Settings screen is **"Which model does which job."** All of
+it is optional — with one model and nothing set, Jarvis just works.
 
-- **Pick automatically** (on by default) — Jarvis chooses the best model for each
-  thing you ask: something fast and cheap for quick chat, something stronger for
-  writing, code, or real thinking — and now factors in what each model actually
-  costs to run, not just a rough guess.
-- **Balance** — nudges that choice: *Prefer fastest*, *Balanced* (recommended), or
-  *Prefer best quality*.
-- Turn **Pick automatically** off to lock Jarvis to one specific model yourself —
-  do this from the **gear icon** on the main screen, in the compact "AI model"
-  dropdown.
+**When Jarvis chooses for itself** sets what to favour whenever a job is left on
+Auto: *Answer quickly*, *Balanced*, or *Answer well*. It takes effect on your very
+next message.
+
+Underneath are five jobs you can set separately:
+
+- **Chat** — when you're typing and waiting for the answer.
+- **Speaking** — spoken replies. A faster model is often genuinely the better
+  choice here, not a compromise.
+- **Driving your computer** — a wrong click costs more than a clumsy sentence, and
+  nobody is watching in real time.
+- **Scheduled work** — tasks and jobs that run while you're away.
+- **Small internal asks** — remembering things, checking its own work.
+
+Each one takes a model, a thinking level, or both. **Choosing a model here does not
+lock Jarvis to it.** It moves that model to the front of the queue; everything else
+stays behind it, so if your choice is busy or rate-limited the job still gets done
+by something else. If the model you picked has been deleted or switched off, Jarvis
+says so under that job and quietly goes back to choosing per turn.
+
+**The thinking level list is the chosen model's own.** Models genuinely differ in
+what they offer, so if a model has no thinking setting the control says exactly
+that instead of showing you choices it would have to ignore.
 
 **If your chosen model breaks mid-conversation** (bad key, no internet, an outage),
 Jarvis automatically tries your next-best available model, tells you out loud that

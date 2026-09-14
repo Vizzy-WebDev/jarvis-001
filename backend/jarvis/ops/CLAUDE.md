@@ -140,10 +140,10 @@ and `ops/diagnostics/`'s own anomaly verdict — never re-derives any of these i
   in-memory, per-process) rather than a timestamp. `observers/security.py` watches for a
   SPIKE (a fixed count-in-window threshold, not a median — a rare discrete event has no
   meaningful "typical" to compare against) of real auth failures
-  (`gateway/availability.py`'s `markUnhealthy(..., 'auth')`) or same-turn confirm-gate bypass
+  (`gateway/availability.py`'s `record(..., 'auth')`) or same-turn confirm-gate bypass
   attempts (`capabilities/`'s `consumePendingToken()`) — both write into
   `observers/security.py`'s own `ops_security_events` table (migration 18) via a
-  one-directional leaf dependency (gateway/availability.py/capabilities/registry.py call it; it never imports
+  one-directional leaf dependency (gateway/availability.py and capabilities/registry.py call it; it never imports
   either back). `events/bus.py` watches for a genuinely NEW local TCP listener via
   PowerShell's `Get-NetTCPConnection` (never `netstat` text parsing), first-seen-is-
   baseline the same way `ops/diagnostics/checks/` establishes its own hash baseline.

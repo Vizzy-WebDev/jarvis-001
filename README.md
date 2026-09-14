@@ -51,9 +51,12 @@ OpenAI-compatible gateway can all be added afterward from Model Settings.
 - **Any model, real fallback.** Connect Gemini, Claude, OpenAI, a local server
   (Ollama/LM Studio), or any other OpenAI/Anthropic/Gemini-shaped gateway (OpenRouter,
   Groq, Together, an in-house endpoint) via a generic Custom connection that probes
-  the address to work out what's actually on the other end. Auto-routing picks a
-  model per task and by real, measured cost, not just a name-based guess; a broken
-  model degrades gracefully with the conversation's context intact.
+  the address to work out what's actually on the other end. The same model reached two
+  ways stays one model with two routes, each with its own key, price and rate limit.
+  Routing picks per task from measured cost and measured latency, never a guess from
+  the model's name, and you can pin a model to a particular job (spoken replies,
+  overnight tasks) without that pin becoming a single point of failure — a broken model
+  degrades gracefully with the conversation's context intact.
 - **A real, adaptive delivery register, separate from what it concludes.** Warmth,
   directness and playfulness shift with the moment — softer when you sound genuinely
   distressed, more measured on an inherently serious topic, and it can genuinely
@@ -121,7 +124,8 @@ OpenAI-compatible gateway can all be added afterward from Model Settings.
 
 - **`.env`** (git-ignored) holds every API key/secret. It's written by
   `backend/jarvis/config.py` — never hand-edit its format.
-- **`data/`** (git-ignored) holds JSON state (models, connections, prefs, tasks) plus
+- **`data/`** (git-ignored) holds JSON state (deployments, connections, role slots,
+  prefs, tasks) plus
   `jarvis.db`, a SQLite database (Chat History, Memory, Jobs, Self-Improvement,
   Self-Model).
 - For an isolated test run, three env vars redirect everything: `JARVIS_DATA_DIR`,
@@ -138,7 +142,8 @@ backend/jarvis/
   capabilities/    The capability contract, the registry, and the one dispatcher
   orchestrator/    pipeline.py — the turn loop
   personality.py   The adaptive delivery register — tone floors, sticky style, real vocal laughter
-  gateway/         Connections/models registry, routing, availability, probing
+  catalog/         What a model IS — family, version, capabilities, reasoning scheme
+  gateway/         Deployments, connections, role slots, routing, effort, availability, latency, probing
   adapters/        One module per wire format: Anthropic, Gemini, OpenAI-compatible
   policy/          The permission layer — decided independently of model behaviour
   events/          Typed event bus; observers/ subscribe (cost, security, verification, improvement)

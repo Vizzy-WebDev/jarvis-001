@@ -217,12 +217,17 @@ def resolve(
         provenance["pinned"] = Source.CATALOG
         pinned = looks_pinned(model)
 
-    context_tokens = _as_count(_first("context_tokens", (
-        (given.get("context_tokens"), Source.USER),
-        (found.get("context_tokens"), Source.DISCOVERED),
-    ), provenance))
-    if context_tokens is None:
-        provenance.pop("context_tokens", None)
+    # Each candidate is coerced BEFORE precedence decides between them, so a
+    # value that fails its own check is simply not a candidate. Coercing the
+    # winner instead lets an unusable higher-precedence value shadow a good
+    # lower-precedence one and blank the field: a hand-edited `context_tokens`
+    # of -5 would erase a context window the provider had actually reported,
+    # and the router's "too small for this much text" check would then have
+    # nothing to read. Found by the pre-merge gate, live, on a hostile PATCH.
+    context_tokens = _first("context_tokens", (
+        (_as_count(given.get("context_tokens")), Source.USER),
+        (_as_count(found.get("context_tokens")), Source.DISCOVERED),
+    ), provenance)
 
     capabilities, capability_provenance = _merge_capabilities(given, found, rule)
     provenance.update(capability_provenance)
@@ -236,20 +241,15 @@ def resolve(
         effort = UNKNOWN_EFFORT
         provenance.pop("effort", None)
 
-    quality = _as_quality(_first("quality", (
-        (given.get("quality"), Source.USER),
-        (rule.quality if rule else None, Source.CATALOG),
-    ), provenance))
-    if quality is None:
-        provenance.pop("quality", None)
+    quality = _first("quality", (
+        (_as_quality(given.get("quality")), Source.USER),
+        (_as_quality(rule.quality if rule else None), Source.CATALOG),
+    ), provenance)
 
-    lifecycle = _as_lifecycle(_first("lifecycle", (
-        (given.get("lifecycle"), Source.USER),
-        (found.get("lifecycle"), Source.DISCOVERED),
-    ), provenance))
-    if lifecycle is None:
-        lifecycle = Lifecycle.UNKNOWN
-        provenance.pop("lifecycle", None)
+    lifecycle = _first("lifecycle", (
+        (_as_lifecycle(given.get("lifecycle")), Source.USER),
+        (_as_lifecycle(found.get("lifecycle")), Source.DISCOVERED),
+    ), provenance) or Lifecycle.UNKNOWN
 
     return Version(
         provider=resolved_provider,

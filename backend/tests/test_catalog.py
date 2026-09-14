@@ -409,3 +409,41 @@ def test_a_refused_value_is_not_reported_as_having_come_from_the_user():
 
     assert "quality" not in version.provenance
     assert "context_tokens" not in version.provenance
+
+
+def test_an_unusable_value_falls_through_instead_of_blanking_the_field():
+    """Precedence decides between CANDIDATES, and a value that fails its own
+    check is not a candidate.
+
+    Coercing the winner instead lets an unusable higher-precedence value shadow
+    a good lower-precedence one. A hand-edited `context_tokens` of -5 would
+    erase a window the provider had actually reported, and the router's "too
+    small for this much text" check would then have nothing to read. Found by
+    the pre-merge gate, live, on a hostile PATCH.
+    """
+    shipped = resolve(model="gpt-5-mini")
+    assert shipped.quality is not None, "the fixture for this test needs a shipped quality"
+
+    # The user's value is refused, so the catalog's own answer still stands.
+    assert resolve(model="gpt-5-mini", user={"quality": 99999}).quality == shipped.quality
+    assert resolve(model="gpt-5-mini", user={"quality": 2}).quality == 2, "a valid one wins"
+
+    reported = resolve(model="mystery", discovered={"context_tokens": 8000})
+    assert reported.context_tokens == 8000
+    kept = resolve(model="mystery", discovered={"context_tokens": 8000},
+                   user={"context_tokens": -5})
+    assert kept.context_tokens == 8000, "a nonsense override must not erase a real fact"
+
+    junk = resolve(model="mystery", discovered={"lifecycle": "retired"},
+                   user={"lifecycle": 12})
+    assert junk.lifecycle is Lifecycle.RETIRED
+
+
+def test_provenance_names_the_source_of_the_value_actually_used():
+    """Guards the fix above: if a refused value still set provenance, a screen
+    would offer to correct a setting that is not in effect."""
+    version = resolve(model="gpt-5-mini", user={"quality": 99999})
+
+    assert version.source_of("quality") is Source.CATALOG
+    assert resolve(model="mystery", user={"context_tokens": -5}).source_of(
+        "context_tokens") is Source.DEFAULT

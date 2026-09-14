@@ -513,6 +513,23 @@ def test_the_thinking_levels_offered_are_the_chosen_model_s_own(page, stub):
     assert "No thinking setting" in page.inner_text("[data-testid=role-effort-control]")
 
 
+def test_the_balance_dial_is_reachable_and_takes_effect_on_the_next_turn(page, stub):
+    """It was not, before this. `balance` was stored, defaulted and read by the
+    router on every turn, and no screen anywhere set it — so the one control
+    over "what should Jarvis favour when it chooses for itself" existed only in
+    a JSON file."""
+    from jarvis import prefs
+
+    page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
+    page.wait_for_selector("[data-testid=balance]", timeout=15_000)
+    assert page.input_value("[data-testid=balance]") == "balanced"
+
+    page.select_option("[data-testid=balance]", "quality")
+    page.wait_for_timeout(400)
+
+    assert prefs.get_prefs()["balance"] == "quality"
+
+
 def test_the_by_model_view_shows_what_a_model_actually_is(page, stub):
     """The crossing axis, made visible: this view groups by what a model IS,
     where the default view groups by whose key reaches it."""

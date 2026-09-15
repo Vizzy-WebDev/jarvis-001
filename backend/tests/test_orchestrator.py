@@ -208,6 +208,36 @@ def test_a_provider_failure_ends_the_turn_honestly(reg):
     assert orch.state_for("s1").state is State.ERROR
 
 
+def test_a_turn_after_a_failed_one_does_not_crash_the_state_machine(reg):
+    """A previously-real bug: any turn that fails leaves the session's
+    AssistantState in ERROR, whose only legal exits are IDLE/LISTENING — not
+    THINKING — so the NEXT turn's attempt to enter THINKING was illegal and
+    crashed, for every turn after the first failure, for the rest of the
+    session's life. Nothing ever recovered it — not even "New chat", which
+    never touches this state machine at all."""
+    class FailsOnce:
+        def __init__(self):
+            self.calls = 0
+
+        def stream(self, **_):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("upstream is down")
+                yield  # pragma: no cover — makes this a generator
+            yield TextChunk("Hello again.")
+            yield StepComplete(text="Hello again.", model_id="stub")
+
+    orch = Orchestrator(FailsOnce(), registry=reg, event_bus=EventBus())
+
+    failed = run(orch, "hello there")
+    assert isinstance(failed[-1], Failed)
+    assert orch.state_for("s1").state is State.ERROR
+
+    recovered = run(orch, "hello again")
+    assert isinstance(recovered[-1], Done)
+    assert orch.state_for("s1").state is State.IDLE
+
+
 def test_a_client_that_never_completes_a_step_is_a_failure_not_a_silent_success(reg):
     model = StubModel([TextChunk("half a thought")])
     orch = Orchestrator(model, registry=reg, event_bus=EventBus())
@@ -246,6 +276,24 @@ def test_voice_does_not_bypass_the_gate(reg):
 
     assert ran == []
     assert any(isinstance(e, ApprovalRequired) for e in events)
+
+
+def test_a_second_voice_turn_does_not_crash_on_the_state_the_first_left(reg):
+    """The exact reported crash. A voice reply ends with the session parked in
+    SPEAKING — nothing ever signals "done talking" back to this state machine,
+    not even /api/chat/interrupt — and SPEAKING's only legal exits are
+    IDLE/LISTENING/INTERRUPTED/ERROR, not THINKING. The very next voice turn
+    used to throw exactly: "speaking -> thinking is not a legal transition"."""
+    model = StubModel(say("First reply."), say("Second reply."))
+    orch = Orchestrator(model, registry=reg, event_bus=EventBus())
+
+    first = run(orch, "hello there", surface=Surface.VOICE)
+    assert isinstance(first[-1], Done)
+    assert orch.state_for("s1").state is State.SPEAKING
+
+    second = run(orch, "and one more thing", surface=Surface.VOICE)
+    assert isinstance(second[-1], Done)
+    assert orch.state_for("s1").state is State.SPEAKING
 
 
 def test_a_scheduled_task_still_needs_a_human_for_a_high_risk_action(reg):

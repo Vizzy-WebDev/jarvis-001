@@ -215,6 +215,37 @@ def test_an_attached_image_reaches_the_transcript_and_the_model_requirement():
     assert stored["role"] == "user" and stored["media"][0]["kind"] == "image"
 
 
+def test_an_attachment_with_no_typed_words_still_reaches_the_model():
+    """A previously-real bug: `classify()` only ever looks at `text`, so empty
+    text unconditionally routed to Intent.CLARIFY and the turn short-circuited
+    with "Sorry — I didn't catch that." BEFORE attachments were ever looked at
+    — an attachment-only send never reached the model at all. The existing
+    HTTP-level test above only asserted `status_code == 200`, which is true
+    either way, and did not actually exercise this path."""
+    from jarvis.capabilities import CapabilityRegistry
+    from jarvis.events.bus import EventBus
+    from jarvis.orchestrator import Done, Orchestrator, TurnRequest
+    from jarvis.orchestrator.model_port import StepComplete
+
+    called = []
+
+    class Model:
+        def stream(self, *, messages, system, tools, session_id, need=None,
+                   model_id=None, role=None):
+            called.append(messages[-1].get("media"))
+            yield StepComplete(text="A cat.", model_id="stub")
+
+    upload_id = _attach("photo.png", PNG)
+    orchestrator = Orchestrator(Model(), registry=CapabilityRegistry(), event_bus=EventBus())
+    events = list(orchestrator.run_turn(TurnRequest(text="", session_id="s1",
+                                                     attachments=(upload_id,))))
+
+    assert called and called[0][0]["kind"] == "image", \
+        "the model was never called — the CLARIFY fallback fired instead"
+    done = [e for e in events if isinstance(e, Done)]
+    assert done and done[0].text != "Sorry — I didn't catch that."
+
+
 def test_a_turn_with_only_an_attachment_and_no_words_is_not_rejected(live_server):
     import httpx
 
@@ -222,10 +253,13 @@ def test_a_turn_with_only_an_attachment_and_no_words_is_not_rejected(live_server
     with httpx.Client(base_url=live_server, timeout=10.0) as client:
         response = client.post("/api/uploads", params={"name": "notes.txt"}, content=b"hello")
         assert response.json()["ok"] is True
-        # An empty message with an attachment is an ordinary thing to send.
+        # An empty message with an attachment is an ordinary thing to send —
+        # and the streamed body must actually reflect that: status 200 alone
+        # is true whether the attachment was read or silently ignored.
         streamed = client.get("/api/chat/stream",
                               params={"message": "", "attachments": upload_id})
     assert streamed.status_code == 200
+    assert "didn't catch that" not in streamed.text
 
 
 def test_an_upload_round_trips_through_the_route(live_server):

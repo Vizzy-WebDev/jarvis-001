@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 from .. import conversation
-from ..assistant.state import AssistantState, State
+from ..assistant.state import TRANSITIONS, AssistantState, State
 from ..capabilities import CapabilitySpec, registry as default_registry
 from ..capabilities.execute import ExecOutcome, ExecutionResult, execute
 from ..capabilities.registry import CapabilityRegistry
@@ -236,6 +236,33 @@ class TurnRequest:
     attachments: tuple[str, ...] = ()
 
 
+def _prepare_for_new_turn(state: AssistantState) -> None:
+    """A new turn must always be able to start, whatever the assistant's
+    per-session state was left at by whatever happened before it.
+
+    Nothing ever signals this machine "the reply finished playing" — a voice
+    turn ends with it parked in SPEAKING (see `_finish`) and it just stays
+    there — so the next turn's attempt to enter THINKING is illegal on its
+    face. The same shape of problem hits ERROR: any turn that fails leaves the
+    session there, and ERROR's only legal exits are IDLE/LISTENING, not
+    THINKING, so a session with one failed turn would crash on every turn
+    after it, forever, with nothing to recover it.
+
+    Walk the real intermediate hop the lifecycle defines for the common case
+    (a voice reply finishing and a follow-up arriving is SPEAKING -> LISTENING
+    -> TRANSCRIBING — "conversation mode", per the transition table's own
+    comment), and fall back to reset() — always legal, and exactly what it
+    exists for — for anything else with no defined resume path.
+    """
+    if State.THINKING in TRANSITIONS[state.state]:
+        return
+    if state.state is State.SPEAKING:
+        state.to(State.LISTENING, "new turn arrived while still marked speaking")
+        state.to(State.TRANSCRIBING, "new turn arrived while still marked speaking")
+        return
+    state.reset()
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -291,9 +318,12 @@ class Orchestrator:
         )
 
         route = classify(text)
-        if route.intent is Intent.CLARIFY:
-            # Nothing was said. Answering this with a model call would be a model
-            # call spent on silence.
+        if route.intent is Intent.CLARIFY and not request.attachments:
+            # Nothing was said and nothing was attached either. Answering this
+            # with a model call would be a model call spent on silence. An
+            # attachment-only send (empty text, a real file) must NOT hit this —
+            # classify() only ever looks at text, so it has no way to know
+            # attachments exist; that check belongs here instead.
             yield Routed(route.intent, route.confidence, route.reason, fast=False)
             yield Done("Sorry — I didn't catch that.", steps=0)
             return
@@ -309,10 +339,8 @@ class Orchestrator:
             message_text = compose_message(text, prepared)
         conversation.push_user_text(request.session_id, message_text,
                                     media=prepared.media if prepared else None)
-        try:
-            state.to(State.THINKING, "turn started")
-        except Exception:  # noqa: BLE001 — an odd starting state must not lose the turn
-            logger.warning("could not enter THINKING from %s", state.state.value)
+        _prepare_for_new_turn(state)
+        state.to(State.THINKING, "turn started")
 
         fast_spec = self._fast_spec(route)
         yield Routed(route.intent, route.confidence, route.reason, fast=fast_spec is not None)

@@ -180,12 +180,20 @@ export default function Home() {
 
   // --- sending ---------------------------------------------------------------
 
-  const send = useCallback((text: string, attachments: string[]) => {
+  const send = useCallback((text: string, attachments: { id: string; name: string; kind: string }[]) => {
     const asked = text || 'I’ve attached this.';
     const replyId = newId();
+    // Shown in the sender's own bubble, not just sent to the model — attached
+    // files used to vanish from the transcript entirely once sent. The
+    // content route (routes/uploads.py) forces the same download-disposition
+    // headers routes/artifacts.py does; browsers still render an <img>/<video>
+    // fetched through it inline, same as tool-result attachments already do.
+    const sentAttachments = attachments.map((a) => ({
+      kind: a.kind, url: `/api/uploads/${a.id}/content`,
+    }));
     setTurns((current) => [
       ...current,
-      { id: newId(), role: 'user', text: asked },
+      { id: newId(), role: 'user', text: asked, attachments: sentAttachments },
       { id: replyId, role: 'assistant', text: '', streaming: true },
     ]);
     setBusy(true);
@@ -197,7 +205,7 @@ export default function Home() {
 
     const turn = streamTurn({
       message: text,
-      attachments,
+      attachments: attachments.map((a) => a.id),
       onEvent: (event) => {
         switch (event.type) {
           case 'chunk':

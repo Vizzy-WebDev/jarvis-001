@@ -37,7 +37,7 @@ export function ConversationPanel({
   turns: Turn[];
   notConfigured: boolean;
   busy: boolean;
-  onSend: (text: string, attachments: string[]) => void;
+  onSend: (text: string, attachments: { id: string; name: string; kind: string }[]) => void;
   onNewChat: () => void;
   onDecide?: (approvalId: string, decision: 'allow' | 'deny') => void;
   /** Passed straight through to the composer's dictation — see there. */

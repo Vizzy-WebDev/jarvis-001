@@ -271,8 +271,34 @@ def test_an_upload_round_trips_through_the_route(live_server):
         described = client.get(f"/api/uploads/{saved['id']}").json()
         missing = client.get("/api/uploads/nope")
 
+    assert saved["kind"] == "document"
     assert described["name"] == "notes.txt" and described["size"] == 5
+    assert described["kind"] == "document"
     assert "path" not in described, "a path must never go back to the browser"
+    assert missing.status_code == 404
+
+
+def test_an_uploads_own_bytes_are_served_with_the_same_forced_download_headers_as_artifacts(live_server):
+    """A previously-real gap: nothing ever served an upload's actual bytes back
+    to the browser at all — `describe()` only ever returned metadata — so a
+    sent attachment could never be shown in the sender's own chat bubble.
+    Adding that surface needs the exact same unconditional security headers
+    `routes/artifacts.py` forces, for the identical reason: nothing restricts
+    what a user-attached file's bytes are."""
+    import httpx
+
+    with httpx.Client(base_url=live_server, timeout=10.0) as client:
+        saved = client.post("/api/uploads", params={"name": "photo.png"},
+                            content=PNG).json()
+        response = client.get(f"/api/uploads/{saved['id']}/content")
+        missing = client.get("/api/uploads/nope/content")
+
+    assert response.status_code == 200
+    assert response.content == PNG
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["content-disposition"].startswith("attachment;")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["content-security-policy"] == "default-src 'none'; sandbox"
     assert missing.status_code == 404
 
 

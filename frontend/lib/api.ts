@@ -604,7 +604,14 @@ export const api = {
         }
         throw new ApiRequestError(response.status, message);
       }
-      return (await response.json()) as { ok: true; id: string; name: string; size: number };
+      return (await response.json()) as {
+        ok: true; id: string; name: string; size: number;
+        /** 'image' | 'video' | 'audio' | 'document' | 'unknown' — the same
+         *  classification the backend uses to decide what a model gets, so
+         *  the browser never re-guesses it from a `File.type` that might
+         *  disagree. */
+        kind: string;
+      };
     },
   },
 };

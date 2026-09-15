@@ -231,6 +231,38 @@ def test_attachments_scroll_sideways_and_never_stack(page, tmp_path):
     assert page.evaluate("document.documentElement.scrollHeight <= window.innerHeight + 1")
 
 
+def test_a_sent_image_shows_in_the_senders_own_bubble_and_expands_on_click(page, tmp_path, stub):
+    """Two previously-real gaps, closed together: an attachment the user sent
+    used to vanish from the transcript entirely once sent (their own bubble
+    carried only text, never the file) — and nothing anywhere in the
+    transcript was clickable to see a full-size view."""
+    import base64
+
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+    path = tmp_path / "photo.png"
+    path.write_bytes(png)
+
+    stub.says("Nice photo.")
+    page.set_input_files("input[type=file]", [str(path)])
+    page.wait_for_selector("[data-testid=attachments]")
+    page.click("[data-testid=send]")
+
+    page.wait_for_selector("text=Nice photo.", timeout=15_000)
+    tile = page.locator("[data-testid=attachment-tile]").first
+    tile.wait_for()
+    img_src = tile.locator("img").get_attribute("src")
+    assert img_src and "/api/uploads/" in img_src and img_src.endswith("/content")
+
+    tile.click()
+    page.wait_for_selector("[data-testid=attachment-lightbox]")
+    lightbox_img = page.locator("[data-testid=attachment-lightbox] img")
+    assert lightbox_img.get_attribute("src") == img_src
+
+    page.keyboard.press("Escape")
+    page.wait_for_selector("[data-testid=attachment-lightbox]", state="detached")
+
+
 # --- nothing is a static display ----------------------------------------------
 
 def test_a_notification_opens_and_reading_it_marks_it_read(page):

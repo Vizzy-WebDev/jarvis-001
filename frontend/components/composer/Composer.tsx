@@ -11,6 +11,11 @@ export interface Attachment {
   id: string;
   name: string;
   size: number;
+  /** 'image' | 'video' | 'audio' | 'document' | 'unknown' — from the upload
+   *  response, the same classification the backend uses to decide what a
+   *  model gets. Carried through `onSend` so the sender's own chat bubble can
+   *  show what was actually attached. */
+  kind: string;
   /** A local preview for a picture, so a tile shows the actual image. Made with
    *  `createObjectURL` and revoked when the tile goes — the file is already on
    *  the server, this is only what the user looks at while they type. */
@@ -49,7 +54,11 @@ export function Composer({
 }: {
   disabled: boolean;
   busy: boolean;
-  onSend: (text: string, attachments: string[]) => void;
+  /** `attachments` carries just enough to show what was sent in the
+   *  sender's own chat bubble (id, name, kind) — never `preview`, which is
+   *  an internal, composer-only concern (a local blob URL, revoked the
+   *  moment this fires). */
+  onSend: (text: string, attachments: { id: string; name: string; kind: string }[]) => void;
   /** Silence anything else that is listening — only one recognition session
    *  runs reliably at a time. */
   onDictationStart?: () => void;
@@ -179,6 +188,7 @@ export function Composer({
           id: saved.id,
           name: saved.name,
           size: saved.size,
+          kind: saved.kind,
           preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
         }]);
       }
@@ -200,7 +210,7 @@ export function Composer({
     event?.preventDefault();
     const message = text.trim();
     if ((!message && attachments.length === 0) || disabled || busy) return;
-    onSend(message, attachments.map((a) => a.id));
+    onSend(message, attachments.map((a) => ({ id: a.id, name: a.name, kind: a.kind })));
     attachments.forEach(revoke);
     setText('');
     setAttachments([]);

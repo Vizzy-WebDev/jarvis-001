@@ -26,6 +26,8 @@ export function ConversationPanel({
   onSend,
   onNewChat,
   onDecide,
+  onEditMessage,
+  onRetryMessage,
   onDictationStart,
   voiceEngineActive,
   isSpeaking,
@@ -40,6 +42,9 @@ export function ConversationPanel({
   onSend: (text: string, attachments: { id: string; name: string; kind: string }[]) => void;
   onNewChat: () => void;
   onDecide?: (approvalId: string, decision: 'allow' | 'deny') => void;
+  /** Passed straight through to the transcript — see `Transcript.tsx`. */
+  onEditMessage?: (turn: Turn, newText: string) => void;
+  onRetryMessage?: (userTurn: Turn) => void;
   /** Passed straight through to the composer's dictation — see there. */
   onDictationStart?: () => void;
   /** Whether the main voice engine is running — passed straight through so
@@ -93,7 +98,13 @@ export function ConversationPanel({
       </div>
 
       <div className="h-px shrink-0 bg-surface-border" />
-      <Transcript turns={turns} notConfigured={notConfigured} onDecide={onDecide} />
+      <Transcript
+        turns={turns}
+        notConfigured={notConfigured}
+        onDecide={onDecide}
+        onEditMessage={onEditMessage}
+        onRetryMessage={onRetryMessage}
+      />
       <div className="h-px shrink-0 bg-surface-border" />
       <Composer
         disabled={notConfigured}

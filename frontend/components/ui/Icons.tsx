@@ -104,6 +104,27 @@ export const ChevronIcon = (p: IconProps) => (
   </Svg>
 );
 
+export const CopyIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="9" y="9" width="12" height="12" rx="2" />
+    <path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" />
+  </Svg>
+);
+
+export const EditIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 20h9" />
+    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+  </Svg>
+);
+
+export const RetryIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3 12a9 9 0 1 1 2.64 6.36" />
+    <path d="M3 21v-6h6" />
+  </Svg>
+);
+
 export const CheckIcon = (p: IconProps) => (
   <Svg {...p}>
     <path d="M5 13l4 4L19 7" />

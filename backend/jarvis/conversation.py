@@ -86,9 +86,6 @@ def _push(session_id: str, message: dict[str, Any]) -> dict[str, Any]:
     # `{id: newId(), createdAt: ..., ...message}`.
     full = {"id": _new_id(), "createdAt": now_iso(), **message}
     with _lock:
-        messages = _sessions.setdefault(session_id, [])
-        messages.append(full)
-        _trim(session_id)
         is_bound = session_id in _bound_sessions
     if is_bound:
         # Persist the neutral message as-is, minus the in-memory-only id (which
@@ -96,7 +93,19 @@ def _push(session_id: str, message: dict[str, Any]) -> dict[str, Any]:
         # (already stamped as its own column; storing it in the payload too would
         # double-store the same timestamp).
         rest = {k: v for k, v in full.items() if k not in ("id", "createdAt")}
-        chat_store.append_message(session_id, rest)
+        persisted = chat_store.append_message(session_id, rest)
+        if persisted and persisted.get("messageId"):
+            # Replace the in-memory-only id with the real, persisted one —
+            # `chat_store.get_messages()` reports the SAME id after a reload,
+            # so a caller that gets this message straight back from a live
+            # turn (never having reloaded) can still reference it correctly.
+            # Without this, every message id in a live session was a
+            # placeholder chat_store had never heard of.
+            full["id"] = persisted["messageId"]
+    with _lock:
+        messages = _sessions.setdefault(session_id, [])
+        messages.append(full)
+        _trim(session_id)
     return full
 
 
@@ -231,6 +240,30 @@ def remove_last_orphaned_tool_call(session_id: str) -> bool:
     messages.pop()
     if session_id in _bound_sessions:
         chat_store.remove_last_message_if_matches(session_id, "assistant")
+    return True
+
+
+def truncate_to_before(session_id: str, message_id: str) -> bool:
+    """Drop `message_id` and everything after it, from both the in-memory
+    working set and (if bound) chat_store's persisted copy.
+
+    Powers Edit and Retry: both are "cut the conversation back to just
+    before a chosen message, then run a new turn as if its replacement text
+    had just been sent" — this is the cut. Returns False if `message_id`
+    is not found in the live session (nothing to do; the id was already
+    stale, or belongs to a different session).
+    """
+    with _lock:
+        messages = _sessions.get(session_id)
+        index = None
+        if messages:
+            index = next((i for i, m in enumerate(messages) if m["id"] == message_id), None)
+        if index is None:
+            return False
+        _sessions[session_id] = messages[:index]
+        is_bound = session_id in _bound_sessions
+    if is_bound:
+        chat_store.truncate_to_before(session_id, message_id)
     return True
 
 

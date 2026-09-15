@@ -128,7 +128,10 @@ export interface Notification {
 /** One event from `GET /api/chat/stream`. The wire vocabulary is deliberately
  *  small and stable — see backend/jarvis/routes/turn.py's `to_wire`. */
 export type TurnEvent =
-  | { type: 'routed'; intent: string; fast: boolean; confidence: number; reason: string }
+  | { type: 'routed'; intent: string; fast: boolean; confidence: number; reason: string;
+      /** The user message's real, persisted id — present so Edit/Retry can act
+       *  on THIS turn without waiting for a reload to learn it. */
+      userMessageId?: string }
   | { type: 'chunk'; text: string }
   | { type: 'tool_result'; capability: string; ok: boolean; outcome: string; error: string | null;
       attachment?: { type: 'attachment'; kind: string; url: string; mimeType: string };
@@ -141,7 +144,9 @@ export type TurnEvent =
   | { type: 'interrupted'; spokenText: string }
   | { type: 'progress'; phase: string }
   | { type: 'error'; error: string; code?: string; detail?: unknown }
-  | { type: 'done'; text: string; steps: number }
+  | { type: 'done'; text: string; steps: number;
+      /** The reply's real, persisted id — see `userMessageId` above. */
+      messageId?: string }
   | { type: 'unknown' };
 
 // --- scheduled tasks ----------------------------------------------------------

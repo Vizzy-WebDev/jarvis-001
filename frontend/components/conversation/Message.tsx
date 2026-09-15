@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/Button';
-import { CloseIcon } from '@/components/ui/Icons';
+import { CheckIcon, CloseIcon, CopyIcon, EditIcon, RetryIcon } from '@/components/ui/Icons';
 import { IconButton } from '@/components/ui/IconButton';
 import { isTopmost, popOverlay, pushOverlay } from '@/components/ui/overlay-stack';
 import type { TurnEvent } from '@/lib/api-types';
@@ -126,6 +126,37 @@ function Lightbox({ open, onClose, attachment }: {
   );
 }
 
+/** One small text+icon control in a message's own action row — Copy, Edit,
+ *  Retry. Deliberately not `IconButton`: that one is sized for the header/
+ *  composer's standalone 36px controls, and reads as oversized sitting under
+ *  a message bubble at that size. */
+function ActionButton({
+  label,
+  onClick,
+  testId,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  testId: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      data-testid={testId}
+      onClick={onClick}
+      className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-ink-faint transition
+                 duration-150 ease-out hover:text-ink focus-visible:outline-none
+                 focus-visible:ring-2 focus-visible:ring-accent/60"
+    >
+      {children}
+    </button>
+  );
+}
+
 /**
  * One turn in the transcript.
  *
@@ -141,10 +172,52 @@ function Lightbox({ open, onClose, attachment }: {
 export function Message({
   turn,
   onDecide,
+  onEdit,
+  onRetry,
 }: {
   turn: Turn;
   onDecide?: (approvalId: string, decision: 'allow' | 'deny') => void;
+  /** Present only for a user turn the caller can still act on — see
+   *  `Transcript.tsx`'s wiring. Called with the revised text once the user
+   *  confirms an edit; this component owns only the editing UI, not what
+   *  happens next (truncate-and-resend lives in `app/page.tsx`). */
+  onEdit?: (newText: string) => void;
+  /** Present only on an assistant turn with a preceding user turn to redo,
+   *  and not while still streaming. Regenerates this exchange from that
+   *  user message's own text/attachments. */
+  onRetry?: () => void;
 }) {
+  // Declared unconditionally, ahead of the early returns below (approval/note
+  // turns never show these), so this component never violates the rule that
+  // hooks run in the same order on every render regardless of `turn.role`.
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(turn.text);
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (copyTimer.current) clearTimeout(copyTimer.current);
+  }, []);
+
+  const copyText = () => {
+    navigator.clipboard.writeText(turn.text).then(() => {
+      setCopied(true);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(false), 1500);
+    }).catch(() => undefined);
+  };
+
+  const startEdit = () => {
+    setDraft(turn.text);
+    setEditing(true);
+  };
+
+  const saveEdit = () => {
+    const text = draft.trim();
+    setEditing(false);
+    if (text && text !== turn.text) onEdit?.(text);
+  };
+
   if (turn.role === 'approval') {
     return (
       <div
@@ -192,7 +265,7 @@ export function Message({
   // item list, else none.
   const shown = turn.attachments ?? (turn.attachment ? [turn.attachment] : []);
   return (
-    <div className={`animate-fade-up flex ${mine ? 'justify-end' : 'justify-start'}`}>
+    <div className={`animate-fade-up flex flex-col ${mine ? 'items-end' : 'items-start'}`}>
       <div
         className={[
           'max-w-[88%] rounded-lg px-3.5 py-2.5 text-[14px] leading-relaxed',
@@ -202,14 +275,62 @@ export function Message({
         {shown.map((attachment, index) => (
           <AttachmentTile key={`${attachment.url}-${index}`} attachment={attachment} />
         ))}
-        <p className="whitespace-pre-wrap break-words">
-          {turn.text}
-          {turn.streaming && <span className="ml-0.5 inline-block animate-pulse text-accent">▍</span>}
-        </p>
+        {editing ? (
+          <div className="min-w-[220px]">
+            <textarea
+              data-testid="edit-message-input"
+              autoFocus
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
+                  saveEdit();
+                } else if (event.key === 'Escape') {
+                  setEditing(false);
+                }
+              }}
+              rows={Math.min(8, Math.max(2, draft.split('\n').length))}
+              className="w-full resize-none rounded border border-surface-border bg-surface-base/60
+                         px-2 py-1.5 text-[14px] leading-relaxed text-ink outline-none
+                         focus-visible:ring-2 focus-visible:ring-accent/60"
+            />
+            <div className="mt-1.5 flex justify-end gap-1.5">
+              <Button data-testid="cancel-edit" onClick={() => setEditing(false)}>
+                Cancel
+              </Button>
+              <Button tone="primary" data-testid="save-edit" onClick={saveEdit}>
+                Save &amp; resend
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <p className="whitespace-pre-wrap break-words">
+            {turn.text}
+            {turn.streaming && <span className="ml-0.5 inline-block animate-pulse text-accent">▍</span>}
+          </p>
+        )}
         {turn.interrupted && (
           <p className="mt-1 text-[11px] italic text-ink-faint">interrupted</p>
         )}
       </div>
+      {!editing && !turn.streaming && (
+        <div className="mt-1 flex gap-0.5 px-1">
+          <ActionButton label="Copy" testId="copy-message" onClick={copyText}>
+            {copied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}
+          </ActionButton>
+          {onEdit && (
+            <ActionButton label="Edit and resend" testId="edit-message" onClick={startEdit}>
+              <EditIcon className="h-3.5 w-3.5" />
+            </ActionButton>
+          )}
+          {onRetry && (
+            <ActionButton label="Retry" testId="retry-message" onClick={onRetry}>
+              <RetryIcon className="h-3.5 w-3.5" />
+            </ActionButton>
+          )}
+        </div>
+      )}
     </div>
   );
 }

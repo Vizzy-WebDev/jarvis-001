@@ -180,8 +180,13 @@ export default function Home() {
 
   // --- sending ---------------------------------------------------------------
 
-  const send = useCallback((text: string, attachments: { id: string; name: string; kind: string }[]) => {
+  const send = useCallback((
+    text: string,
+    attachments: { id: string; name: string; kind: string }[],
+    editOf?: string,
+  ) => {
     const asked = text || 'I’ve attached this.';
+    const userTurnId = newId();
     const replyId = newId();
     // Shown in the sender's own bubble, not just sent to the model — attached
     // files used to vanish from the transcript entirely once sent. The
@@ -191,11 +196,24 @@ export default function Home() {
     const sentAttachments = attachments.map((a) => ({
       kind: a.kind, url: `/api/uploads/${a.id}/content`,
     }));
-    setTurns((current) => [
-      ...current,
-      { id: newId(), role: 'user', text: asked, attachments: sentAttachments },
-      { id: replyId, role: 'assistant', text: '', streaming: true },
-    ]);
+    setTurns((current) => {
+      // Edit/Retry: drop the message being redone and everything after it —
+      // the server does the same cut (chat_store.truncate_to_before) against
+      // the persisted transcript, so the two stay in lockstep. A stale
+      // `editOf` (not found — e.g. a second click after it already resolved)
+      // is a plain send instead of a no-op, since the id it named is gone.
+      const base = editOf
+        ? (() => {
+            const cut = current.findIndex((turn) => turn.id === editOf);
+            return cut === -1 ? current : current.slice(0, cut);
+          })()
+        : current;
+      return [
+        ...base,
+        { id: userTurnId, role: 'user', text: asked, attachments: sentAttachments },
+        { id: replyId, role: 'assistant', text: '', streaming: true },
+      ];
+    });
     setBusy(true);
     setOrbState('thinking');
     setStatus('Thinking…');
@@ -206,8 +224,18 @@ export default function Home() {
     const turn = streamTurn({
       message: text,
       attachments: attachments.map((a) => a.id),
+      editOf,
       onEvent: (event) => {
         switch (event.type) {
+          case 'routed':
+            // The user message's real, persisted id — once known, replace the
+            // local placeholder so a later Edit/Retry on THIS message (before
+            // any reload) references something chat_store actually has.
+            if (event.userMessageId) {
+              setTurns((current) => current.map((t) =>
+                t.id === userTurnId ? { ...t, id: event.userMessageId! } : t));
+            }
+            break;
           case 'chunk':
             setOrbState('speaking');
             patch((turn) => ({ ...turn, text: turn.text + event.text }));
@@ -248,7 +276,11 @@ export default function Home() {
             patch((turn) => ({ ...turn, text: event.error, streaming: false }));
             break;
           case 'done':
-            patch((turn) => ({ ...turn, text: event.text || turn.text, streaming: false }));
+            // Same real-id swap as `routed` above, for the reply's own bubble.
+            patch((turn) => ({
+              ...turn, text: event.text || turn.text, streaming: false,
+              id: event.messageId ?? turn.id,
+            }));
             break;
           default:
             break;
@@ -265,6 +297,33 @@ export default function Home() {
       setStatus('Type below to talk to Jarvis');
     });
   }, []);
+
+  /** The upload id a sent attachment's content URL was built from — the
+   *  inverse of `send()`'s own `/api/uploads/${a.id}/content`. Needed so
+   *  Retry/Edit can resend the SAME files, since the composer only ever
+   *  hands `send()` ids and `Turn.attachments` only ever keeps the URL. */
+  const uploadIdFromAttachment = (url: string): string | null => {
+    const match = url.match(/\/api\/uploads\/([^/]+)\/content$/);
+    return match?.[1] ?? null;
+  };
+
+  const handleEditMessage = useCallback((turn: Turn, newText: string) => {
+    if (busy) return;
+    const attachments = (turn.attachments ?? [])
+      .map((a) => uploadIdFromAttachment(a.url))
+      .filter((id): id is string => Boolean(id))
+      .map((id) => ({ id, name: '', kind: '' }));
+    send(newText, attachments, turn.id);
+  }, [busy, send]);
+
+  const handleRetryMessage = useCallback((userTurn: Turn) => {
+    if (busy) return;
+    const attachments = (userTurn.attachments ?? [])
+      .map((a) => uploadIdFromAttachment(a.url))
+      .filter((id): id is string => Boolean(id))
+      .map((id) => ({ id, name: '', kind: '' }));
+    send(userTurn.text, attachments, userTurn.id);
+  }, [busy, send]);
 
   const decide = useCallback(async (approvalId: string, decision: 'allow' | 'deny') => {
     try {
@@ -596,6 +655,8 @@ export default function Home() {
             onSend={send}
             onNewChat={newChat}
             onDecide={decide}
+            onEditMessage={handleEditMessage}
+            onRetryMessage={handleRetryMessage}
             draftText={composerDraft}
             onDraftConsumed={() => setComposerDraft(null)}
             historyOpen={historyOpen}

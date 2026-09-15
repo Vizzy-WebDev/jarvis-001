@@ -55,6 +55,31 @@ def test_archived_conversations_are_hidden_by_default_and_isolated_when_asked_fo
     assert [c["id"] for c in chat_store.list_conversations(include_archived=True)] == [hidden["id"]]
 
 
+# --- truncate_to_before (Edit/Retry's shared cut) --------------------------------
+
+
+def test_truncate_to_before_deletes_the_message_and_everything_after_it():
+    convo = chat_store.create_conversation()
+    first = chat_store.append_message(convo["id"], {"role": "user", "text": "one"})
+    second = chat_store.append_message(convo["id"], {"role": "assistant", "text": "two"})
+    third = chat_store.append_message(convo["id"], {"role": "user", "text": "three"})
+
+    removed = chat_store.truncate_to_before(convo["id"], second["messageId"])
+
+    assert removed == 2
+    remaining = chat_store.get_messages(convo["id"])
+    assert [m["id"] for m in remaining] == [first["messageId"]]
+    assert third["messageId"] not in [m["id"] for m in remaining]
+
+
+def test_truncate_to_before_an_unknown_id_deletes_nothing():
+    convo = chat_store.create_conversation()
+    chat_store.append_message(convo["id"], {"role": "user", "text": "one"})
+
+    assert chat_store.truncate_to_before(convo["id"], "m999999") == 0
+    assert len(chat_store.get_messages(convo["id"])) == 1
+
+
 # --- the recycle bin ------------------------------------------------------------
 
 def test_deleting_moves_to_the_bin_rather_than_removing_it():

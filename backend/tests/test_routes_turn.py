@@ -90,8 +90,87 @@ def test_a_turn_streams_chunks_then_done(client, stub):
 
     events = events_from(response)
     assert [e["type"] for e in events][0] == "routed"
+    assert events[0]["userMessageId"], "the routed event should carry the pushed user message's real id"
     assert "".join(e["text"] for e in events if e["type"] == "chunk") == "All quiet here."
-    assert events[-1] == {"type": "done", "text": "All quiet here.", "steps": 1}
+    done = events[-1]
+    assert done["type"] == "done" and done["text"] == "All quiet here." and done["steps"] == 1
+    assert done["messageId"], "the done event should carry the reply's real, persisted id"
+
+
+def test_the_ids_a_live_turn_reports_are_the_same_ones_a_reload_would_see(client, stub):
+    """A previously-real gap: conversation.py's in-memory `_push()` minted its
+    own placeholder id for every message, discarding the real one
+    `chat_store.append_message()` generated — so a message shown during the
+    CURRENT live session carried an id chat_store had never heard of, and
+    only matched reality after a reload re-fetched everything through
+    `get_messages()`. Message actions (retry, edit) built on the id a live
+    turn reports would silently target the wrong thing, or nothing, until
+    then."""
+    from jarvis import chat_store
+
+    stub.says("Right here.")
+    response = client.get("/api/chat/stream", params={"message": "are you there"})
+    events = events_from(response)
+    routed = next(e for e in events if e["type"] == "routed")
+    done = next(e for e in events if e["type"] == "done")
+
+    stored = chat_store.get_messages(get_active_session_id())
+    stored_ids = {m["id"] for m in stored}
+    assert routed["userMessageId"] in stored_ids
+    assert done["messageId"] in stored_ids
+    user_row = next(m for m in stored if m["id"] == routed["userMessageId"])
+    reply_row = next(m for m in stored if m["id"] == done["messageId"])
+    assert user_row["role"] == "user" and user_row["text"] == "are you there"
+    assert reply_row["role"] == "assistant" and reply_row["text"] == "Right here."
+
+
+def test_edit_of_truncates_the_conversation_and_replays_from_that_point(client, stub):
+    """Edit and Retry share one mechanism: `edit_of=<messageId>` cuts the
+    conversation back to just before that message, then the turn's own text
+    is pushed as if it had just been sent. Sending a revised message with
+    `edit_of` set to the ORIGINAL user message's id must remove both the
+    original message and whatever came after it (the old reply), leaving
+    only the edited exchange."""
+    from jarvis import chat_store
+
+    stub.says("First answer.")
+    first = events_from(client.get("/api/chat/stream", params={"message": "original question"}))
+    original_user_id = next(e for e in first if e["type"] == "routed")["userMessageId"]
+
+    stub.says("Second answer.")
+    second = events_from(client.get(
+        "/api/chat/stream",
+        params={"message": "edited question", "edit_of": original_user_id},
+    ))
+    routed = next(e for e in second if e["type"] == "routed")
+    done = next(e for e in second if e["type"] == "done")
+
+    stored = chat_store.get_messages(get_active_session_id())
+    assert [m["text"] for m in stored if m["role"] == "user"] == ["edited question"]
+    assert [m["text"] for m in stored if m["role"] == "assistant"] == ["Second answer."]
+    assert routed["userMessageId"] in {m["id"] for m in stored}
+    assert done["messageId"] in {m["id"] for m in stored}
+
+
+def test_retry_is_the_same_mechanism_with_the_messages_own_unedited_text(client, stub):
+    """Retry = resend the last user message's own text with `edit_of` set to
+    its own id — no second endpoint. This drops the stale reply and
+    generates a fresh one for the exact same question."""
+    from jarvis import chat_store
+
+    stub.says("Wrong-sounding answer.")
+    first = events_from(client.get("/api/chat/stream", params={"message": "same question"}))
+    user_id = next(e for e in first if e["type"] == "routed")["userMessageId"]
+
+    stub.says("Better answer.")
+    events_from(client.get(
+        "/api/chat/stream",
+        params={"message": "same question", "edit_of": user_id},
+    ))
+
+    stored = chat_store.get_messages(get_active_session_id())
+    assert [m["text"] for m in stored if m["role"] == "user"] == ["same question"]
+    assert [m["text"] for m in stored if m["role"] == "assistant"] == ["Better answer."]
 
 
 def test_an_empty_message_is_refused_before_any_model_call(client, stub):

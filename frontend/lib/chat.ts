@@ -18,6 +18,11 @@ export interface TurnOptions {
   attachments?: string[];
   source?: 'text' | 'voice';
   confidence?: number;
+  /** Edit and Retry both ride this one parameter: the id of the user message
+   *  to redo. The server cuts the conversation back to just before it, then
+   *  this call's own `message`/`attachments` replay as if just sent — the
+   *  original text for Retry, the revised text for Edit. */
+  editOf?: string;
   onEvent: (event: TurnEvent) => void;
 }
 
@@ -33,12 +38,14 @@ export function streamTurn({
   attachments = [],
   source = 'text',
   confidence,
+  editOf,
   onEvent,
 }: TurnOptions): RunningTurn {
   const params = new URLSearchParams({ message });
   if (attachments.length) params.set('attachments', attachments.join(','));
   if (source !== 'text') params.set('source', source);
   if (typeof confidence === 'number') params.set('confidence', String(confidence));
+  if (editOf) params.set('edit_of', editOf);
 
   const events = new EventSource(`/api/chat/stream?${params}`);
   let settle: () => void = () => {};

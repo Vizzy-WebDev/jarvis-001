@@ -45,10 +45,19 @@ def to_wire(event: Any) -> dict[str, Any]:
     if isinstance(event, Reaction):
         return {"type": "reaction", "kind": event.kind}
     if isinstance(event, Done):
-        return {"type": "done", "text": event.text, "steps": event.steps}
+        wire = {"type": "done", "text": event.text, "steps": event.steps}
+        # The reply's real, persisted id — so a client can act on THIS turn
+        # (retry, and eventually edit) without waiting for a reload to learn
+        # what chat_store ended up calling it.
+        if event.message_id:
+            wire["messageId"] = event.message_id
+        return wire
     if isinstance(event, Routed):
-        return {"type": "routed", "intent": event.intent.value, "fast": event.fast,
+        wire = {"type": "routed", "intent": event.intent.value, "fast": event.fast,
                 "confidence": event.confidence, "reason": event.reason}
+        if event.user_message_id:
+            wire["userMessageId"] = event.user_message_id
+        return wire
     if isinstance(event, ToolRan):
         wire = {"type": "tool_result", "capability": event.capability, "ok": event.ok,
                 "outcome": event.outcome.value, "error": event.error}
@@ -86,7 +95,8 @@ def _phase_of(event: dict[str, Any]) -> str:
 
 @router.get("/chat/stream")
 async def chat_stream(request: Request, message: str = "", source: str = "text",
-                      confidence: float | None = None, attachments: str = ""):
+                      confidence: float | None = None, attachments: str = "",
+                      edit_of: str = ""):
     text = (message or "").strip()
     # Attachment ids ride in the query string because EventSource can only make a
     # GET with no body. Ids, never paths — see routes/uploads.py.
@@ -96,6 +106,13 @@ async def chat_stream(request: Request, message: str = "", source: str = "text",
     # message is only an error when nothing is attached either.
     if not text and not attached:
         return JSONResponse({"error": "No message provided."}, status_code=400)
+
+    # Edit and Retry both arrive as an ordinary new turn plus this one extra
+    # id: cut the conversation back to just before the message being redone,
+    # then let the normal turn logic below push the (possibly edited) text
+    # as if it had just been sent. No second endpoint needed for either.
+    if edit_of.strip():
+        conversation.truncate_to_before(get_active_session_id(), edit_of.strip())
 
     surface = Surface.VOICE if source == "voice" else Surface.TEXT
     low_confidence = (surface is Surface.VOICE and confidence is not None

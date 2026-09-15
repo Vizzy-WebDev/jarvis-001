@@ -129,6 +129,64 @@ def test_a_typed_message_streams_a_real_reply(page, stub):
     assert stub.requests, "the backend never called the model"
 
 
+def _turn_containing(page, text: str):
+    """The one direct child of the transcript whose bubble holds `text` — every
+    turn (`Message.tsx`) renders as exactly one top-level element there, so
+    this is how a test reaches into a SPECIFIC message's own action row rather
+    than the first Copy/Edit/Retry button on the page."""
+    return page.locator("[data-testid=transcript] > div", has_text=text).first
+
+
+def test_copy_puts_the_messages_own_text_on_the_clipboard(page, stub):
+    stub.says("The kettle is on.")
+    page.context.grant_permissions(["clipboard-read", "clipboard-write"])
+
+    page.fill("[data-testid=composer-input]", "what are you up to")
+    page.press("[data-testid=composer-input]", "Enter")
+    page.wait_for_selector("text=The kettle is on.", timeout=15_000)
+
+    _turn_containing(page, "what are you up to").locator("[data-testid=copy-message]").click()
+    assert page.evaluate("() => navigator.clipboard.readText()") == "what are you up to"
+
+    _turn_containing(page, "The kettle is on.").locator("[data-testid=copy-message]").click()
+    assert page.evaluate("() => navigator.clipboard.readText()") == "The kettle is on."
+
+
+def test_editing_a_message_replaces_it_and_the_stale_reply_after_it(page, stub):
+    """Edit is truncate-and-resend, not append: the original question, its old
+    reply, and nothing else are what disappear."""
+    stub.says("First answer.")
+    page.fill("[data-testid=composer-input]", "original question")
+    page.press("[data-testid=composer-input]", "Enter")
+    page.wait_for_selector("text=First answer.", timeout=15_000)
+
+    stub.says("Second answer.")
+    _turn_containing(page, "original question").locator("[data-testid=edit-message]").click()
+    page.fill("[data-testid=edit-message-input]", "edited question")
+    page.click("[data-testid=save-edit]")
+
+    page.wait_for_selector("text=Second answer.", timeout=15_000)
+    transcript = page.locator("[data-testid=transcript]").inner_text()
+    assert "edited question" in transcript
+    assert "original question" not in transcript
+    assert "First answer." not in transcript
+
+
+def test_retry_regenerates_the_reply_without_changing_the_question(page, stub):
+    stub.says("Wrong-sounding answer.")
+    page.fill("[data-testid=composer-input]", "same question")
+    page.press("[data-testid=composer-input]", "Enter")
+    page.wait_for_selector("text=Wrong-sounding answer.", timeout=15_000)
+
+    stub.says("Better answer.")
+    _turn_containing(page, "Wrong-sounding answer.").locator("[data-testid=retry-message]").click()
+
+    page.wait_for_selector("text=Better answer.", timeout=15_000)
+    transcript = page.locator("[data-testid=transcript]").inner_text()
+    assert transcript.count("same question") == 1
+    assert "Wrong-sounding answer." not in transcript
+
+
 def test_the_bell_reads_what_the_backend_stored(page):
     from jarvis import notifications
 

@@ -34,10 +34,20 @@ export function Transcript({
   turns,
   notConfigured,
   onDecide,
+  onEditMessage,
+  onRetryMessage,
 }: {
   turns: Turn[];
   notConfigured: boolean;
   onDecide?: (approvalId: string, decision: 'allow' | 'deny') => void;
+  /** Edit lives on the user's own bubble: revise the text, resend from
+   *  there. Takes the turn being edited (its real id is what the truncate-
+   *  and-resend call needs) and the confirmed new text. */
+  onEditMessage?: (turn: Turn, newText: string) => void;
+  /** Retry lives on the assistant's bubble but redoes the exchange from the
+   *  PRECEDING user turn — found here, per-row, since `Message` only ever
+   *  sees the one turn it renders. */
+  onRetryMessage?: (userTurn: Turn) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
@@ -80,9 +90,26 @@ export function Transcript({
         </p>
       )}
 
-      {turns.map((turn) => (
-        <Message key={turn.id} turn={turn} onDecide={onDecide} />
-      ))}
+      {turns.map((turn, index) => {
+        const precedingUser = turn.role === 'assistant'
+          ? turns.slice(0, index).reverse().find((t) => t.role === 'user')
+          : undefined;
+        return (
+          <Message
+            key={turn.id}
+            turn={turn}
+            onDecide={onDecide}
+            onEdit={
+              turn.role === 'user' && onEditMessage
+                ? (newText) => onEditMessage(turn, newText)
+                : undefined
+            }
+            onRetry={
+              precedingUser && onRetryMessage ? () => onRetryMessage(precedingUser) : undefined
+            }
+          />
+        );
+      })}
     </div>
   );
 }

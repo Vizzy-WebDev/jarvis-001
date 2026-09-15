@@ -81,6 +81,12 @@ class Routed:
     confidence: float
     reason: str
     fast: bool
+    #: The just-pushed user message's real, persisted id (chat_store's own
+    #: "mN" shape) — never this module's in-memory-only placeholder. Lets the
+    #: frontend reference the turn it just showed (for Edit/Retry) without
+    #: waiting for a reload to learn what its real id turned out to be. None
+    #: for the CLARIFY fast-return, which never gets this far.
+    user_message_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -157,6 +163,10 @@ class Done:
     #: silently fell back — the gateway treats a pin as an ordering, not a
     #: requirement, so a deleted pinned model degrades instead of breaking.
     model_id: str | None = None
+    #: The reply's own real, persisted id — same reasoning as `Routed.
+    #: user_message_id`. None for the CLARIFY fast-return, which never wrote
+    #: an assistant message at all.
+    message_id: str | None = None
 
 
 TurnEvent = (Routed | Chunk | Reaction | ToolRan | ApprovalRequired | Switched | Interrupted
@@ -337,13 +347,14 @@ class Orchestrator:
             from ..attachments import compose_message
 
             message_text = compose_message(text, prepared)
-        conversation.push_user_text(request.session_id, message_text,
-                                    media=prepared.media if prepared else None)
+        pushed_user = conversation.push_user_text(request.session_id, message_text,
+                                                   media=prepared.media if prepared else None)
         _prepare_for_new_turn(state)
         state.to(State.THINKING, "turn started")
 
         fast_spec = self._fast_spec(route)
-        yield Routed(route.intent, route.confidence, route.reason, fast=fast_spec is not None)
+        yield Routed(route.intent, route.confidence, route.reason, fast=fast_spec is not None,
+                     user_message_id=pushed_user.get("id"))
 
         try:
             if fast_spec is not None:
@@ -423,9 +434,9 @@ class Orchestrator:
             state.to(State.THINKING, "fast path produced data, not an answer")
             return events, True
 
-        conversation.push_assistant_text(request.session_id, spoken)
+        pushed_reply = conversation.push_assistant_text(request.session_id, spoken)
         self._finish(state, request)
-        events.append(Done(spoken, steps=0))
+        events.append(Done(spoken, steps=0, message_id=pushed_reply.get("id")))
         return events, False
 
     # --- the model path ------------------------------------------------------
@@ -535,7 +546,7 @@ class Orchestrator:
                 # gets the same stripping before it ever reaches the
                 # transcript or gets said back as words.
                 reply = strip_reaction_markers(completed.text) or "".join(spoken_so_far)
-                conversation.push_assistant_text(
+                pushed_reply = conversation.push_assistant_text(
                     request.session_id, reply, completed.model_id, completed.raw
                 )
                 self._bus.publish(
@@ -545,7 +556,8 @@ class Orchestrator:
                      "toolNames": list(tools_used)},
                 )
                 self._finish(state, request)
-                yield Done(reply, steps=step, model_id=completed.model_id)
+                yield Done(reply, steps=step, model_id=completed.model_id,
+                          message_id=pushed_reply.get("id"))
                 return
 
             conversation.push_assistant_tool_calls(

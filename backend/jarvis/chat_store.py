@@ -356,11 +356,12 @@ def append_message(conversation_id: str, message: dict[str, Any]) -> dict[str, A
         ).fetchone()
         next_seq = (row["seq"] if row else 0) + 1
 
-        db.execute(
+        cursor = db.execute(
             "INSERT INTO messages (conversation_id, seq, role, text, payload, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (conversation_id, next_seq, role, text if text is not None else None, payload, ts),
         )
+        message_id = f"m{cursor.lastrowid}"
 
         conv = db.execute("SELECT title FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
         should_title = bool(conv and conv["title"] == "New chat" and role == "user" and text)
@@ -376,7 +377,36 @@ def append_message(conversation_id: str, message: dict[str, Any]) -> dict[str, A
         db.execute("ROLLBACK")
         raise
 
-    return get_conversation(conversation_id)
+    # `messageId` is the real, stable, persisted id — the same `mN` shape
+    # `_row_to_message` uses on read — merged onto the conversation dict this
+    # already returned. The one caller (conversation.py's `_push`) previously
+    # discarded this return value entirely; it needs this id to stop handing
+    # the frontend an in-memory-only id that means nothing once the message is
+    # actually persisted (see conversation.py for why that distinction matters).
+    described = get_conversation(conversation_id) or {}
+    return {**described, "messageId": message_id}
+
+
+def truncate_to_before(conversation_id: str, message_id: str) -> int:
+    """Delete `message_id` and every message after it in this conversation.
+
+    Powers Edit and Retry (see conversation.py's own `truncate_to_before`):
+    both replay from a fixed point by cutting the persisted transcript back to
+    just before a chosen message, then letting a fresh turn push its
+    replacement. `message_id` is the `mN` shape `_row_to_message` already
+    hands out, and within one conversation its numeric part is the SQLite
+    rowid, which only ever increases with insertion order — the same
+    ordering `seq` uses — so a plain `id >= ?` delete is exact without a
+    second lookup.
+    """
+    try:
+        row_id = int(message_id[1:]) if message_id.startswith("m") else int(message_id)
+    except ValueError:
+        return 0
+    cursor = get_db().execute(
+        "DELETE FROM messages WHERE conversation_id = ? AND id >= ?", (conversation_id, row_id)
+    )
+    return cursor.rowcount
 
 
 def remove_last_message_if_matches(conversation_id: str, role: str) -> bool:

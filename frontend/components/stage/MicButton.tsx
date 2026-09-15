@@ -3,7 +3,11 @@
 import { MicIcon } from '@/components/ui/Icons';
 
 /**
- * Jarvis's own voice control — mute and unmute, nothing else.
+ * Jarvis's own voice control — starts or fully ends a session, nothing else.
+ * Muting (capture on/off without touching a session in progress) is a
+ * separate, dedicated control next to this one; this button's own click
+ * always tears the whole session down, which is allowed to interrupt Jarvis
+ * as a natural consequence of actually ending things.
  *
  * It sits in the stage's lower band, which is reserved space: the orb's box is
  * everything above it, so neither can ever resize the other. Distinct from the
@@ -32,8 +36,8 @@ export function MicButton({
       disabled={disabled}
       data-testid="mic"
       aria-pressed={listening}
-      aria-label={listening ? 'Mute the microphone' : 'Unmute the microphone'}
-      title={disabled ? hint : listening ? 'Mute' : 'Unmute'}
+      aria-label={listening ? 'End the voice session' : 'Start a voice session'}
+      title={disabled ? hint : listening ? 'End session' : 'Start listening'}
       className={[
         'inline-flex h-[60px] w-[60px] items-center justify-center rounded-full border',
         'transition duration-200 ease-out',

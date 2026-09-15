@@ -42,6 +42,7 @@ export function Composer({
   busy,
   onSend,
   onDictationStart,
+  voiceEngineActive,
   isSpeaking,
   draftText,
   onDraftConsumed,
@@ -52,6 +53,12 @@ export function Composer({
   /** Silence anything else that is listening — only one recognition session
    *  runs reliably at a time. */
   onDictationStart?: () => void;
+  /** The other direction of that same rule: true while the main voice engine
+   *  is running, so this can stand its own dictation down the moment it
+   *  starts — a plain reactive prop rather than an imperative call, since the
+   *  caller has no other way to reach into this component's own `Dictation`
+   *  instance. */
+  voiceEngineActive?: boolean;
   /** Whether Jarvis is speaking right now. A backstop: the caller is expected
    *  to have silenced it, and this catches the case where it starts for some
    *  unrelated reason while this is already open. */
@@ -95,7 +102,7 @@ export function Composer({
       setText(spoken);
       const box = textRef.current;
       if (box) {
-        box.value = spoken;
+        setValuePreservingCaret(box, spoken);
         grow(box);
       }
     },
@@ -126,6 +133,12 @@ export function Composer({
   // A live session outlives a re-render but must not outlive the composer.
   useEffect(() => () => dictation.stop(), [dictation]);
 
+  // The reverse direction of `onDictationStart`: the main voice engine starting
+  // stands this one down too, so the two never capture at once.
+  useEffect(() => {
+    if (voiceEngineActive && dictation.active) dictation.stop();
+  }, [voiceEngineActive, dictation]);
+
   // A preview URL is a real allocation; letting them pile up over a long
   // session is a leak the browser cannot clean up on its own.
   const liveRef = useRef<Attachment[]>([]);
@@ -145,7 +158,7 @@ export function Composer({
     setText(draftText);
     const box = textRef.current;
     if (box) {
-      box.value = draftText;
+      setValuePreservingCaret(box, draftText);
       grow(box);
       box.focus();
     }
@@ -265,6 +278,11 @@ export function Composer({
           onChange={(event) => {
             setText(event.target.value);
             grow(event.target);
+            // A no-op when dictation isn't running (rebase() checks that
+            // itself). While it is, this re-anchors it onto the edit just
+            // made, so the next recognition result appends after it instead
+            // of silently overwriting it with what was heard before the edit.
+            dictation.rebase(event.target.value);
           }}
           onKeyDown={onKeyDown}
           placeholder={uploading ? 'Attaching…' : 'Message Jarvis…'}
@@ -313,6 +331,33 @@ export function Composer({
       </form>
     </div>
   );
+}
+
+/**
+ * Write a new value into a textarea without unconditionally snapping the
+ * caret to the end — the browser's own default for any programmatic `.value`
+ * assignment, which is what made a click into the middle of the box (to fix a
+ * word, say) get silently overridden the next time dictation or a draft wrote
+ * into it.
+ *
+ * Only restores the old caret position when it is still meaningful: pure
+ * growth AHEAD of it (`next` starts with the box's old value) means the text
+ * up to and around the caret never changed, so its position still points at
+ * the same characters. Anything else — a rebase, a fresh draft replacing
+ * everything — has no earlier position worth preserving, so the caret goes to
+ * the end of the new text, exactly what happens today, just made explicit.
+ */
+function setValuePreservingCaret(box: HTMLTextAreaElement, next: string): void {
+  const prevValue = box.value;
+  const hadFocus = document.activeElement === box;
+  const prevStart = box.selectionStart;
+  const prevEnd = box.selectionEnd;
+  box.value = next;
+  if (hadFocus && prevStart !== null && prevEnd !== null && next.startsWith(prevValue)) {
+    box.setSelectionRange(prevStart, prevEnd);
+  } else {
+    box.setSelectionRange(next.length, next.length);
+  }
 }
 
 function revoke(file: Attachment) {

@@ -679,6 +679,30 @@ def test_the_mic_button_is_live_now(page):
         timeout=10_000)
 
 
+def test_mute_is_a_real_separate_control_disabled_with_no_session(page):
+    """Muting used not to exist as its own control at all — the single mic
+    button always did a full stop, interrupting Jarvis as a side effect.
+    `setMuted()` was already correctly implemented on every engine (input
+    capture only, never the current turn) but nothing in the UI ever called
+    it. This proves the dedicated control actually exists and starts
+    disabled, matching "nothing to mute yet" with no session running.
+
+    What this deliberately does NOT attempt: driving it through a real
+    speaking turn to prove muting never interrupts. This sandboxed Chromium
+    cannot hold a stable `listening` state at all — its fake microphone
+    doesn't satisfy the real Web Speech API, which errors out within
+    milliseconds (confirmed directly, twice, while building this — see
+    `test_pipeline_engine_stops_for_real_rather_than_being_silently_abandoned`
+    above) — so `listening` itself is never stable long enough here to
+    reliably reach `speaking`, let alone test muting during it, without
+    writing a flaky test around a race this environment cannot resolve.
+    `toggleMute` never calling `interrupt()`/`stop()` is verified by reading
+    the code instead; a real microphone is the honest way to confirm the
+    live behaviour, per the manual check in the project's own testing notes.
+    """
+    assert page.is_disabled("[data-testid=mute]")
+
+
 # --- the engines that need a microphone ----------------------------------------
 
 @pytest.fixture
@@ -1809,3 +1833,4 @@ def test_the_catalogue_lists_official_connectors_with_a_real_resolved_icon(page,
 
     notion_row = page.locator("[data-testid=catalog-row]", has_text="Notion")
     assert notion_row.locator("img").get_attribute("src") == seeded
+

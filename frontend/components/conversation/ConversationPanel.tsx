@@ -27,6 +27,7 @@ export function ConversationPanel({
   onNewChat,
   onDecide,
   onDictationStart,
+  voiceEngineActive,
   isSpeaking,
   draftText,
   onDraftConsumed,
@@ -41,6 +42,9 @@ export function ConversationPanel({
   onDecide?: (approvalId: string, decision: 'allow' | 'deny') => void;
   /** Passed straight through to the composer's dictation — see there. */
   onDictationStart?: () => void;
+  /** Whether the main voice engine is running — passed straight through so
+   *  the composer's own dictation can stand down when it starts. */
+  voiceEngineActive?: boolean;
   isSpeaking?: () => boolean;
   /** Passed straight through to the composer — see there. */
   draftText?: string | null;
@@ -96,6 +100,7 @@ export function ConversationPanel({
         busy={busy}
         onSend={onSend}
         onDictationStart={onDictationStart}
+        voiceEngineActive={voiceEngineActive}
         isSpeaking={isSpeaking}
         draftText={draftText}
         onDraftConsumed={onDraftConsumed}

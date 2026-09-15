@@ -22,6 +22,8 @@ import { Header } from '@/components/shell/Header';
 import { SettingsPanel } from '@/components/shell/SettingsPanel';
 import { MicButton } from '@/components/stage/MicButton';
 import { Orb } from '@/components/stage/Orb';
+import { MicIcon } from '@/components/ui/Icons';
+import { IconButton } from '@/components/ui/IconButton';
 import { api, ApiRequestError } from '@/lib/api';
 import type { Message as StoredMessage, Monitor } from '@/lib/api-types';
 import { streamTurn, type RunningTurn } from '@/lib/chat';
@@ -67,6 +69,10 @@ export default function Home() {
   const [status, setStatus] = useState('Type below to talk to Jarvis');
   const [busy, setBusy] = useState(false);
   const [listening, setListening] = useState(false);
+  /** Whether the microphone is muted, independent of everything else the
+   *  engine is doing — see `toggleMute` for why this is kept as its own
+   *  concept rather than folded into stopping/interrupting. */
+  const [muted, setMuted] = useState(false);
   const [engineId, setEngineId] = useState('pipeline');
   const [voiceId, setVoiceId] = useState('browser');
   /** Text handed to the composer from elsewhere (e.g. "Create with Jarvis" on
@@ -297,6 +303,7 @@ export default function Home() {
       engine.current = null;
       sttNotice.current = null;
       setListening(false);
+      setMuted(false);  // stop() always begins the next session unmuted too
       setOrbState('idle');
       setStatus('Type below to talk to Jarvis');
       return;
@@ -317,6 +324,7 @@ export default function Home() {
         engine.current = null;
         sttNotice.current = null;
         setListening(false);
+        setMuted(false);
       }
       // A standing note wins while resting, because that is when there is
       // nothing more urgent to say and it is exactly when someone is wondering
@@ -365,6 +373,21 @@ export default function Home() {
     setListening(true);
     await started.start();
   }, [engineId, speakReplies, voiceId]);
+
+  /**
+   * Mute/unmute, kept deliberately separate from `toggleListening` and from
+   * interrupting Jarvis. `setMuted()` (every engine already implements this
+   * correctly — see `lib/voice/engine.ts`) touches ONLY microphone capture: it
+   * never stops, interrupts, or resets whatever Jarvis is currently doing.
+   * Nothing here calls `interrupt()` or `stop()`, on purpose — this is the
+   * one control that must never do either.
+   */
+  const toggleMute = useCallback(() => {
+    if (!engine.current) return;
+    const next = !engine.current.muted;
+    engine.current.setMuted(next);
+    setMuted(next);
+  }, []);
 
   // Releasing the microphone is not optional cleanup.
   useEffect(() => () => engine.current?.stop(), []);
@@ -503,11 +526,25 @@ export default function Home() {
             <p data-testid="status" className="text-[13px] text-ink-faint" aria-live="polite">
               {status}
             </p>
-            <MicButton
-              listening={listening}
-              hint={listening ? 'Listening — click to stop' : 'Click to talk'}
-              onToggle={() => void toggleListening()}
-            />
+            <div className="flex items-center gap-3">
+              <MicButton
+                listening={listening}
+                hint={listening ? 'Listening — click to stop' : 'Click to talk'}
+                onToggle={() => void toggleListening()}
+              />
+              {/* A real, separate mute — never stops or interrupts Jarvis, only
+                  toggles microphone capture (`toggleMute`). Distinct from the
+                  mic button above, which ends the whole session. */}
+              <IconButton
+                label={muted ? 'Unmute the microphone' : 'Mute the microphone'}
+                data-testid="mute"
+                active={muted}
+                disabled={!listening}
+                onClick={toggleMute}
+              >
+                <MicIcon className="h-[18px] w-[18px]" muted={muted} />
+              </IconButton>
+            </div>
           </div>
         </section>
 
@@ -536,6 +573,10 @@ export default function Home() {
               if (!engine.current) return;
               void toggleListening();
             }}
+            // The other direction of the same rule: starting the main mic
+            // stands the composer's own dictation down, via a prop it watches
+            // rather than an imperative call — see Composer's own effect.
+            voiceEngineActive={listening}
             isSpeaking={() => engine.current?.state === 'speaking'}
           />
         </aside>

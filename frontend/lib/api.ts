@@ -40,7 +40,6 @@ import type {
   Prefs,
   ModelEntry,
   ModelHealth,
-  ModelRole,
   ProbeResult,
   Provider,
   RecheckPreview,
@@ -173,23 +172,6 @@ export const api = {
       request<{ ok: true; models: ModelEntry[] }>('/models/recheck', {
         method: 'POST',
         ...json({ scope }),
-      }),
-  },
-
-  /** Which model does which job. Its own noun, not a model's field: a role is
-   *  a statement about how a kind of work should be served, and the deployment
-   *  it names may not even exist any more. */
-  roles: {
-    list: () => request<{ roles: ModelRole[] }>('/roles'),
-    /** Either half, or both. `null` clears that half and leaves the other. */
-    set: (role: string, patch: { deploymentId?: string | null; effort?: string | null }) =>
-      request<{ ok: true; role: ModelRole }>(`/roles/${encodeURIComponent(role)}`, {
-        method: 'PUT',
-        ...json(patch),
-      }),
-    clear: (role: string) =>
-      request<{ ok: true; role: ModelRole }>(`/roles/${encodeURIComponent(role)}`, {
-        method: 'DELETE',
       }),
   },
 

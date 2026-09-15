@@ -31,7 +31,7 @@ import httpx
 
 from .gateway.client import NoModelAvailable, ask
 from .gateway.routing import Task
-from .gateway.slots import Role
+from .gateway.routing import Role
 from .webtext import to_text
 
 logger = logging.getLogger(__name__)

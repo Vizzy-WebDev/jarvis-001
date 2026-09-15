@@ -5,9 +5,10 @@ things the Node implementation spreads across three separate loops that disagree
 
 1. **Building the candidate list** — one function, `routing.build_candidates`,
    used by every caller rather than re-derived per call site.
-2. **Deciding how hard to think** — the role's slot asks for a level, the
-   version's own scheme says what it can take, and `effort.plan` resolves the
-   two. An adapter is handed the answer; it never chooses and never clamps.
+2. **Deciding how hard to think** — the version's own scheme says what it can
+   take, and `effort.plan` resolves that against a request (none, currently —
+   there is no per-role default any more). An adapter is handed the answer; it
+   never chooses and never clamps.
 3. **Marking a failure** — every failure records the deployment's availability,
    so a model that just 401'd is not offered again on the next turn. The
    control loop in the Node app never did this, so it re-tried dead models
@@ -40,11 +41,10 @@ from ..orchestrator.model_port import (
     ModelEvent, ModelSwitched, ModelUnavailable, StepComplete, TextChunk,
 )
 from ..redact import redact_text
-from . import availability, deployments, effort as effort_store, latency, slots
+from . import availability, deployments, effort as effort_store, latency
 from .error_kind import availability_state_for, classify_error
 from .jsonish import extract_json
-from .routing import Task, build_candidates, explain_exclusions
-from .slots import Role, role_from
+from .routing import Role, Task, build_candidates, explain_exclusions, role_from
 
 logger = logging.getLogger(__name__)
 
@@ -62,18 +62,20 @@ class NoModelAvailable(ModelUnavailable):
     """
 
 
-def _effort_for(entry: dict[str, Any], role: Role):
+def _effort_for(entry: dict[str, Any]):
     """What to ask this deployment for, resolved against what it can take.
 
-    The slot says how hard to think in this role, the version's own scheme says
-    what it can be asked, and `plan` resolves the two — clamping down where they
-    disagree, and answering None where there is nothing to send.
+    No caller currently requests a specific level (there used to be a
+    persisted per-role default; it was removed as an application-level
+    concern), so this always resolves to the version's own scheme default —
+    `plan` still does the work of answering None where there is nothing to
+    send at all.
     """
     version = deployments.version_of(entry)
     if version is None:
         return None
     return effort_store.plan(
-        slots.effort_for(role), version.effort,
+        None, version.effort,
         provider=deployments.provider_of(entry), model=str(entry.get("model") or ""))
 
 
@@ -132,7 +134,7 @@ class Gateway:
                 continue
 
             provider = deployments.provider_of(entry)
-            plan = _effort_for(entry, task.role)
+            plan = _effort_for(entry)
             if plan is not None and plan.clamped:
                 logger.info("%s takes at most %s; asked for %s", entry["id"],
                             plan.level.name, plan.requested.name)
@@ -316,7 +318,7 @@ def ask(
             continue
 
         provider = deployments.provider_of(entry)
-        plan = _effort_for(entry, task.role)
+        plan = _effort_for(entry)
         tried.append(entry["id"])
         text = ""
         usage: dict[str, Any] | None = None

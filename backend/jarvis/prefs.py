@@ -24,9 +24,11 @@ FILE = "prefs"
 #:
 #: All three were stored, served by this route, and read by absolutely nothing —
 #: so anyone who set one had been running with a control that silently did not
-#: work. The two pins are now role slots (`gateway/slots.py`), where they are
-#: actually consulted, and existing values are adopted once on the way past
-#: rather than dropped.
+#: work. A persisted per-role pin briefly existed to replace them
+#: (`gateway/slots.py`) and was itself removed: routing still classifies a turn
+#: by role (`gateway/routing.py`'s `Role`) for scoring purposes, but there is no
+#: stored per-role model/effort override any more — that's an application-level
+#: settings concern, not something the gateway should hold.
 #:
 #: `autoSelect` is deleted outright rather than moved. It expressed "use the
 #: manual pick instead of ranking", which a pin either exists or does not

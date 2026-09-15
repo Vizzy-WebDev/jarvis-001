@@ -183,7 +183,7 @@ def _examine_media(record: dict[str, Any], request: str) -> dict[str, Any]:
     can fail for the top-ranked model specifically while the next is fine."""
     from ..gateway.client import ask
     from ..gateway.routing import Task, build_candidates
-    from ..gateway.slots import Role
+    from ..gateway.routing import Role
 
     source = record["source"]
     if source.get("kind") == "youtube":
@@ -247,7 +247,7 @@ def _youtube_fallback(record: dict[str, Any], request: str,
     about which of the two actually happened."""
     from ..gateway.client import ask
     from ..gateway.routing import Task
-    from ..gateway.slots import Role
+    from ..gateway.routing import Role
 
     fallback = fetch_youtube_text(record["source"]["url"])
     if not fallback.get("ok"):
@@ -287,7 +287,7 @@ def _youtube_fallback(record: dict[str, Any], request: str,
 def _run_examine(record: dict[str, Any], request: str) -> dict[str, Any]:
     from ..gateway.client import ask
     from ..gateway.routing import Task
-    from ..gateway.slots import Role
+    from ..gateway.routing import Role
 
     if _is_text_shaped(record["source"]):
         text = _text_for(record)
@@ -424,7 +424,7 @@ def judge_claim(claim: str, *, context: str | None = None,
     top, with no path around it — that is the entire point of this function."""
     from ..gateway.client import ask
     from ..gateway.routing import Task
-    from ..gateway.slots import Role
+    from ..gateway.routing import Role
 
     question = (claim or "").strip()
     if not question:

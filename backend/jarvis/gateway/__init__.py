@@ -12,14 +12,17 @@ This package exists so that logic lives once.
 
 from . import (
     availability, connections, deployments, discovery, effort, error_kind,
-    latency, probe, providers, routing, slots,
+    latency, probe, providers, routing,
 )
 from .client import Gateway, NoModelAvailable
-from .routing import Task, build_candidates, explain_exclusions
+from .routing import Role, Task, build_candidates, explain_exclusions, role_from
 
 __all__ = [
     "Gateway",
     "NoModelAvailable",
+    # Which job a model gets asked to do — a per-request classification a
+    # caller attaches to its own Task, not a stored preference.
+    "Role",
     "Task",
     "availability",
     "build_candidates",
@@ -40,7 +43,6 @@ __all__ = [
     "latency",
     "probe",
     "providers",
+    "role_from",
     "routing",
-    # Which model does which job — a preference that leads the ranking.
-    "slots",
 ]

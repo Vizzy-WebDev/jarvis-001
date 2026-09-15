@@ -463,56 +463,6 @@ def test_an_approval_in_the_transcript_is_a_real_control(page, stub):
 
 # --- the models screen ---------------------------------------------------------
 
-def test_a_job_can_be_given_a_model_through_the_screen(page, stub):
-    """Phase 5 built the slot store and phase 6 taught the router to read it.
-    This is the part a person can actually reach: choosing which model answers
-    when Jarvis speaks, and having that survive a reload."""
-    from jarvis.gateway import deployments, slots
-    from jarvis.gateway.slots import Role
-
-    [existing] = deployments.list_deployments()
-
-    page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
-    page.wait_for_selector("[data-testid=role-voice]", timeout=15_000)
-
-    page.select_option("[data-testid=role-model-voice]", existing["id"])
-    page.wait_for_timeout(400)
-
-    assert slots.pin_for(Role.VOICE) == existing["id"]
-
-    # And the screen still says so after a reload — it is reading the store,
-    # not its own component state.
-    page.reload(wait_until="networkidle")
-    page.wait_for_selector("[data-testid=role-voice]", timeout=15_000)
-    assert page.input_value("[data-testid=role-model-voice]") == existing["id"]
-
-
-def test_every_job_is_shown_even_though_none_is_set(page, stub):
-    """The unset ones are the ones a person needs to see in order to set them."""
-    page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
-    page.wait_for_selector("[data-testid=role-list]", timeout=15_000)
-
-    assert page.locator("[data-testid=role-list] > div").count() == 5
-
-
-def test_the_thinking_levels_offered_are_the_chosen_model_s_own(page, stub):
-    """Not a fixed ladder. A model with no reasoning control offers none, and
-    the control says so rather than presenting an empty dropdown."""
-    from jarvis.gateway import deployments
-
-    [existing] = deployments.list_deployments()
-
-    page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
-    page.wait_for_selector("[data-testid=role-control]", timeout=15_000)
-    page.select_option("[data-testid=role-model-control]", existing["id"])
-    page.wait_for_timeout(400)
-
-    # The fixture's model matches no catalog pattern, so nothing is established
-    # about its reasoning control — which is a real answer, not a blank.
-    assert page.locator("[data-testid=role-effort-control]").is_disabled()
-    assert "No thinking setting" in page.inner_text("[data-testid=role-effort-control]")
-
-
 def test_the_balance_dial_is_reachable_and_takes_effect_on_the_next_turn(page, stub):
     """It was not, before this. `balance` was stored, defaulted and read by the
     router on every turn, and no screen anywhere set it — so the one control

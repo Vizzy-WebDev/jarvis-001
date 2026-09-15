@@ -113,11 +113,12 @@ ADDED_KEYS: dict[tuple[str, str], set[str]] = {
 #: Removing anything at all needs a better reason than tidiness. These three
 #: qualify: `autoSelect`, `manualModelId` and `voiceModelId` were served by the
 #: preferences route and read by NOTHING in either build, so a person who set
-#: one had been running with a control that silently did nothing. The two pins
-#: are now role slots, where they are actually consulted; `autoSelect` is gone
-#: outright, since "use the manual pick rather than ranking" is a question a pin
-#: existing or not already answers, and a separate boolean for it could only
-#: ever disagree with the thing it described.
+#: one had been running with a control that silently did nothing. A persisted
+#: per-role pin briefly replaced the two model ids and was itself removed as an
+#: application-level concern; `autoSelect` is gone outright, since "use the
+#: manual pick rather than ranking" is a question a pin existing or not already
+#: answers, and a separate boolean for it could only ever disagree with the
+#: thing it described.
 REMOVED_KEYS: dict[tuple[str, str], set[str]] = {
     ("GET", "/api/prefs"): {"autoSelect", "manualModelId", "voiceModelId"},
 }

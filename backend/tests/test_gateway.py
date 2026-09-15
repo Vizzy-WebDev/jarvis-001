@@ -17,12 +17,11 @@ import pytest
 from jarvis.catalog import Capabilities, Effort, Lifecycle, Support
 from jarvis.gateway import (
     availability, connections, deployments, effort as effort_store, latency,
-    probe, routing, slots,
+    probe, routing,
 )
-from jarvis.gateway.slots import Role
 from jarvis.gateway.client import Gateway, NoModelAvailable
 from jarvis.gateway.error_kind import classify_error
-from jarvis.gateway.routing import Task, build_candidates, explain_exclusions
+from jarvis.gateway.routing import Role, Task, build_candidates, explain_exclusions
 from jarvis.orchestrator.model_port import ModelSwitched, StepComplete, TextChunk
 from jarvis.events import EventType
 from jarvis.events.bus import EventBus
@@ -33,10 +32,10 @@ from stub_openai_server import StubModelServer
 
 @pytest.fixture(autouse=True)
 def _isolate(scratch):
-    for module in (availability, effort_store, latency, slots):
+    for module in (availability, effort_store, latency):
         module.reset_for_tests()
     yield
-    for module in (availability, effort_store, latency, slots):
+    for module in (availability, effort_store, latency):
         module.reset_for_tests()
 
 
@@ -364,24 +363,14 @@ def test_a_probe_shows_its_working_even_when_it_fails():
 
 
 # --- effort, end to end ------------------------------------------------------
-
-def test_the_level_a_role_asks_for_reaches_the_wire(stub):
-    """The whole point of the slot's second half.
-
-    Nothing between the setting and the request re-decides it: the slot names a
-    level, the version's scheme says what that means here, and the adapter
-    spells it. A control that stops somewhere in the middle is worse than no
-    control, because it looks like it worked.
-    """
-    stub.says("thought about it")
-    connect(stub, models=("gpt-5-mini",))
-    slots.assign(Role.CONVERSATION, effort=Effort.HIGH)
-
-    collect(Gateway(event_bus=EventBus()))
-
-    sent = [r["body"] for r in stub.requests if r["path"].endswith("/chat/completions")]
-    assert sent and sent[-1]["reasoning_effort"] == "high"
-
+#
+# There is currently no live caller that requests a specific, non-default
+# effort level — a persisted per-role default used to be the only source of
+# one and was removed (an application-level settings concern, not something
+# the gateway should hold). Every real call now resolves to the version's own
+# scheme default. The tests below cover that real path end to end; `clamp()`/
+# `plan()` themselves stay fully unit-tested against an explicit requested
+# level in `test_effort.py`, independent of any caller.
 
 def test_nothing_is_sent_for_a_version_that_has_no_reasoning_control(stub):
     """An UNKNOWN scheme is not a scheme with a default. Sending a parameter on
@@ -389,7 +378,6 @@ def test_nothing_is_sent_for_a_version_that_has_no_reasoning_control(stub):
     rosters — local, small, unlisted — least able to afford one."""
     stub.says("fine")
     connect(stub, models=("stub-model",))          # matches no catalog rule
-    slots.assign(Role.CONVERSATION, effort=Effort.HIGH)
 
     collect(Gateway(event_bus=EventBus()))
 
@@ -397,40 +385,20 @@ def test_nothing_is_sent_for_a_version_that_has_no_reasoning_control(stub):
     assert sent and "reasoning_effort" not in sent[-1]
 
 
-def test_a_clamp_is_announced_rather_than_applied_quietly(stub):
-    """Asking for more than a version can take is the NORMAL case — the ladders
-    genuinely differ between providers — so it lowers the request rather than
-    failing the turn. But a clamp nobody can see is indistinguishable from the
-    setting being ignored, which is how a control teaches people it does not
-    work. Gemini's level enum stops at HIGH; the ladder does not.
-    """
+def test_the_versions_own_default_is_reported_without_claiming_a_clamp(stub):
+    """With no explicit request, the version's own default is what's sent —
+    and it can never disagree with its own scheme, so nothing here should ever
+    read as clamped. A payload that always said `clamped` would pass a test
+    that checked for the clamp alone while proving nothing."""
     stub.says("ok")
     connect(stub, models=("gemini-3-pro",))
-    slots.assign(Role.CONVERSATION, effort=Effort.MAX)
 
     started = []
     ebus = EventBus()
     ebus.subscribe(EventType.MODEL_CALL_STARTED, lambda e: started.append(e.payload))
     collect(Gateway(event_bus=ebus))
 
-    assert started[-1]["effort"] == "HIGH"
-    assert started[-1]["effortRequested"] == "MAX"
-    assert started[-1]["effortClamped"] is True
-
-
-def test_an_honoured_level_is_reported_without_claiming_a_clamp(stub):
-    """Guards the test above: a payload that always said `clamped` would make it
-    pass while proving nothing."""
-    stub.says("ok")
-    connect(stub, models=("gemini-3-pro",))
-    slots.assign(Role.CONVERSATION, effort=Effort.LOW)
-
-    started = []
-    ebus = EventBus()
-    ebus.subscribe(EventType.MODEL_CALL_STARTED, lambda e: started.append(e.payload))
-    collect(Gateway(event_bus=ebus))
-
-    assert started[-1]["effort"] == "LOW"
+    assert started[-1].get("effort")
     assert "effortClamped" not in started[-1]
 
 
@@ -443,7 +411,6 @@ def test_a_refused_parameter_is_paid_for_once_rather_than_every_turn(stub):
     """
     stub.fails(400, "Unrecognized request argument supplied: reasoning_effort").says("second try")
     connect(stub, models=("gpt-5-mini",))
-    slots.assign(Role.CONVERSATION, effort=Effort.HIGH)
 
     events = collect(Gateway(event_bus=EventBus()))
     assert "".join(e.text for e in events if isinstance(e, TextChunk)) == "second try"
@@ -506,21 +473,3 @@ def test_a_record_too_damaged_to_resolve_is_not_waved_through(stub):
     assert build_candidates(Task(need={"webSearch": True}), entries=[broken]) == []
 
 
-def test_a_task_s_own_pin_beats_the_role_s_standing_choice():
-    """Two pins, and the order between them matters.
-
-    A scheduled task naming its model is a one-off decision about THIS run; the
-    role's slot is a standing preference about that kind of work. The specific
-    one has to win, or a task that names a model would silently run on whatever
-    the background job was set to — which reads as the task's setting being
-    ignored.
-
-    Both are still pins, so the rest of the roster stays behind them.
-    """
-    a, b, c = entry("a"), entry("b"), entry("c")
-    slots.assign(Role.BACKGROUND, deployment_id="b")
-
-    ranked = build_candidates(Task(text="run it", role=Role.BACKGROUND),
-                              model_id="c", entries=[a, b, c])
-
-    assert [e["id"] for e in ranked] == ["c", "b", "a"]

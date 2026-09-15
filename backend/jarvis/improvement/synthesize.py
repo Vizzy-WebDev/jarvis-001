@@ -19,7 +19,7 @@ from typing import Any
 
 from ..gateway.client import NoModelAvailable, ask
 from ..gateway.routing import Task
-from ..gateway.slots import Role
+from ..gateway.routing import Role
 from . import store
 from .domains import is_excluded
 

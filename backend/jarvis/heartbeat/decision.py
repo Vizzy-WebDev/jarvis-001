@@ -67,7 +67,7 @@ def _system(quiet: bool) -> str:
 def decide_attention(finding: dict[str, Any], *, now: datetime | None = None) -> Verdict:
     from ..gateway.client import ask
     from ..gateway.routing import Task
-    from ..gateway.slots import Role
+    from ..gateway.routing import Role
     from ..memory.store import approved_memories_text
     from .quiet_hours import is_quiet_now
 

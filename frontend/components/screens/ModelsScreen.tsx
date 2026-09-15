@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { AddModelFlow } from '@/components/models/AddModelFlow';
 import { CatalogView, VersionFacts } from '@/components/models/CatalogView';
-import { RoleAssignments } from '@/components/models/RoleAssignments';
 import { AppIcon } from '@/components/ui/AppIcon';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -14,7 +13,7 @@ import { Modal } from '@/components/ui/Modal';
 import { Toggle } from '@/components/ui/Toggle';
 import { api, ApiRequestError } from '@/lib/api';
 import type {
-  ConnectionEntry, ExternalService, ModelEntry, ModelHealth,
+  ConnectionEntry, ExternalService, ModelEntry, ModelHealth, Prefs,
 } from '@/lib/api-types';
 
 /**
@@ -44,6 +43,7 @@ export function ModelsScreen() {
   const [adding, setAdding] = useState(false);
   const [open, setOpen] = useState<ModelEntry | null>(null);
   const [checking, setChecking] = useState(false);
+  const [balance, setBalance] = useState<Prefs['balance'] | null>(null);
   const [view, setView] = useState<'connection' | 'model'>('connection');
   // Bumped on every reload so the catalog view refetches with the rest rather
   // than keeping a copy that quietly disagrees with the list beside it.
@@ -64,6 +64,11 @@ export function ModelsScreen() {
       setServices((await api.externalServices.list()).services);
     } catch {
       /* the models half of this screen still works without it */
+    }
+    try {
+      setBalance((await api.prefs.get()).balance);
+    } catch {
+      /* the dial is a convenience; the rest of the screen still works without it */
     }
     setReloadKey((n) => n + 1);
   }, []);
@@ -163,7 +168,15 @@ export function ModelsScreen() {
         </div>
       )}
 
-      {(models ?? []).length > 0 && <RoleAssignments models={models ?? []} />}
+      {balance !== null && (
+        <BalanceDial
+          balance={balance}
+          onChanged={async (next) => {
+            setBalance(next);
+            await api.prefs.update({ balance: next }).catch(() => void load());
+          }}
+        />
+      )}
 
       <ServiceKeys services={services} onChanged={load} />
 
@@ -179,6 +192,49 @@ export function ModelsScreen() {
         }}
       />
     </>
+  );
+}
+
+/**
+ * The Fast / Balanced / Quality dial. Read fresh by the router on every turn
+ * (`gateway/routing.py`'s `_balance()`), so a change here takes effect on the
+ * next thing Jarvis is asked, no restart required.
+ *
+ * Deliberately the one global preference left on this screen — a per-role
+ * model/effort override used to live here too and was removed: every
+ * deployment a pin can reach becomes a real, billable candidate, and which
+ * model answers which kind of request is a policy call an application makes,
+ * not something worth a standing settings surface most single-model users
+ * would never touch.
+ */
+function BalanceDial({
+  balance,
+  onChanged,
+}: {
+  balance: Prefs['balance'];
+  onChanged: (next: Prefs['balance']) => void;
+}) {
+  return (
+    <Card className="mt-8 flex flex-wrap items-center justify-between gap-x-4 gap-y-2"
+          data-testid="balance-row">
+      <div className="min-w-0 flex-1">
+        <p className="text-[14px] text-ink">When Jarvis chooses for itself</p>
+        <p className="mt-0.5 text-[12px] text-ink-muted">
+          What to favour when nothing more specific is asked for. Takes effect on your
+          next message.
+        </p>
+      </div>
+      <select
+        className={`${inputClass} w-auto`}
+        data-testid="balance"
+        value={balance}
+        onChange={(event) => onChanged(event.target.value as Prefs['balance'])}
+      >
+        <option value="fast">Answer quickly</option>
+        <option value="balanced">Balanced</option>
+        <option value="quality">Answer well</option>
+      </select>
+    </Card>
   );
 }
 

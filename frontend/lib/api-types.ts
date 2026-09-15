@@ -296,34 +296,6 @@ export interface ConnectionEntry {
   modelCount: number;
 }
 
-/** One job a model gets asked to do. Every role is optional and unassigned is
- *  the normal state — a fresh install with one model needs no configuration. */
-export interface ModelRole {
-  id: string;
-  label: string;
-  description: string;
-  /** May name a deployment that no longer exists. A stale preference is not an
-   *  error: the router honours a pin by moving it to the front of the ranking,
-   *  never by removing everything else, so it degrades to ordinary ranking. */
-  deploymentId: string | null;
-  /** Null when `deploymentId` names nothing that is currently here. The id is
-   *  still reported, so a screen can say what it was. */
-  deployment: {
-    id: string;
-    label: string;
-    model: string;
-    connectionLabel: string | null;
-    enabled: boolean;
-    ready: boolean;
-  } | null;
-  effort: EffortLevel | null;
-  /** The levels the ASSIGNED model actually takes, not a fixed ladder — the
-   *  ladders genuinely differ between providers. Empty means this model has no
-   *  reasoning control, or nobody has established that it has any. */
-  effortChoices: { id: EffortLevel; label: string }[];
-  assigned: boolean;
-}
-
 /** The roster as provider -> family -> version. Built from the deployments this
  *  install actually has, never from a shipped model list. */
 export interface CatalogProvider {

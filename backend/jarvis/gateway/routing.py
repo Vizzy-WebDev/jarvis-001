@@ -25,13 +25,17 @@ arrived as `False` and hid a capable model with no visible reason. A version
 that has told us nothing is offered and allowed to fail honestly, which is the
 only way anybody finds out.
 
-**The role's slot leads the ranking, and this is where that happens.** Reading
-the slot inside the one ranking function rather than at each call site is what
-makes it impossible for a caller to forget — and it is honoured by ORDER, never
-by exclusion, so an assignment that is benched or deleted degrades to ordinary
-ranking instead of taking the turn down with it.
+**Role is a per-request classification, not a stored preference.** Each caller
+tags its own `Task` with the role that best describes the work — a control-loop
+step, a spoken reply, a one-off background ask — and `_score()` weighs the
+ranking accordingly. There used to also be a persisted, per-role model/effort
+pin here (`gateway/slots.py`); it was removed because it lived at the wrong
+layer — a settings surface bolted into the ranking function rather than
+something an application built on top of the gateway would own. `role` itself
+stays: it is exactly the kind of per-request characteristic a gateway should
+accept, and ten real callers rely on the distinction it draws.
 
-Pure except for reading the deployment, availability, slot, latency, price and
+Pure except for reading the deployment, availability, latency, price and
 preference stores; no model calls, no network. `explain_exclusions()` walks the
 SAME predicate, so a "nothing can answer this" message can never name a
 different reason than the one that actually excluded the model.
@@ -41,12 +45,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Iterable
 
 from ..catalog import Capabilities, Lifecycle, Support, Version
 from ..cost.advisor import observed_cost_tier
-from . import availability, deployments, latency, slots
-from .slots import Role
+from . import availability, deployments, latency
 
 #: A loose signal for "this needs real thinking" — enough to nudge the balance
 #: dial, never enough to gate anything on its own.
@@ -81,6 +85,50 @@ NEUTRAL_SPEED = 3
 #: capability. A second caller wanting a real search would otherwise have to
 #: rediscover this, and would get it wrong the same way.
 MUST_BE_CERTAIN = frozenset({"web_search"})
+
+
+class Role(Enum):
+    """A job a model gets asked to do.
+
+    Each corresponds to something the ranking already treats differently, not
+    to a category invented for the sake of having one. Purely a per-request
+    classification a caller attaches to its own `Task` — there is no persisted,
+    per-role model/effort override here; that was removed as an application-
+    level concern that didn't belong inside the ranking function.
+    """
+
+    #: A person is waiting for the answer. The ordinary chat turn.
+    CONVERSATION = "conversation"
+    #: Spoken. Latency is most of the experience, so this is the one role where
+    #: a faster, weaker model is often the RIGHT answer rather than a compromise.
+    VOICE = "voice"
+    #: Driving the screen. A wrong click costs more than a slightly clumsy
+    #: sentence, and nobody is watching it happen in real time.
+    CONTROL = "control"
+    #: Scheduled tasks, job workers, briefings. Nobody is waiting, so cost
+    #: matters more than latency.
+    BACKGROUND = "background"
+    #: The one-off asks — memory extraction, verification, heartbeat triage,
+    #: improvement synthesis. Small, frequent, and answered in JSON.
+    UTILITY = "utility"
+
+
+def role_from(name: Any) -> Role:
+    """A role from whatever a caller is holding, defaulting to conversation.
+
+    The orchestrator names the role for a turn but may not import this module —
+    the turn loop imports no part of the gateway — so it says "voice" or
+    "control" as a plain string across the port and this is where that becomes
+    a Role. An unrecognised name is not an error: a turn whose origin nobody
+    classified is an ordinary conversation, and failing it over a label would
+    be a routing decision made by a typo.
+    """
+    if isinstance(name, Role):
+        return name
+    try:
+        return Role(str(name).strip().lower())
+    except ValueError:
+        return Role.CONVERSATION
 
 
 @dataclass(frozen=True)
@@ -266,13 +314,9 @@ def build_candidates(
     """Every deployment that could serve this task, best first.
 
     `model_id` is a one-off pin (a scheduled task naming its model) and beats
-    the role's own slot, which beats pure ranking. A pin is honoured by ORDER,
-    not by exclusion: if the pinned deployment fails mid-turn the rest of the
-    list is still there, which is what keeps a pin from becoming a single point
-    of failure.
-
-    The slot is read HERE rather than passed in, so no caller can forget to
-    consult it and no caller can turn it into a filter by accident.
+    pure ranking. A pin is honoured by ORDER, not by exclusion: if the pinned
+    deployment fails mid-turn the rest of the list is still there, which is
+    what keeps a pin from becoming a single point of failure.
     """
     pool = deployments.list_deployments() if entries is None else entries
     eligible = [e for e in pool if _exclude_reason(e, task) is None]
@@ -286,7 +330,7 @@ def build_candidates(
 
     ranked = sorted(eligible, key=sort_key)
 
-    for pin in (slots.pin_for(task.role), model_id):
+    for pin in (model_id,):
         if not pin:
             continue
         pinned = next((e for e in ranked if e.get("id") == pin), None)

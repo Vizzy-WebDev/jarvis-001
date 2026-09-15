@@ -40,7 +40,7 @@ def ask_model(prompt: str, *, system: str = "", want_json: bool = False,
     """
     from .gateway.client import ask
     from .gateway.routing import Task
-    from .gateway.slots import role_from
+    from .gateway.routing import role_from
 
     # `utility` by default rather than `background`: these are the small,
     # frequent, JSON-shaped asks a tool makes mid-turn, which is a different

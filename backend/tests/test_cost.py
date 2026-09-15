@@ -25,7 +25,7 @@ from jarvis.observers.cost import record_model_call
 from jarvis.orchestrator.model_port import StepComplete
 
 from conftest import candidate
-from jarvis.gateway.slots import Role
+from jarvis.gateway.routing import Role
 from stub_openai_server import StubModelServer
 
 

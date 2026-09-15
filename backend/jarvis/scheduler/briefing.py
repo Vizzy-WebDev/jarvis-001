@@ -20,7 +20,7 @@ from typing import Any
 
 from ..gateway.client import NoModelAvailable, ask
 from ..gateway.routing import Task as RoutingTask
-from ..gateway.slots import Role
+from ..gateway.routing import Role
 from ..memory import store as memory_store
 from .briefing_config import get_config
 from .recurrence import describe

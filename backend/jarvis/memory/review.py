@@ -25,7 +25,7 @@ from ..events import EventType, bus as default_bus
 from ..events.bus import EventBus
 from ..gateway.client import NoModelAvailable, ask
 from ..gateway.routing import Task
-from ..gateway.slots import Role
+from ..gateway.routing import Role
 from . import store
 from .policy import AUTO_APPROVE, decide
 

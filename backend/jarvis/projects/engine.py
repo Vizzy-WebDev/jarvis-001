@@ -218,7 +218,7 @@ def write_plan(project_id: str, *, event_bus: EventBus | None = None) -> dict[st
     def work() -> None:
         from ..gateway.client import ask
         from ..gateway.routing import Task
-        from ..gateway.slots import Role
+        from ..gateway.routing import Role
 
         _announce(project, event_bus=event_bus, status="working", step="plan")
         try:
@@ -282,7 +282,7 @@ def write_prompts(project_id: str, target: dict[str, Any] | None = None, *,
     def work() -> None:
         from ..gateway.client import ask
         from ..gateway.routing import Task
-        from ..gateway.slots import Role
+        from ..gateway.routing import Role
 
         _announce(updated, event_bus=event_bus, status="working", step="prompts")
         try:

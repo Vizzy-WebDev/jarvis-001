@@ -46,14 +46,17 @@ model does not accept that argument" is a fact about the model, not about the ro
   cannot pick up a capability the catalog learned afterwards. `RESERVED_IDS` refuses ids
   that would collide with a static route segment — a model called "Catalog" would
   otherwise be unreachable through `/api/models/<id>` with nothing reporting a problem.
-- **`routing.py`** — the ONE ranking function. `build_candidates()` is used by every
-  caller rather than re-derived per call site, and `need` is enforced here rather than by
-  each caller. `explain_exclusions()` walks the SAME predicate, so a "nothing can answer
-  this" message can never name a different reason than the one that actually excluded.
-- **`slots.py`** — which model does which job, across five roles. **A slot leads the
-  ranking; it never restricts it.** The obvious implementation is a filter, and a filter
-  means a voice turn FAILS when that one deployment is rate-limited — trading an
-  occasional slightly-worse answer for an occasional no answer at all.
+- **`routing.py`** — the ONE ranking function, and also where `Role` lives. `Role` is a
+  per-request classification a caller tags its own `Task` with (conversation, voice,
+  control, background, utility) — `_score()` weighs the ranking by it, the same way it
+  weighs by the balance dial. A persisted, user-configurable per-role model/effort pin
+  used to live here too (`slots.py`, plus `routes/roles.py`'s API and a settings screen)
+  and was removed: that was an application-level preference bolted into the gateway,
+  not something the ranking function itself needed to own. `build_candidates()` is used
+  by every caller rather than re-derived per call site, and `need` is enforced here
+  rather than by each caller. `explain_exclusions()` walks the SAME predicate, so a
+  "nothing can answer this" message can never name a different reason than the one that
+  actually excluded.
 - **`effort.py`** — resolving "think this hard" against what a specific version accepts,
   and remembering what a version has refused. Clamping goes DOWN, never up, and is
   reported. `call_with_effort()` keeps retry policy on this side, out of the three wire
@@ -100,6 +103,10 @@ before the switchover — the seeder filed under the adapter name while the obse
 under the connection's provider — so every `$0` row seeded for a local model was read back
 by nothing.
 
-**Do not overload `slots.assign(..., None)` to mean "remove".** `None` already means "leave
-this half alone", which is what makes the model and the effort independently settable.
-`clear_model()` and `clear_effort()` exist for removal.
+**Do not reintroduce a persisted per-role model/effort pin inside this package.** One
+existed (`slots.py`) and was deliberately removed: every deployment a pin can reach is a
+real, callable, billable candidate, and deciding "which model answers which kind of
+request" is a policy choice an application makes, not a fact the ranking function should
+store. If a caller wants a specific deployment, `Task`/`model_id` already carry that per
+request — `role` on `Task` is the classification a caller supplies; it was never meant to
+also be where a stored preference lives.

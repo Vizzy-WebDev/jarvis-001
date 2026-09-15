@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { Button } from '@/components/ui/Button';
-import { CloseIcon, PinIcon } from '@/components/ui/Icons';
+import { ChevronIcon, CloseIcon, PinIcon } from '@/components/ui/Icons';
 import { IconButton } from '@/components/ui/IconButton';
 import { api, ApiRequestError } from '@/lib/api';
 import type { Conversation } from '@/lib/api-types';
@@ -33,6 +33,10 @@ export function ChatHistoryDrawer({
   const [rows, setRows] = useState<Conversation[] | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Both default open — collapsing is for a list that's grown long enough to
+  // want to save the scroll space, not the drawer's starting state.
+  const [pinnedExpanded, setPinnedExpanded] = useState(true);
+  const [recentExpanded, setRecentExpanded] = useState(true);
 
   const load = useCallback(async () => {
     try {
@@ -131,29 +135,33 @@ export function ChatHistoryDrawer({
             <>
               {pinned.length > 0 && (
                 <section className="mb-3">
-                  <h3 className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-ink-faint">
-                    Pinned
-                  </h3>
-                  <ul className="space-y-0.5" data-testid="drawer-pinned-list">
-                    {pinned.map((conversation) => (
-                      <Row key={conversation.id} conversation={conversation} open={open}
-                          onResume={onResume} onTogglePinned={togglePinned} />
-                    ))}
-                  </ul>
+                  <SectionHeader label="Pinned" expanded={pinnedExpanded}
+                                onToggle={() => setPinnedExpanded((was) => !was)}
+                                testId="drawer-pinned-toggle" tabIndex={open ? 0 : -1} />
+                  {pinnedExpanded && (
+                    <ul className="space-y-0.5" data-testid="drawer-pinned-list">
+                      {pinned.map((conversation) => (
+                        <Row key={conversation.id} conversation={conversation} open={open}
+                            onResume={onResume} onTogglePinned={togglePinned} />
+                      ))}
+                    </ul>
+                  )}
                 </section>
               )}
               <section>
                 {pinned.length > 0 && (
-                  <h3 className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-ink-faint">
-                    Recent
-                  </h3>
+                  <SectionHeader label="Recent" expanded={recentExpanded}
+                                onToggle={() => setRecentExpanded((was) => !was)}
+                                testId="drawer-recent-toggle" tabIndex={open ? 0 : -1} />
                 )}
-                <ul className="space-y-0.5" data-testid="drawer-recent-list">
-                  {recent.map((conversation) => (
-                    <Row key={conversation.id} conversation={conversation} open={open}
-                        onResume={onResume} onTogglePinned={togglePinned} />
-                  ))}
-                </ul>
+                {(pinned.length === 0 || recentExpanded) && (
+                  <ul className="space-y-0.5" data-testid="drawer-recent-list">
+                    {recent.map((conversation) => (
+                      <Row key={conversation.id} conversation={conversation} open={open}
+                          onResume={onResume} onTogglePinned={togglePinned} />
+                    ))}
+                  </ul>
+                )}
               </section>
             </>
           )}
@@ -167,6 +175,32 @@ export function ChatHistoryDrawer({
         </div>
       </aside>
     </>
+  );
+}
+
+/** A section label that doubles as its own collapse toggle — the whole row
+ *  is clickable, not just a small chevron, since that is the easier target
+ *  and there is nothing else on this row to compete with a click. */
+function SectionHeader({ label, expanded, onToggle, testId, tabIndex }: {
+  label: string;
+  expanded: boolean;
+  onToggle: () => void;
+  testId: string;
+  tabIndex: number;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      aria-expanded={expanded}
+      onClick={onToggle}
+      tabIndex={tabIndex}
+      className="flex w-full items-center gap-1 px-2 pb-1 text-[10px] font-semibold uppercase
+                 tracking-[0.16em] text-ink-faint hover:text-ink"
+    >
+      {label}
+      <ChevronIcon className={['h-3 w-3 transition-transform', expanded ? '' : '-rotate-90'].join(' ')} />
+    </button>
   );
 }
 

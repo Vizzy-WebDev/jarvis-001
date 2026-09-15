@@ -1544,6 +1544,57 @@ def test_clicking_new_chat_repeatedly_on_an_empty_conversation_does_not_duplicat
     assert len(chat_store.list_conversations()) == before
 
 
+def test_the_archive_toggle_shows_only_archived_not_everything_mixed_in(page):
+    """A previously-real bug: the toggle's "on" state ran an unfiltered query,
+    mixing archived conversations into the SAME list as everything else
+    rather than showing an isolated archived-only list."""
+    from jarvis import chat_store
+
+    visible = chat_store.create_conversation()
+    chat_store.rename_conversation(visible["id"], "Visible One")
+    hidden = chat_store.create_conversation()
+    chat_store.rename_conversation(hidden["id"], "Archived One")
+    chat_store.set_archived(hidden["id"], True)
+
+    go_to(page, "chat-history")
+    page.wait_for_selector("[data-testid=history-row]")
+    body = page.inner_text("[data-testid=history-list]")
+    assert "Visible One" in body and "Archived One" not in body
+
+    page.click("[data-testid=toggle-archived]")
+    page.wait_for_selector("text=Archived One")
+    body = page.inner_text("[data-testid=history-list]")
+    assert "Archived One" in body and "Visible One" not in body
+
+
+def test_pinned_and_recent_sections_collapse_independently(page):
+    from jarvis import chat_store
+
+    pinned = chat_store.create_conversation()
+    chat_store.rename_conversation(pinned["id"], "Pinned Thread")
+    chat_store.set_pinned(pinned["id"], True)
+    recent = chat_store.create_conversation()
+    chat_store.rename_conversation(recent["id"], "Recent Thread")
+
+    page.click("[data-testid=chat-history-menu]")
+    page.wait_for_selector("[data-testid=drawer-pinned-list]")
+    assert "Pinned Thread" in page.locator("[data-testid=drawer-pinned-list]").inner_text()
+    assert "Recent Thread" in page.locator("[data-testid=drawer-recent-list]").inner_text()
+
+    page.click("[data-testid=drawer-pinned-toggle]")
+    assert page.get_attribute("[data-testid=drawer-pinned-toggle]", "aria-expanded") == "false"
+    assert page.locator("[data-testid=drawer-pinned-list]").count() == 0
+    # Collapsing Pinned must not touch Recent.
+    assert "Recent Thread" in page.locator("[data-testid=drawer-recent-list]").inner_text()
+
+    page.click("[data-testid=drawer-recent-toggle]")
+    assert page.locator("[data-testid=drawer-recent-list]").count() == 0
+
+    page.click("[data-testid=drawer-pinned-toggle]")
+    page.wait_for_selector("[data-testid=drawer-pinned-list]")
+    assert "Pinned Thread" in page.locator("[data-testid=drawer-pinned-list]").inner_text()
+
+
 def test_view_all_in_the_drawer_opens_the_full_chat_history_page(page):
     page.click("[data-testid=chat-history-menu]")
     page.wait_for_selector("[data-testid=chat-history-drawer][data-open=true]")

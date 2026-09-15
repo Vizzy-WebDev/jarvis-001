@@ -42,14 +42,17 @@ def test_pinned_conversations_sort_first():
     assert listed[0]["pinned"] is True
 
 
-def test_archived_conversations_are_hidden_unless_asked_for():
+def test_archived_conversations_are_hidden_by_default_and_isolated_when_asked_for():
+    """A previously-real bug: `include_archived=True` used to mean "no filter
+    at all" (`1=1`), mixing archived conversations into the SAME list as
+    everything else rather than showing just them — there was no way to see
+    an archived-only list at all."""
     shown = _titled("visible")
     hidden = _titled("archived")
     chat_store.set_archived(hidden["id"], True)
 
     assert [c["id"] for c in chat_store.list_conversations()] == [shown["id"]]
-    ids = {c["id"] for c in chat_store.list_conversations(include_archived=True)}
-    assert ids == {shown["id"], hidden["id"]}
+    assert [c["id"] for c in chat_store.list_conversations(include_archived=True)] == [hidden["id"]]
 
 
 # --- the recycle bin ------------------------------------------------------------

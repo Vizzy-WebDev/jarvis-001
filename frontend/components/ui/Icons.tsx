@@ -96,6 +96,14 @@ export const BackIcon = (p: IconProps) => (
   </Svg>
 );
 
+/** Points down at rest; callers rotate it (e.g. a `collapsed` class) rather
+ *  than this drawing a second, up-facing variant. */
+export const ChevronIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M6 9l6 6 6-6" />
+  </Svg>
+);
+
 export const CheckIcon = (p: IconProps) => (
   <Svg {...p}>
     <path d="M5 13l4 4L19 7" />

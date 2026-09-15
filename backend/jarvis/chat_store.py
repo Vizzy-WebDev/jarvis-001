@@ -134,7 +134,13 @@ def _fts_or_terms(q: str) -> str:
 
 
 def list_conversations(query: str | None = None, include_archived: bool = False) -> list[dict[str, Any]]:
-    """All conversations, newest-updated first, pinned always ahead of unpinned.
+    """Conversations, newest-updated first, pinned always ahead of unpinned.
+
+    `include_archived` switches WHICH set is returned — archived-only when
+    true, unarchived-only (the default) when false — never both mixed
+    together in one list. (`include_archived` is a legacy name from when it
+    genuinely meant "include them too"; kept as-is rather than a parameter
+    rename that would touch every caller for no behavioural reason.)
 
     `query`, if given, full-text-searches message bodies as well as matching
     conversation titles — either match surfaces the conversation. Never
@@ -143,7 +149,7 @@ def list_conversations(query: str | None = None, include_archived: bool = False)
     """
     db = get_db()
     q = str(query or "").strip()
-    archived_clause = "1=1" if include_archived else "c.archived = 0"
+    archived_clause = "c.archived = 1" if include_archived else "c.archived = 0"
     count_expr = "(SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count"
 
     if q:

@@ -18,15 +18,12 @@ from jarvis.cost import advisor, prices, report, store
 from jarvis.db import reset_for_tests as reset_db
 from jarvis.events import EventType
 from jarvis.events.bus import Event, EventBus
-from jarvis.gateway import availability
 from jarvis.jscompat import to_iso_z
 from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
 from jarvis.model_system.registry import add_model
 from jarvis.observers.cost import record_model_call
 from jarvis.orchestrator.model_port import StepComplete
 
-from conftest import candidate
-from jarvis.gateway.routing import Role
 from stub_openai_server import StubModelServer
 
 
@@ -35,9 +32,7 @@ def _isolate(scratch):
     reset_db()
     advisor.reset_cache()
     conversation.reset_for_tests()
-    availability.reset_for_tests()
     yield
-    availability.reset_for_tests()
     conversation.reset_for_tests()
     advisor.reset_cache()
     reset_db()
@@ -227,21 +222,25 @@ def test_a_measured_price_lands_in_the_same_zero_to_four_domain_the_guess_used(
     assert 0 <= tier <= 4
 
 
-def test_the_router_prefers_the_measured_price_over_the_catalogs_guess():
-    from jarvis.gateway.routing import Task, build_candidates
+def test_the_router_prefers_the_measured_price_over_the_catalogs_guess(scratch):
+    from jarvis.model_system.request import Preferences, Requirements, Role
+    from jarvis.model_system.router import rank
 
-    entries = [candidate("a", provider="p", model="one"),
-               candidate("b", provider="p", model="two")]
-    task = Task(text="hello", role=Role.BACKGROUND)
+    provider = add_provider(label="p", kind=ProviderKind.OPENAI_COMPATIBLE, adapter="openai_compatible",
+                            auth_method=AuthMethod.NONE, key_required=False)
+    one = add_model(provider_id=provider.id, native_model_id="one")
+    two = add_model(provider_id=provider.id, native_model_id="two")
+    reqs, prefs = Requirements(), Preferences(role=Role.BACKGROUND)
+
     # Nothing is measured yet, so neither can be preferred on price and the
     # deterministic tie-break decides. There is no authored guess left to beat:
-    # `tier.cost` was a name regex and was deleted with the rest of them.
-    assert [e["id"] for e in build_candidates(task, entries=entries)] == ["a", "b"]
+    # a name regex was deleted with the rest of them.
+    assert [m.id for m in rank(reqs, prefs, models=[one, two])] == ["one", "two"]
 
     prices.set_user_price(provider="p", model_id="one", price_in=0.001, price_out=0.002)
     prices.set_user_price(provider="p", model_id="two", price_in=0.0, price_out=0.0)
     advisor.reset_cache()
-    assert [e["id"] for e in build_candidates(task, entries=entries)][0] == "b"
+    assert rank(reqs, prefs, models=[one, two])[0].id == "two"
 
 
 # --- balances stay separate ---------------------------------------------------
@@ -413,22 +412,25 @@ def test_a_price_row_with_no_numbers_in_it_is_not_a_price():
     assert advisor.observed_cost_tier("p", "m") is None
 
 
-def test_the_router_treats_free_as_cheapest_and_unpriced_as_no_opinion():
-    from jarvis.gateway.routing import Task, build_candidates
+def test_the_router_treats_free_as_cheapest_and_unpriced_as_no_opinion(scratch):
+    from jarvis.model_system.request import Preferences, Requirements, Role
+    from jarvis.model_system.router import rank
+
+    provider = add_provider(label="p", kind=ProviderKind.OPENAI_COMPATIBLE, adapter="openai_compatible",
+                            auth_method=AuthMethod.NONE, key_required=False)
+    free = add_model(provider_id=provider.id, native_model_id="free-one")
+    unknown = add_model(provider_id=provider.id, native_model_id="unknown-one")
 
     prices.set_user_price(provider="p", model_id="free-one", price_in=0.0, price_out=0.0)
     advisor.reset_cache()
     assert advisor.observed_cost_tier("p", "free-one") == 0
     assert advisor.observed_cost_tier("p", "unknown-one") is None
 
-    entries = [candidate("free", provider="p", model="free-one"),
-               candidate("unknown", provider="p", model="unknown-one")]
     # A measured $0 beats "nothing has been measured", which is not the same as
     # beating a cheap guess — there is no guess any more. The unpriced model
     # gets the neutral reading rather than an invented one.
-    ranked = [e["id"] for e in build_candidates(
-        Task(text="hi", role=Role.BACKGROUND), entries=entries)]
-    assert ranked[0] == "free"
+    ranked = rank(Requirements(), Preferences(role=Role.BACKGROUND), models=[free, unknown])
+    assert ranked[0].id == "free-one"
 
 
 def test_check_spending_says_free_rather_than_unknown():

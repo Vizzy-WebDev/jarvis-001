@@ -120,3 +120,25 @@ def test_as_dict_never_contains_a_secret(scratch, provider):
     model = add_model(provider_id=provider.id, native_model_id="claude-haiku-4-5")
     payload = model.as_dict()
     assert "credential_ref" not in str(payload)
+
+
+def test_pinned_reads_the_shape_of_a_dated_snapshot_id(scratch, provider):
+    floating = add_model(provider_id=provider.id, native_model_id="claude-opus-4")
+    pinned = add_model(provider_id=provider.id, native_model_id="claude-opus-4-20260101")
+    assert floating.pinned is Support.NO
+    assert pinned.pinned is Support.YES
+    assert floating.as_dict()["pinned"] == "no"
+
+
+def test_capability_provenance_follows_user_over_discovered_over_catalog(scratch, provider):
+    model = add_model(provider_id=provider.id, native_model_id="claude-opus-4-20260101")
+    # Catalog seed alone: tool_calling is known from the family match.
+    assert model.provenance["capabilities.tool_calling"] == "catalog"
+    assert model.provenance["capabilities.vision"] == "default"
+
+    record_discovery(model.id, {"capabilities": {"vision": True}})
+    discovered = get_model(model.id)
+    assert discovered.provenance["capabilities.vision"] == "discovered"
+
+    overridden = update_model(model.id, {"capability_overrides": {"vision": "no"}})
+    assert overridden.provenance["capabilities.vision"] == "user"

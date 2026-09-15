@@ -19,7 +19,6 @@ from jarvis import chat_store, conversation
 from jarvis.db import reset_for_tests as reset_db
 from jarvis.events import EventType
 from jarvis.events.bus import EventBus
-from jarvis.gateway import availability
 from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
 from jarvis.model_system.registry import add_model
 from jarvis.memory import review, store
@@ -32,9 +31,7 @@ from stub_openai_server import StubModelServer
 def _isolate(scratch):
     reset_db()
     conversation.reset_for_tests()
-    availability.reset_for_tests()
     yield
-    availability.reset_for_tests()
     conversation.reset_for_tests()
     reset_db()
 

@@ -22,7 +22,6 @@ from jarvis.capabilities.execute import ExecOutcome, execute
 from jarvis.db import reset_for_tests as reset_db
 from jarvis.events import EventType
 from jarvis.events.bus import EventBus
-from jarvis.gateway import availability
 from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
 from jarvis.model_system.registry import add_model
 from jarvis.jobs import job_store, orchestrator, worker
@@ -41,14 +40,12 @@ from stub_openai_server import StubModelServer
 def _isolate(scratch):
     reset_db()
     conversation.reset_for_tests()
-    availability.reset_for_tests()
     assembly.reset_for_tests()
     yield
     # Before the database is torn down: a worker still writing to it while the
     # connection closes is a segfault, not an exception.
     worker.join_all(timeout=10)
     assembly.reset_for_tests()
-    availability.reset_for_tests()
     conversation.reset_for_tests()
     reset_db()
 

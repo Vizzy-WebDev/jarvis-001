@@ -14,7 +14,6 @@ import json
 import pytest
 
 from jarvis.db import reset_for_tests as reset_db
-from jarvis.gateway import availability
 from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
 from jarvis.model_system.registry import add_model
 from jarvis.improvement import apply, capture, store
@@ -32,9 +31,7 @@ from stub_openai_server import StubModelServer
 @pytest.fixture(autouse=True)
 def _isolate(scratch):
     reset_db()
-    availability.reset_for_tests()
     yield
-    availability.reset_for_tests()
     reset_db()
 
 

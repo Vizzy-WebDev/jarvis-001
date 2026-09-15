@@ -502,7 +502,6 @@ def test_a_job_that_finishes_the_wrong_thing_is_treated_exactly_like_a_stall(mon
     """No second recovery mechanism: a checked mismatch spends the same single
     retry, on the same counter, and escalates the same way a stall does."""
     from jarvis import assembly, conversation
-    from jarvis.gateway import availability
     from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
     from jarvis.model_system.registry import add_model
     from jarvis.jobs import job_store, orchestrator, worker
@@ -536,14 +535,12 @@ def test_a_job_that_finishes_the_wrong_thing_is_treated_exactly_like_a_stall(mon
         worker.join_all()
         stub.stop()
         assembly.reset_for_tests()
-        availability.reset_for_tests()
         conversation.reset_for_tests()
         stub.stop()
 
 
 def test_a_job_whose_result_could_not_be_checked_still_completes(monkeypatch):
     from jarvis import assembly, conversation
-    from jarvis.gateway import availability
     from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
     from jarvis.model_system.registry import add_model
     from jarvis.jobs import job_store, worker
@@ -565,7 +562,6 @@ def test_a_job_whose_result_could_not_be_checked_still_completes(monkeypatch):
         worker.join_all()
         stub.stop()
         assembly.reset_for_tests()
-        availability.reset_for_tests()
         conversation.reset_for_tests()
 
 

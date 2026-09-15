@@ -272,7 +272,6 @@ def test_a_scheduled_task_may_do_ordinary_work_but_never_a_high_risk_action(scra
     """
     from jarvis import assembly, conversation
     from jarvis.capabilities import CapabilitySpec
-    from jarvis.gateway import availability
     from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
     from jarvis.model_system.registry import add_model
 
@@ -280,7 +279,6 @@ def test_a_scheduled_task_may_do_ordinary_work_but_never_a_high_risk_action(scra
 
     assembly.reset_for_tests()
     conversation.reset_for_tests()
-    availability.reset_for_tests()
     stub = StubModelServer()
     base = stub.start()
     try:
@@ -323,7 +321,6 @@ def test_a_scheduled_task_may_do_ordinary_work_but_never_a_high_risk_action(scra
     finally:
         stub.stop()
         assembly.reset_for_tests()
-        availability.reset_for_tests()
         conversation.reset_for_tests()
 
 
@@ -432,7 +429,6 @@ def test_a_task_with_no_pin_asks_for_no_particular_model(monkeypatch):
 
 def test_a_completed_task_run_lands_a_real_outcome_row(scratch):
     from jarvis import assembly, conversation
-    from jarvis.gateway import availability
     from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
     from jarvis.model_system.registry import add_model
     from jarvis.improvement import store as improvement_store
@@ -441,7 +437,6 @@ def test_a_completed_task_run_lands_a_real_outcome_row(scratch):
 
     assembly.reset_for_tests()
     conversation.reset_for_tests()
-    availability.reset_for_tests()
     stub = StubModelServer()
     base = stub.start()
     try:
@@ -467,7 +462,6 @@ def test_a_completed_task_run_lands_a_real_outcome_row(scratch):
     finally:
         stub.stop()
         assembly.reset_for_tests()
-        availability.reset_for_tests()
         conversation.reset_for_tests()
 
 

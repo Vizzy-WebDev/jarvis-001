@@ -31,3 +31,15 @@ def test_clear_removes_it(scratch):
     set_credential("to_clear", "value")
     clear_credential("to_clear")
     assert status_of("to_clear") is CredentialStatus.NOT_CONFIGURED
+
+
+def test_a_transient_value_resolves_without_being_saved(scratch):
+    from jarvis.config import get_secret
+    from jarvis.model_system.credentials import discard_transient, stage_transient
+
+    ref = stage_transient("sk-not-saved-yet")
+    assert resolve(ref) == "sk-not-saved-yet"
+    assert get_secret(ref) is None  # never written to .env
+
+    discard_transient(ref)
+    assert resolve(ref) is None

@@ -35,7 +35,7 @@ from typing import Any, Mapping, Pattern
 
 from ..db import get_db
 from ..jscompat import now_iso
-from .capabilities import Capabilities, capabilities_from_dict, merge_capabilities
+from .capabilities import CAPABILITY_NAMES, Capabilities, Support, capabilities_from_dict, merge_capabilities
 from .parameters import Param, merge_param_support, params_from_dict
 from .providers import Provider, get_provider
 from .reasoning import (
@@ -128,6 +128,70 @@ def looks_pinned(native_model_id: str) -> bool:
     return bool(_DATED.search(native_model_id or ""))
 
 
+# --- per-field provenance: USER > DISCOVERED > CATALOG > DEFAULT -------------
+#
+# §14/§15's own precedence, computed at read time exactly like the merged
+# facts themselves — never stored, so a field's provenance can never drift
+# from the value it actually describes. "We matched this from the name" and
+# "the provider told us" look identical once they are both just a capability
+# value; this is the one place that distinction survives to the picker,
+# which is also the one place a person might want to correct it.
+
+def _provenance_of(user: Any, discovered: Any, catalog: Any) -> str:
+    if user is not None:
+        return "user"
+    if discovered is not None:
+        return "discovered"
+    if catalog is not None:
+        return "catalog"
+    return "default"
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    """Whatever arrived, as something safe to `.get()` on.
+
+    `capabilities_override_json` is reachable straight from a PATCH body, and
+    this runs at READ time on every routing pass — a hand-edited or hostile
+    override that decoded to a string, a list, or anything else non-mapping
+    must degrade to "answered nothing" rather than take the whole roster down
+    with an `AttributeError` on the very next read.
+    """
+    return value if isinstance(value, Mapping) else {}
+
+
+def _capabilities_with_provenance(
+    override: Any, discovered: Any, seed_caps: Capabilities,
+) -> tuple[Capabilities, dict[str, str]]:
+    override, discovered = _mapping(override), _mapping(discovered)
+    values: dict[str, Support] = {}
+    provenance: dict[str, str] = {}
+    for name in CAPABILITY_NAMES:
+        user_val = _support_or_none(override.get(name))
+        found_val = _support_or_none(discovered.get(name))
+        seed_val = seed_caps.get(name)
+        seed_val = seed_val if seed_val is not Support.UNKNOWN else None
+        winner = user_val or found_val or seed_val or Support.UNKNOWN
+        values[name] = winner
+        provenance[f"capabilities.{name}"] = _provenance_of(user_val, found_val, seed_val)
+    return Capabilities(**values), provenance
+
+
+def _support_or_none(value: Any) -> Support | None:
+    if value is None:
+        return None
+    if isinstance(value, Support):
+        return value if value is not Support.UNKNOWN else None
+    if isinstance(value, bool):
+        return Support.YES if value else Support.NO
+    if isinstance(value, str):
+        try:
+            parsed = Support(value.lower())
+        except ValueError:
+            return None
+        return parsed if parsed is not Support.UNKNOWN else None
+    return None
+
+
 # --- the resolved, effective view of one model -------------------------------
 
 @dataclass(frozen=True)
@@ -158,6 +222,14 @@ class ResolvedModel:
     quality: int | None
     enabled: bool
     notes: str
+    #: Whether `native_model_id` names one frozen snapshot rather than a
+    #: floating alias that silently repoints when the maker ships a
+    #: successor — a read of the id's SHAPE, not an inference about the
+    #: model. See `looks_pinned()`.
+    pinned: Support
+    #: field name -> "user" | "discovered" | "catalog" | "default". Absent
+    #: keys mean "default". See `_provenance_of()`.
+    provenance: Mapping[str, str]
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -174,6 +246,7 @@ class ResolvedModel:
             "reasoning": self.reasoning.as_dict(),
             "pricing": dict(self.pricing) if self.pricing else None,
             "quality": self.quality, "enabled": self.enabled, "notes": self.notes,
+            "pinned": self.pinned.value, "provenance": dict(self.provenance),
         }
 
 
@@ -183,25 +256,28 @@ def _row_to_resolved(row: Any) -> ResolvedModel | None:
         return None
     seed = match_seed(row["native_model_id"])
     seed_caps = seed.capabilities if seed else Capabilities()
-    capabilities = merge_capabilities(
-        json.loads(row["capabilities_override_json"] or "{}"),
-        json.loads(row["capabilities_discovered_json"] or "{}"),
-        seed_caps,
-    )
+    override_caps = json.loads(row["capabilities_override_json"] or "{}")
+    discovered_caps = json.loads(row["capabilities_discovered_json"] or "{}")
+    capabilities, provenance = _capabilities_with_provenance(override_caps, discovered_caps, seed_caps)
     parameters = merge_param_support(
         params_from_dict(json.loads(row["parameters_json"] or "{}")),
     )
-    reasoning = (
-        scheme_from_dict(json.loads(row["reasoning_override_json"] or "{}"))
-        or scheme_from_dict(json.loads(row["reasoning_discovered_json"] or "{}"))
-        or (seed.reasoning if seed else None)
-        or UNKNOWN_SCHEME
-    )
+    reasoning_override = scheme_from_dict(json.loads(row["reasoning_override_json"] or "{}"))
+    reasoning_discovered = scheme_from_dict(json.loads(row["reasoning_discovered_json"] or "{}"))
+    reasoning = (reasoning_override or reasoning_discovered
+                 or (seed.reasoning if seed else None) or UNKNOWN_SCHEME)
+    provenance["effort"] = _provenance_of(reasoning_override, reasoning_discovered,
+                                          seed.reasoning if seed else None)
     pricing = json.loads(row["pricing_json"]) if row["pricing_json"] else None
     quality = row["quality"] if row["quality"] is not None else (seed.quality if seed else None)
+    provenance["quality"] = _provenance_of(row["quality"], None, seed.quality if seed else None)
     family = row["family"] or (seed.family if seed else None)
+    provenance["family"] = _provenance_of(row["family"], None, seed.family if seed else None)
+    provenance["lifecycle"] = "discovered" if row["status"] and row["status"] != "unknown" else "default"
     maker = (seed.maker if seed and seed.maker else None) or provider.id
     display = row["label"] or row["display_name"] or row["native_model_id"]
+    pinned = Support.YES if looks_pinned(row["native_model_id"]) else Support.NO
+    provenance["pinned"] = "catalog"
 
     return ResolvedModel(
         id=row["id"], provider=provider, native_model_id=row["native_model_id"],
@@ -210,7 +286,7 @@ def _row_to_resolved(row: Any) -> ResolvedModel | None:
         max_input_tokens=row["max_input_tokens"], max_output_tokens=row["max_output_tokens"],
         capabilities=capabilities, parameters=parameters, reasoning=reasoning,
         pricing=pricing, quality=quality, enabled=bool(row["enabled"]),
-        notes=row["notes"] or "",
+        notes=row["notes"] or "", pinned=pinned, provenance=provenance,
     )
 
 

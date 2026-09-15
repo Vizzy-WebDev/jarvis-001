@@ -1,0 +1,268 @@
+<!-- Ported from the Node build during the S6 cutover. The architecture, the
+invariants and the live-caught bugs described here all carried over deliberately and
+still hold. File paths have been updated to their real Python counterparts and are
+verified to exist. Function names written in camelCase (`getToolDeclarations()`) are
+the NODE originals, kept because the surrounding reasoning is about them; the Python
+equivalent is the snake_case function doing that job in the same module. Where a Node
+module had no Python counterpart, the text says so rather than pointing at a file that
+does not exist. -->
+
+# Background Task Orchestration ("Jobs") — `jarvis/jobs/*.py`
+
+See the root `CLAUDE.md`'s "Background Task Orchestration (Jobs)" section for the
+layered design and the decisions that matter beyond this file (the write-ahead trace,
+stall detection, the third confirm mode, interruption tiers, the split depth ceiling).
+This file is the module-by-module breakdown.
+
+## The circular-import split — the one thing to understand before touching this directory
+
+`orchestrator.py` imports `worker.py`, which imports `orchestrator/pipeline.py`, which imports
+`capabilities/`, which imports `capabilities/registry.py`. That means **`orchestrator.py` is NOT
+safe for anything under `jarvis/tools/` to import** — doing so would recreate the exact
+deadlock root `CLAUDE.md`'s circular-import invariant exists to prevent (`capabilities/registry.py`
+dynamically imports every file in `jarvis/tools/` at load time, including whichever tool
+made that import).
+
+`orchestrator.py` exists specifically to give tools a safe door in: it imports only
+`job_store.py`, `job-events/bus.py`, `policy.py`, and `../prefs.py` — all leaves — so it
+is itself leaf-safe. **The rule going forward: any job action a tool needs to call
+directly belongs in `orchestrator.py`, never in `orchestrator.py`.** `orchestrator.py`
+re-exports `createJobIfCapacity`/`cancelJob`/`resumeStuckJob`/`hasBackgroundCapacityNow`/
+`runningSummaries` from `orchestrator.py` unchanged, so `main.py`'s routes don't need to
+know the split exists — they still just `import { ... } from './jobs/orchestrator.py'`.
+
+A job action that actually needs to **start a worker** (not just change a row) cannot
+live in `orchestrator.py` — starting a worker means calling `worker.py`'s `driveJob()`,
+which is exactly the non-leaf-safe edge. `orchestrator.py`'s `resumeStuckJob()` resolves
+this by only ever touching the database: it sets `status: 'queued'` with a `resumeNote`
+column carrying the owner's guidance, and it's `orchestrator.py`'s own 5-second tick —
+the ONE thing that's ever allowed to call `startWorker()`/`driveJob()` — that reads
+`resumeNote` back out and clears it. A missed `jobEvents` emission only costs latency
+until the next tick, never correctness, same as `jarvis/monitor/engine.py`'s
+`monitorEvents` two-channel split this whole pattern is copied from.
+
+`orchestrator.py`'s own `resumeOrphan()`/`restartOrphan()` (a *real* crash, not a live
+stall — see "Crash recovery" below) skip this indirection and call `startWorker()`
+directly, since they're route-only (`main.py`), never called from a tool.
+
+## `job_store.py` — the durable truth
+
+Leaf module (imports only `db.py`). Three tables (`db.py` migration 4, plus migration 5
+for `resume_note`):
+
+- **`jobs`** — one row per job. `parent_id` is set ONLY by an approved split
+  (`tools/job_split.py`) and is ALWAYS the root ancestor's id, never an intermediate
+  job's own id — see "Splitting" below for why that's what keeps the tree from ever
+  exceeding depth 2. `conversation_id` deliberately carries no foreign key (a job must
+  outlive the conversation that started it — same discipline migration 2 set for
+  `memories` vs `memory_candidates`). `transcript` is a whole-snapshot overwrite (not an
+  append) of `conversation.getMessages(sessionId)` after every completed step — what
+  lets a `resumable` job continue with its real prior context instead of restarting from
+  `goal` alone. `resume_note` is the tool-to-tick handoff described above.
+- **The write-ahead activity log — table name is now `trace`, not `job_trace`.**
+  Generalized off the original `job_trace` (db.py migration 15, root CLAUDE.md's
+  "Operational Awareness" section) the exact same way `job_outbox` was already
+  generalized below — `jobs/job_store.py`'s own `appendTrace`/`getTrace`/`getTraceTail`
+  are thin wrappers over `jarvis/ops/trace.py` with `source:'job'` baked in, so
+  every call site in this directory is unaffected and still just calls `appendTrace()`
+  as always. `appendTrace()` takes `{phase: 'intent' | 'outcome', effect: 'read' |
+  'workspace' | 'external', kind, summary, detail}` — a caller writes an `intent` row
+  BEFORE an effectful action runs and an `outcome` row after, so a crash between the two
+  still leaves the intent's `effect` on record. This single fact is what lets
+  `policy.py`'s `classifyRecovery()` derive an honest resumability verdict instead of
+  a job declaring one about itself.
+- **The Tier 1/2/3 interruption queue — table name is now `outbox`, not `job_outbox`.**
+  Generalized in db.py migration 13 (root CLAUDE.md's "Heartbeat" section) so a
+  Heartbeat/Trigger finding with no job behind it could use the same broker — this
+  directory's own `addOutboxEntry`/`listPendingOutbox`/`getOutboxForJob`/
+  `markOutboxDelivered` (job_store.py) are thin wrappers over
+  `heartbeat/outbox.py` with `source:'job'` baked in, so every call site here is
+  unaffected. `prompt.py`'s `jobsSection()` drains it. `reason: 'permission'` (a parked
+  confirm-gate decision, or a fresh `computer`-kind job asking to start) vs `'stuck'` (a
+  stall/hang that survived its one retry, or the model's own `report_job_stuck`) — same
+  delivery/resume path either way, just worded differently.
+
+`RUNNING_STATUSES` (`queued`/`planning`/`running`) vs `RESOURCE_HOLDING_STATUSES` (those
+plus `awaiting_decision`) are deliberately two different lists, found necessary by live
+testing, not assumed up front — see root `CLAUDE.md`.
+
+## `policy.py` — pure functions, zero imports
+
+Same discipline as `memory/policy.py`'s `decide()` — testable with a bare `node
+-e` truth table, no server needed. `classifyRecovery(job, trace)` (crash verdict),
+`diagnoseStall(tailTrace)` (five signals: exact repeat, oscillation, repeated failure,
+near-duplicate reasoning, each returning `{cause, detail}` or `null`),
+`stepBudgetExceeded(stepCount, kind)`, `isHung`, `hasCapacity`, `resourceAvailable`,
+`canAutoRetry`. `STEP_BUDGET_BY_KIND` and `DIAGNOSE_TAIL_SIZE` (8) live here too.
+
+## `job-events/bus.py` — the in-process bus
+
+`export const jobEvents = new EventEmitter()`. Same two-channel shape as
+`monitor/engine.py`'s `monitorEvents`: `worker.py` and `orchestrator.py` both emit
+`'status'` events into it; `orchestrator.py`'s `startOrchestrator()` is the only
+subscriber, re-broadcasting to the browser as `{type:'job_progress', jobId, status,
+title}` via `events/bus.py`.
+
+## `worker.py` — drives one job
+
+`driveJob(jobId, {allowedTools, kindByName, resumeText})`. A "step" means one
+`runTurn()` call — it can still run several internal tool-call rounds
+(`runner.py`'s own default `maxToolSteps`), but the outer loop only gets to inspect
+what happened and decide continue/retry/stop BETWEEN whole `runTurn` calls, never
+mid-call — two `runTurn` calls on the same session at once would race on
+`conversation.py`'s session Map.
+
+The model signals its own outcome via three internal-only tools
+(`report_job_done`/`report_job_stuck`/`request_job_split` — see
+`jarvis/tools/CLAUDE.md`'s `internal` vs `meta` note), never a heuristic over prose.
+After each `driveOneTurn()`, a `liveCheck` re-reads the job's own status: if anything
+OUTSIDE this loop changed it (a `stop_working_on` cancellation, or `driveOneTurn`'s own
+`onEscalate` callback parking it) the loop just returns, respecting whatever it is now
+rather than overwriting it — the one point either kind of intervention CAN take effect,
+since an in-flight `runTurn` call has no cancellation token (same accepted limitation as
+`control/session.py`'s `raceAgainstStop`).
+
+**`turn.reportedDone` doesn't mean "done" by itself any more — Verification (root
+CLAUDE.md's Operational Awareness item 4) sits in front of it, reusing the SAME
+`canAutoRetry`/escalate shape `diagnoseStall`'s own retry branch already uses below, at
+the SAME call site, sharing the SAME `job.retries` counter — never a second recovery
+mechanism.** `ops/verify.py`'s `verifySemanticMatch({request: job.goal, resultSummary:
+turn.reportedDone})` spends one model call asking "does this genuinely answer the
+goal." A `matches:false` verdict with `canAutoRetry(job)` still true pauses instead of
+finishing — a trace row, `retries + 1`, a corrective nudge fed back as `nextText`, then
+`continue`s the loop for one more attempt; a `matches:false` verdict with the retry
+already spent escalates through the identical trace -> `awaiting_decision` ->
+`addOutboxEntry(tier:1, reason:'stuck')` -> `notify()` path stall-detection already
+uses. A job that already spent its one retry on a genuine stall gets no SECOND retry for
+a verification mismatch, and vice versa — exactly because both branches gate on the
+same counter. `checked:false` (no model available for the verification call itself)
+never blocks a real completion — silence is the safe failure direction, same as
+everywhere else this project applies it. **Verified via a real stub model through the
+real `driveJob()` path**, not just read: a job whose reported summary never matches its
+own goal retries once then escalates with real trace/outbox rows; a job that corrects
+itself on the retry finishes normally with `retries:1`; a job that matches immediately
+finishes with `retries:0` and no extra trace noise.
+
+**`onEscalate` no-ops once the job is already `awaiting_decision`.** A confirm-gated
+tool retried within the same `runTurn` call (before the outer loop gets a chance to
+notice) produced up to 11 duplicate `job_outbox` rows for one decision before this
+guard existed — found live, not by inspection; see root `CLAUDE.md`.
+
+**`driveComputerJob(jobId, job, resumeText)`** is the one kind that bypasses the
+tool-calling loop entirely, driving `control/session.py`'s `preparePlan`/
+`runControlSession` directly instead. A `setInterval` heartbeat touch runs for the
+duration of the call — `control/session.py`'s own loop can legitimately run for many
+minutes with no hook to report progress mid-call, and without this the hang detector
+would eventually "recover" a session that was never actually stuck, colliding with
+`control/session.py`'s own `activeSession` singleton. Accepted tradeoff: this can't
+distinguish "still working" from "hung inside one low-level step with no internal
+timeout of its own" — `control/session.py`'s own `DECIDE_TIMEOUT_MS` already bounds the
+common case.
+
+## `orchestrator.py` — admission, the 5-second tick, crash recovery
+
+**Kind-based tool restriction lives in `worker.py`, not here — worth being explicit,
+since the Node original's equivalent (`buildToolsetForKind`) lived beside admission
+and an earlier version of this doc described it as if it still did.** `worker.py`'s
+`TOOLS_BY_KIND` dict is what `run_job()` actually reads: `'generic'` maps to `None`,
+meaning no restriction at all (every declared capability is offered); `'research'`
+and `'files'` each map to a small hardcoded raw-tool list (`look_it_up`,
+`read_web_page`, etc.) plus `request_job_split` (`JOB_OWN_TOOLS`, appended to every
+restricted kind). `'computer'` never calls this at all (see `driveComputerJob` above).
+
+**`research`/`files`-kind jobs can now reach an installed Skill, closing what used to
+be a real, disclosed gap.** `worker.py`'s `_installed_skill_names()` reads every
+currently-installed Skill straight from the registry (`assembly.get_registry().list(kind=
+CapabilityKind.SKILL)`, imported lazily for the same reason `run_job()` itself defers
+its own `assembly` import) and `run_job()` appends those names onto a restricted
+kind's own `TOOLS_BY_KIND` list before building `allowed_names` — the same fix the
+Node original had (`c.kind === 'skill'` unconditionally added back into a restricted
+kind's tool list, reasoning that a Skill is the user's own packaged process, not a raw
+capability the kind is trying to fence off), never carried over into `TOOLS_BY_KIND`
+until now. `'generic'` is untouched (`allowed` stays `None` there, meaning no
+restriction at all — nothing to append onto).
+
+**`report_job_done`/`report_job_stuck` do not exist in this port, and that is by
+design, not an omission** — see root `CLAUDE.md`'s own note on this: the Python
+worker observes completion from the orchestrator's own events plus semantic
+verification (`ops/verify.py`) instead of depending on a model honestly
+self-reporting via an internal tool, which is strictly better than what those two
+tools did. `request_job_split` is the only surviving member of that internal-tool
+set, and it is what `JOB_OWN_TOOLS` above actually appends.
+
+**What "kind" is NOT, worth being explicit about since the name invites a stronger
+reading than the code delivers:** there is no per-kind system prompt, no role or
+expertise framing, and the admission call's own `plan.summary`/`plan.steps` are
+computed, shown in the UI, and never fed to the worker's own prompt at all — the
+worker's first message is just the raw `goal` text plus the same generic completion
+instructions every kind gets. `kind` only ever gates which tools are callable. Whether
+to build a genuinely adaptable worker (the Orchestrator selecting tools AND framing per
+task, not a fixed kind enum) is an open, undecided design question — see root
+`CLAUDE.md`.
+
+`tick()` (5s) starts anything `queued` (respecting `resourceAvailable()` — capacity
+itself was already checked at creation, per `orchestrator.py`'s `createJobIfCapacity()`)
+and checks every `running` job this process is driving for `isHung()`.
+`recoverFromHang()` spends the job's one retry, discards whatever the hung call may have
+left in `conversation.py`'s live session, and resumes from the last durable
+`transcript` snapshot instead of trusting it — the abandoned call, if it ever resolves,
+finds the job already moved on.
+
+`recoverOrphans()` — anything still `status:'running'` at startup crashed (no process is
+running it, no heuristic needed). Classified via `policy.py`'s `classifyRecovery()`,
+marked `orphaned` (never auto-resumed), reported via a Tier 1 outbox row. `resumeOrphan`/
+`restartOrphan` are route-only (never called from a tool — see the circular-import note
+above); `restartOrphan` refuses outright for `recovery:'unrecoverable'`.
+
+## Effect classification — in `policy.py`, pure data, no imports
+
+`classifyToolEffect(name, kindByName)` — a first-pass, hand-classified table (not the
+final word; root `CLAUDE.md`'s Jobs section flags the real effect-based "must the owner
+decide" classifier, reusing `control/guard.py`'s `classifyActionRisk` shape, as still
+open). `kindByName` (built by `orchestrator.py` from `listCapabilities()`) is what lets
+an unrecognized name default correctly: a connector tool (`kind:'connector'`) defaults
+to `'external'` since connector names vary per user and can't be hardcoded; anything
+else unrecognized defaults to `'workspace'`, the middle tier — matching
+`control/guard.py`'s own "unknown ⇒ notable, never safe" spirit.
+
+## The action layer — folded into `orchestrator.py`
+
+See "The circular-import split" above for why this file exists at all.
+
+- `createJobIfCapacity({title, goal, kind, resource, conversationId, plan, parentId})` —
+  the ONE capacity-gated creation path, used by `/api/jobs` and `tools/job_tools.py`
+  alike so they can never diverge on what "at capacity" means. `kind:'computer'` is
+  special-cased: it's parked straight into `awaiting_decision` with a Tier 1 outbox row
+  asking to start, never `queued` — an autonomous desktop-control session never begins
+  unattended, full stop. `resource` defaults to `'computer'` for that kind so
+  `policy.py`'s `resourceAvailable()` serializes it against any other computer-kind
+  job, on top of `control/session.py`'s own independent `activeSession` singleton.
+- `cancelJob(jobId)` — works regardless of current status, marks pending outbox entries
+  delivered so a cancelled job's old decision never resurfaces on `jobsSection()` again.
+- `resumeStuckJob(jobId, guidance)` — see "The circular-import split" above. `retries`
+  resets to 0 (a human just intervened — a fresh automatic-recovery budget). Wording
+  adapts on whether the job ever actually started (`job.startedAt`): "go ahead and
+  start" for a fresh `computer`-kind confirmation vs "try something different" for an
+  actual stall.
+
+## Splitting (`jarvis/tools/job_split.py`)
+
+Deliberately self-contained — the whole judge-then-create flow lives in the tool's own
+`run()`, not threaded back through `worker.py`'s core loop the way
+`report_job_done`/`report_job_stuck`'s simpler true/false signals are. Cheap code-only
+checks first (fewer than 2 or more than `MAX_PIECES` pieces, not enough capacity for all
+of them), THEN one Orchestrator-level model call judging proportionality — deny on any
+uncertainty, per the build spec's "uncertainty itself is a reason not to approve."
+
+**The depth ceiling is structural, not a rule anyone has to remember to enforce:**
+`const rootParentId = job.parentId || job.id` resolves to the root ancestor in exactly
+one hop — a level-2 job's own `parentId` already IS the root. Every piece a split ever
+creates therefore becomes a PEER under that same root, never a child of the job that
+requested it. Confirmed live (not just by reading the code): a directly-planted level-2
+job requesting its own split produced grandchildren whose `parent_id` was the ORIGINAL
+root, not the level-2 job itself.
+
+Approved pieces are always created `kind:'generic'` — deliberately, to keep a split's
+total cost at one judgment call regardless of how many pieces it produces, at the cost
+of a piece never getting its own specialized kind even when one would clearly fit
+better (see "What kind is NOT" above — this is the sharpest version of that same gap).

@@ -1,5 +1,15 @@
-node_modules/
 .env
 *.log
 data/
---full-page
+
+# Python backend
+__pycache__/
+*.py[cod]
+.pytest_cache/
+backend/.venv/
+backend/*.egg-info/
+
+# Front-end tooling. `frontend/out` is deliberately NOT ignored — it is the built
+# export the backend serves, and committing it is what lets Jarvis run with only
+# Python installed. See frontend/.gitignore.
+node_modules/

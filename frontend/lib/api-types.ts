@@ -1,0 +1,759 @@
+// Shapes the backend actually returns.
+//
+// Hand-written for now, from the recorded contract fixtures in
+// backend/tests/contract/fixtures/ — the same recordings the Python port is held
+// to, so these types describe what the server really sends rather than what it
+// was assumed to send.
+//
+// These are TEMPORARY BY DESIGN. Once Wave 1 lands in FastAPI, they get
+// generated from its OpenAPI schema (openapi-typescript) and this file is
+// deleted. Until then, any change here should be checked against a fixture, not
+// against memory.
+
+export interface Conversation {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  pinned: boolean;
+  archived: boolean;
+  /** Absent unless the query computed it — a listing has it, a single fetch does not. */
+  messageCount?: number;
+  /** Present only once it has been moved to the recycle bin — absent for an
+   *  active conversation, never null. Gone for good 30 days after this, or
+   *  sooner if emptied by hand. */
+  deletedAt?: string;
+}
+
+export type MessageRole = 'user' | 'assistant' | 'tool';
+
+export interface ToolCall {
+  id?: string;
+  name: string;
+  args?: Record<string, unknown>;
+}
+
+export interface ToolResult {
+  id?: string;
+  name: string;
+  result?: unknown;
+}
+
+export interface MediaPart {
+  kind: 'image' | 'video';
+  mimeType: string;
+  dataBase64?: string;
+  uri?: string;
+}
+
+export interface Message {
+  id: string;
+  role: MessageRole;
+  text?: string;
+  createdAt: string;
+  toolCalls?: ToolCall[];
+  toolResults?: ToolResult[];
+  modelId?: string;
+  media?: MediaPart[];
+  /** Set when a barge-in cut the reply off; `spokenText` is what was actually heard. */
+  interrupted?: boolean;
+  spokenText?: string;
+}
+
+export interface ConversationList {
+  conversations: Conversation[];
+  activeId: string;
+}
+
+export interface ConversationDetail {
+  conversation: Conversation;
+  messages: Message[];
+}
+
+export interface QuietHours {
+  enabled: boolean;
+  /** 'HH:MM', 24-hour. A window may wrap past midnight. */
+  start: string;
+  end: string;
+}
+
+/**
+ * Three fields are absent on purpose: `autoSelect`, `manualModelId` and
+ * `voiceModelId`. All three were served and read by nothing, so setting one
+ * silently did nothing; the two pins are now role slots. `verifyChatAnswers`
+ * was the opposite problem — served by the API and missing from this type.
+ */
+export interface Prefs {
+  balance: 'fast' | 'balanced' | 'quality';
+  clarifySensitivity: 'more' | 'balanced' | 'less';
+  ttsProvider: string | null;
+  verifyChatAnswers: boolean;
+  memoryTrust: 'ask' | 'balanced' | 'auto';
+  maxBackgroundJobs: number;
+  improvementEnabled: boolean;
+  improvementTrust: 'ask' | 'balanced' | 'auto';
+  improvementResearch: 'off' | 'weekly';
+  quietHours: QuietHours;
+}
+
+export interface Status {
+  configured: boolean;
+}
+
+/** Every error response in this API is `{error: string}`, shown to the user verbatim. */
+export interface ApiError {
+  error: string;
+}
+
+export interface Notification {
+  id: string;
+  kind: string;
+  level: 'info' | 'success' | 'warning' | 'error';
+  title: string;
+  body: string;
+  /** `{label, section}` — a section id rather than a callback, so it survives
+   *  JSON and still works for a notice the server generated on its own. */
+  action: { label: string; section: string } | null;
+  meta: Record<string, unknown> | null;
+  ts: string;
+  read: boolean;
+  /** The same fault repeating collapses into one row and counts. */
+  count: number;
+  /** Present only once it has been moved to the recycle bin — absent for an
+   *  active notification, never null. Gone for good 30 days after this, or
+   *  sooner if emptied by hand. */
+  trashedAt?: string;
+}
+
+/** One event from `GET /api/chat/stream`. The wire vocabulary is deliberately
+ *  small and stable — see backend/jarvis/routes/turn.py's `to_wire`. */
+export type TurnEvent =
+  | { type: 'routed'; intent: string; fast: boolean; confidence: number; reason: string;
+      /** The user message's real, persisted id — present so Edit/Retry can act
+       *  on THIS turn without waiting for a reload to learn it. */
+      userMessageId?: string }
+  | { type: 'chunk'; text: string }
+  | { type: 'tool_result'; capability: string; ok: boolean; outcome: string; error: string | null;
+      attachment?: { type: 'attachment'; kind: string; url: string; mimeType: string };
+      /** A tool asked the interface to open a section. Navigating is something
+       *  the browser does, so it arrives beside the result rather than inside
+       *  it, exactly like an attachment. */
+      navigate?: { section: string } }
+  | { type: 'approval_required'; approvalId: string; capability: string; reason: string }
+  | { type: 'model_switch'; to: string; from: string | null; reason: string }
+  | { type: 'interrupted'; spokenText: string }
+  | { type: 'progress'; phase: string }
+  | { type: 'error'; error: string; code?: string; detail?: unknown }
+  | { type: 'done'; text: string; steps: number;
+      /** The reply's real, persisted id — see `userMessageId` above. */
+      messageId?: string }
+  | { type: 'unknown' };
+
+// --- scheduled tasks ----------------------------------------------------------
+
+/** Free-form by design on the wire: `scheduler/recurrence.py` owns what a shape
+ *  means, and a type here that tried to enumerate them would be a second, worse
+ *  copy of that knowledge. `type` is the one field every shape has. */
+export interface Recurrence {
+  type: string;
+  [key: string]: unknown;
+}
+
+export interface TaskAction {
+  type: 'prompt' | 'message' | 'briefing' | string;
+  /** `text`, NOT `prompt` — `scheduler/engine.py`'s `_run_prompt` reads this
+   *  exact key, and a mismatch makes every task fail at run time with "this
+   *  task has nothing to ask". */
+  text?: string;
+  /** A one-off model pin, or absent for Auto. Honoured by ORDER, not
+   *  exclusion: a pin to a model that is later deleted falls back to the usual
+   *  ranking rather than breaking the task. */
+  modelId?: string;
+  /** Connector IDS, never tool names. Resolved to what that connector can do
+   *  at RUN time, so a task never goes stale when a connector is refreshed. */
+  connectors?: string[];
+  [key: string]: unknown;
+}
+
+export interface Task {
+  id: string;
+  title: string;
+  recurrence: Recurrence;
+  action: TaskAction;
+  enabled: boolean;
+  /** 'always' | 'on_error' | 'never'. */
+  notify: string;
+  /** Null whenever the task is off — a paused task must not advertise a time. */
+  nextRunAt: string | null;
+  createdAt: string;
+  lastRunAt: string | null;
+}
+
+export interface TaskRun {
+  id: string;
+  taskId: string;
+  ok: boolean;
+  summary?: string;
+  error?: string;
+  ranAt?: string;
+  /** Which model ANSWERED — not necessarily the one the task pinned, since a
+   *  pin is an ordering the gateway can fall through. */
+  modelId?: string;
+  [key: string]: unknown;
+}
+
+// --- approvals ----------------------------------------------------------------
+
+export interface Approval {
+  id: string;
+  capability: string;
+  args: Record<string, unknown>;
+  risk: string;
+  reason: string;
+  sessionId: string;
+  surface: string;
+  status: string;
+  requestedAt: string;
+}
+
+// --- models, connections, connectors -------------------------------------------
+
+/**
+ * One model under one connection, exactly as `/api/models` serves it.
+ *
+ * These two interfaces used to end in `[key: string]: unknown`, which meant the
+ * compiler accepted any shape the server sent: a renamed field, a dropped
+ * field, a field that changed type — all of it typechecked, built, and then
+ * rendered wrong in the browser. The server side was spreading its internal
+ * record onto the wire at the same time, so neither end could catch a change
+ * the other made.
+ *
+ * The index signature is gone on purpose. The fields below are the whole
+ * contract, and `backend/tests/test_models_contract.py` pins the same set from
+ * the other side, so the two can only disagree loudly.
+ */
+export interface ModelEntry {
+  id: string;
+  connectionId: string;
+  label: string;
+  model: string;
+  enabled: boolean;
+  /** Computed at read time: enabled, and its connection has what it needs. */
+  ready: boolean;
+  hasSecret: boolean;
+  /** Hydrated in from the owning connection, so present but possibly null. */
+  adapter: string | null;
+  baseUrl: string | null;
+  keyRequired: boolean | null;
+  kind: string | null;
+  /** The CONNECTION's provider — whose address this is reached at. Who MAKES
+   *  the model is `version.provider`, and they are routinely different: a
+   *  gateway reselling somebody else's model is still serving that maker's
+   *  model. The two used to share one field, which is how the distinction was
+   *  lost. */
+  connectionProvider: string | null;
+  connectionLabel: string | null;
+  notes?: string;
+  /** What the catalog says this model IS, resolved at read time — so a fact
+   *  learned tomorrow appears without anything being migrated. Null only if a
+   *  record is too damaged to resolve at all. */
+  version: ModelVersion | null;
+}
+
+/** Three states, never two. `unknown` is the honest answer for most models on
+ *  most capabilities, and rendering it as "no" is how a capable model gets
+ *  hidden with no visible reason. */
+export type Support = 'yes' | 'no' | 'unknown';
+
+export type EffortLevel = 'OFF' | 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH' | 'MAX';
+
+export interface ModelVersion {
+  /** Who makes it. `"unknown"` when no catalog pattern recognised the id. */
+  provider: string;
+  /** The id the provider's API expects — what actually goes on the wire. */
+  model: string;
+  label: string;
+  family: string | null;
+  /** Whether `model` names one frozen snapshot rather than a floating alias
+   *  that silently repoints when the vendor ships a successor. */
+  pinned: Support;
+  contextTokens: number | null;
+  capabilities: Record<string, Support>;
+  effort: {
+    /** `tiers` | `budget` | `variant` | `none` | `unknown`. `none` and
+     *  `unknown` are different answers: no reasoning control, versus nobody
+     *  has established whether there is any. */
+    kind: string;
+    default: EffortLevel | null;
+    /** Level -> what this provider wants on the wire for it. */
+    native: Record<string, unknown>;
+  };
+  quality: number | null;
+  lifecycle: 'unknown' | 'current' | 'deprecated' | 'retired';
+  /** field -> `default` | `catalog` | `discovered` | `user`. Per field, because
+   *  a version is almost always a mixture and a single flag cannot say which
+   *  parts to trust. */
+  provenance: Record<string, string>;
+}
+
+export interface ConnectionEntry {
+  id: string;
+  label: string;
+  adapter: string;
+  baseUrl: string | null;
+  provider?: string | null;
+  kind?: string | null;
+  keyRequired?: boolean | null;
+  createdAt?: string;
+  hasSecret: boolean;
+  modelCount: number;
+}
+
+/** The roster as provider -> family -> version. Built from the deployments this
+ *  install actually has, never from a shipped model list. */
+export interface CatalogProvider {
+  id: string;
+  label: string;
+  families: CatalogFamily[];
+}
+
+export interface CatalogFamily {
+  id: string;
+  label: string;
+  versions: CatalogVersion[];
+}
+
+export interface CatalogVersion {
+  model: string;
+  label: string;
+  version: ModelVersion;
+  /** How this one version is actually reachable. Two entries means two routes
+   *  to the same model — separate keys, separate prices, separate rate limits —
+   *  which the flat list could not express at all. */
+  deployments: CatalogRoute[];
+}
+
+export interface CatalogRoute {
+  id: string;
+  label: string;
+  connectionId: string | null;
+  connectionLabel: string | null;
+  enabled: boolean;
+  ready: boolean;
+}
+
+/** Why a model is being skipped right now, keyed by model id. A model nobody
+ *  has had trouble with is simply absent. */
+export type ModelHealth = Record<string, { reason: string | null; kind: string | null; retryInMs: number }>;
+
+export interface Connector {
+  id: string;
+  type: string;
+  label: string | null;
+  description: string | null;
+  enabled: boolean;
+  status: { state: string; checkedAt: string | null; detail: string | null };
+  source?: { type: 'catalog' | 'user'; id?: string };
+  /** Present once resolved server-side — a real, current logo, not a
+   *  hand-drawn mark. Absent while nothing has resolved yet. */
+  iconDataUri?: string | null;
+  config: { hasSecret: boolean };
+  [key: string]: unknown;
+}
+
+export interface ConnectorTool {
+  name: string;
+  description: string;
+  /** Whether using this tool pauses to ask, independent of the standing
+   *  per-tool permission — informational only, matches what actually
+   *  happens at runtime. */
+  confirms: boolean;
+}
+
+export interface ConnectFlow {
+  kind: string;
+  guide?: {
+    consoleLabel: string;
+    note?: string;
+    steps: string[];
+  } | null;
+  [key: string]: unknown;
+}
+
+/** One entry in the bundled directory of apps known to work — every entry
+ *  gets one uniform Connect button, no "ready"/"needs setup" badge. */
+export interface CatalogEntry {
+  id: string;
+  label: string;
+  icon: string;
+  description: string;
+  connectFlow: ConnectFlow;
+  /** Filled in only once the user has actually clicked into this entry at
+   *  least once. */
+  connectorId: string | null;
+  status: string | null;
+  iconDataUri: string | null;
+}
+
+export interface ConnectorConnectOutcome {
+  ok: true;
+  connectorId: string;
+  /** No authorization was needed at all — the connector is already usable,
+   *  no browser tab was opened. */
+  noAuthNeeded?: true;
+  /** Open this in a browser to finish signing in. */
+  authUrl?: string;
+  /** Automatic client registration failed or isn't supported — the guided
+   *  Client ID/Secret form is what's needed next. */
+  needsManualClient?: true;
+  reason?: string;
+  detail?: string;
+  message?: string;
+}
+
+export interface SandboxStatus {
+  backend: 'wsl' | 'restricted';
+  isolation: 'strong' | 'weak';
+  distro: string | null;
+  detectedWindowsSandbox: boolean;
+  setupSteps: string[];
+}
+
+export interface Provider {
+  id: string;
+  label: string;
+  icon: string;
+  iconBg: string;
+  baseUrl: string | null;
+  urlEditable: boolean;
+  keyRequired: boolean;
+  kind: string;
+  suggestions?: string[];
+  keyHint?: string;
+}
+
+/** One model a server says it has, before anything is added. */
+export interface DiscoveredModel {
+  model: string;
+  label: string;
+  contextTokens: number | null;
+  /** Always null now. The old build filled this in from a name regex and the
+   *  picker showed a "free" badge from it — on a paid-tier key, for any id
+   *  containing "flash". Kept on the wire as an explicit "we do not know"
+   *  rather than removed, since a listing genuinely does not answer it. */
+  billing: string | null;
+  /** What the catalog makes of the id: the lineage it belongs to, and who
+   *  makes it. Null when no pattern matched — a real group the picker shows
+   *  rather than hides, since an unrecognised local model has to be pickable. */
+  family: string | null;
+  provider: string | null;
+}
+
+/** What a probe tried, and what it found. `steps` is the point: a failure that
+ *  cannot be explained is the exact problem this flow was built to fix. */
+export interface ProbeResult {
+  ok: boolean;
+  steps: string[];
+  adapter: string | null;
+  baseUrl: string | null;
+  kind: string | null;
+  keyRequired: boolean | null;
+  models: DiscoveredModel[];
+  error: string | null;
+  needsKey: boolean;
+}
+
+export interface ExternalService {
+  ref: string;
+  label: string;
+  configured: boolean;
+  extraFieldLabel: string | null;
+  extraFieldConfigured: boolean;
+}
+
+export interface RecheckPreview {
+  total: number;
+  notWorking: number;
+  byConnection: { id: string; label: string; count: number;
+                  isFreeTier: boolean | null; remaining: number | null }[];
+}
+
+export interface VoiceEngineOption {
+  id: 'pipeline' | 'duplex' | 'realtime' | string;
+  label: string;
+  description: string;
+  available: boolean;
+  /** Why not, whenever it is unavailable — never a bare "no". */
+  reason: string | null;
+  models?: { id: string; label: string }[];
+}
+
+export interface VoiceOption {
+  id: string;
+  label: string;
+  configured: boolean;
+  needsKey: boolean;
+}
+
+export interface VoiceOptions {
+  engines: VoiceEngineOption[];
+  voices: VoiceOption[];
+  listening: { mode: string; serverProxied: boolean };
+  connections: number;
+}
+
+// --- memory, and the profile notes that are one category of it ------------------
+
+export interface Memory {
+  id: string;
+  category: string;
+  text: string;
+  /** How consent was given, which is a different question from where the
+   *  content came from: `explicit` was typed by hand, `approved` was reviewed,
+   *  `auto` cleared the confidence bar, `legacy` predates the distinction. */
+  origin: 'approved' | 'auto' | 'explicit' | 'legacy';
+  sourceKind: string | null;
+  sourceRef: string | null;
+  confidence: number | null;
+  importance: number | null;
+  archived: boolean;
+  expiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MemoryCandidate {
+  id: string;
+  category: string;
+  text: string;
+  confidence: number | null;
+  sourceKind: string | null;
+  /** The id of a memory this one contradicts. A conflict always needs a person,
+   *  at every trust level, with no override. */
+  conflictWith: string | null;
+  createdAt: string;
+}
+
+export interface MemoryVersion {
+  id?: number;
+  text: string;
+  category?: string;
+  changedAt: string;
+  reason: string | null;
+}
+
+export interface MemoryCategory {
+  name: string;
+  status: 'approved' | 'pending';
+}
+
+/** A profile note: the same row as a memory, read as what it is on that screen. */
+export interface ProfileEntry {
+  id: string;
+  text: string;
+  addedAt: string;
+}
+
+// --- self-improvement -------------------------------------------------------------
+
+export interface Proposal {
+  id: string;
+  kind: 'rule' | 'setting' | 'skill' | 'code' | 'idea';
+  title: string;
+  rationale: string | null;
+  helpsJarvis: string | null;
+  helpsUser: string | null;
+  payload: Record<string, unknown> | null;
+  evidence: string[];
+  sourceTier: number;
+  sourceUrl: string | null;
+  conflictWith: string | null;
+  status: 'pending' | 'approved' | 'rejected';
+  implementationPrompt?: string | null;
+  implementationTarget?: string | null;
+  createdAt: string;
+}
+
+export interface Rule {
+  id: string;
+  text: string;
+  scope: string;
+  active: 0 | 1;
+  sourceProposalId: string | null;
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Lesson {
+  id: string;
+  kind: string;
+  text: string;
+  scope: string;
+  evidence: string[];
+  confidence: number | null;
+  sourceTier: number;
+  sourceUrl: string | null;
+  status: 'active' | 'archived';
+  createdAt: string;
+}
+
+export interface Change {
+  id: number;
+  kind: 'rule' | 'setting' | 'undo';
+  target: string;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  reason: string | null;
+  proposalId: string | null;
+  appliedAt: string;
+  undoneAt: string | null;
+}
+
+export interface Outcome {
+  id: string;
+  source: string;
+  title: string;
+  goal: string | null;
+  status: string;
+  error: string | null;
+  createdAt: string;
+}
+
+export interface ImprovementStatus {
+  enabled: boolean;
+  trust: 'ask' | 'balanced' | 'auto';
+  research: 'off' | 'weekly';
+  dailyBudgetRemaining: number;
+  weeklyBudgetRemaining: number;
+  unreviewedOutcomes: number;
+  pendingProposals: number;
+}
+
+/** An undo that would overwrite a later decision answers rather than failing. */
+export type UndoResult =
+  | { ok: true; change: Change }
+  | { ok: false; reason: 'changed_since'; message: string; live: unknown; expected: unknown };
+
+// --- background jobs ---------------------------------------------------------------
+
+export interface Job {
+  id: string;
+  parentId: string | null;
+  conversationId: string | null;
+  title: string;
+  goal: string;
+  kind: string;
+  /** What the backend actually writes. `done` and `stalled` are the two terminal
+   *  states the worker sets; nothing ever emits "succeeded" or "failed". */
+  status: 'queued' | 'running' | 'awaiting_decision' | 'stalled' | 'done' | 'cancelled';
+  plan: { summary?: string; steps?: string[] } | null;
+  resource: string | null;
+  /** What the trace says about picking this up again — never a guess. */
+  recovery: 'resumable' | 'restartable' | 'needs_input' | 'unrecoverable' | null;
+  result: string | null;
+  error: string | null;
+  retries: number;
+  progress: number | null;
+  currentStep: string | null;
+  priority: number;
+  createdAt: string;
+  startedAt: string | null;
+  heartbeatAt: string | null;
+  finishedAt: string | null;
+}
+
+/** One row of the write-ahead record: an intent before an action, an outcome
+ *  after it, so a crash between the two still leaves the intent on record. */
+export interface TraceRow {
+  id: number;
+  seq: number;
+  phase: 'intent' | 'outcome';
+  effect: 'read' | 'workspace' | 'external';
+  kind: string;
+  summary: string;
+  detail: unknown;
+  created_at: string;
+}
+
+export interface OutboxRow {
+  id: number;
+  tier: number;
+  reason: string;
+  summary: string;
+  deliveredAt: string | null;
+  createdAt: string;
+}
+
+// --- the morning briefing, and what is being watched for ----------------------------
+
+export interface BriefingConfig {
+  sections: {
+    greeting: boolean;
+    dateTime: boolean;
+    tasks: boolean;
+    goals: boolean;
+    focus: boolean;
+    custom: boolean;
+  };
+  customText: string;
+  /** Empty means weather is skipped: it cannot be mentioned without a place. */
+  weatherPlace: string;
+  headlines: boolean;
+  /** Connector ids, never tool names — a connector's tools change on reconnect. */
+  connectors: string[];
+}
+
+export type BriefingPreview =
+  | { ok: true; text: string; facts: Record<string, unknown>; modelId: string | null }
+  | { ok: false; text: string; error: string; facts?: Record<string, unknown> };
+
+export interface Monitor {
+  id: string;
+  description: string;
+  status: 'watching' | 'stopped' | 'triggered' | 'error';
+  check: Record<string, unknown>;
+  onTrigger: Record<string, unknown>;
+  createdAt: string;
+  lastCheckedAt: string | null;
+  triggeredAt: string | null;
+  error: string | null;
+}
+
+// --- folder skills ------------------------------------------------------------------
+
+/**
+ * A Skill is a FOLDER OF INSTRUCTIONS, never a built-in ability under another
+ * name. Everything here comes from the one backend function that reads folders
+ * directly and structurally cannot return a built-in — which is why this type
+ * has no "kind" discriminator to get wrong.
+ */
+export interface Skill {
+  /** The folder name: what a model calls, and what is shown. It can never drift
+   *  from where the Skill actually lives, even if its own file disagrees. */
+  name: string;
+  declaredName: string;
+  description: string;
+  hasSkillMd: boolean;
+  hasToml: boolean;
+  allowedTools: string[];
+  enabled: boolean;
+  source: { type: string; repo?: string; url?: string };
+  installedAt: string | null;
+  updatedAt: string | null;
+  /** Whether this Skill's helper scripts may run in the sandbox. */
+  scriptsApproved: boolean;
+  /** Whether its pipeline may run. A different mechanism from the above, with a
+   *  different default: true only for a Skill written and reviewed in the app. */
+  pipelineApproved: boolean;
+}
+
+export interface SkillDetail extends Skill {
+  ok: true;
+  /** The whole file as written, and just the instructions under the frontmatter. */
+  raw: string;
+  body: string;
+  supportingFiles: { name: string; size: number }[];
+  pipeline: { description?: string; inputs?: unknown; steps?: unknown[] } | null;
+  pipelineErrors: string[];
+}

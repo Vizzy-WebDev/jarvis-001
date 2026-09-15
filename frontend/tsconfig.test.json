@@ -1,0 +1,21 @@
+{
+  // Compiles the voice layer's PURE logic to plain JS so `node --test` can run
+  // it directly. No test framework and no bundler: TypeScript and Node are both
+  // already here, and a runner would be a dependency earning nothing.
+  //
+  // Only files with no browser dependency are worth importing from a test —
+  // everything else in this directory needs a real microphone or a real audio
+  // context, and pretending otherwise in a fake DOM proves nothing.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": ".test-build",
+    "rootDir": ".",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "target": "es2022",
+    "jsx": "preserve",
+    "skipLibCheck": true
+  },
+  "include": ["lib/voice/**/*.ts"]
+}

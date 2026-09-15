@@ -22,7 +22,9 @@ from jarvis.capabilities.execute import ExecOutcome, execute
 from jarvis.db import reset_for_tests as reset_db
 from jarvis.events import EventType
 from jarvis.events.bus import EventBus
-from jarvis.gateway import availability, connections, deployments as model_registry
+from jarvis.gateway import availability
+from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
+from jarvis.model_system.registry import add_model
 from jarvis.jobs import job_store, orchestrator, worker
 from jarvis.jobs.policy import (
     can_auto_retry, classify_recovery, diagnose_stall, has_capacity, is_hung,
@@ -55,10 +57,10 @@ def _isolate(scratch):
 def stub():
     server = StubModelServer()
     server.base_url = server.start()
-    conn = connections.add_connection(adapter="openai-compatible", base_url=server.base_url,
-                                      label="stub", provider="custom", kind="local",
-                                      key_required=False)
-    model_registry.add_deployment(connection_id=conn["id"], model="stub-model")
+    provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
+                            base_url=server.base_url, auth_method=AuthMethod.NONE,
+                            key_required=False)
+    add_model(provider_id=provider.id, native_model_id="stub-model")
     yield server
     server.stop()
 

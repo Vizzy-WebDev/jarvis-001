@@ -161,9 +161,10 @@ def prepare_for_turn(ids: list[str] | None, *, session_id: str) -> Prepared:
 
 
 def _can_take_rich_files() -> bool:
-    from .gateway.routing import Task, build_candidates
+    from .model_system.request import Preferences, Requirements
+    from .model_system.router import rank
 
-    return bool(build_candidates(Task(text="", needs_tools=False, need={"video": True})))
+    return bool(rank(Requirements(capabilities={"video": True}), Preferences()))
 
 
 def _register(path: Path, name: str, session_id: str) -> str:

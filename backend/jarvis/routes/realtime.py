@@ -136,9 +136,9 @@ async def duplex(socket: WebSocket) -> None:
 async def live(socket: WebSocket) -> None:
     await socket.accept()
 
-    from ..adapters import get_adapter
     from ..assembly import get_registry
-    from ..config import get_secret
+    from ..model_system.adapters import get_adapter
+    from ..model_system.credentials import CredentialStatus
     from ..prompt import stable_instruction
     from ..voice.options import realtime_models
 
@@ -147,8 +147,8 @@ async def live(socket: WebSocket) -> None:
     # never disagree. Nothing here names a provider, and nothing here constructs
     # an SDK: opening the session is the adapter's job, for the reason the
     # architecture test spells out.
-    entry = next(iter(realtime_models()), None)
-    if entry is None or not get_secret(entry.get("secretRef") or ""):
+    model = next(iter(realtime_models()), None)
+    if model is None or model.provider.credential_status is not CredentialStatus.CONFIGURED:
         await _send(socket, {"type": "error",
                              "error": "No model with a realtime voice is set up yet.",
                              "code": "NO_API_KEY"})
@@ -173,8 +173,9 @@ async def live(socket: WebSocket) -> None:
     }
 
     try:
-        adapter = get_adapter(entry.get("adapter"))
-        async with adapter.open_realtime_session(entry, config=config) as session:
+        adapter = get_adapter(model.provider.adapter)
+        async with adapter.open_realtime_session(model.provider, model.native_model_id,
+                                                  config=config) as session:
             await _send(socket, {"type": "ready"})
             session_id = f"live:{uuid.uuid4().hex[:8]}"
             from_browser = asyncio.create_task(_pump_browser(socket, session))

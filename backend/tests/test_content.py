@@ -91,7 +91,7 @@ def test_sharing_makes_no_model_call_and_reads_nothing(monkeypatch, no_network):
     def refuse(*_a, **_kw):
         raise AssertionError("sharing must not call a model")
 
-    monkeypatch.setattr("jarvis.gateway.client.ask", refuse)
+    monkeypatch.setattr("jarvis.model_system.compat.ask", refuse)
     result = share(source=intake.classify_source("https://example.com/article"),
                    session_id="s1")
     join_all()
@@ -145,13 +145,13 @@ def test_how_it_was_taken_in_is_always_said_honestly(kind, phrase):
 # --- examining ----------------------------------------------------------------
 
 def _answer(text="Because it is hot.", data=None, model_id="stub"):
-    from jarvis.gateway.client import Answer
+    from jarvis.model_system.compat import Answer
 
     return Answer(text=text, model_id=model_id, data=data)
 
 
 def test_examining_text_answers_the_question_asked_and_records_it(monkeypatch, no_network):
-    monkeypatch.setattr("jarvis.gateway.client.ask",
+    monkeypatch.setattr("jarvis.model_system.compat.ask",
                         lambda *a, **k: _answer("It boils at one hundred degrees."))
     shared = share(source=intake.classify_source("https://example.com/article"),
                    session_id="s1")
@@ -177,7 +177,7 @@ def test_a_failed_examine_is_recorded_in_the_conversation_too(monkeypatch, no_ne
     def unavailable(*_a, **_kw):
         raise RuntimeError("everything is rate limited")
 
-    monkeypatch.setattr("jarvis.gateway.client.ask", unavailable)
+    monkeypatch.setattr("jarvis.model_system.compat.ask", unavailable)
     shared = share(source=intake.classify_source("https://example.com/article"),
                    session_id="s1")
     join_all()
@@ -199,7 +199,7 @@ def test_a_follow_up_the_notes_cover_does_not_look_again(monkeypatch):
         calls["fresh"] += 1
         return _answer(data={"answer": "fresh", "observations": "notes"})
 
-    monkeypatch.setattr("jarvis.gateway.client.ask", fake_ask)
+    monkeypatch.setattr("jarvis.model_system.compat.ask", fake_ask)
     record = store.create_content(source={"kind": "file", "filePath": "/x/clip.mp4"},
                                   identity={"title": "clip", "kind": "video"},
                                   session_id="s1")
@@ -222,10 +222,11 @@ def test_notes_that_do_not_cover_the_question_cause_a_real_second_look(monkeypat
         looked["again"] = True
         return _answer(data={"answer": "A siren.", "observations": "a siren sounds"})
 
-    monkeypatch.setattr("jarvis.gateway.client.ask", fake_ask)
-    monkeypatch.setattr("jarvis.gateway.routing.build_candidates",
-                        lambda task, **kw: [{"id": "m1", "adapter": "gemini",
-                                             "model": "g", "caps": {"video": True}}])
+    import types
+
+    monkeypatch.setattr("jarvis.model_system.compat.ask", fake_ask)
+    monkeypatch.setattr("jarvis.model_system.router.rank",
+                        lambda requirements, preferences, **kw: [types.SimpleNamespace(id="m1")])
     # Patched where the investigator BOUND it, not where it is defined: the
     # module-level import means the other target would have no effect at all.
     monkeypatch.setattr("jarvis.content.investigator.prepare_for",
@@ -253,7 +254,7 @@ def test_examining_an_office_document_reads_its_real_content(monkeypatch, tmp_pa
         seen["prompt"] = prompt
         return _answer("The third.")
 
-    monkeypatch.setattr("jarvis.gateway.client.ask", fake_ask)
+    monkeypatch.setattr("jarvis.model_system.compat.ask", fake_ask)
     shared = share(source={"kind": "file", "filePath": str(path)}, session_id="s1")
     join_all()
     examine(shared["record"]["id"], "when is the deposit due?", session_id="s1")
@@ -285,7 +286,7 @@ def test_a_claim_is_always_researched_before_it_is_judged(monkeypatch):
         return Research(ok=True, answer="Most people make nothing.", query="x")
 
     monkeypatch.setattr("jarvis.content.investigator.research", fake_research)
-    monkeypatch.setattr("jarvis.gateway.client.ask",
+    monkeypatch.setattr("jarvis.model_system.compat.ask",
                         lambda *a, **k: _answer(data={"verdict": "misleading",
                                                       "confidence": "high",
                                                       "reasoning": "It is not typical."}))
@@ -300,7 +301,7 @@ def test_an_unrecognised_verdict_becomes_cannot_tell_rather_than_being_passed_th
 
     monkeypatch.setattr("jarvis.content.investigator.research",
                         lambda *a, **k: Research(ok=True, answer="something"))
-    monkeypatch.setattr("jarvis.gateway.client.ask",
+    monkeypatch.setattr("jarvis.model_system.compat.ask",
                         lambda *a, **k: _answer(data={"verdict": "definitely yes!!"}))
     assert judge_claim("something")["verdict"] == "can't tell"
 
@@ -310,7 +311,7 @@ def test_a_claim_that_could_not_be_researched_says_so_in_the_verdict(monkeypatch
 
     monkeypatch.setattr("jarvis.content.investigator.research",
                         lambda *a, **k: Research(ok=False, error="no search available"))
-    monkeypatch.setattr("jarvis.gateway.client.ask",
+    monkeypatch.setattr("jarvis.model_system.compat.ask",
                         lambda *a, **k: _answer(data={"verdict": "can't tell",
                                                       "reasoning": "nothing to go on"}))
     judged = judge_claim("something")
@@ -327,7 +328,7 @@ def test_an_empty_claim_is_refused():
 def test_share_content_asks_what_is_wanted_when_they_did_not_say(monkeypatch, no_network):
     from jarvis.tools.content_tools import SPECS
 
-    monkeypatch.setattr("jarvis.gateway.client.ask",
+    monkeypatch.setattr("jarvis.model_system.compat.ask",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("no model call")))
     share_tool = next(s for s in SPECS if s.name == "share_content")
     answer = share_tool.handler(source="https://example.com/article")
@@ -340,7 +341,7 @@ def test_share_content_asks_what_is_wanted_when_they_did_not_say(monkeypatch, no
 def test_share_content_with_an_instruction_looks_into_it_straight_away(monkeypatch, no_network):
     from jarvis.tools.content_tools import SPECS
 
-    monkeypatch.setattr("jarvis.gateway.client.ask", lambda *a, **k: _answer("Water."))
+    monkeypatch.setattr("jarvis.model_system.compat.ask", lambda *a, **k: _answer("Water."))
     share_tool = next(s for s in SPECS if s.name == "share_content")
     answer = share_tool.handler(source="https://example.com/article",
                                 instruction="what is it about?")

@@ -61,7 +61,7 @@ def test_no_tool_imports_the_loader_or_the_things_built_on_it():
     error at all."""
     assert offending(files_under("tools"), (
         "jarvis.tools.__init__", "jarvis.capabilities.execute",
-        "jarvis.orchestrator", "jarvis.gateway",
+        "jarvis.orchestrator", "jarvis.model_system",
         # The composition root imports the loader, so reaching it from a tool is
         # the same edge one hop further out — and it looks perfectly innocent.
         "jarvis.assembly",
@@ -129,7 +129,7 @@ def test_the_policy_layer_stays_pure():
     policy module that can reach the executor, the gateway or a tool is a policy
     module that can be argued with."""
     assert offending([p for p in files_under("policy") if p.name != "approvals.py"], (
-        "jarvis.capabilities.execute", "jarvis.orchestrator", "jarvis.gateway", "jarvis.tools",
+        "jarvis.capabilities.execute", "jarvis.orchestrator", "jarvis.model_system", "jarvis.tools",
     )) == []
 
 
@@ -172,25 +172,29 @@ def test_nothing_in_the_orchestrator_calls_a_recorder():
 def test_the_orchestrator_does_not_import_a_provider_sdk_or_an_adapter():
     """It talks to the model port. A turn loop that knows a wire format is a
     turn loop a second one has to be written to avoid."""
-    assert offending(files_under("orchestrator"), ("jarvis.adapters",)) == []
+    assert offending(files_under("orchestrator"), ("jarvis.model_system.adapters",)) == []
     for path in files_under("orchestrator"):
         source = path.read_text()
         for sdk in ("import openai", "import anthropic", "from google import genai"):
             assert sdk not in source, f"{path.name} reaches for a provider SDK"
 
 
-def test_the_catalog_knows_nothing_about_calling_a_model():
-    """`jarvis/catalog/` answers what a model IS. It owns nothing and calls nothing.
+def test_the_vocabulary_layer_knows_nothing_about_calling_a_model():
+    """`capabilities.py`/`reasoning.py`/`parameters.py`/`request.py` answer what
+    a model IS and what a request/response LOOKS LIKE. They own nothing and
+    call nothing.
 
-    Asserted rather than trusted because the pull the other way is constant: the
-    obvious place to put "and here is how to reach it" is beside "and here is
-    what it can do". An edge from here to the gateway is also a real cycle — the
-    gateway imports the catalog, and so do the adapters, which is why the
-    catalog was moved out of `gateway/` in the first place.
+    Asserted rather than trusted because the pull the other way is constant:
+    the obvious place to put "and here is how to reach it" is beside "and here
+    is what it can do". An edge from here to the gateway is also a real cycle —
+    the gateway imports these, and so do the adapters.
     """
-    assert offending(files_under("catalog"), (
-        "jarvis.gateway", "jarvis.adapters", "jarvis.orchestrator",
-        "jarvis.capabilities", "jarvis.assembly", "jarvis.store", "jarvis.db",
+    vocabulary = [PACKAGE / "model_system" / name for name in
+                 ("capabilities.py", "reasoning.py", "parameters.py", "request.py")]
+    assert offending(vocabulary, (
+        "jarvis.model_system.gateway", "jarvis.model_system.fallback",
+        "jarvis.model_system.router", "jarvis.model_system.adapters",
+        "jarvis.orchestrator", "jarvis.assembly",
     )) == []
 
 
@@ -204,7 +208,9 @@ def test_an_adapter_does_not_import_the_gateway():
     cycle takes here. Retry policy, clamping and the learned-refusal record all
     live on the gateway side for this reason.
     """
-    assert offending(files_under("adapters"), ("jarvis.gateway",)) == []
+    assert offending(files_under("model_system", "adapters"), (
+        "jarvis.model_system.gateway", "jarvis.model_system.fallback", "jarvis.model_system.router",
+    )) == []
 
 
 def test_only_adapters_import_provider_sdks():

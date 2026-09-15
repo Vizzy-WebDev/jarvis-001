@@ -15,8 +15,9 @@ from jarvis import conversation
 from jarvis.capabilities import CapabilityRegistry, CapabilitySpec, Risk
 from jarvis.db import reset_for_tests as reset_db
 from jarvis.events.bus import EventBus
-from jarvis.gateway import availability, connections, deployments
-from jarvis.gateway.client import Gateway
+from jarvis.model_system.gateway import Gateway
+from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
+from jarvis.model_system.registry import add_model
 from jarvis.orchestrator import Chunk, Done, Orchestrator, ToolRan, TurnRequest
 
 from stub_openai_server import StubModelServer
@@ -26,9 +27,7 @@ from stub_openai_server import StubModelServer
 def _isolate(scratch):
     reset_db()
     conversation.reset_for_tests()
-    availability.reset_for_tests()
     yield
-    availability.reset_for_tests()
     conversation.reset_for_tests()
     reset_db()
 
@@ -37,10 +36,10 @@ def _isolate(scratch):
 def stub():
     server = StubModelServer()
     server.base_url = server.start()
-    conn = connections.add_connection(adapter="openai-compatible", base_url=server.base_url,
-                                      label="stub", provider="custom", kind="local",
-                                      key_required=False)
-    deployments.add_deployment(connection_id=conn["id"], model="stub-model")
+    provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
+                            base_url=server.base_url, auth_method=AuthMethod.NONE,
+                            key_required=False)
+    add_model(provider_id=provider.id, native_model_id="stub-model")
     yield server
     server.stop()
 

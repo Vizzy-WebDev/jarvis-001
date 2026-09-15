@@ -302,21 +302,26 @@ class CannotPrepare(RuntimeError):
     """This model cannot take this source. The message is for the user."""
 
 
-def prepare_for(entry: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
+def prepare_for(model: Any, source: dict[str, Any]) -> dict[str, Any]:
     """Media for a model that can genuinely watch or see this, plus a cleanup.
+
+    `model` is a `model_system.registry.ResolvedModel` — capability support
+    is read from what THIS model actually declares, tri-state, and only a
+    confirmed `NO` refuses; a model nobody has asked about is tried anyway.
 
     Two routes, cheapest first: INLINE base64 (no upload, works on every
     adapter) for small images and PDFs, and UPLOADED for video, audio, and
     anything over the inline cap. The uploaded route pins the file to ONE
     model's API key, which is why its caller must disable fallback.
     """
-    from ..adapters import get_adapter, get_capabilities
+    from ..model_system.adapters import get_adapter
+    from ..model_system.capabilities import Support
 
-    caps = get_capabilities(entry.get("adapter"))
-    adapter = get_adapter(entry.get("adapter"))
+    caps = model.capabilities
+    adapter = get_adapter(model.provider.adapter)
 
     if source.get("kind") == "youtube":
-        if not caps.get("video"):
+        if caps.video_input is Support.NO:
             raise CannotPrepare("That model cannot watch video.")
         return {"media": [{"kind": "video", "mimeType": "video/*", "uri": source["url"]}],
                 "cleanup": None}
@@ -329,13 +334,13 @@ def prepare_for(entry: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]
     mime_type = mime_type_for(path)
     is_pdf = mime_type == "application/pdf"
 
-    if kind == "video" and not caps.get("video"):
+    if kind == "video" and caps.video_input is Support.NO:
         raise CannotPrepare("That model cannot watch video.")
-    if kind == "audio" and not caps.get("audio"):
+    if kind == "audio" and caps.audio_input is Support.NO:
         raise CannotPrepare("That model cannot listen to audio.")
-    if kind == "image" and not caps.get("vision"):
+    if kind == "image" and caps.vision is Support.NO:
         raise CannotPrepare("That model cannot see images.")
-    if is_pdf and not caps.get("video"):
+    if is_pdf and caps.video_input is Support.NO:
         raise CannotPrepare("That model cannot read a PDF directly.")
     if not path.exists():
         raise CannotPrepare("I can't find that file — check the path is right.")
@@ -357,7 +362,7 @@ def prepare_for(entry: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]
             f"Taking in {'audio' if kind == 'audio' else 'video'} needs a model that can "
             "accept file uploads — Gemini can.")
 
-    uploaded = upload(entry, str(path), mime_type)
+    uploaded = upload(model.provider, str(path), mime_type)
     return {"media": [{"kind": "image" if kind == "image" else "video",
                        "mimeType": uploaded.get("mimeType", mime_type),
                        "uri": uploaded["uri"]}],

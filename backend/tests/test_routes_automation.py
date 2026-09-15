@@ -12,7 +12,8 @@ import pytest
 from starlette.testclient import TestClient
 
 from jarvis.events import EventType, bus
-from jarvis.gateway import connections, deployments
+from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
+from jarvis.model_system.registry import add_model
 from jarvis.monitor import store as monitor_store
 from jarvis.scheduler import briefing, briefing_config
 
@@ -30,10 +31,10 @@ def client(scratch):
 def stub(scratch):
     server = StubModelServer()
     server.base_url = server.start()
-    conn = connections.add_connection(adapter="openai-compatible", base_url=server.base_url,
-                                      label="stub", provider="custom", kind="local",
-                                      key_required=False)
-    deployments.add_deployment(connection_id=conn["id"], model="stub-model")
+    provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
+                            base_url=server.base_url, auth_method=AuthMethod.NONE,
+                            key_required=False)
+    add_model(provider_id=provider.id, native_model_id="stub-model")
     yield server
     server.stop()
 

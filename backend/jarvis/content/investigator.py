@@ -181,9 +181,9 @@ def _context_line(record: dict[str, Any]) -> str:
 def _examine_media(record: dict[str, Any], request: str) -> dict[str, Any]:
     """Really watch, see or listen — walking the candidates, because preparation
     can fail for the top-ranked model specifically while the next is fine."""
-    from ..gateway.client import ask
-    from ..gateway.routing import Task, build_candidates
-    from ..gateway.routing import Role
+    from ..model_system.compat import Task, ask
+    from ..model_system.request import Preferences, Requirements, Role
+    from ..model_system.router import rank
 
     source = record["source"]
     if source.get("kind") == "youtube":
@@ -195,7 +195,7 @@ def _examine_media(record: dict[str, Any], request: str) -> dict[str, Any]:
                 else {"audio": True} if kind == "audio" else {"vision": True})
 
     task = Task(text=request, needs_tools=False, role=Role.UTILITY, need=need)
-    candidates = build_candidates(task)
+    candidates = rank(Requirements(capabilities=need), Preferences(role=Role.UTILITY))
     if not candidates:
         return {"ok": False,
                 "error": "None of your models can take that kind of file right now."}
@@ -214,7 +214,7 @@ def _examine_media(record: dict[str, Any], request: str) -> dict[str, Any]:
         try:
             answer = ask(f"{_context_line(record)}\n\nQuestion: \"{request}\"",
                          system=MEDIA_SYSTEM, want_json=True, task=task,
-                         media=prepared["media"], model_id=entry["id"],
+                         media=prepared["media"], model_id=entry.id,
                          # The media is pinned to THIS model's key; falling back
                          # would hand the next provider a URI it cannot read.
                          only=True)
@@ -245,9 +245,8 @@ def _youtube_fallback(record: dict[str, Any], request: str,
                       last_error: str | None) -> dict[str, Any]:
     """Nothing could watch it. Read what is publishable instead, and be explicit
     about which of the two actually happened."""
-    from ..gateway.client import ask
-    from ..gateway.routing import Task
-    from ..gateway.routing import Role
+    from ..model_system.compat import Task, ask
+    from ..model_system.request import Role
 
     fallback = fetch_youtube_text(record["source"]["url"])
     if not fallback.get("ok"):
@@ -285,9 +284,8 @@ def _youtube_fallback(record: dict[str, Any], request: str,
 
 
 def _run_examine(record: dict[str, Any], request: str) -> dict[str, Any]:
-    from ..gateway.client import ask
-    from ..gateway.routing import Task
-    from ..gateway.routing import Role
+    from ..model_system.compat import Task, ask
+    from ..model_system.request import Role
 
     if _is_text_shaped(record["source"]):
         text = _text_for(record)
@@ -422,9 +420,8 @@ def judge_claim(claim: str, *, context: str | None = None,
                 realism: bool = False) -> dict[str, Any]:
     """Research first, then judge. The research call is unconditional, at the
     top, with no path around it — that is the entire point of this function."""
-    from ..gateway.client import ask
-    from ..gateway.routing import Task
-    from ..gateway.routing import Role
+    from ..model_system.compat import Task, ask
+    from ..model_system.request import Role
 
     question = (claim or "").strip()
     if not question:

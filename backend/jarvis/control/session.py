@@ -733,7 +733,7 @@ def start(goal: str, plan: str = "", *, client: Any = None, event_bus: Any = Non
         _active = session
 
     if client is None:
-        from ..gateway.client import Gateway
+        from ..model_system.gateway import Gateway
 
         client = Gateway()
 

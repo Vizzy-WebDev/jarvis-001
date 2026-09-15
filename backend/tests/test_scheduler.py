@@ -272,7 +272,9 @@ def test_a_scheduled_task_may_do_ordinary_work_but_never_a_high_risk_action(scra
     """
     from jarvis import assembly, conversation
     from jarvis.capabilities import CapabilitySpec
-    from jarvis.gateway import availability, connections, deployments as model_registry
+    from jarvis.gateway import availability
+    from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
+    from jarvis.model_system.registry import add_model
 
     from stub_openai_server import StubModelServer
 
@@ -282,10 +284,9 @@ def test_a_scheduled_task_may_do_ordinary_work_but_never_a_high_risk_action(scra
     stub = StubModelServer()
     base = stub.start()
     try:
-        conn = connections.add_connection(adapter="openai-compatible", base_url=base,
-                                          label="stub", provider="custom", kind="local",
-                                          key_required=False)
-        model_registry.add_deployment(connection_id=conn["id"], model="stub-model")
+        provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
+                                base_url=base, auth_method=AuthMethod.NONE, key_required=False)
+        add_model(provider_id=provider.id, native_model_id="stub-model")
 
         did = {"medium": 0, "high": 0}
         caps = assembly.get_registry()
@@ -431,7 +432,9 @@ def test_a_task_with_no_pin_asks_for_no_particular_model(monkeypatch):
 
 def test_a_completed_task_run_lands_a_real_outcome_row(scratch):
     from jarvis import assembly, conversation
-    from jarvis.gateway import availability, connections, deployments as model_registry
+    from jarvis.gateway import availability
+    from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
+    from jarvis.model_system.registry import add_model
     from jarvis.improvement import store as improvement_store
 
     from stub_openai_server import StubModelServer
@@ -442,10 +445,9 @@ def test_a_completed_task_run_lands_a_real_outcome_row(scratch):
     stub = StubModelServer()
     base = stub.start()
     try:
-        conn = connections.add_connection(adapter="openai-compatible", base_url=base,
-                                          label="stub", provider="custom", kind="local",
-                                          key_required=False)
-        model_registry.add_deployment(connection_id=conn["id"], model="stub-model")
+        provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
+                                base_url=base, auth_method=AuthMethod.NONE, key_required=False)
+        add_model(provider_id=provider.id, native_model_id="stub-model")
         stub.says("All tidied up.")
 
         task = task_store.create_task(

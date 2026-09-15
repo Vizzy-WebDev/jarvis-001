@@ -19,7 +19,9 @@ from jarvis import chat_store, conversation
 from jarvis.db import reset_for_tests as reset_db
 from jarvis.events import EventType
 from jarvis.events.bus import EventBus
-from jarvis.gateway import availability, connections, deployments
+from jarvis.gateway import availability
+from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
+from jarvis.model_system.registry import add_model
 from jarvis.memory import review, store
 from jarvis.memory.policy import AUTO_APPROVE, REQUIRE_APPROVAL, THRESHOLDS, decide
 
@@ -154,10 +156,10 @@ def test_an_unreviewed_draft_dies_with_its_conversation_but_a_memory_does_not():
 def stub():
     server = StubModelServer()
     server.base_url = server.start()
-    conn = connections.add_connection(adapter="openai-compatible", base_url=server.base_url,
-                                      label="stub", provider="custom", kind="local",
-                                      key_required=False)
-    deployments.add_deployment(connection_id=conn["id"], model="stub-model")
+    provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
+                            base_url=server.base_url, auth_method=AuthMethod.NONE,
+                            key_required=False)
+    add_model(provider_id=provider.id, native_model_id="stub-model")
     yield server
     server.stop()
 

@@ -17,7 +17,7 @@ import threading
 from .capabilities import CapabilityRegistry
 from .events import bus
 from .observers import start_observers
-from .gateway.client import Gateway
+from .model_system.gateway import Gateway
 from .orchestrator import Orchestrator
 from .tools import load_tools
 from .voice import ConversationMode, WakeDetector

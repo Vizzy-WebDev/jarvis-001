@@ -12,7 +12,8 @@ import pytest
 from starlette.testclient import TestClient
 
 from jarvis import external_services
-from jarvis.gateway import connections, deployments
+from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
+from jarvis.model_system.registry import add_model
 
 
 @pytest.fixture
@@ -39,10 +40,9 @@ def test_with_no_realtime_model_the_session_says_so_and_closes(client):
 def test_a_realtime_capable_model_with_no_key_still_does_not_open(client):
     """Declaring the capability is not enough — the connection has to actually
     hold a credential, or there is nothing to connect with."""
-    conn = connections.add_connection(adapter="gemini", base_url=None, label="g",
-                                      provider="gemini", kind="first-party",
-                                      key_required=True)
-    deployments.add_deployment(connection_id=conn["id"], model="live-model")
+    provider = add_provider(label="g", kind=ProviderKind.NATIVE, adapter="gemini",
+                            auth_method=AuthMethod.API_KEY, key_required=True)
+    add_model(provider_id=provider.id, native_model_id="live-model")
 
     with client.websocket_connect("/api/live") as socket:
         assert socket.receive_json()["code"] == "NO_API_KEY"
@@ -107,12 +107,12 @@ def test_a_realtime_session_is_opened_BY_THE_ADAPTER_not_the_route():
     """The architecture rule this port exists to keep: one place per wire
     format. The Node app had two callers construct a provider SDK directly, and
     that is how the voice path ended up with none of the gateway's protections.
-    An adapter that declares `realtime` is promising this function exists — the
-    route asks for a session and never learns whose it is."""
-    from jarvis import adapters
+    An adapter that declares `SUPPORTS_REALTIME` is promising this function
+    exists — the route asks for a session and never learns whose it is."""
+    from jarvis.model_system.adapters import _REGISTRY
 
-    for name, module in adapters.ADAPTERS.items():
-        declares = bool(adapters.get_capabilities(name).get("realtime"))
+    for name, module in _REGISTRY.items():
+        declares = bool(getattr(module, "SUPPORTS_REALTIME", False))
         provides = hasattr(module, "open_realtime_session")
         assert declares == provides, (
             f"{name} declares realtime={declares} but provides={provides} — a capability "

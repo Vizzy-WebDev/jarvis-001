@@ -12,7 +12,8 @@ from typing import Any
 
 from fastapi import APIRouter, Body
 
-from ..gateway.deployments import is_ready, list_deployments
+from ..model_system.credentials import CredentialStatus
+from ..model_system.registry import list_models
 from ..prefs import get_prefs, set_prefs
 
 router = APIRouter(prefix="/api")
@@ -28,7 +29,8 @@ def status() -> dict[str, Any]:
     and reporting it as configured sends the user to a chat box that cannot
     answer.
     """
-    usable = any(d.get("enabled", True) and is_ready(d) for d in list_deployments())
+    usable = any(m.enabled and m.provider.credential_status is CredentialStatus.CONFIGURED
+                for m in list_models())
     # Exactly the recorded shape, deliberately: the contract harness only catches
     # unintended divergence if the intended response stays byte-identical too.
     # Counts belong here when a screen actually needs them, not before.

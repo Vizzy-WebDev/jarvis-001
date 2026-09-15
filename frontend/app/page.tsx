@@ -67,6 +67,9 @@ export default function Home() {
   const [listening, setListening] = useState(false);
   const [engineId, setEngineId] = useState('pipeline');
   const [voiceId, setVoiceId] = useState('browser');
+  /** Text handed to the composer from elsewhere (e.g. "Create with Jarvis" on
+   *  the Skills screen), landing unsent for the person to edit or send. */
+  const [composerDraft, setComposerDraft] = useState<string | null>(null);
   const running = useRef<RunningTurn | null>(null);
   const engine = useRef<VoiceEngine | null>(null);
   /**
@@ -332,6 +335,13 @@ export default function Home() {
     }
   }
 
+  // A screen elsewhere handing a message to the assistant: land it in the
+  // composer, unsent, and switch to the conversation.
+  function startChatWith(draft: string) {
+    setComposerDraft(draft);
+    go('home');
+  }
+
   // --- a section that is not the assistant ------------------------------------
 
   if (section.id !== 'home') {
@@ -339,7 +349,7 @@ export default function Home() {
       <main className="h-screen">
         <Drawer open={drawerOpen} current={section} onClose={() => setDrawerOpen(false)} onNavigate={go} />
         <GenericScreen section={section} onMenu={() => setDrawerOpen(true)}>
-          {screenFor(section.id, go) ?? <NotPortedYet section={section} />}
+          {screenFor(section.id, go, startChatWith) ?? <NotPortedYet section={section} />}
         </GenericScreen>
       </main>
     );
@@ -454,6 +464,8 @@ export default function Home() {
             onSend={send}
             onNewChat={newChat}
             onDecide={decide}
+            draftText={composerDraft}
+            onDraftConsumed={() => setComposerDraft(null)}
             // Only one recognition session runs reliably at a time, so the
             // voice engine stands down when the composer's own mic starts.
             onDictationStart={() => {
@@ -513,7 +525,7 @@ function clearReply(turns: Turn[]): Turn[] {
 
 /** The screen for a section, or nothing if it is still being ported. One place
  *  rather than a branch inside the render, so adding a screen is one line. */
-function screenFor(id: string, go: (id: string) => void): React.ReactNode {
+function screenFor(id: string, go: (id: string) => void, startChatWith: (draft: string) => void): React.ReactNode {
   if (id === 'notifications') return <NotificationsScreen onNavigate={go} />;
   if (id === 'models') return <ModelsScreen />;
   if (id === 'tasks') return <TasksScreen onNavigate={go} />;
@@ -522,7 +534,7 @@ function screenFor(id: string, go: (id: string) => void): React.ReactNode {
   if (id === 'improvement') return <ImprovementScreen />;
   if (id === 'jobs') return <JobsScreen />;
   if (id === 'briefing') return <BriefingScreen onNavigate={go} />;
-  if (id === 'skills') return <SkillsScreen />;
+  if (id === 'skills') return <SkillsScreen onCreateWithJarvis={startChatWith} />;
   if (id === 'chat-history') return <ChatHistoryScreen onNavigate={go} />;
   if (id === 'app-control') return <AppControlScreen />;
   return null;

@@ -1180,6 +1180,7 @@ def test_a_watch_shows_in_the_shell_and_stopping_it_reaches_every_tab(page):
 def test_a_skill_is_written_here_and_really_lands_on_disk(page):
     go_to(page, "skills")
     page.click("[data-testid=add-skill]")
+    page.click("[data-testid=add-way-write]")
     page.fill("[data-testid=skill-name]", "weekly-report")
     page.fill("[data-testid=skill-description]", "How to write the Friday report")
     page.fill("[data-testid=skill-instructions]", "Open with the headline number.")
@@ -1240,6 +1241,60 @@ def test_a_skill_is_deleted_from_its_own_detail(page):
     page.click("[data-testid=delete-skill]")
     page.wait_for_selector("[data-testid=skill-row]", state="detached")
     assert files.list_user_skills() == []
+
+
+def test_the_add_button_opens_a_menu_before_the_create_widget(page):
+    """Clicking Add shows a choice of ways in first; the create/install widget
+    itself only appears after one is picked."""
+    go_to(page, "skills")
+    page.click("[data-testid=add-skill]")
+    page.wait_for_selector("[data-testid=add-way-write]")
+    assert page.locator("[data-testid=add-way-write]").inner_text() == "Write skill instructions"
+    assert page.locator("[data-testid=skill-name]").count() == 0  # not yet — menu first
+
+    page.click("[data-testid=add-way-write]")
+    page.wait_for_selector("[data-testid=skill-name]")
+    assert page.locator("[data-testid=way-write][aria-pressed=true]").count() == 1
+
+
+def test_create_with_jarvis_hands_the_composer_a_real_draft(page):
+    """Picking it never opens the write/install widget — it drops a real,
+    editable draft in the ordinary chat composer instead, per the historical
+    'Create with Claude' behaviour this mirrors."""
+    go_to(page, "skills")
+    page.click("[data-testid=add-skill]")
+    page.click("[data-testid=add-way-jarvis]")
+    page.wait_for_url("**#/")
+    page.wait_for_selector("[data-testid=composer-input]")
+    typed = page.locator("[data-testid=composer-input]").input_value()
+    assert "skill" in typed.lower() and len(typed) > 0
+    assert page.locator("[data-testid=skill-name]").count() == 0  # no widget was opened
+
+
+def test_the_skill_list_is_filtered_and_sorted_for_real(page):
+    from jarvis.skills import files
+
+    files.create_skill(name="zzz-last", description="z", instructions="z", reserved=set())
+    files.create_skill(name="aaa-first", description="a", instructions="a", reserved=set())
+    files.update_skill_state("aaa-first", {"enabled": False})
+
+    go_to(page, "skills")
+    page.wait_for_selector("[data-testid=skill-row]")
+
+    page.click("[data-testid=skill-filter-off]")
+    rows = page.locator("[data-testid=skill-row]")
+    assert rows.count() == 1
+    assert "aaa-first" in rows.inner_text()
+
+    page.click("[data-testid=skill-filter-on]")
+    rows = page.locator("[data-testid=skill-row]")
+    assert rows.count() == 1
+    assert "zzz-last" in rows.inner_text()
+
+    page.click("[data-testid=skill-filter-all]")
+    page.click("[data-testid=skill-sort-name]")
+    names = page.locator("[data-testid=skill-row]").all_inner_texts()
+    assert names[0].startswith("aaa-first")
 
 
 def test_chat_history_searches_what_was_SAID_not_the_titles(page, stub):

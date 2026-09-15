@@ -28,6 +28,8 @@ export function ConversationPanel({
   onDecide,
   onDictationStart,
   isSpeaking,
+  draftText,
+  onDraftConsumed,
 }: {
   turns: Turn[];
   notConfigured: boolean;
@@ -38,6 +40,9 @@ export function ConversationPanel({
   /** Passed straight through to the composer's dictation — see there. */
   onDictationStart?: () => void;
   isSpeaking?: () => boolean;
+  /** Passed straight through to the composer — see there. */
+  draftText?: string | null;
+  onDraftConsumed?: () => void;
 }) {
   return (
     <div
@@ -70,6 +75,8 @@ export function ConversationPanel({
         onSend={onSend}
         onDictationStart={onDictationStart}
         isSpeaking={isSpeaking}
+        draftText={draftText}
+        onDraftConsumed={onDraftConsumed}
       />
     </div>
   );

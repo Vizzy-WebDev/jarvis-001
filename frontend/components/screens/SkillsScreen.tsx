@@ -1,12 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Field, inputClass } from '@/components/ui/Field';
 import { Modal } from '@/components/ui/Modal';
+import { Popover } from '@/components/ui/Popover';
 import { Toggle } from '@/components/ui/Toggle';
 import { api, ApiRequestError } from '@/lib/api';
 import type { Skill, SkillDetail } from '@/lib/api-types';
@@ -33,10 +34,15 @@ const SOURCE_LABEL: Record<string, string> = {
   github: 'From a repository',
 };
 
-export function SkillsScreen() {
+export function SkillsScreen({ onCreateWithJarvis }: { onCreateWithJarvis?: (draft: string) => void }) {
   const [skills, setSkills] = useState<Skill[] | null>(null);
   const [openName, setOpenName] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [addWay, setAddWay] = useState<Way>('write');
+  const [addOpen, setAddOpen] = useState(false);
+  const addAnchor = useRef<HTMLSpanElement>(null);
+  const [filter, setFilter] = useState<'all' | 'on' | 'off'>('all');
+  const [sort, setSort] = useState<'name' | 'updated'>('name');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -63,12 +69,63 @@ export function SkillsScreen() {
     }
   }
 
+  function openAdd(way: Way) {
+    setAddOpen(false);
+    setAddWay(way);
+    setAdding(true);
+  }
+
+  const visibleSkills = useMemo(() => {
+    const filtered = (skills ?? []).filter((skill) => (
+      filter === 'all' ? true : filter === 'on' ? skill.enabled : !skill.enabled
+    ));
+    return [...filtered].sort((a, b) => (
+      sort === 'name'
+        ? a.name.localeCompare(b.name)
+        : (b.updatedAt ?? b.installedAt ?? '').localeCompare(a.updatedAt ?? a.installedAt ?? '')
+    ));
+  }, [skills, filter, sort]);
+
   return (
     <>
       <div className="mb-4 flex items-center gap-2">
-        <Button tone="primary" data-testid="add-skill" onClick={() => setAdding(true)}>
-          Add a skill
-        </Button>
+        <span ref={addAnchor} className="inline-block">
+          <Button tone="primary" data-testid="add-skill" onClick={() => setAddOpen((was) => !was)}>
+            Add a skill
+          </Button>
+        </span>
+        <Popover open={addOpen} anchorRef={addAnchor} onClose={() => setAddOpen(false)} width={220}>
+          <div className="py-1">
+            <button type="button" data-testid="add-way-write"
+                    className="block w-full rounded px-3 py-2 text-left text-[13px] text-ink hover:bg-white/[0.06]"
+                    onClick={() => openAdd('write')}>
+              Write skill instructions
+            </button>
+            <button type="button" data-testid="add-way-file"
+                    className="block w-full rounded px-3 py-2 text-left text-[13px] text-ink hover:bg-white/[0.06]"
+                    onClick={() => openAdd('file')}>
+              Upload a skill
+            </button>
+            <button type="button" data-testid="add-way-repo"
+                    className="block w-full rounded px-3 py-2 text-left text-[13px] text-ink hover:bg-white/[0.06]"
+                    onClick={() => openAdd('repo')}>
+              From a repository
+            </button>
+            {onCreateWithJarvis && (
+              <button type="button" data-testid="add-way-jarvis"
+                      className="block w-full rounded px-3 py-2 text-left text-[13px] text-ink hover:bg-white/[0.06]"
+                      onClick={() => {
+                        setAddOpen(false);
+                        onCreateWithJarvis(
+                          "I'd like to create a new skill. Can you ask me what it should do, " +
+                          'then write the instructions for me?',
+                        );
+                      }}>
+                Create with Jarvis
+              </button>
+            )}
+          </div>
+        </Popover>
       </div>
 
       {error && <p className="mb-4 text-[13px] text-state-danger">{error}</p>}
@@ -77,42 +134,88 @@ export function SkillsScreen() {
         <EmptyState
           title="No skills yet"
           body="A skill is something Jarvis does not already know — how you like a report written, the steps of a process you repeat. Write one here, or install one from a repository."
-          action={<Button tone="primary" onClick={() => setAdding(true)}>Add a skill</Button>}
+          action={<Button tone="primary" onClick={() => openAdd('write')}>Add a skill</Button>}
         />
       ) : (
-        <div className="space-y-2" data-testid="skill-list">
-          {skills.map((skill) => (
-            <Card key={skill.name} interactive data-testid="skill-row"
-                  className="flex items-center gap-4">
-              <button
-                type="button"
-                data-testid="skill-open"
-                onClick={() => setOpenName(skill.name)}
-                className="min-w-0 flex-1 text-left focus-visible:outline-none"
-              >
-                <p className={`truncate text-[14px] ${skill.enabled ? 'text-ink' : 'text-ink-faint'}`}>
-                  {skill.name}
-                </p>
-                <p className="mt-0.5 truncate text-[12px] text-ink-faint">
-                  {skill.description || 'No description'}
-                  {' · '}
-                  {SOURCE_LABEL[skill.source?.type ?? 'user'] ?? skill.source?.type}
-                  {!skill.enabled && ' · off'}
-                </p>
-              </button>
-              <Toggle
-                label={`${skill.enabled ? 'Turn off' : 'Turn on'} ${skill.name}`}
-                data-testid="skill-toggle"
-                checked={skill.enabled}
-                onChange={(next) => void setEnabled(skill, next)}
-              />
-            </Card>
-          ))}
-        </div>
+        <>
+          <div className="mb-3 flex flex-wrap items-center gap-3">
+            <div className="inline-flex rounded-pill border border-surface-border p-0.5">
+              {([['all', 'All'], ['on', 'On'], ['off', 'Off']] as [typeof filter, string][]).map(
+                ([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    data-testid={`skill-filter-${id}`}
+                    aria-pressed={filter === id}
+                    onClick={() => setFilter(id)}
+                    className={[
+                      'rounded-pill px-3 py-1 text-[12px] transition duration-150 ease-out',
+                      filter === id ? 'bg-accent/15 text-accent' : 'text-ink-muted hover:text-ink',
+                    ].join(' ')}
+                  >
+                    {label}
+                  </button>
+                ),
+              )}
+            </div>
+            <div className="inline-flex rounded-pill border border-surface-border p-0.5">
+              {([['name', 'Name A-Z'], ['updated', 'Last update']] as [typeof sort, string][]).map(
+                ([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    data-testid={`skill-sort-${id}`}
+                    aria-pressed={sort === id}
+                    onClick={() => setSort(id)}
+                    className={[
+                      'rounded-pill px-3 py-1 text-[12px] transition duration-150 ease-out',
+                      sort === id ? 'bg-accent/15 text-accent' : 'text-ink-muted hover:text-ink',
+                    ].join(' ')}
+                  >
+                    {label}
+                  </button>
+                ),
+              )}
+            </div>
+          </div>
+          <div className="space-y-2" data-testid="skill-list">
+            {visibleSkills.length === 0 && (
+              <p className="text-[13px] text-ink-faint">No skills match this filter.</p>
+            )}
+            {visibleSkills.map((skill) => (
+              <Card key={skill.name} interactive data-testid="skill-row"
+                    className="flex items-center gap-4">
+                <button
+                  type="button"
+                  data-testid="skill-open"
+                  onClick={() => setOpenName(skill.name)}
+                  className="min-w-0 flex-1 text-left focus-visible:outline-none"
+                >
+                  <p className={`truncate text-[14px] ${skill.enabled ? 'text-ink' : 'text-ink-faint'}`}>
+                    {skill.name}
+                  </p>
+                  <p className="mt-0.5 truncate text-[12px] text-ink-faint">
+                    {skill.description || 'No description'}
+                    {' · '}
+                    {SOURCE_LABEL[skill.source?.type ?? 'user'] ?? skill.source?.type}
+                    {!skill.enabled && ' · off'}
+                  </p>
+                </button>
+                <Toggle
+                  label={`${skill.enabled ? 'Turn off' : 'Turn on'} ${skill.name}`}
+                  data-testid="skill-toggle"
+                  checked={skill.enabled}
+                  onChange={(next) => void setEnabled(skill, next)}
+                />
+              </Card>
+            ))}
+          </div>
+        </>
       )}
 
       {adding && (
         <AddSkill
+          initialWay={addWay}
           onClose={() => setAdding(false)}
           onAdded={async () => {
             setAdding(false);
@@ -137,8 +240,12 @@ export function SkillsScreen() {
 
 type Way = 'write' | 'repo' | 'file';
 
-function AddSkill({ onClose, onAdded }: { onClose: () => void; onAdded: () => Promise<void> }) {
-  const [way, setWay] = useState<Way>('write');
+function AddSkill({ initialWay, onClose, onAdded }: {
+  initialWay?: Way;
+  onClose: () => void;
+  onAdded: () => Promise<void>;
+}) {
+  const [way, setWay] = useState<Way>(initialWay ?? 'write');
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [instructions, setInstructions] = useState('');
@@ -184,7 +291,7 @@ function AddSkill({ onClose, onAdded }: { onClose: () => void; onAdded: () => Pr
       }
     >
       <div className="mb-3 inline-flex rounded-pill border border-surface-border p-0.5">
-        {([['write', 'Write one'], ['repo', 'From a repository'], ['file', 'Paste a file']] as
+        {([['write', 'Write skill instructions'], ['repo', 'From a repository'], ['file', 'Paste a file']] as
           [Way, string][]).map(([id, label]) => (
           <button
             key={id}

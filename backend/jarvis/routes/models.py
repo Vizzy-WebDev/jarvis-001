@@ -100,6 +100,24 @@ _PROVIDER_TILES: tuple[dict[str, Any], ...] = (
 )
 
 
+def _version_of(model: Any) -> dict[str, Any]:
+    """What the catalog says a model IS, in the frontend's own `ModelVersion`
+    shape (`frontend/lib/api-types.ts`) — pre-dating this rebuild and kept
+    stable on purpose. `ResolvedModel.as_dict()` is a different, newer shape
+    (`model_system`'s own internal contract, e.g. for a future direct route);
+    this is the one translation point between the two, so the two can drift
+    without a screen silently receiving the wrong field names.
+    """
+    return {
+        "provider": model.maker, "model": model.native_model_id,
+        "label": model.display_name or model.native_model_id, "family": model.family,
+        "pinned": model.pinned.value, "contextTokens": model.context_window,
+        "capabilities": model.capabilities.as_dict(), "effort": model.reasoning.as_dict(),
+        "quality": model.quality, "lifecycle": model.status,
+        "provenance": dict(model.provenance),
+    }
+
+
 def _public_model(model: Any) -> dict[str, Any]:
     """One model made callable through one provider: what the user made, plus
     what the registry says it is."""
@@ -111,7 +129,7 @@ def _public_model(model: Any) -> dict[str, Any]:
         "keyRequired": provider.key_required, "kind": provider.kind.value,
         "connectionProvider": provider.id, "connectionLabel": provider.label,
         "label": model.display_name or model.native_model_id,
-        "version": model.as_dict(),
+        "version": _version_of(model),
         "hasSecret": provider.credential_status is not CredentialStatus.NOT_CONFIGURED,
         "ready": provider.credential_status is CredentialStatus.CONFIGURED,
     }
@@ -183,7 +201,7 @@ def catalog() -> dict[str, Any]:
         node = family["versions"].setdefault(
             model.native_model_id,
             {"model": model.native_model_id, "label": model.display_name or model.native_model_id,
-             "version": model.as_dict(), "deployments": []})
+             "version": _version_of(model), "deployments": []})
         node["deployments"].append(_catalog_route(model))
 
     def sorted_maker(row: dict[str, Any]) -> dict[str, Any]:

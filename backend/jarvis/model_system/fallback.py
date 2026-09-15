@@ -25,7 +25,7 @@ straight off it.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterator
 
 from ..events import EventType, bus as default_bus
@@ -190,6 +190,13 @@ def execute(request: AIRequest, *, event_bus: EventBus | None = None) -> Iterato
                         produced_text = True
                     elif isinstance(event, Completed):
                         attempt_usage = event.usage
+                        # An adapter answers in terms of the wire call it just
+                        # made — it has no reason to know which ranked
+                        # candidate that was. This loop does, so it stamps the
+                        # fact on here rather than trusting each of three
+                        # adapters to independently get a cross-cutting
+                        # concern right.
+                        event = replace(event, model_id=model.id, provider_id=model.provider.id)
                     if isinstance(event, ErrorEvent):
                         # Swallowed here — this loop decides whether to retry
                         # or fall through; a caller sees only the final

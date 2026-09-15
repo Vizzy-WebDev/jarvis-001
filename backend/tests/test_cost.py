@@ -13,7 +13,6 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from jarvis import conversation
-from jarvis.adapters import usage as usage_read
 from jarvis.cost import advisor, prices, report, store
 from jarvis.db import reset_for_tests as reset_db
 from jarvis.events import EventType
@@ -43,15 +42,20 @@ def _isolate(scratch):
 def test_a_number_the_provider_did_not_report_is_absent_not_zero():
     """Zero is a claim; absence is the truth. Blurring them is how a subsystem
     built to avoid invented numbers starts inventing them."""
+    from jarvis.model_system.adapters import anthropic, openai_compatible
+
     class OnlyInput:
         prompt_tokens = 40
 
-    assert usage_read.from_openai(OnlyInput()) == {"unitsIn": 40}
-    assert usage_read.from_openai(None) is None
-    assert usage_read.from_anthropic(object()) is None
+    usage = openai_compatible._usage(OnlyInput())
+    assert usage.tokens_in == 40 and usage.tokens_out is None
+    assert openai_compatible._usage(None) is None
+    assert anthropic._usage(None) is None
 
 
 def test_each_provider_shape_reads_into_the_same_three_fields():
+    from jarvis.model_system.adapters import anthropic, gemini, openai_compatible
+
     class OpenAI:
         prompt_tokens, completion_tokens = 10, 5
         prompt_tokens_details = type("D", (), {"cached_tokens": 2})()
@@ -62,10 +66,10 @@ def test_each_provider_shape_reads_into_the_same_three_fields():
     class Gemini:
         prompt_token_count, candidates_token_count, cached_content_token_count = 10, 5, 2
 
-    expected = {"unitsIn": 10, "unitsOut": 5, "cachedIn": 2}
-    assert usage_read.from_openai(OpenAI()) == expected
-    assert usage_read.from_anthropic(Anthropic()) == expected
-    assert usage_read.from_gemini(Gemini()) == expected
+    expected = (10, 5, 2)
+    for usage in (openai_compatible._usage(OpenAI()), anthropic._usage(Anthropic()),
+                 gemini._usage(Gemini())):
+        assert (usage.tokens_in, usage.tokens_out, usage.cached_in) == expected
 
 
 # --- the observer seam --------------------------------------------------------

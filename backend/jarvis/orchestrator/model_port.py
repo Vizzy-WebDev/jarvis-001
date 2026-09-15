@@ -1,99 +1,36 @@
-"""What the orchestrator needs from a model, and nothing more (§9, §26).
+"""What the orchestrator needs from the AI Model System, and nothing more.
 
-The orchestrator must not know which provider answered, how streaming works on
-that provider's wire, or how a tool call is spelled in its JSON. It needs three
-things: text as it arrives, the tool calls a step decided on, and the fact that
-a step finished. That is the whole port.
+The turn loop must not know which provider answered, how streaming works on
+that provider's wire, or how a tool call is spelled in its JSON — a narrow
+port is what lets `jarvis/model_system/` be replaced, stubbed, or extended
+without the orchestrator noticing, and it is what let the desktop control
+loop (`control/session.py`) reuse the exact same seam for a different
+perceive step instead of reimplementing model-calling from scratch.
 
-Defining it here, in the consumer, rather than in the gateway is deliberate. In
-the Node implementation the turn loop and the provider layer are the same
-1,027-line file, which is why a second loop (`control/session.js`) had to
-reimplement the whole thing to get a different perceive step, and why neither
-`ai.js` nor that loop marks a model unhealthy on failure. A narrow port means
-the gateway can be replaced, stubbed, or fronted by a router without the
-orchestrator noticing — and it means the orchestrator is testable against a stub
-model today, before any provider code exists.
+This is now a thin seam directly onto `jarvis/model_system`'s own normalized
+vocabulary — `TextDelta`/`Completed`/`ModelSwitched`/`ToolCall` ARE the port,
+re-exported here rather than wrapped in a second, orchestrator-owned copy of
+the same shapes. `ModelUnavailable` is `ai/fallback.py`'s own
+`NoModelAvailable`, for the same reason: a caller catching it needs the real
+`.detail` the routing trace was built from, not a summary of it.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any, Iterator, Protocol, runtime_checkable
 
-
-@dataclass(frozen=True)
-class ToolCall:
-    """One tool the model asked for. `id` is the model's own correlation id."""
-
-    id: str
-    name: str
-    args: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class TextChunk:
-    """Streamed text, as it arrives."""
-
-    text: str
-
-
-@dataclass(frozen=True)
-class StepComplete:
-    """One model step finished: its full text and any tool calls it decided on.
-
-    `raw` carries the provider's own reply object when that provider needs exact
-    round-tripping (Gemini's `thought_signature` must come back verbatim or the
-    next call is rejected). The orchestrator never inspects it — it only stores
-    it on the transcript so the adapter gets it back unchanged.
-    """
-
-    text: str = ""
-    tool_calls: tuple[ToolCall, ...] = ()
-    model_id: str | None = None
-    raw: dict[str, Any] | None = None
-    #: What the provider itself said this step consumed, as
-    #: `{"unitsIn", "unitsOut", "cachedIn"}` — any key absent rather than zero
-    #: when the provider did not report it. Part of the port because it is a
-    #: fact about the step: every SDK already returns it and every adapter
-    #: previously threw it away, which is why spend could only be guessed at.
-    #: A key with no number is never filled in with one.
-    usage: dict[str, Any] | None = None
-
-
-@dataclass(frozen=True)
-class ModelSwitched:
-    """A candidate failed and the next one is taking over.
-
-    Emitted by the gateway, not by an adapter. The orchestrator passes it
-    through so a switch is never silent: a reply that changes course with no
-    explanation is worse than the failure, and a turn that quietly took three
-    attempts looks identical to one that took none.
-    """
-
-    to_model: str
-    reason: str
-    from_model: str | None = None
-
+from ..model_system.fallback import NoModelAvailable as ModelUnavailable
+from ..model_system.request import (
+    Completed as StepComplete,
+    ErrorEvent,
+    ModelSwitched,
+    TextDelta as TextChunk,
+    ToolCall,
+)
 
 #: What a model client yields, in order: any number of chunks (possibly
 #: interrupted by a switch), then exactly one completed step.
-ModelEvent = TextChunk | StepComplete | ModelSwitched
-
-
-class ModelUnavailable(RuntimeError):
-    """No model could serve this turn.
-
-    Part of the PORT rather than the gateway because it is not an internal
-    error — it is a state the user has to be told accurately ("everything is
-    rate-limited until about 20 past"), and flattening it into a generic
-    failure is what makes an assistant feel broken when it is merely waiting.
-    The orchestrator may not import the gateway, so the shared vocabulary has
-    to live at the seam they already share.
-    """
-
-    def __init__(self, message: str, detail: dict[str, Any] | None = None) -> None:
-        super().__init__(message)
-        self.detail = detail or {}
+ModelEvent = TextChunk | StepComplete | ModelSwitched | ErrorEvent
 
 
 @runtime_checkable
@@ -107,26 +44,26 @@ class ModelClient(Protocol):
         system: str,
         tools: list[dict[str, Any]],
         session_id: str,
+        model_id: str | None = None,
         role: str | None = None,
         need: dict[str, bool] | None = None,
     ) -> Iterator[ModelEvent]:
-        """`need` is what this turn REQUIRES — vision, video, audio, web search.
+        """`need` is what this turn REQUIRES — vision, video, audio, web
+        search. Part of the port because it is the orchestrator's own
+        knowledge: it is the side that knows an image was attached. A model
+        that cannot see one must be excluded BEFORE it is called, not
+        discovered to be blind by being handed bytes it cannot read.
 
-        Part of the port because it is the orchestrator's own knowledge: it is
-        the side that knows an image was attached. A model that cannot see one
-        must be excluded BEFORE it is called, not discovered to be blind by
-        being handed bytes it cannot read.
+        `role` is the same kind of knowledge: the orchestrator knows whether
+        this turn was spoken, scheduled or typed, and the model system is the
+        side that knows a spoken turn should be ranked for latency and a
+        scheduled one for price. A plain string, not `model_system.request`'s
+        own `Role` enum — the orchestrator may hold no opinion about the
+        model system's internal vocabulary beyond this port, only about the
+        shared strings the two sides have agreed mean the same thing.
 
-        `role` is the same kind of knowledge: the orchestrator is the side that
-        knows whether this turn was spoken, scheduled or typed, and the provider
-        layer is the side that knows a spoken turn should be ranked for latency
-        and a scheduled one for price. A plain string rather than the gateway's
-        own enum, because the orchestrator may not import the gateway — the
-        shared vocabulary has to live at the seam they already share, exactly as
-        `ModelUnavailable` does.
-
-        An unrecognised role is not an error. The provider layer treats it as an
-        ordinary conversation, so a caller that has not classified its turn gets
-        sensible routing rather than a failure.
+        An unrecognised role is not an error: `model_system.request.role_from()`
+        treats it as an ordinary conversation, so a caller that has not
+        classified its turn gets sensible routing rather than a failure.
         """
         ...

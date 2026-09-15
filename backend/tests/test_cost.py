@@ -13,19 +13,16 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from jarvis import conversation
-from jarvis.adapters import usage as usage_read
 from jarvis.cost import advisor, prices, report, store
 from jarvis.db import reset_for_tests as reset_db
 from jarvis.events import EventType
 from jarvis.events.bus import Event, EventBus
-from jarvis.gateway import availability, connections, deployments
-from jarvis.gateway.client import Gateway
 from jarvis.jscompat import to_iso_z
+from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
+from jarvis.model_system.registry import add_model
 from jarvis.observers.cost import record_model_call
 from jarvis.orchestrator.model_port import StepComplete
 
-from conftest import candidate
-from jarvis.gateway.slots import Role
 from stub_openai_server import StubModelServer
 
 
@@ -34,9 +31,7 @@ def _isolate(scratch):
     reset_db()
     advisor.reset_cache()
     conversation.reset_for_tests()
-    availability.reset_for_tests()
     yield
-    availability.reset_for_tests()
     conversation.reset_for_tests()
     advisor.reset_cache()
     reset_db()
@@ -47,15 +42,20 @@ def _isolate(scratch):
 def test_a_number_the_provider_did_not_report_is_absent_not_zero():
     """Zero is a claim; absence is the truth. Blurring them is how a subsystem
     built to avoid invented numbers starts inventing them."""
+    from jarvis.model_system.adapters import anthropic, openai_compatible
+
     class OnlyInput:
         prompt_tokens = 40
 
-    assert usage_read.from_openai(OnlyInput()) == {"unitsIn": 40}
-    assert usage_read.from_openai(None) is None
-    assert usage_read.from_anthropic(object()) is None
+    usage = openai_compatible._usage(OnlyInput())
+    assert usage.tokens_in == 40 and usage.tokens_out is None
+    assert openai_compatible._usage(None) is None
+    assert anthropic._usage(None) is None
 
 
 def test_each_provider_shape_reads_into_the_same_three_fields():
+    from jarvis.model_system.adapters import anthropic, gemini, openai_compatible
+
     class OpenAI:
         prompt_tokens, completion_tokens = 10, 5
         prompt_tokens_details = type("D", (), {"cached_tokens": 2})()
@@ -66,10 +66,10 @@ def test_each_provider_shape_reads_into_the_same_three_fields():
     class Gemini:
         prompt_token_count, candidates_token_count, cached_content_token_count = 10, 5, 2
 
-    expected = {"unitsIn": 10, "unitsOut": 5, "cachedIn": 2}
-    assert usage_read.from_openai(OpenAI()) == expected
-    assert usage_read.from_anthropic(Anthropic()) == expected
-    assert usage_read.from_gemini(Gemini()) == expected
+    expected = (10, 5, 2)
+    for usage in (openai_compatible._usage(OpenAI()), anthropic._usage(Anthropic()),
+                 gemini._usage(Gemini())):
+        assert (usage.tokens_in, usage.tokens_out, usage.cached_in) == expected
 
 
 # --- the observer seam --------------------------------------------------------
@@ -103,19 +103,20 @@ def test_the_observer_records_what_the_gateway_published():
 
 # --- end to end, over a real socket -------------------------------------------
 
-def test_a_real_turn_records_the_usage_the_provider_actually_sent():
+def test_a_real_turn_records_the_usage_the_provider_actually_sent(scratch):
+    from jarvis.model_system.gateway import Gateway as NewGateway
+
     stub = StubModelServer()
     base_url = stub.start()
     try:
-        conn = connections.add_connection(adapter="openai-compatible", base_url=base_url,
-                                          label="stub", provider="custom", kind="local",
-                                          key_required=False)
-        model = deployments.add_deployment(connection_id=conn["id"], model="stub-model")
+        provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
+                                base_url=base_url, auth_method=AuthMethod.NONE, key_required=False)
+        model = add_model(provider_id=provider.id, native_model_id="stub-model")
         stub.says("done")
 
         bus = EventBus()
         bus.subscribe(EventType.MODEL_CALL_COMPLETED, record_model_call)
-        events = list(Gateway(event_bus=bus).stream(
+        events = list(NewGateway(event_bus=bus).stream(
             messages=[{"role": "user", "text": "hello"}], system="", tools=[],
             session_id="s1"))
     finally:
@@ -123,14 +124,14 @@ def test_a_real_turn_records_the_usage_the_provider_actually_sent():
 
     step = [e for e in events if isinstance(e, StepComplete)][0]
     # The empty-`choices` usage chunk really was parsed, by the real adapter.
-    assert step.usage == {"unitsIn": 11, "unitsOut": 3, "cachedIn": 4}
+    assert (step.usage.tokens_in, step.usage.tokens_out, step.usage.cached_in) == (11, 3, 4)
 
     recorded = store.list_events_since("1970-01-01T00:00:00.000Z")
     assert len(recorded) == 1
     assert recorded[0]["unitsIn"] == 11 and recorded[0]["unitsOut"] == 3
     assert recorded[0]["modelId"] == "stub-model"
     assert recorded[0]["sessionId"] == "s1"
-    assert model["id"]
+    assert model.id
 
 
 # --- prices: never a guess ----------------------------------------------------
@@ -225,21 +226,25 @@ def test_a_measured_price_lands_in_the_same_zero_to_four_domain_the_guess_used(
     assert 0 <= tier <= 4
 
 
-def test_the_router_prefers_the_measured_price_over_the_catalogs_guess():
-    from jarvis.gateway.routing import Task, build_candidates
+def test_the_router_prefers_the_measured_price_over_the_catalogs_guess(scratch):
+    from jarvis.model_system.request import Preferences, Requirements, Role
+    from jarvis.model_system.router import rank
 
-    entries = [candidate("a", provider="p", model="one"),
-               candidate("b", provider="p", model="two")]
-    task = Task(text="hello", role=Role.BACKGROUND)
+    provider = add_provider(label="p", kind=ProviderKind.OPENAI_COMPATIBLE, adapter="openai_compatible",
+                            auth_method=AuthMethod.NONE, key_required=False)
+    one = add_model(provider_id=provider.id, native_model_id="one")
+    two = add_model(provider_id=provider.id, native_model_id="two")
+    reqs, prefs = Requirements(), Preferences(role=Role.BACKGROUND)
+
     # Nothing is measured yet, so neither can be preferred on price and the
     # deterministic tie-break decides. There is no authored guess left to beat:
-    # `tier.cost` was a name regex and was deleted with the rest of them.
-    assert [e["id"] for e in build_candidates(task, entries=entries)] == ["a", "b"]
+    # a name regex was deleted with the rest of them.
+    assert [m.id for m in rank(reqs, prefs, models=[one, two])] == ["one", "two"]
 
     prices.set_user_price(provider="p", model_id="one", price_in=0.001, price_out=0.002)
     prices.set_user_price(provider="p", model_id="two", price_in=0.0, price_out=0.0)
     advisor.reset_cache()
-    assert [e["id"] for e in build_candidates(task, entries=entries)][0] == "b"
+    assert rank(reqs, prefs, models=[one, two])[0].id == "two"
 
 
 # --- balances stay separate ---------------------------------------------------
@@ -315,26 +320,31 @@ def test_check_spending_on_an_empty_period_says_so_rather_than_reporting_zero_sp
 # understates spend, and reporting a free model as unpriced makes a genuinely
 # free month look like a month with no data.
 
+_KIND_MAP = {"local": ProviderKind.LOCAL, "gateway": ProviderKind.AGGREGATOR,
+            "first-party": ProviderKind.NATIVE}
+
+
 def _register(model: str, *, kind: str = "local", key_required: bool = False,
-              base_url: str = "http://127.0.0.1:11434/v1") -> dict:
-    conn = connections.add_connection(adapter="openai-compatible", base_url=base_url,
-                                      label=model, provider="custom", kind=kind,
-                                      key_required=key_required)
-    return deployments.add_deployment(connection_id=conn["id"], model=model)
+              base_url: str = "http://127.0.0.1:11434/v1"):
+    provider = add_provider(label=model, kind=_KIND_MAP[kind], adapter="openai_compatible",
+                            base_url=base_url,
+                            auth_method=AuthMethod.API_KEY if key_required else AuthMethod.NONE,
+                            key_required=key_required)
+    return add_model(provider_id=provider.id, native_model_id=model)
 
 
 def test_a_local_model_is_seeded_at_zero_rather_than_left_unpriced():
     """Seeded under the same key the spend observer writes, which it was not.
 
-    The seeder filed a price under the ADAPTER ("openai-compatible") while the
-    observer recorded spend under the connection's provider ("custom"), so the
-    $0 rows this function wrote were read back by nothing — a real bug the
-    switchover found by making both sides call one function
-    (`deployments.provider_of`) instead of each deriving the key themselves.
+    The seeder used to file a price under the ADAPTER while the observer
+    recorded spend under the connection's provider, so the $0 rows this
+    function wrote were read back by nothing — a real bug the switchover
+    found by making both sides call one function (`ResolvedModel.maker`)
+    instead of each deriving the key themselves.
     """
-    _register("llama3")
+    model = _register("llama3")
     assert prices.seed_known_free_prices() == 1
-    price = store.get_price("custom", "llama3")
+    price = store.get_price(model.maker, "llama3")
     assert (price["priceIn"], price["priceOut"], price["source"]) == (0.0, 0.0, "built_in")
 
 
@@ -342,22 +352,22 @@ def test_a_provider_labelled_free_variant_is_seeded_but_a_guessed_one_is_not():
     """`:free` is the provider's own label. `flash -> free` is our name regex,
     which a paid-tier key matches just as well — good enough to rank a model,
     nowhere near good enough to assert what it costs."""
-    _register("meta-llama/llama-3-8b:free", kind="gateway", key_required=True,
-              base_url="https://openrouter.ai/api/v1")
-    _register("gemini-3.5-flash", kind="first-party", key_required=True,
-              base_url="https://generativelanguage.googleapis.com")
+    free_variant = _register("meta-llama/llama-3-8b:free", kind="gateway", key_required=True,
+                             base_url="https://openrouter.ai/api/v1")
+    guessed = _register("gemini-3.5-flash", kind="first-party", key_required=True,
+                        base_url="https://generativelanguage.googleapis.com")
 
     prices.seed_known_free_prices()
-    assert store.get_price("custom", "meta-llama/llama-3-8b:free")["priceIn"] == 0.0
-    assert store.get_price("custom", "gemini-3.5-flash") is None
+    assert store.get_price(free_variant.maker, "meta-llama/llama-3-8b:free")["priceIn"] == 0.0
+    assert store.get_price(guessed.maker, "gemini-3.5-flash") is None
 
 
 def test_seeding_never_overwrites_a_price_someone_actually_set():
-    _register("llama3")
-    prices.set_user_price(provider="custom", model_id="llama3",
+    model = _register("llama3")
+    prices.set_user_price(provider=model.maker, model_id="llama3",
                           price_in=0.5, price_out=0.5)
     assert prices.seed_known_free_prices() == 0
-    assert store.get_price("custom", "llama3")["source"] == "user"
+    assert store.get_price(model.maker, "llama3")["source"] == "user"
 
 
 def test_seeding_happens_with_the_network_interlock_off(monkeypatch):
@@ -366,10 +376,10 @@ def test_seeding_happens_with_the_network_interlock_off(monkeypatch):
     from jarvis import assembly
 
     monkeypatch.delenv(prices.ENABLE_ENV, raising=False)
-    _register("llama3")
+    model = _register("llama3")
     started = assembly.start_background_work()
     assert started["prices"] is False, "the network refresh must stay off"
-    assert store.get_price("custom", "llama3")["priceIn"] == 0.0
+    assert store.get_price(model.maker, "llama3")["priceIn"] == 0.0
 
 
 def test_free_usage_is_reported_as_free_and_unpriced_usage_as_unknown():
@@ -406,22 +416,25 @@ def test_a_price_row_with_no_numbers_in_it_is_not_a_price():
     assert advisor.observed_cost_tier("p", "m") is None
 
 
-def test_the_router_treats_free_as_cheapest_and_unpriced_as_no_opinion():
-    from jarvis.gateway.routing import Task, build_candidates
+def test_the_router_treats_free_as_cheapest_and_unpriced_as_no_opinion(scratch):
+    from jarvis.model_system.request import Preferences, Requirements, Role
+    from jarvis.model_system.router import rank
+
+    provider = add_provider(label="p", kind=ProviderKind.OPENAI_COMPATIBLE, adapter="openai_compatible",
+                            auth_method=AuthMethod.NONE, key_required=False)
+    free = add_model(provider_id=provider.id, native_model_id="free-one")
+    unknown = add_model(provider_id=provider.id, native_model_id="unknown-one")
 
     prices.set_user_price(provider="p", model_id="free-one", price_in=0.0, price_out=0.0)
     advisor.reset_cache()
     assert advisor.observed_cost_tier("p", "free-one") == 0
     assert advisor.observed_cost_tier("p", "unknown-one") is None
 
-    entries = [candidate("free", provider="p", model="free-one"),
-               candidate("unknown", provider="p", model="unknown-one")]
     # A measured $0 beats "nothing has been measured", which is not the same as
     # beating a cheap guess — there is no guess any more. The unpriced model
     # gets the neutral reading rather than an invented one.
-    ranked = [e["id"] for e in build_candidates(
-        Task(text="hi", role=Role.BACKGROUND), entries=entries)]
-    assert ranked[0] == "free"
+    ranked = rank(Requirements(), Preferences(role=Role.BACKGROUND), models=[free, unknown])
+    assert ranked[0].id == "free-one"
 
 
 def test_check_spending_says_free_rather_than_unknown():

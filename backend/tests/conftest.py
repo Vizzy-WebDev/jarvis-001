@@ -102,28 +102,3 @@ def live_server(scratch):
         thread.join(timeout=10)
 
 
-def candidate(deployment_id: str, **version_fields):
-    """One hydrated deployment, shaped exactly as the router reads them.
-
-    Shared rather than copied into each routing test because the shape is the
-    thing under test: a helper that drifts from what `deployments.hydrate()`
-    actually produces makes every test using it agree with itself and with
-    nothing else. `entries=` exists on `build_candidates` precisely so the
-    ranking can be exercised without a store behind it, and this is what goes
-    in it.
-
-    Everything unstated is genuinely unknown, which is the normal state of a
-    model nobody has probed — so a test that wants a capability considered must
-    say so, rather than inheriting a confident default.
-    """
-    from jarvis.catalog import Version
-
-    fields = {"provider": "stub", "model": deployment_id, "label": deployment_id}
-    fields.update(version_fields)
-    return {
-        "id": deployment_id,
-        "model": fields["model"],
-        "enabled": True,
-        "keyRequired": False,
-        "version": Version(**fields),
-    }

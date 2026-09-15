@@ -94,7 +94,7 @@ SYSTEM = ("You check whether a result actually answers what was asked. Judge onl
 
 def verify_semantic_match(*, request: str, result_summary: str,
                           result_text: str | None = None) -> Verdict:
-    from ..gateway.client import ask
+    from ..model_system.compat import ask
 
     prompt = "\n\n".join(filter(None, [
         f'The request was: "{request}"',
@@ -118,7 +118,7 @@ def verify_semantic_match(*, request: str, result_summary: str,
 
 
 def _background_task(text: str) -> Any:
-    from ..gateway.routing import Task
-    from ..gateway.slots import Role
+    from ..model_system.compat import Task
+    from ..model_system.request import Role
 
     return Task(text=text, role=Role.UTILITY, needs_tools=False)

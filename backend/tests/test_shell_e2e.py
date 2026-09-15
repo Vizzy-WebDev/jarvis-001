@@ -27,7 +27,8 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.gateway import connections, deployments
+from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
+from jarvis.model_system.registry import add_model, list_models
 
 from stub_oauth_server import StubOAuthServer
 from stub_openai_server import StubModelServer
@@ -57,10 +58,9 @@ def stub(scratch):
     """A model that answers, registered in the scratch data dir only."""
     server = StubModelServer()
     server.base_url = base_url = server.start()
-    conn = connections.add_connection(adapter="openai-compatible", base_url=base_url,
-                                      label="stub", provider="custom", kind="local",
-                                      key_required=False)
-    deployments.add_deployment(connection_id=conn["id"], model="stub-model")
+    provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
+                            base_url=base_url, auth_method=AuthMethod.NONE, key_required=False)
+    add_model(provider_id=provider.id, native_model_id="stub-model")
     yield server
     server.stop()
 
@@ -463,56 +463,6 @@ def test_an_approval_in_the_transcript_is_a_real_control(page, stub):
 
 # --- the models screen ---------------------------------------------------------
 
-def test_a_job_can_be_given_a_model_through_the_screen(page, stub):
-    """Phase 5 built the slot store and phase 6 taught the router to read it.
-    This is the part a person can actually reach: choosing which model answers
-    when Jarvis speaks, and having that survive a reload."""
-    from jarvis.gateway import deployments, slots
-    from jarvis.gateway.slots import Role
-
-    [existing] = deployments.list_deployments()
-
-    page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
-    page.wait_for_selector("[data-testid=role-voice]", timeout=15_000)
-
-    page.select_option("[data-testid=role-model-voice]", existing["id"])
-    page.wait_for_timeout(400)
-
-    assert slots.pin_for(Role.VOICE) == existing["id"]
-
-    # And the screen still says so after a reload — it is reading the store,
-    # not its own component state.
-    page.reload(wait_until="networkidle")
-    page.wait_for_selector("[data-testid=role-voice]", timeout=15_000)
-    assert page.input_value("[data-testid=role-model-voice]") == existing["id"]
-
-
-def test_every_job_is_shown_even_though_none_is_set(page, stub):
-    """The unset ones are the ones a person needs to see in order to set them."""
-    page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
-    page.wait_for_selector("[data-testid=role-list]", timeout=15_000)
-
-    assert page.locator("[data-testid=role-list] > div").count() == 5
-
-
-def test_the_thinking_levels_offered_are_the_chosen_model_s_own(page, stub):
-    """Not a fixed ladder. A model with no reasoning control offers none, and
-    the control says so rather than presenting an empty dropdown."""
-    from jarvis.gateway import deployments
-
-    [existing] = deployments.list_deployments()
-
-    page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
-    page.wait_for_selector("[data-testid=role-control]", timeout=15_000)
-    page.select_option("[data-testid=role-model-control]", existing["id"])
-    page.wait_for_timeout(400)
-
-    # The fixture's model matches no catalog pattern, so nothing is established
-    # about its reasoning control — which is a real answer, not a blank.
-    assert page.locator("[data-testid=role-effort-control]").is_disabled()
-    assert "No thinking setting" in page.inner_text("[data-testid=role-effort-control]")
-
-
 def test_the_balance_dial_is_reachable_and_takes_effect_on_the_next_turn(page, stub):
     """It was not, before this. `balance` was stored, defaulted and read by the
     router on every turn, and no screen anywhere set it — so the one control
@@ -554,8 +504,6 @@ def test_a_model_can_be_added_through_the_screen_and_then_answers(page, stub):
     """The front door: nothing works until a model is added, so this walks the
     real three steps — pick a provider, give the address, choose models — and
     then proves the thing that was added can actually hold a conversation."""
-    from jarvis.gateway import deployments
-
     stub.models = [{"id": "alpha"}, {"id": "beta"}]
 
     page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
@@ -574,7 +522,7 @@ def test_a_model_can_be_added_through_the_screen_and_then_answers(page, stub):
     page.wait_for_selector("[data-testid=connection-list] >> text=alpha", timeout=15_000)
     # Beside the one the fixture already registered — "alpha" is the one this
     # test actually added, through the real screen.
-    assert "alpha" in [m["model"] for m in deployments.list_deployments()]
+    assert "alpha" in [m.native_model_id for m in list_models()]
 
     # And it is a real, usable model, not just a row: ask it something.
     stub.says("Hello from alpha.")
@@ -598,8 +546,6 @@ def test_an_address_with_nothing_at_it_says_what_it_tried(page):
 
 
 def test_removing_a_connection_says_what_goes_with_it(page, stub):
-    from jarvis.gateway import deployments
-
     page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
     page.wait_for_selector("[data-testid=connection-card]")
     page.locator("[data-testid=connection-card]").first.get_by_text("Remove").click()
@@ -608,7 +554,7 @@ def test_removing_a_connection_says_what_goes_with_it(page, stub):
     assert "1 model" in page.locator("[data-testid=modal]").inner_text()
     page.click("[data-testid=confirm-remove]")
     page.wait_for_selector("[data-testid=connection-card]", state="detached")
-    assert deployments.list_deployments() == []
+    assert list_models() == []
 
 
 def test_a_service_key_is_saved_and_never_shown_again(page):
@@ -778,12 +724,10 @@ def test_the_realtime_engine_is_offered_from_a_capability_and_fails_honestly(voi
     resolved on the socket merely opening, so a session that could never start
     took the microphone first and mentioned the problem afterwards.
     """
-    from jarvis.gateway import connections, deployments
-
-    conn = connections.add_connection(adapter="gemini", base_url=None, label="realtime",
-                                      provider="gemini", kind="first-party", key_required=True,
-                                      secret="not-a-real-key")
-    deployments.add_deployment(connection_id=conn["id"], model="a-realtime-model")
+    provider = add_provider(label="realtime", kind=ProviderKind.NATIVE, adapter="gemini",
+                            auth_method=AuthMethod.API_KEY, secret="not-a-real-key",
+                            key_required=True)
+    add_model(provider_id=provider.id, native_model_id="a-realtime-model")
 
     voice_page.reload(wait_until="networkidle")
     voice_page.click("[data-testid=settings]")

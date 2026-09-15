@@ -29,9 +29,9 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
 
-from .gateway.client import NoModelAvailable, ask
-from .gateway.routing import Task
-from .gateway.slots import Role
+from .model_system.compat import Task, ask
+from .model_system.fallback import NoModelAvailable
+from .model_system.request import Role
 from .webtext import to_text
 
 logger = logging.getLogger(__name__)

@@ -1,15 +1,15 @@
 """One prompt, one answer — the narrow seam a TOOL is allowed to ask through.
 
 A third way to drive a model, alongside a turn (the orchestrator) and a research
-lookup. What makes it its own module rather than a call into the gateway is the
-boundary it preserves: nothing under `jarvis/tools/` may import the gateway, and
-`tests/test_architecture.py` asserts that. A tool should be able to say "answer
-this", not to pick a candidate and drive a stream — the second is the provider
-layer's job, and a tool reaching into it is how a second, subtly different
-model-calling path gets written.
+lookup. What makes it its own module rather than a call into the model system's
+gateway is the boundary it preserves: nothing under `jarvis/tools/` may import
+the model system, and `tests/test_architecture.py` asserts that. A tool should
+be able to say "answer this", not to pick a candidate and drive a stream — the
+second is the model system's job, and a tool reaching into it is how a second,
+subtly different model-calling path gets written.
 
-Safe for a tool to import: no path from here to the tool loader, the executor or
-the orchestrator.
+Safe for a tool to import: no path from here to the tool loader, the executor,
+the orchestrator, or `jarvis/model_system/`'s own internals.
 """
 
 from __future__ import annotations
@@ -38,9 +38,8 @@ def ask_model(prompt: str, *, system: str = "", want_json: bool = False,
     something to say plainly in a tool result — not an exception that turns into
     a failed turn with no explanation.
     """
-    from .gateway.client import ask
-    from .gateway.routing import Task
-    from .gateway.slots import role_from
+    from .model_system.compat import Task, ask
+    from .model_system.request import role_from
 
     # `utility` by default rather than `background`: these are the small,
     # frequent, JSON-shaped asks a tool makes mid-turn, which is a different

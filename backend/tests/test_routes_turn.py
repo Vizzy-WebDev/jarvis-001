@@ -16,8 +16,9 @@ from jarvis import assembly, conversation
 from jarvis.capabilities import CapabilitySpec, Risk
 from jarvis.db import reset_for_tests as reset_db
 from jarvis.events import EventType, bus
-from jarvis.gateway import availability, connections, deployments
 from jarvis.main import create_app
+from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
+from jarvis.model_system.registry import add_model
 from jarvis.policy import approvals as approval_store
 from jarvis.session import get_active_session_id
 
@@ -28,12 +29,10 @@ from stub_openai_server import StubModelServer
 def _isolate(scratch):
     reset_db()
     conversation.reset_for_tests()
-    availability.reset_for_tests()
     assembly.reset_for_tests()
     bus.reset_for_tests()
     yield
     assembly.reset_for_tests()
-    availability.reset_for_tests()
     conversation.reset_for_tests()
     reset_db()
 
@@ -42,10 +41,10 @@ def _isolate(scratch):
 def stub():
     server = StubModelServer()
     server.base_url = server.start()
-    conn = connections.add_connection(adapter="openai-compatible", base_url=server.base_url,
-                                      label="stub", provider="custom", kind="local",
-                                      key_required=False)
-    deployments.add_deployment(connection_id=conn["id"], model="stub-model")
+    provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
+                            base_url=server.base_url, auth_method=AuthMethod.NONE,
+                            key_required=False)
+    add_model(provider_id=provider.id, native_model_id="stub-model")
     yield server
     server.stop()
 
@@ -70,10 +69,9 @@ def test_status_is_configured_only_when_a_model_can_actually_be_used(client, stu
     flow exists to catch."""
     assert client.get("/api/status").json()["configured"] is True
 
-    keyed = connections.add_connection(adapter="anthropic", label="needs a key",
-                                       provider="anthropic", kind="first-party",
-                                       key_required=True)
-    deployments.add_deployment(connection_id=keyed["id"], model="claude-sonnet-5")
+    keyed = add_provider(label="needs a key", kind=ProviderKind.NATIVE, adapter="anthropic",
+                        auth_method=AuthMethod.API_KEY, key_required=True)
+    add_model(provider_id=keyed.id, native_model_id="claude-sonnet-5")
     # Still configured: one of the two is usable, which is the question asked.
     assert client.get("/api/status").json() == {"configured": True}
 

@@ -470,7 +470,7 @@ class Orchestrator:
                                     spoken_so_far.append(piece.text)
                                     yield Chunk(piece.text)
                     elif isinstance(event, ModelSwitched):
-                        yield Switched(event.to_model, event.reason, event.from_model)
+                        yield Switched(event.to_model_id, event.reason, event.from_model_id)
                     elif isinstance(event, StepComplete):
                         completed = event
             except Exception as err:  # noqa: BLE001 — provider errors are expected

@@ -102,7 +102,7 @@ export function AddModelFlow({
         setFound(probe.models);
       } else {
         const answer = await api.connections.discover({
-          adapter: undefined, baseUrl: baseUrl || undefined, secret: secret || undefined,
+          provider: provider.id, baseUrl: baseUrl || undefined, secret: secret || undefined,
         });
         if (answer.error) {
           setError(answer.error);

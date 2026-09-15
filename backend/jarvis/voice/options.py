@@ -22,18 +22,28 @@ from __future__ import annotations
 from typing import Any
 
 from .. import stt, tts
-from ..adapters import get_capabilities
-from ..gateway import connections, deployments
+from ..model_system.adapters import get_adapter
+from ..model_system.credentials import CredentialStatus
+from ..model_system.providers import list_providers
+from ..model_system.registry import ResolvedModel, list_models
 
 
-def _ready_models() -> list[dict[str, Any]]:
-    return [d for d in deployments.list_deployments()
-            if d.get("enabled") and deployments.is_ready(d)]
+def _ready_models() -> list[ResolvedModel]:
+    return [m for m in list_models()
+            if m.enabled and m.provider.credential_status is CredentialStatus.CONFIGURED]
 
 
-def realtime_models() -> list[dict[str, Any]]:
+def realtime_models() -> list[ResolvedModel]:
     """Every ready model whose adapter declares a realtime API of its own."""
-    return [m for m in _ready_models() if get_capabilities(m.get("adapter")).get("realtime")]
+    out = []
+    for m in _ready_models():
+        try:
+            supports = getattr(get_adapter(m.provider.adapter), "SUPPORTS_REALTIME", False)
+        except KeyError:
+            supports = False
+        if supports:
+            out.append(m)
+    return out
 
 
 def list_engines() -> list[dict[str, Any]]:
@@ -69,8 +79,7 @@ def list_engines() -> list[dict[str, Any]]:
             "available": bool(realtime),
             # Named from the models themselves, so this stays true if the set of
             # realtime-capable providers ever changes.
-            "models": [{"id": m["id"], "label": m.get("label") or m.get("model")}
-                       for m in realtime],
+            "models": [{"id": m.id, "label": m.display_name} for m in realtime],
             "reason": None if realtime else
                       "None of your models offers a realtime voice session.",
         },
@@ -105,5 +114,5 @@ def status() -> dict[str, Any]:
             # degraded state: the browser's own recognition is a real path.
             "serverProxied": stt.is_configured(),
         },
-        "connections": len(connections.list_connections()),
+        "connections": len(list_providers()),
     }

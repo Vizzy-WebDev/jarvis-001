@@ -29,7 +29,7 @@ def _isolate(scratch):
 
 
 def _answer(text="", data=None, model_id="stub"):
-    from jarvis.gateway.client import Answer
+    from jarvis.model_system.compat import Answer
 
     return Answer(text=text, model_id=model_id, data=data)
 
@@ -41,7 +41,7 @@ def test_starting_a_project_makes_no_model_call_and_researches_nothing(monkeypat
     def refuse(*_a, **_kw):
         raise AssertionError("starting a project must not call a model")
 
-    monkeypatch.setattr("jarvis.gateway.client.ask", refuse)
+    monkeypatch.setattr("jarvis.model_system.compat.ask", refuse)
     monkeypatch.setattr("jarvis.projects.engine.research", refuse)
 
     project = start_project(idea="a website for my bakery", session_id="s1")
@@ -130,7 +130,7 @@ def test_the_plan_is_written_from_the_decisions_not_only_the_idea(monkeypatch):
         seen["prompt"] = prompt
         return _answer("## What you're building\n\nA one-page site.")
 
-    monkeypatch.setattr("jarvis.gateway.client.ask", fake_ask)
+    monkeypatch.setattr("jarvis.model_system.compat.ask", fake_ask)
     conversation.push_user_text("s1", "I want it to feel warm and handmade")
 
     project = start_project(idea="a bakery site", session_id="s1")
@@ -145,7 +145,7 @@ def test_the_plan_is_written_from_the_decisions_not_only_the_idea(monkeypatch):
 
 
 def test_research_is_not_required_before_a_plan(monkeypatch):
-    monkeypatch.setattr("jarvis.gateway.client.ask", lambda *a, **k: _answer("A plan."))
+    monkeypatch.setattr("jarvis.model_system.compat.ask", lambda *a, **k: _answer("A plan."))
     project = start_project(idea="a bakery site", session_id="s1")
     write_plan(project["id"])
     join_all()
@@ -156,7 +156,7 @@ def test_a_plan_that_cannot_be_written_says_so_instead_of_leaving_an_empty_proje
     def unavailable(*_a, **_kw):
         raise RuntimeError("everything is rate limited")
 
-    monkeypatch.setattr("jarvis.gateway.client.ask", unavailable)
+    monkeypatch.setattr("jarvis.model_system.compat.ask", unavailable)
     project = start_project(idea="a bakery site", session_id="s1")
     write_plan(project["id"])
     join_all()
@@ -182,7 +182,7 @@ def test_the_prompt_is_written_for_the_named_assistant(monkeypatch):
         seen["prompt"] = prompt
         return _answer(data={"prompts": [{"title": "Build the site", "text": "Do the thing."}]})
 
-    monkeypatch.setattr("jarvis.gateway.client.ask", fake_ask)
+    monkeypatch.setattr("jarvis.model_system.compat.ask", fake_ask)
     project = start_project(idea="a bakery site", session_id="s1")
     store.update_project(project["id"], {"plan": "## The plan\n\nOne page."})
     write_prompts(project["id"], {"id": "builder"})
@@ -195,7 +195,7 @@ def test_the_prompt_is_written_for_the_named_assistant(monkeypatch):
 
 
 def test_several_prompts_keep_their_order_and_the_reason_for_it(monkeypatch):
-    monkeypatch.setattr("jarvis.gateway.client.ask", lambda *a, **k: _answer(data={
+    monkeypatch.setattr("jarvis.model_system.compat.ask", lambda *a, **k: _answer(data={
         "prompts": [{"title": "One", "text": "first"}, {"title": "Two", "text": "second"}],
         "order": "The second needs the database from the first."}))
     project = start_project(idea="a bakery site", session_id="s1")
@@ -209,7 +209,7 @@ def test_several_prompts_keep_their_order_and_the_reason_for_it(monkeypatch):
 
 
 def test_a_reply_with_no_usable_prompt_says_so_and_keeps_the_plan(monkeypatch):
-    monkeypatch.setattr("jarvis.gateway.client.ask",
+    monkeypatch.setattr("jarvis.model_system.compat.ask",
                         lambda *a, **k: _answer(data={"prompts": [{"title": "x", "text": "  "}]}))
     project = start_project(idea="a bakery site", session_id="s1")
     store.update_project(project["id"], {"plan": "A plan"})

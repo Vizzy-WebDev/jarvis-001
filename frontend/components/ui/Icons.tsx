@@ -102,6 +102,15 @@ export const CheckIcon = (p: IconProps) => (
   </Svg>
 );
 
+/** A map-pin teardrop — used for "pin this chat" and for marking a pinned
+ *  row, so the same shape means the same thing in both places. */
+export const PinIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 21s-7-6.2-7-11a7 7 0 1 1 14 0c0 4.8-7 11-7 11z" />
+    <circle cx="12" cy="10" r="2.5" />
+  </Svg>
+);
+
 /** Needs a decision before it runs — a clock, not a literal hand: reads clearly
  *  at 14px, where a raised-hand glyph turns into a smudge. */
 export const AskIcon = (p: IconProps) => (

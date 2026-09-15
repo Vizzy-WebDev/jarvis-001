@@ -57,8 +57,11 @@ never called by a test — sets every one of them via `os.environ.setdefault()` 
 all of them on: the scheduler (`scheduler/engine.py`), the heartbeat
 (`heartbeat/engine.py`), the monitor (`monitor/engine.py`), the job supervisor
 (`jobs/orchestrator.py`), cost/price refresh (`cost/balances.py`, `cost/prices.py`), the
-environment sampler (`ops/environment/sampler.py`), and Self-Improvement's own tick
-(`improvement/cadence.py`). `assembly.start_background_work()` is the one place "what
+environment sampler (`ops/environment/sampler.py`), Self-Improvement's own tick
+(`improvement/cadence.py`), and three recycle-bin/logo sweeps added since — the
+notifications trash purge (`notifications.py`), the connector icon resolver
+(`connectors/icons.py`), and the chat-history trash purge (`chat_store.py`).
+`assembly.start_background_work()` is the one place "what
 starts itself" is answerable by reading a single function.
 
 ## Testing
@@ -136,9 +139,10 @@ as "passed":
    (`run_in_background: true`) with `JARVIS_DATA_DIR`/`JARVIS_ENV_PATH` pointed at empty
    scratch paths and an unusual `PORT`. Must come up with no unhandled exception.
 3. **Migrations + tool loader** — read the scratch `jarvis.db` read-only and confirm
-   `PRAGMA user_version` reached 23: `jarvis/migrations.py`'s `MIGRATION_SQL` (19,
+   `PRAGMA user_version` reached 24: `jarvis/migrations.py`'s `MIGRATION_SQL` (19,
    the ones ported byte-for-byte from the Node build) plus
-   `migrations_extra.py`'s `EXTRA_MIGRATION_SQL` (4, this build's own). Counting only
+   `migrations_extra.py`'s `EXTRA_MIGRATION_SQL` (5, this build's own — the latest
+   being the conversations recycle bin's `deleted_at` column). Counting only
    the first file gives 19 and a false failure — the gate caught exactly that mistake
    in this document. **The database is created lazily on first use**, so hit a route
    before looking for the file. Confirm `load_tools()` (or a route that touches the

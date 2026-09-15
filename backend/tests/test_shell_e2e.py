@@ -1403,6 +1403,111 @@ def test_opening_a_conversation_shows_what_was_said_without_resuming_it(page, st
     assert page.locator("[data-testid=resume-conversation]").count() == 0
 
 
+def test_the_chat_history_drawer_opens_from_the_hamburger_and_shows_pinned_first(page):
+    from jarvis import chat_store
+
+    alpha = chat_store.create_conversation()
+    chat_store.rename_conversation(alpha["id"], "Alpha")
+    beta = chat_store.create_conversation()
+    chat_store.rename_conversation(beta["id"], "Beta")
+    chat_store.set_pinned(beta["id"], True)
+
+    page.click("[data-testid=chat-history-menu]")
+    page.wait_for_selector("[data-testid=chat-history-drawer][data-open=true]")
+
+    pinned_text = page.locator("[data-testid=drawer-pinned-list]").inner_text()
+    assert "Beta" in pinned_text
+    recent_text = page.locator("[data-testid=drawer-recent-list]").inner_text()
+    assert "Alpha" in recent_text and "Beta" not in recent_text
+
+    # The full-screen backdrop is what makes this a real overlay rather than
+    # decoration — it intercepts clicks to whatever is behind it, the hamburger
+    # itself included, so closing goes through Escape (or the backdrop/close
+    # button), the same as the main hamburger Drawer.
+    page.keyboard.press("Escape")
+    page.wait_for_selector("[data-testid=chat-history-drawer][data-open=false]")
+
+
+def test_pinning_from_the_drawer_moves_it_into_the_pinned_group(page):
+    from jarvis import chat_store
+
+    convo = chat_store.create_conversation()
+    chat_store.rename_conversation(convo["id"], "ToPin")
+
+    page.click("[data-testid=chat-history-menu]")
+    row = page.locator("[data-testid=drawer-chat-row]", has_text="ToPin")
+    row.wait_for()
+    assert page.locator("[data-testid=drawer-pinned-list]").count() == 0
+
+    row.locator("[data-testid=drawer-toggle-pin]").click()
+    page.wait_for_selector("[data-testid=drawer-pinned-list]")
+    assert "ToPin" in page.locator("[data-testid=drawer-pinned-list]").inner_text()
+    assert chat_store.get_conversation(convo["id"])["pinned"] is True
+
+
+def test_view_all_in_the_drawer_opens_the_full_chat_history_page(page):
+    page.click("[data-testid=chat-history-menu]")
+    page.wait_for_selector("[data-testid=chat-history-drawer][data-open=true]")
+    page.click("[data-testid=drawer-view-all]")
+    page.wait_for_url("**#/chat-history")
+    assert page.locator("h1").inner_text() == "Chat History"
+
+
+def test_resuming_from_the_drawer_actually_loads_the_transcript(page):
+    """A real, previously-live gap this closes: activating a conversation
+    alone changes what the SERVER thinks is current, but does nothing to the
+    panel's own `turns` state — so without a real reload, picking one up read
+    as having silently done nothing."""
+    from jarvis import chat_store
+
+    convo = chat_store.create_conversation()
+    chat_store.rename_conversation(convo["id"], "Old Thread")
+    chat_store.append_message(convo["id"], {"role": "user", "text": "remember the rhubarb pie"})
+    chat_store.append_message(convo["id"], {"role": "assistant", "text": "Noted: rhubarb pie."})
+
+    page.click("[data-testid=chat-history-menu]")
+    page.locator("[data-testid=drawer-resume]", has_text="Old Thread").click()
+    page.wait_for_selector("[data-testid=chat-history-drawer][data-open=false]")
+    page.wait_for_selector("text=Noted: rhubarb pie.", timeout=10_000)
+
+
+def test_deleting_a_chat_sends_it_to_a_real_recycle_bin_and_back(page):
+    from jarvis import chat_store
+
+    convo = chat_store.create_conversation()
+    chat_store.rename_conversation(convo["id"], "Doomed")
+
+    go_to(page, "chat-history")
+    page.locator("[data-testid=history-row]", has_text="Doomed").click()
+    page.click("[data-testid=delete-conversation]")
+    page.wait_for_selector("[data-testid=modal]", state="detached")
+    assert chat_store.is_trashed(convo["id"]) is True
+
+    page.click("[data-testid=open-chat-recycle-bin]")
+    page.locator("[data-testid=chat-recycle-bin-row]", has_text="Doomed").wait_for()
+
+    page.locator("[data-testid=chat-recycle-bin-row]", has_text="Doomed") \
+        .locator("[data-testid=restore-conversation]").click()
+    page.wait_for_selector("[data-testid=chat-recycle-bin-row]", state="detached")
+    assert chat_store.is_trashed(convo["id"]) is False
+
+
+def test_permanently_deleting_from_the_chat_recycle_bin(page):
+    from jarvis import chat_store
+
+    convo = chat_store.create_conversation()
+    chat_store.rename_conversation(convo["id"], "GoneForGood")
+    chat_store.delete_conversation(convo["id"])
+
+    go_to(page, "chat-history")
+    page.click("[data-testid=open-chat-recycle-bin]")
+    row = page.locator("[data-testid=chat-recycle-bin-row]", has_text="GoneForGood")
+    row.wait_for()
+    row.locator("[data-testid=delete-conversation-forever]").click()
+    page.wait_for_selector("[data-testid=chat-recycle-bin-row]", state="detached")
+    assert chat_store.is_conversation(convo["id"]) is False
+
+
 def test_no_screen_draws_its_own_title_over_the_one_the_shell_draws(page):
     """A real bug this caught, and the reason it is now checked on every screen.
 

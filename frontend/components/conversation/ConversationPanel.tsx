@@ -3,7 +3,7 @@
 import { Composer } from '@/components/composer/Composer';
 import { Transcript } from '@/components/conversation/Transcript';
 import type { Turn } from '@/components/conversation/Message';
-import { NewChatIcon } from '@/components/ui/Icons';
+import { MenuIcon, NewChatIcon } from '@/components/ui/Icons';
 import { IconButton } from '@/components/ui/IconButton';
 
 /**
@@ -30,6 +30,8 @@ export function ConversationPanel({
   isSpeaking,
   draftText,
   onDraftConsumed,
+  historyOpen,
+  onToggleHistory,
 }: {
   turns: Turn[];
   notConfigured: boolean;
@@ -43,6 +45,15 @@ export function ConversationPanel({
   /** Passed straight through to the composer — see there. */
   draftText?: string | null;
   onDraftConsumed?: () => void;
+  /** Whether the chat-history slide-out is open. Owned by the caller, not
+   *  this panel — the drawer itself is rendered at the page's top level, not
+   *  nested in here: this container's own `backdrop-blur-xl` creates a
+   *  containing block for `position: fixed` descendants, which trapped an
+   *  earlier version of the drawer inside this small floating panel instead
+   *  of the real viewport (confirmed live — it slid in on top of the very
+   *  button that opened it). */
+  historyOpen?: boolean;
+  onToggleHistory?: () => void;
 }) {
   return (
     <div
@@ -52,6 +63,17 @@ export function ConversationPanel({
                  focus-within:border-accent/25"
     >
       <div className="flex items-center gap-2 px-4 py-2">
+        {/* Same area as New chat, on the left: chat history is a sibling
+            action on this panel, not a separate destination. */}
+        <IconButton
+          label="Chat history"
+          data-testid="chat-history-menu"
+          className="-ml-1 h-8 w-8"
+          active={historyOpen}
+          onClick={onToggleHistory}
+        >
+          <MenuIcon className="h-[18px] w-[18px]" />
+        </IconButton>
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-ink-faint">
           Conversation
         </h2>

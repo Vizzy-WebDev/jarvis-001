@@ -19,6 +19,10 @@ export interface Conversation {
   archived: boolean;
   /** Absent unless the query computed it — a listing has it, a single fetch does not. */
   messageCount?: number;
+  /** Present only once it has been moved to the recycle bin — absent for an
+   *  active conversation, never null. Gone for good 30 days after this, or
+   *  sooner if emptied by hand. */
+  deletedAt?: string;
 }
 
 export type MessageRole = 'user' | 'assistant' | 'tool';

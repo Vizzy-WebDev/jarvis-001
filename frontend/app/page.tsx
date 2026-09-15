@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { ChatHistoryDrawer } from '@/components/conversation/ChatHistoryDrawer';
 import { ConversationPanel } from '@/components/conversation/ConversationPanel';
 import { attachmentOf, type Turn } from '@/components/conversation/Message';
 import { AppControlScreen } from '@/components/screens/AppControlScreen';
@@ -51,6 +52,7 @@ const newId = () => `t${(nextId += 1)}`;
 export default function Home() {
   const [section, go] = useHashRoute();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [speakReplies, setSpeakReplies] = useState(false);
   const [sharing, setSharing] = useState(false);
@@ -262,6 +264,27 @@ export default function Home() {
   }
 
   /**
+   * Picking an old conversation back up — from the chat-history slide-out, or
+   * from the full Chat History page's own "Pick up where this left off."
+   * Activating alone changes what the SERVER thinks is current; without
+   * re-fetching and repainting `turns`, the panel would keep showing whatever
+   * was already there, which reads as the resume having silently done nothing.
+   */
+  async function resumeConversation(id: string) {
+    running.current?.cancel();
+    try {
+      await api.conversations.activate(id);
+      const detail = await api.conversations.open(id);
+      setTurns(detail.messages.filter(isShown).map(toTurn));
+    } catch (err) {
+      setStatus(err instanceof ApiRequestError ? err.message : 'Could not open that conversation.');
+      return;
+    }
+    setBusy(false);
+    setOrbState('idle');
+  }
+
+  /**
    * Start or stop listening.
    *
    * The engine is built on demand and torn down completely when it stops: it
@@ -349,7 +372,8 @@ export default function Home() {
       <main className="h-screen">
         <Drawer open={drawerOpen} current={section} onClose={() => setDrawerOpen(false)} onNavigate={go} />
         <GenericScreen section={section} onMenu={() => setDrawerOpen(true)}>
-          {screenFor(section.id, go, startChatWith) ?? <NotPortedYet section={section} />}
+          {screenFor(section.id, go, startChatWith, (id) => void resumeConversation(id))
+            ?? <NotPortedYet section={section} />}
         </GenericScreen>
       </main>
     );
@@ -358,6 +382,23 @@ export default function Home() {
   return (
     <main className="relative h-screen overflow-hidden">
       <Drawer open={drawerOpen} current={section} onClose={() => setDrawerOpen(false)} onNavigate={go} />
+
+      {/* Rendered here, not inside ConversationPanel: that panel's own
+          backdrop-blur-xl creates a containing block for position:fixed
+          descendants, which trapped an earlier version of this drawer inside
+          the small floating panel instead of the real viewport. */}
+      <ChatHistoryDrawer
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        onViewAll={() => {
+          setHistoryOpen(false);
+          go('chat-history');
+        }}
+        onResume={(id) => {
+          setHistoryOpen(false);
+          void resumeConversation(id);
+        }}
+      />
 
       <Header
         unread={unread}
@@ -466,6 +507,8 @@ export default function Home() {
             onDecide={decide}
             draftText={composerDraft}
             onDraftConsumed={() => setComposerDraft(null)}
+            historyOpen={historyOpen}
+            onToggleHistory={() => setHistoryOpen((was) => !was)}
             // Only one recognition session runs reliably at a time, so the
             // voice engine stands down when the composer's own mic starts.
             onDictationStart={() => {
@@ -525,7 +568,12 @@ function clearReply(turns: Turn[]): Turn[] {
 
 /** The screen for a section, or nothing if it is still being ported. One place
  *  rather than a branch inside the render, so adding a screen is one line. */
-function screenFor(id: string, go: (id: string) => void, startChatWith: (draft: string) => void): React.ReactNode {
+function screenFor(
+  id: string,
+  go: (id: string) => void,
+  startChatWith: (draft: string) => void,
+  resumeConversation: (id: string) => void,
+): React.ReactNode {
   if (id === 'notifications') return <NotificationsScreen onNavigate={go} />;
   if (id === 'models') return <ModelsScreen />;
   if (id === 'tasks') return <TasksScreen onNavigate={go} />;
@@ -535,7 +583,9 @@ function screenFor(id: string, go: (id: string) => void, startChatWith: (draft: 
   if (id === 'jobs') return <JobsScreen />;
   if (id === 'briefing') return <BriefingScreen onNavigate={go} />;
   if (id === 'skills') return <SkillsScreen onCreateWithJarvis={startChatWith} />;
-  if (id === 'chat-history') return <ChatHistoryScreen onNavigate={go} />;
+  if (id === 'chat-history') {
+    return <ChatHistoryScreen onNavigate={go} onResumeConversation={resumeConversation} />;
+  }
   if (id === 'app-control') return <AppControlScreen />;
   return null;
 }

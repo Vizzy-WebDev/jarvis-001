@@ -62,7 +62,10 @@ def test_full_text_search_works(scratch):
     # FTS5 is the reason SQLite was chosen over a JSON file in the first place;
     # a build of Python without it would fail here rather than at runtime.
     db = get_db()
-    db.execute("INSERT INTO conversations VALUES ('c1','T','t','t',0,0)")
+    db.execute(
+        "INSERT INTO conversations (id, title, created_at, updated_at, pinned, archived) "
+        "VALUES ('c1','T','t','t',0,0)"
+    )
     db.execute(
         "INSERT INTO messages (conversation_id, seq, role, text, created_at) "
         "VALUES ('c1', 1, 'user', 'the quick brown fox', 't')"

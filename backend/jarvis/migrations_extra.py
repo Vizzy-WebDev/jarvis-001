@@ -134,4 +134,142 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
         CREATE INDEX IF NOT EXISTS idx_jobs_priority ON jobs(priority, created_at);
         """
     ],
+
+    # 24: The AI Model System — providers, models, profiles, health, usage.
+    #
+    # A ground-up rebuild of the model infrastructure layer (jarvis/ai/),
+    # replacing the JSON-file-backed connections/deployments/availability/effort
+    # stores the earlier catalog/gateway build used. Five entities, each with a
+    # real reason to be its own table rather than folded into another:
+    #
+    # `ai_providers` is a saved address + credential reference + wire format.
+    # `ai_models` is one model made callable through one provider — the
+    # crossing-axis unit a router actually chooses between, so the same model
+    # reachable two ways is two independent rows with their own health and
+    # usage, never one row silently shared. `capabilities_discovered_json`
+    # (what the provider reported) and `capabilities_override_json` (what a
+    # person corrected) are kept as separate columns rather than one merged
+    # blob so provenance survives a restart; the third source — this build's
+    # own small seed of known model families — is a pattern table matched
+    # fresh on every read (`ai/registry.py`'s `SEED`), never stored, so a
+    # better seed shipped tomorrow applies to an existing row with no
+    # migration touching it. Same shape for `reasoning_*_json`.
+    #
+    # `ai_health` is its own table, not a column on `ai_models`, because it is
+    # written on nearly every call and read on nearly every routing decision —
+    # a write-heavy, small-payload access pattern that has no business sharing
+    # a row (and a lock) with a model's rarely-changed configuration.
+    #
+    # `ai_usage` is the per-request ledger (§17/§30): one row per attempted
+    # call, success or failure, carrying enough to reconstruct why a model was
+    # chosen and what happened when it answered — `fallback_chain_json` is the
+    # ordered list of every candidate tried before this row's outcome.
+    24: [
+        """
+        CREATE TABLE IF NOT EXISTS ai_providers (
+          id                   TEXT PRIMARY KEY,
+          label                TEXT NOT NULL,
+          kind                 TEXT NOT NULL,
+          adapter              TEXT NOT NULL,
+          base_url             TEXT,
+          auth_method          TEXT NOT NULL DEFAULT 'api_key',
+          credential_ref       TEXT,
+          key_required         INTEGER,
+          enabled              INTEGER NOT NULL DEFAULT 1,
+          builtin              INTEGER NOT NULL DEFAULT 0,
+          discovery_supported  INTEGER,
+          config_json          TEXT NOT NULL DEFAULT '{}',
+          created_at           TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS ai_models (
+          id                            TEXT PRIMARY KEY,
+          provider_id                   TEXT NOT NULL REFERENCES ai_providers(id) ON DELETE CASCADE,
+          native_model_id               TEXT NOT NULL,
+          display_name                  TEXT,
+          label                         TEXT,
+          family                        TEXT,
+          version_label                 TEXT,
+          status                        TEXT NOT NULL DEFAULT 'unknown',
+          release_date                  TEXT,
+          deprecation_date              TEXT,
+          context_window                INTEGER,
+          max_input_tokens              INTEGER,
+          max_output_tokens             INTEGER,
+          capabilities_discovered_json  TEXT NOT NULL DEFAULT '{}',
+          capabilities_override_json    TEXT NOT NULL DEFAULT '{}',
+          parameters_json               TEXT NOT NULL DEFAULT '{}',
+          reasoning_discovered_json     TEXT NOT NULL DEFAULT '{}',
+          reasoning_override_json       TEXT NOT NULL DEFAULT '{}',
+          pricing_json                  TEXT,
+          quality                       INTEGER,
+          enabled                       INTEGER NOT NULL DEFAULT 1,
+          notes                         TEXT,
+          discovered_at                 TEXT,
+          created_at                    TEXT NOT NULL,
+          UNIQUE(provider_id, native_model_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_models_provider ON ai_models(provider_id);
+
+        CREATE TABLE IF NOT EXISTS ai_profiles (
+          id                  TEXT PRIMARY KEY,
+          label               TEXT NOT NULL,
+          model_id            TEXT REFERENCES ai_models(id) ON DELETE SET NULL,
+          reasoning_level     TEXT,
+          params_json         TEXT NOT NULL DEFAULT '{}',
+          tool_behavior_json  TEXT NOT NULL DEFAULT '{}',
+          is_default          INTEGER NOT NULL DEFAULT 0,
+          builtin             INTEGER NOT NULL DEFAULT 0,
+          created_at          TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS ai_health (
+          model_id      TEXT PRIMARY KEY REFERENCES ai_models(id) ON DELETE CASCADE,
+          state         TEXT NOT NULL,
+          detail        TEXT,
+          technical     TEXT,
+          since         TEXT NOT NULL,
+          failure_count INTEGER NOT NULL DEFAULT 0,
+          last_success  TEXT,
+          last_failure  TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS ai_usage (
+          id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+          request_id           TEXT NOT NULL,
+          ts                   TEXT NOT NULL,
+          provider_id          TEXT,
+          model_id             TEXT,
+          role                 TEXT,
+          tokens_in            INTEGER,
+          tokens_out           INTEGER,
+          tokens_reasoning     INTEGER,
+          cached_in            INTEGER,
+          cost_estimate        REAL,
+          latency_ms           INTEGER,
+          ttft_ms              INTEGER,
+          success              INTEGER NOT NULL,
+          error_type           TEXT,
+          fallback_chain_json  TEXT,
+          session_id           TEXT,
+          background           INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_usage_ts ON ai_usage(ts);
+        CREATE INDEX IF NOT EXISTS idx_ai_usage_model ON ai_usage(model_id);
+        CREATE INDEX IF NOT EXISTS idx_ai_usage_request ON ai_usage(request_id);
+        """
+    ],
+
+    # 25: A recycle bin for chat history, the same shape the notifications
+    # store already uses for its own trash — deleting a conversation moves it
+    # here instead of dropping it (and, via ON DELETE CASCADE, every message
+    # in it) immediately and irreversibly. NULL means "not trashed", so every
+    # existing conversation is unaffected by this migration; a real timestamp
+    # is both the recycle-bin sort key and the 30-day auto-purge clock.
+    25: [
+        """
+        ALTER TABLE conversations ADD COLUMN deleted_at TEXT;
+        CREATE INDEX IF NOT EXISTS idx_conversations_deleted ON conversations(deleted_at);
+        """
+    ],
 }

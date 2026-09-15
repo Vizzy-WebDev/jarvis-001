@@ -11,7 +11,9 @@ from __future__ import annotations
 import pytest
 from starlette.testclient import TestClient
 
-from jarvis.gateway import availability, connections, deployments, setup
+from jarvis.model_system import setup
+from jarvis.model_system.providers import list_providers
+from jarvis.model_system.registry import list_models
 
 from stub_openai_server import StubModelServer
 
@@ -20,9 +22,7 @@ from stub_openai_server import StubModelServer
 def client(scratch):
     from jarvis.main import create_app
 
-    availability.reset_for_tests()
     yield TestClient(create_app())
-    availability.reset_for_tests()
 
 
 @pytest.fixture
@@ -38,7 +38,7 @@ def test_adding_one_model_proves_that_model_can_answer(client, stub):
     produce a token. Listing would only prove the address exists."""
     stub.says("ready")
     added = client.post("/api/connections", json={
-        "adapter": "openai-compatible", "baseUrl": stub.base_url,
+        "adapter": "openai_compatible", "baseUrl": stub.base_url,
         "label": "stub", "models": ["stub-model"]}).json()
 
     assert added["ok"] is True
@@ -53,7 +53,7 @@ def test_adding_several_models_proves_the_ADDRESS_not_one_arbitrary_model(client
     generating with whichever model happened to sort first. Several models means
     the honest question is "is this connection real", answered by listing."""
     added = client.post("/api/connections", json={
-        "adapter": "openai-compatible", "baseUrl": stub.base_url,
+        "adapter": "openai_compatible", "baseUrl": stub.base_url,
         "label": "stub", "models": ["one", "two", "three"]}).json()
 
     assert added["ok"] is True
@@ -64,11 +64,11 @@ def test_adding_several_models_proves_the_ADDRESS_not_one_arbitrary_model(client
 
 def test_a_connection_that_cannot_be_reached_is_refused_with_a_reason(client):
     refused = client.post("/api/connections", json={
-        "adapter": "openai-compatible", "baseUrl": "http://127.0.0.1:19999/v1",
+        "adapter": "openai_compatible", "baseUrl": "http://127.0.0.1:19999/v1",
         "label": "nothing there", "models": ["a", "b"]})
     assert refused.status_code == 400
     assert refused.json()["error"]
-    assert connections.list_connections() == []
+    assert list_providers() == []
 
 
 def test_no_provider_and_no_adapter_is_a_plain_refusal(client):
@@ -80,7 +80,7 @@ def test_no_provider_and_no_adapter_is_a_plain_refusal(client):
 def test_a_key_goes_in_and_never_comes_back_out(client, stub):
     stub.says("ready")
     added = client.post("/api/connections", json={
-        "adapter": "openai-compatible", "baseUrl": stub.base_url, "label": "keyed",
+        "adapter": "openai_compatible", "baseUrl": stub.base_url, "label": "keyed",
         "secret": "sk-super-secret-value", "models": ["stub-model"]})
     assert added.status_code == 200
     assert "sk-super-secret-value" not in added.text
@@ -92,29 +92,29 @@ def test_a_key_goes_in_and_never_comes_back_out(client, stub):
 def test_discovery_distinguishes_found_nothing_from_could_not_reach(client, stub):
     stub.models = [{"id": "alpha"}, {"id": "beta"}]
     found = client.post("/api/connections/discover", json={
-        "adapter": "openai-compatible", "baseUrl": stub.base_url}).json()
+        "adapter": "openai_compatible", "baseUrl": stub.base_url}).json()
     assert [m["model"] for m in found["models"]] == ["alpha", "beta"]
     assert found["error"] is None
 
     unreachable = client.post("/api/connections/discover", json={
-        "adapter": "openai-compatible", "baseUrl": "http://127.0.0.1:19999/v1"}).json()
+        "adapter": "openai_compatible", "baseUrl": "http://127.0.0.1:19999/v1"}).json()
     assert unreachable["models"] == []
     assert unreachable["error"], "an unreachable address answered like an empty one"
 
 
 def test_discovery_resolves_a_named_providers_own_adapter_not_openai_compatible(client, monkeypatch):
-    """Gemini's and Anthropic's own catalog presets have no base URL — their SDKs
-    need none — so before this fix, discovery with no adapter/baseUrl supplied
+    """Gemini's and Anthropic's own presets have no base URL — their SDKs need
+    none — so before this fix, discovery with no adapter/baseUrl supplied
     silently defaulted to the openai-compatible adapter, which meant a Gemini or
     Anthropic key typed into "Add a model" was sent to OpenAI's real API instead
     of the provider actually chosen. `provider` must resolve the same real
     adapter the Save endpoint (`/api/connections`) already resolves for a fixed
-    provider, rather than falling back to openai-compatible just because no
+    template, rather than falling back to openai_compatible just because no
     address was typed."""
     resolved: list[str | None] = []
 
     class _FakeModule:
-        def list_models(self, entry):
+        def discover_models(self, provider):
             return []
 
     def fake_get_adapter(adapter):
@@ -127,7 +127,7 @@ def test_discovery_resolves_a_named_providers_own_adapter_not_openai_compatible(
     client.post("/api/connections/discover", json={"provider": "anthropic", "secret": "fake-key"})
 
     assert resolved == ["gemini", "anthropic"], (
-        "discovery defaulted to the openai-compatible adapter instead of resolving "
+        "discovery defaulted to the openai_compatible adapter instead of resolving "
         "the chosen provider's own adapter")
 
 
@@ -138,7 +138,7 @@ def test_discovery_against_a_saved_connection_hides_what_is_already_added(client
     stub.says("ready")
     stub.models = [{"id": "alpha"}, {"id": "beta"}]
     conn_id = client.post("/api/connections", json={
-        "adapter": "openai-compatible", "baseUrl": stub.base_url, "label": "stub",
+        "adapter": "openai_compatible", "baseUrl": stub.base_url, "label": "stub",
         "models": ["alpha"]}).json()["connection"]["id"]
 
     found = client.post("/api/connections/discover", json={"connectionId": conn_id}).json()
@@ -148,20 +148,20 @@ def test_discovery_against_a_saved_connection_hides_what_is_already_added(client
 def test_removing_a_connection_removes_the_models_that_hung_off_it(client, stub):
     stub.says("ready")
     conn_id = client.post("/api/connections", json={
-        "adapter": "openai-compatible", "baseUrl": stub.base_url, "label": "stub",
+        "adapter": "openai_compatible", "baseUrl": stub.base_url, "label": "stub",
         "models": ["one", "two"]}).json()["connection"]["id"]
     # Two models: the multi-add path, so nothing was generated with.
-    assert len(deployments.list_deployments()) == 2
+    assert len(list_models()) == 2
 
     answer = client.delete(f"/api/connections/{conn_id}").json()
     assert answer == {"ok": True, "removedModels": 2}
-    assert deployments.list_deployments() == []
+    assert list_models() == []
 
 
 def test_testing_a_model_updates_its_badge_both_ways(client, stub):
     stub.says("ready")
     model_id = client.post("/api/connections", json={
-        "adapter": "openai-compatible", "baseUrl": stub.base_url, "label": "stub",
+        "adapter": "openai_compatible", "baseUrl": stub.base_url, "label": "stub",
         "models": ["stub-model"]}).json()["added"][0]["id"]
 
     stub.fails(500, "everything is on fire")
@@ -183,7 +183,7 @@ def test_the_default_recheck_only_touches_what_is_not_already_working(client, st
     real request on a roster that is routinely rate-limited."""
     stub.says("ready")
     client.post("/api/connections", json={
-        "adapter": "openai-compatible", "baseUrl": stub.base_url, "label": "stub",
+        "adapter": "openai_compatible", "baseUrl": stub.base_url, "label": "stub",
         "models": ["good"]})
     before = len(stub.requests)
 
@@ -197,7 +197,7 @@ def test_the_default_recheck_only_touches_what_is_not_already_working(client, st
 def test_the_preview_costs_nothing_to_ask(client, stub):
     stub.says("ready")
     client.post("/api/connections", json={
-        "adapter": "openai-compatible", "baseUrl": stub.base_url, "label": "stub",
+        "adapter": "openai_compatible", "baseUrl": stub.base_url, "label": "stub",
         "models": ["good"]})
     before = len(stub.requests)
 
@@ -219,8 +219,8 @@ def test_probing_an_unknown_address_reports_what_it_tried(client, stub):
 
 
 def test_a_provider_nobody_shipped_is_accepted_when_an_address_is_given(client, stub):
-    """The five entries in `providers.py` are setup PRESETS, not the set of
-    providers that may exist.
+    """`BUILTIN_TEMPLATES` are setup PRESETS, not the set of providers that may
+    exist.
 
     Treating them as a closed enum is the same hardcoding this rebuild removes
     one layer down — a person running something nobody has heard of should not
@@ -230,7 +230,7 @@ def test_a_provider_nobody_shipped_is_accepted_when_an_address_is_given(client, 
 
     added = client.post("/api/connections", json={
         "provider": "something-nobody-shipped",
-        "adapter": "openai-compatible",
+        "adapter": "openai_compatible",
         "baseUrl": stub.base_url,
         "models": ["stub-model"],
     }).json()
@@ -255,8 +255,7 @@ def test_an_unknown_provider_with_no_address_still_says_what_is_missing(client):
     {"overrides": {"capabilities": "not a mapping"}},
     {"overrides": {"capabilities": {"vision": "maybe"}}},
     {"overrides": {"quality": 99999}},
-    {"overrides": {"context_tokens": -1}},
-    {"overrides": {"lifecycle": 12}},
+    {"overrides": {"quality": -1}},
     {"overrides": {"effort": [1, 2]}},
     {"overrides": "not a mapping at all"},
 ])
@@ -264,17 +263,17 @@ def test_a_malformed_override_cannot_take_the_whole_roster_down(client, stub, ho
     """`overrides` is user-owned data by design — Source.USER beats everything —
     and it is reachable straight from a PATCH body.
 
-    What makes it worth a test of its own is WHEN it is read. A deployment
-    resolves its version at read time, on every routing pass, so a value that
+    What makes it worth a test of its own is WHEN it is read. A model resolves
+    its effective facts at read time, on every routing pass, so a value that
     raises during resolution does not spoil the request that set it: it empties
     the roster on the next read, taking the models screen, the status route and
     every turn with it. One bad PATCH, and the app reports having no models.
     """
     stub.says("ready")
     added = client.post("/api/connections", json={
-        "provider": "custom", "adapter": "openai-compatible",
+        "provider": "custom", "adapter": "openai_compatible",
         "baseUrl": stub.base_url, "models": ["some-model"],
-        "resolved": {"adapter": "openai-compatible", "baseUrl": stub.base_url,
+        "resolved": {"adapter": "openai_compatible", "baseUrl": stub.base_url,
                      "keyRequired": False, "kind": "local"}}).json()
     model_id = added["added"][0]["id"]
 

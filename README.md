@@ -71,7 +71,7 @@ OpenAI-compatible gateway can all be added afterward from Model Settings.
   at every trust level.
 - **Skills, and connected apps/services.** Folder-based Skills (house style,
   templates, a process to follow) install from a `.zip` or a public GitHub repo link.
-  Separately, App Control connects real apps/services over MCP, API, or CLI, plus
+  Separately, Connector connects real apps/services over MCP, API, or CLI, plus
   Jarvis's own built-in ability to actually operate your desktop — click, type,
   launch apps, read what's on screen — always with a spoken heads-up and your
   explicit OK before it takes over.

@@ -19,7 +19,8 @@ from jarvis import chat_store, conversation
 from jarvis.db import reset_for_tests as reset_db
 from jarvis.events import EventType
 from jarvis.events.bus import EventBus
-from jarvis.gateway import availability, connections, deployments
+from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
+from jarvis.model_system.registry import add_model
 from jarvis.memory import review, store
 from jarvis.memory.policy import AUTO_APPROVE, REQUIRE_APPROVAL, THRESHOLDS, decide
 
@@ -30,9 +31,7 @@ from stub_openai_server import StubModelServer
 def _isolate(scratch):
     reset_db()
     conversation.reset_for_tests()
-    availability.reset_for_tests()
     yield
-    availability.reset_for_tests()
     conversation.reset_for_tests()
     reset_db()
 
@@ -137,15 +136,27 @@ def test_resolving_a_conflict_with_the_new_fact_edits_rather_than_duplicates():
 
 
 def test_an_unreviewed_draft_dies_with_its_conversation_but_a_memory_does_not():
-    """Enforced by the schema, not by remembering."""
+    """Enforced by the schema (a real, permanent delete), not by remembering."""
     convo = chat_store.create_conversation()
     store.create_candidate(conversation_id=convo["id"], source_kind="chat",
                            category="About You", text="A draft.", confidence=0.2)
     memory = store.create_memory(category="About You", text="An approved fact.")
 
+    # "Delete" moves the conversation to the recycle bin — reversible, so its
+    # candidate is suppressed rather than gone.
     chat_store.delete_conversation(convo["id"])
     assert store.list_pending_candidates() == []
     assert store.get_memory(memory["id"]) is not None
+
+    # Restoring brings it back into review with no extra step needed.
+    chat_store.restore_conversation(convo["id"])
+    assert len(store.list_pending_candidates()) == 1
+
+    # Only a real, permanent delete removes the row for good, via the
+    # existing ON DELETE CASCADE.
+    chat_store.delete_conversation(convo["id"])
+    assert chat_store.purge_conversation(convo["id"]) is True
+    assert store.list_pending_candidates() == []
 
 
 # --- the checkpoint engine ---------------------------------------------------
@@ -154,10 +165,10 @@ def test_an_unreviewed_draft_dies_with_its_conversation_but_a_memory_does_not():
 def stub():
     server = StubModelServer()
     server.base_url = server.start()
-    conn = connections.add_connection(adapter="openai-compatible", base_url=server.base_url,
-                                      label="stub", provider="custom", kind="local",
-                                      key_required=False)
-    deployments.add_deployment(connection_id=conn["id"], model="stub-model")
+    provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
+                            base_url=server.base_url, auth_method=AuthMethod.NONE,
+                            key_required=False)
+    add_model(provider_id=provider.id, native_model_id="stub-model")
     yield server
     server.stop()
 

@@ -3,6 +3,11 @@
 A port of server/server.js's /api/conversations routes. Status codes and error
 message TEXT are reproduced exactly: the front end shows these strings to the
 user directly, so a reworded 404 is a user-visible change, not an internal one.
+
+"Deleting" moves a conversation to the recycle bin (`chat_store.py`'s
+`delete_conversation()`) rather than dropping it immediately — see the
+`/conversations/trash` routes below for restoring, permanently deleting one,
+or emptying the whole bin.
 """
 
 from __future__ import annotations
@@ -44,6 +49,35 @@ def list_conversations(
 @router.post("/conversations")
 def new_conversation() -> dict[str, Any]:
     return {"conversation": reset_conversation()}
+
+
+# --- the recycle bin ------------------------------------------------------------
+# Registered before the "/{conversation_id}" routes below: FastAPI matches path
+# operations in registration order, and "/conversations/trash" would otherwise
+# be swallowed by "/conversations/{conversation_id}" with conversation_id="trash".
+
+@router.get("/conversations/trash")
+def trash_listed() -> dict[str, Any]:
+    return {"conversations": chat_store.trash_listed()}
+
+
+@router.delete("/conversations/trash")
+def empty_trash() -> dict[str, Any]:
+    return {"ok": True, "removed": chat_store.empty_conversation_trash()}
+
+
+@router.post("/conversations/{conversation_id}/restore")
+def restore(conversation_id: str):
+    if not chat_store.is_conversation(conversation_id):
+        return _not_found()
+    return {"conversation": chat_store.restore_conversation(conversation_id)}
+
+
+@router.delete("/conversations/{conversation_id}/permanent")
+def permanent(conversation_id: str):
+    if not chat_store.purge_conversation(conversation_id):
+        return _not_found()
+    return {"ok": True}
 
 
 @router.get("/conversations/{conversation_id}")

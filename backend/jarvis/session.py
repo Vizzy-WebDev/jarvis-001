@@ -113,11 +113,15 @@ def activate_conversation(conversation_id: str) -> dict[str, Any]:
     """Switch to an existing conversation and hydrate its transcript back into
     the working set, so the model has its context again.
 
-    Raises LookupError if the id does not exist.
+    Raises LookupError if the id does not exist, or sits in the recycle bin —
+    resuming something the user just put there needs restoring it first,
+    never a side effect of picking it back up.
     """
     global _active_id
     if not chat_store.is_conversation(conversation_id):
         raise LookupError("That conversation no longer exists.")
+    if chat_store.is_trashed(conversation_id):
+        raise LookupError("That conversation is in the recycle bin — restore it first.")
     conversation.hydrate(conversation_id)
     chat_store.set_active_id(conversation_id)
     with _lock:

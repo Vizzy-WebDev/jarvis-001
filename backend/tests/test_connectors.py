@@ -384,16 +384,22 @@ def test_a_risky_connector_tool_confirms_even_though_nobody_declared_it():
 
 def test_a_tool_the_user_turned_off_is_absent_rather_than_refused():
     """Being told no is worse than never being offered: the model spends a step
-    finding out, and then has to explain it."""
+    finding out, and then has to explain it.
+
+    Keyed by the PREFIXED name (`pet_store__deletepet`) — the only name a real
+    caller (the frontend) ever has. A real, previously-live bug: this lookup
+    used to happen by the RAW name, so setting a permission the way the UI
+    actually does (by the prefixed name shown to the user) silently never
+    took effect."""
     connector = _api_connector()
-    store.set_tool_permission(connector["id"], "deletepet", "deny")
+    store.set_tool_permission(connector["id"], "pet_store__deletepet", "deny")
     registry = CapabilityRegistry()
     assert capabilities.sync(registry) == ["pet_store__getpet"]
 
 
 def test_marking_a_tool_ask_makes_it_confirm_without_changing_what_it_is():
     connector = _api_connector()
-    store.set_tool_permission(connector["id"], "getpet", "ask")
+    store.set_tool_permission(connector["id"], "pet_store__getpet", "ask")
     registry = CapabilityRegistry()
     capabilities.sync(registry)
     assert registry.get("pet_store__getpet").risk is Risk.MEDIUM
@@ -403,7 +409,7 @@ def test_always_allow_cannot_stop_a_risky_tool_asking():
     """Standing permission and runtime confirmation are separate, and neither
     can suppress the other."""
     connector = _api_connector()
-    store.set_tool_permission(connector["id"], "deletepet", "allow")
+    store.set_tool_permission(connector["id"], "pet_store__deletepet", "allow")
     registry = CapabilityRegistry()
     capabilities.sync(registry)
     assert registry.get("pet_store__deletepet").risk is Risk.MEDIUM
@@ -558,9 +564,20 @@ def test_connectors_can_be_listed_inspected_and_removed(live_server):
         assert next(t for t in detail["tools"]
                     if t["name"] == "pet_store__deletepet")["confirms"] is True
 
+        # Keyed by the PREFIXED name — the only name a real caller (the
+        # frontend) ever has, since that is the only name `detail["tools"]`
+        # above ever showed it. A real, previously-live bug: `connector_specs()`
+        # used to look this permission up by the RAW name instead, so setting
+        # it by the prefixed name here (what the UI actually sends) silently
+        # never took effect at all.
         turned_off = client.patch(f"/api/connectors/{connector['id']}",
-                                  json={"toolPermissions": {"deletepet": "deny"}}).json()
+                                  json={"toolPermissions": {"pet_store__deletepet": "deny"}}).json()
         assert turned_off["ok"] is True
+        assert turned_off["connector"]["config"]["toolPermissions"] == {
+            "pet_store__deletepet": "deny"}
+
+        detail_after = client.get(f"/api/connectors/{connector['id']}").json()
+        assert {t["name"] for t in detail_after["tools"]} == {"pet_store__getpet"}
 
         assert client.delete(f"/api/connectors/{connector['id']}").json()["ok"] is True
         assert client.get(f"/api/connectors/{connector['id']}").status_code == 404

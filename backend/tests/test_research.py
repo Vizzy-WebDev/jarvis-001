@@ -12,7 +12,8 @@ import pytest
 
 from jarvis import research as research_module
 from jarvis.db import reset_for_tests as reset_db
-from jarvis.gateway import availability, connections, deployments
+from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
+from jarvis.model_system.registry import add_model
 from jarvis.research import Source, research, search, to_search_query
 
 from stub_openai_server import StubModelServer
@@ -21,9 +22,7 @@ from stub_openai_server import StubModelServer
 @pytest.fixture(autouse=True)
 def _isolate(scratch):
     reset_db()
-    availability.reset_for_tests()
     yield
-    availability.reset_for_tests()
     reset_db()
 
 
@@ -31,10 +30,10 @@ def _isolate(scratch):
 def stub():
     server = StubModelServer()
     server.base_url = server.start()
-    conn = connections.add_connection(adapter="openai-compatible", base_url=server.base_url,
-                                      label="stub", provider="custom", kind="local",
-                                      key_required=False)
-    deployments.add_deployment(connection_id=conn["id"], model="stub-model")
+    provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
+                            base_url=server.base_url, auth_method=AuthMethod.NONE,
+                            key_required=False)
+    add_model(provider_id=provider.id, native_model_id="stub-model")
     yield server
     server.stop()
 
@@ -125,8 +124,10 @@ def test_a_thin_web_result_escalates_to_a_model_that_can_search(stub, monkeypatc
     # capability, "nobody has asked" is not good enough (`routing.MUST_BE_CERTAIN`).
     # Setting it as a user override also exercises the §26 fix: what a model can
     # do is its own correctable fact, not a ceiling imposed by its adapter.
-    searcher = deployments.list_deployments()[0]
-    deployments.update_deployment(searcher["id"], {"overrides": {"capabilities": {"web_search": "yes"}}})
+    from jarvis.model_system.registry import list_models, update_model
+
+    searcher = list_models()[0]
+    update_model(searcher.id, {"capability_overrides": {"web_search": "yes"}})
     monkeypatch.setattr(research_module, "search", lambda q: [])
     stub.says("I looked it up: it's large.")
 

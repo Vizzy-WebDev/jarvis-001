@@ -216,9 +216,8 @@ def write_plan(project_id: str, *, event_bus: EventBus | None = None) -> dict[st
         raise KeyError("That project no longer exists.")
 
     def work() -> None:
-        from ..gateway.client import ask
-        from ..gateway.routing import Task
-        from ..gateway.routing import Role
+        from ..model_system.compat import Task, ask
+        from ..model_system.request import Role
 
         _announce(project, event_bus=event_bus, status="working", step="plan")
         try:
@@ -280,9 +279,8 @@ def write_prompts(project_id: str, target: dict[str, Any] | None = None, *,
     updated = store.update_project(project_id, {"target": chosen}) or project
 
     def work() -> None:
-        from ..gateway.client import ask
-        from ..gateway.routing import Task
-        from ..gateway.routing import Role
+        from ..model_system.compat import Task, ask
+        from ..model_system.request import Role
 
         _announce(updated, event_bus=event_bus, status="working", step="prompts")
         try:

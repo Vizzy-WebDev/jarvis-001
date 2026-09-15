@@ -152,3 +152,59 @@ def test_an_oversized_body_is_refused_even_with_an_image_content_type(icon_serve
 
 def test_a_404_is_refused_not_raised(icon_server):
     assert icons._fetch(f"{icon_server}/does-not-exist.png") is None
+
+
+# --- host_key_for() — where a connector's own logo could come from --------------
+
+def test_host_key_for_reads_the_right_field_per_mechanism():
+    assert icons.host_key_for({"type": "mcp", "config": {
+        "connectFlow": {"url": "https://mcp.notion.com/mcp"}}}) == "https://mcp.notion.com/mcp"
+    assert icons.host_key_for({"type": "api", "config": {
+        "baseUrl": "https://api.example.com"}}) == "https://api.example.com"
+    assert icons.host_key_for({"type": "cli", "config": {"command": "git"}}) is None
+    assert icons.host_key_for({"type": "mcp", "config": {}}) is None
+
+
+# --- the background sweep: gated, off by default, never blocks a request -------
+
+def test_refresh_every_connector_is_off_without_its_own_interlock(scratch, monkeypatch):
+    monkeypatch.delenv(icons.ENABLE_ENV, raising=False)
+    assert icons.is_enabled() is False
+    assert icons.start() is False
+
+
+def test_the_sweep_resolves_every_connector_with_a_real_address(scratch, monkeypatch):
+    """The one place this module makes a network call outside of a direct
+    `icon_for(refresh=True)` request — proven here by stubbing `_fetch` rather
+    than reaching the real DuckDuckGo icon service, same discipline as every
+    other test in this file."""
+    from jarvis.connectors import store
+
+    store.add_connector(type="mcp", label="Notion",
+                        config={"connectFlow": {"url": "https://mcp.notion.com/mcp"}})
+    store.add_connector(type="api", label="Pet Store", config={"baseUrl": "https://api.example.com"})
+    store.add_connector(type="cli", label="Git", config={"command": "git"})  # no address to resolve
+
+    calls = []
+    monkeypatch.setattr(icons, "_fetch",
+                        lambda url: calls.append(url) or "data:image/png;base64,aGVsbG8=")
+    found = icons.refresh_every_connector()
+    assert found == 2  # mcp + api; cli has nowhere to resolve from
+    assert icons.icon_for("mcp.notion.com", refresh=False)
+    assert icons.icon_for("api.example.com", refresh=False)
+
+
+def test_sweep_never_runs_without_the_interlock_even_with_real_connectors(scratch, monkeypatch):
+    """The gate that stops an ordinary `create_app()` from ever making a
+    network call nobody asked for."""
+    from jarvis.connectors import store
+
+    store.add_connector(type="mcp", label="Notion",
+                        config={"connectFlow": {"url": "https://mcp.notion.com/mcp"}})
+    monkeypatch.delenv(icons.ENABLE_ENV, raising=False)
+
+    calls = []
+    monkeypatch.setattr(icons, "_fetch", lambda url: calls.append(url) or None)
+    assert icons.start() is False
+    assert calls == []
+    icons.stop()

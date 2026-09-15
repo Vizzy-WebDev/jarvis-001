@@ -13,7 +13,8 @@ from starlette.testclient import TestClient
 
 from jarvis import external_services
 from jarvis.voice import options as voice
-from jarvis.gateway import connections, deployments
+from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
+from jarvis.model_system.registry import add_model
 
 
 @pytest.fixture
@@ -23,11 +24,11 @@ def client(scratch):
     return TestClient(create_app())
 
 
-def _connect(adapter: str, *, key: str | None = "k") -> dict:
-    conn = connections.add_connection(adapter=adapter, base_url="https://example.test",
-                                      label=adapter, secret=key, provider="custom",
-                                      kind="first-party", key_required=True)
-    return deployments.add_deployment(connection_id=conn["id"], model=f"{adapter}-model")
+def _connect(adapter: str, *, key: str | None = "k"):
+    provider = add_provider(label=adapter, kind=ProviderKind.NATIVE, adapter=adapter,
+                            base_url="https://example.test", auth_method=AuthMethod.API_KEY,
+                            key_required=True, secret=key)
+    return add_model(provider_id=provider.id, native_model_id=f"{adapter}-model")
 
 
 def test_with_nothing_configured_every_engine_says_why_not(client):
@@ -38,7 +39,7 @@ def test_with_nothing_configured_every_engine_says_why_not(client):
 
 
 def test_a_plain_model_unlocks_the_engines_that_only_need_a_model(client):
-    _connect("openai-compatible")
+    _connect("openai_compatible")
     engines = {e["id"]: e for e in client.get("/api/voice/options").json()["engines"]}
     assert engines["pipeline"]["available"] is True
     assert engines["duplex"]["available"] is True
@@ -50,27 +51,23 @@ def test_realtime_appears_because_an_adapter_DECLARES_it(client, monkeypatch):
     """Not because the code recognises a provider. Flipping the declaration on
     an adapter that does not have one is enough to make the engine appear —
     which is the whole point, and would fail against a hardcoded name."""
-    from jarvis import adapters
+    from jarvis.model_system.adapters import openai_compatible
 
-    _connect("openai-compatible")
+    _connect("openai_compatible")
     assert voice.realtime_models() == []
 
-    real = adapters.get_capabilities
-    monkeypatch.setattr(adapters, "get_capabilities",
-                        lambda name: {**real(name), "realtime": True})
-    monkeypatch.setattr(voice, "get_capabilities", adapters.get_capabilities)
+    monkeypatch.setattr(openai_compatible, "SUPPORTS_REALTIME", True)
 
     engines = {e["id"]: e for e in client.get("/api/voice/options").json()["engines"]}
     assert engines["realtime"]["available"] is True
-    assert engines["realtime"]["models"][0]["label"] == "openai-compatible-model"
+    assert engines["realtime"]["models"][0]["label"] == "openai_compatible-model"
 
 
 def test_a_realtime_capable_model_that_is_not_ready_does_not_count(client):
     """Declaring the capability is not enough — it has to actually be usable."""
-    conn = connections.add_connection(adapter="gemini", base_url=None, label="g",
-                                      provider="gemini", kind="first-party",
-                                      key_required=True)
-    deployments.add_deployment(connection_id=conn["id"], model="live-model")  # no key saved
+    provider = add_provider(label="g", kind=ProviderKind.NATIVE, adapter="gemini",
+                            auth_method=AuthMethod.API_KEY, key_required=True)
+    add_model(provider_id=provider.id, native_model_id="live-model")  # no key saved
 
     engines = {e["id"]: e for e in client.get("/api/voice/options").json()["engines"]}
     assert engines["realtime"]["available"] is False

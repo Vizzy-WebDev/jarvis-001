@@ -96,6 +96,37 @@ export const BackIcon = (p: IconProps) => (
   </Svg>
 );
 
+export const CheckIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M5 13l4 4L19 7" />
+  </Svg>
+);
+
+/** A map-pin teardrop — used for "pin this chat" and for marking a pinned
+ *  row, so the same shape means the same thing in both places. */
+export const PinIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 21s-7-6.2-7-11a7 7 0 1 1 14 0c0 4.8-7 11-7 11z" />
+    <circle cx="12" cy="10" r="2.5" />
+  </Svg>
+);
+
+/** Needs a decision before it runs — a clock, not a literal hand: reads clearly
+ *  at 14px, where a raised-hand glyph turns into a smudge. */
+export const AskIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 7v5l3.5 2" />
+  </Svg>
+);
+
+export const BlockIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M6.5 6.5l11 11" />
+  </Svg>
+);
+
 // --- one per section in the drawer -------------------------------------------
 // Drawn on the same grid and stroke as the rest, so a list of twelve reads as
 // one set rather than twelve borrowed glyphs.

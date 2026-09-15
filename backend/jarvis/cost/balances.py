@@ -69,13 +69,13 @@ def refresh_all() -> dict[str, Any]:
 def _openrouter_balance() -> dict[str, Any] | None:
     import httpx
 
-    from ..config import get_secret
-    from ..gateway.connections import list_connections
+    from ..model_system.credentials import resolve
+    from ..model_system.providers import list_providers
 
-    connection = next((c for c in list_connections() if c.get("provider") == "openrouter"), None)
-    if connection is None:
+    provider = next((p for p in list_providers() if "openrouter.ai" in (p.base_url or "")), None)
+    if provider is None:
         return None
-    key = get_secret(connection.get("secretRef") or "")
+    key = resolve(provider.credential_ref)
     if not key:
         return None
 

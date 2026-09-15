@@ -18,7 +18,7 @@ main chat:
 - **Chat History** — every past conversation, searchable
 - **Model Settings** — which AI models Jarvis can use, and how it picks between them
 - **Skills** — the abilities Jarvis has, and ones you can add
-- **App Control** — apps and services Jarvis is connected to (MCP/API/CLI), and its
+- **Connector** — apps and services Jarvis is connected to (MCP/API/CLI), and its
   built-in computer control
 - **Planning** — turn an idea into a plan and a ready-to-paste prompt
 - **Content Analysis** — hand Jarvis a video, article or file and ask about it
@@ -357,9 +357,9 @@ either way, quiet hours or not.
 
 ---
 
-## 13. App Control — connecting apps, and controlling your computer
+## 13. Connector — connecting apps, and controlling your computer
 
-Open the menu → **App Control** for two different things, in three tabs (MCP / API
+Open the menu → **Connector** for two different things, in three tabs (MCP / API
 / CLI):
 
 - **Connected apps and services** — click **+ Add** → **"Browse connectors"** for a
@@ -381,7 +381,7 @@ Open the menu → **App Control** for two different things, in three tabs (MCP /
 
 Just ask — *"take a screenshot"* drops a real image straight into your
 conversation; *"record my screen for a bit"* / *"stop recording"* saves a real,
-playable video the same way. Recordings are also listed on the **App Control**
+playable video the same way. Recordings are also listed on the **Connector**
 screen if you want to find one again later. This is different from Screen Sharing
 above, which is an ongoing mode rather than a one-off capture.
 
@@ -562,7 +562,7 @@ You can adjust how trigger-happy that second layer is from Model Settings →
 | Find something from a past conversation | Menu → Chat History, or just ask Jarvis |
 | See or manage notifications, and quiet hours | The bell icon, or Menu → Notifications |
 | Have Jarvis work on something in the background | Just ask, or Menu → Background Jobs |
-| Connect an app or service | Menu → App Control → + Add |
+| Connect an app or service | Menu → Connector → + Add |
 | Let Jarvis operate your computer | Just ask — it always confirms first |
 | Turn Screen Sharing on or off | Header toggle, or just say so |
 | Take a screenshot or record your screen | Just ask |

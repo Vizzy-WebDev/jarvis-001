@@ -27,7 +27,8 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.gateway import connections, deployments
+from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
+from jarvis.model_system.registry import add_model, list_models
 
 from stub_oauth_server import StubOAuthServer
 from stub_openai_server import StubModelServer
@@ -57,10 +58,9 @@ def stub(scratch):
     """A model that answers, registered in the scratch data dir only."""
     server = StubModelServer()
     server.base_url = base_url = server.start()
-    conn = connections.add_connection(adapter="openai-compatible", base_url=base_url,
-                                      label="stub", provider="custom", kind="local",
-                                      key_required=False)
-    deployments.add_deployment(connection_id=conn["id"], model="stub-model")
+    provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
+                            base_url=base_url, auth_method=AuthMethod.NONE, key_required=False)
+    add_model(provider_id=provider.id, native_model_id="stub-model")
     yield server
     server.stop()
 
@@ -262,6 +262,62 @@ def test_a_notification_can_be_deleted_from_its_own_detail(page):
     assert notifications.listed() == []
 
 
+def test_the_unread_filter_actually_filters(page):
+    from jarvis import notifications
+
+    a = notifications.add(kind="system", title="Read already")
+    notifications.add(kind="system", title="Still unread")
+    notifications.mark_read(a["id"])
+
+    page.goto(page.url.split("#")[0] + "#/notifications", wait_until="networkidle")
+    assert page.locator("[data-testid=notification-row]").count() == 2
+
+    page.click("[data-testid=notification-filter-unread]")
+    rows = page.locator("[data-testid=notification-row]")
+    assert rows.count() == 1
+    assert "Still unread" in rows.inner_text()
+
+    page.click("[data-testid=notification-filter-all]")
+    assert page.locator("[data-testid=notification-row]").count() == 2
+
+
+def test_clearing_sends_notifications_to_a_real_recycle_bin_and_back(page):
+    """The whole point of the recycle bin: Clear must not be a hard delete —
+    it has to be restorable, and only genuinely gone once emptied for good."""
+    from jarvis import notifications
+
+    notifications.add(kind="system", title="Something happened.")
+    page.goto(page.url.split("#")[0] + "#/notifications", wait_until="networkidle")
+
+    page.click("[data-testid=clear-all]")
+    page.wait_for_selector("[data-testid=notification-row]", state="detached")
+    assert notifications.listed() == []
+
+    page.click("[data-testid=open-recycle-bin]")
+    page.wait_for_selector("[data-testid=recycle-bin-row]")
+    assert len(notifications.trash_listed()) == 1
+
+    page.click("[data-testid=restore-notification]")
+    page.wait_for_selector("[data-testid=recycle-bin-row]", state="detached")
+    assert notifications.trash_listed() == []
+    assert len(notifications.listed()) == 1
+
+
+def test_emptying_the_recycle_bin_permanently_deletes(page):
+    from jarvis import notifications
+
+    notifications.add(kind="system", title="Something happened.")
+    notifications.clear_all()
+
+    page.goto(page.url.split("#")[0] + "#/notifications", wait_until="networkidle")
+    page.click("[data-testid=open-recycle-bin]")
+    page.wait_for_selector("[data-testid=recycle-bin-row]")
+
+    page.click("[data-testid=empty-recycle-bin]")
+    page.wait_for_selector("[data-testid=recycle-bin-row]", state="detached")
+    assert notifications.trash_listed() == []
+
+
 def test_a_task_can_be_created_edited_paused_and_deleted_from_the_screen(page):
     from jarvis.scheduler import task_store
 
@@ -318,9 +374,16 @@ def test_a_task_built_through_the_screen_actually_runs(page, stub):
 
 
 def _connect(label: str, kind: str = "api") -> str:
+    """A genuinely CONNECTED connector, not just an added one — `isPickable()`
+    now requires `status.state == 'working'`, not just `enabled`, so a picker
+    test has to simulate a real completed connection to mean what its own
+    name says."""
     from jarvis.connectors import store
 
-    return store.add_connector(type=kind, label=label)["id"]
+    connector = store.add_connector(type=kind, label=label)
+    store.update_connector(connector["id"], {
+        "status": {"state": "working", "checkedAt": None, "detail": None}})
+    return connector["id"]
 
 
 def test_the_connector_picker_is_a_picker_not_a_list_of_names(page):
@@ -504,8 +567,6 @@ def test_a_model_can_be_added_through_the_screen_and_then_answers(page, stub):
     """The front door: nothing works until a model is added, so this walks the
     real three steps — pick a provider, give the address, choose models — and
     then proves the thing that was added can actually hold a conversation."""
-    from jarvis.gateway import deployments
-
     stub.models = [{"id": "alpha"}, {"id": "beta"}]
 
     page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
@@ -524,7 +585,7 @@ def test_a_model_can_be_added_through_the_screen_and_then_answers(page, stub):
     page.wait_for_selector("[data-testid=connection-list] >> text=alpha", timeout=15_000)
     # Beside the one the fixture already registered — "alpha" is the one this
     # test actually added, through the real screen.
-    assert "alpha" in [m["model"] for m in deployments.list_deployments()]
+    assert "alpha" in [m.native_model_id for m in list_models()]
 
     # And it is a real, usable model, not just a row: ask it something.
     stub.says("Hello from alpha.")
@@ -548,8 +609,6 @@ def test_an_address_with_nothing_at_it_says_what_it_tried(page):
 
 
 def test_removing_a_connection_says_what_goes_with_it(page, stub):
-    from jarvis.gateway import deployments
-
     page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
     page.wait_for_selector("[data-testid=connection-card]")
     page.locator("[data-testid=connection-card]").first.get_by_text("Remove").click()
@@ -558,7 +617,7 @@ def test_removing_a_connection_says_what_goes_with_it(page, stub):
     assert "1 model" in page.locator("[data-testid=modal]").inner_text()
     page.click("[data-testid=confirm-remove]")
     page.wait_for_selector("[data-testid=connection-card]", state="detached")
-    assert deployments.list_deployments() == []
+    assert list_models() == []
 
 
 def test_a_service_key_is_saved_and_never_shown_again(page):
@@ -769,12 +828,10 @@ def test_the_realtime_engine_is_offered_from_a_capability_and_fails_honestly(voi
     resolved on the socket merely opening, so a session that could never start
     took the microphone first and mentioned the problem afterwards.
     """
-    from jarvis.gateway import connections, deployments
-
-    conn = connections.add_connection(adapter="gemini", base_url=None, label="realtime",
-                                      provider="gemini", kind="first-party", key_required=True,
-                                      secret="not-a-real-key")
-    deployments.add_deployment(connection_id=conn["id"], model="a-realtime-model")
+    provider = add_provider(label="realtime", kind=ProviderKind.NATIVE, adapter="gemini",
+                            auth_method=AuthMethod.API_KEY, secret="not-a-real-key",
+                            key_required=True)
+    add_model(provider_id=provider.id, native_model_id="a-realtime-model")
 
     voice_page.reload(wait_until="networkidle")
     voice_page.click("[data-testid=settings]")
@@ -1221,6 +1278,7 @@ def test_a_watch_shows_in_the_shell_and_stopping_it_reaches_every_tab(page):
 def test_a_skill_is_written_here_and_really_lands_on_disk(page):
     go_to(page, "skills")
     page.click("[data-testid=add-skill]")
+    page.click("[data-testid=add-way-write]")
     page.fill("[data-testid=skill-name]", "weekly-report")
     page.fill("[data-testid=skill-description]", "How to write the Friday report")
     page.fill("[data-testid=skill-instructions]", "Open with the headline number.")
@@ -1283,6 +1341,60 @@ def test_a_skill_is_deleted_from_its_own_detail(page):
     assert files.list_user_skills() == []
 
 
+def test_the_add_button_opens_a_menu_before_the_create_widget(page):
+    """Clicking Add shows a choice of ways in first; the create/install widget
+    itself only appears after one is picked."""
+    go_to(page, "skills")
+    page.click("[data-testid=add-skill]")
+    page.wait_for_selector("[data-testid=add-way-write]")
+    assert page.locator("[data-testid=add-way-write]").inner_text() == "Write skill instructions"
+    assert page.locator("[data-testid=skill-name]").count() == 0  # not yet — menu first
+
+    page.click("[data-testid=add-way-write]")
+    page.wait_for_selector("[data-testid=skill-name]")
+    assert page.locator("[data-testid=way-write][aria-pressed=true]").count() == 1
+
+
+def test_create_with_jarvis_hands_the_composer_a_real_draft(page):
+    """Picking it never opens the write/install widget — it drops a real,
+    editable draft in the ordinary chat composer instead, per the historical
+    'Create with Claude' behaviour this mirrors."""
+    go_to(page, "skills")
+    page.click("[data-testid=add-skill]")
+    page.click("[data-testid=add-way-jarvis]")
+    page.wait_for_url("**#/")
+    page.wait_for_selector("[data-testid=composer-input]")
+    typed = page.locator("[data-testid=composer-input]").input_value()
+    assert "skill" in typed.lower() and len(typed) > 0
+    assert page.locator("[data-testid=skill-name]").count() == 0  # no widget was opened
+
+
+def test_the_skill_list_is_filtered_and_sorted_for_real(page):
+    from jarvis.skills import files
+
+    files.create_skill(name="zzz-last", description="z", instructions="z", reserved=set())
+    files.create_skill(name="aaa-first", description="a", instructions="a", reserved=set())
+    files.update_skill_state("aaa-first", {"enabled": False})
+
+    go_to(page, "skills")
+    page.wait_for_selector("[data-testid=skill-row]")
+
+    page.click("[data-testid=skill-filter-off]")
+    rows = page.locator("[data-testid=skill-row]")
+    assert rows.count() == 1
+    assert "aaa-first" in rows.inner_text()
+
+    page.click("[data-testid=skill-filter-on]")
+    rows = page.locator("[data-testid=skill-row]")
+    assert rows.count() == 1
+    assert "zzz-last" in rows.inner_text()
+
+    page.click("[data-testid=skill-filter-all]")
+    page.click("[data-testid=skill-sort-name]")
+    names = page.locator("[data-testid=skill-row]").all_inner_texts()
+    assert names[0].startswith("aaa-first")
+
+
 def test_chat_history_searches_what_was_SAID_not_the_titles(page, stub):
     """Search runs on the server over the full transcript. Filtering titles in
     the browser would quietly answer a much worse question."""
@@ -1326,6 +1438,111 @@ def test_opening_a_conversation_shows_what_was_said_without_resuming_it(page, st
     assert page.locator("[data-testid=resume-conversation]").count() == 0
 
 
+def test_the_chat_history_drawer_opens_from_the_hamburger_and_shows_pinned_first(page):
+    from jarvis import chat_store
+
+    alpha = chat_store.create_conversation()
+    chat_store.rename_conversation(alpha["id"], "Alpha")
+    beta = chat_store.create_conversation()
+    chat_store.rename_conversation(beta["id"], "Beta")
+    chat_store.set_pinned(beta["id"], True)
+
+    page.click("[data-testid=chat-history-menu]")
+    page.wait_for_selector("[data-testid=chat-history-drawer][data-open=true]")
+
+    pinned_text = page.locator("[data-testid=drawer-pinned-list]").inner_text()
+    assert "Beta" in pinned_text
+    recent_text = page.locator("[data-testid=drawer-recent-list]").inner_text()
+    assert "Alpha" in recent_text and "Beta" not in recent_text
+
+    # The full-screen backdrop is what makes this a real overlay rather than
+    # decoration — it intercepts clicks to whatever is behind it, the hamburger
+    # itself included, so closing goes through Escape (or the backdrop/close
+    # button), the same as the main hamburger Drawer.
+    page.keyboard.press("Escape")
+    page.wait_for_selector("[data-testid=chat-history-drawer][data-open=false]")
+
+
+def test_pinning_from_the_drawer_moves_it_into_the_pinned_group(page):
+    from jarvis import chat_store
+
+    convo = chat_store.create_conversation()
+    chat_store.rename_conversation(convo["id"], "ToPin")
+
+    page.click("[data-testid=chat-history-menu]")
+    row = page.locator("[data-testid=drawer-chat-row]", has_text="ToPin")
+    row.wait_for()
+    assert page.locator("[data-testid=drawer-pinned-list]").count() == 0
+
+    row.locator("[data-testid=drawer-toggle-pin]").click()
+    page.wait_for_selector("[data-testid=drawer-pinned-list]")
+    assert "ToPin" in page.locator("[data-testid=drawer-pinned-list]").inner_text()
+    assert chat_store.get_conversation(convo["id"])["pinned"] is True
+
+
+def test_view_all_in_the_drawer_opens_the_full_chat_history_page(page):
+    page.click("[data-testid=chat-history-menu]")
+    page.wait_for_selector("[data-testid=chat-history-drawer][data-open=true]")
+    page.click("[data-testid=drawer-view-all]")
+    page.wait_for_url("**#/chat-history")
+    assert page.locator("h1").inner_text() == "Chat History"
+
+
+def test_resuming_from_the_drawer_actually_loads_the_transcript(page):
+    """A real, previously-live gap this closes: activating a conversation
+    alone changes what the SERVER thinks is current, but does nothing to the
+    panel's own `turns` state — so without a real reload, picking one up read
+    as having silently done nothing."""
+    from jarvis import chat_store
+
+    convo = chat_store.create_conversation()
+    chat_store.rename_conversation(convo["id"], "Old Thread")
+    chat_store.append_message(convo["id"], {"role": "user", "text": "remember the rhubarb pie"})
+    chat_store.append_message(convo["id"], {"role": "assistant", "text": "Noted: rhubarb pie."})
+
+    page.click("[data-testid=chat-history-menu]")
+    page.locator("[data-testid=drawer-resume]", has_text="Old Thread").click()
+    page.wait_for_selector("[data-testid=chat-history-drawer][data-open=false]")
+    page.wait_for_selector("text=Noted: rhubarb pie.", timeout=10_000)
+
+
+def test_deleting_a_chat_sends_it_to_a_real_recycle_bin_and_back(page):
+    from jarvis import chat_store
+
+    convo = chat_store.create_conversation()
+    chat_store.rename_conversation(convo["id"], "Doomed")
+
+    go_to(page, "chat-history")
+    page.locator("[data-testid=history-row]", has_text="Doomed").click()
+    page.click("[data-testid=delete-conversation]")
+    page.wait_for_selector("[data-testid=modal]", state="detached")
+    assert chat_store.is_trashed(convo["id"]) is True
+
+    page.click("[data-testid=open-chat-recycle-bin]")
+    page.locator("[data-testid=chat-recycle-bin-row]", has_text="Doomed").wait_for()
+
+    page.locator("[data-testid=chat-recycle-bin-row]", has_text="Doomed") \
+        .locator("[data-testid=restore-conversation]").click()
+    page.wait_for_selector("[data-testid=chat-recycle-bin-row]", state="detached")
+    assert chat_store.is_trashed(convo["id"]) is False
+
+
+def test_permanently_deleting_from_the_chat_recycle_bin(page):
+    from jarvis import chat_store
+
+    convo = chat_store.create_conversation()
+    chat_store.rename_conversation(convo["id"], "GoneForGood")
+    chat_store.delete_conversation(convo["id"])
+
+    go_to(page, "chat-history")
+    page.click("[data-testid=open-chat-recycle-bin]")
+    row = page.locator("[data-testid=chat-recycle-bin-row]", has_text="GoneForGood")
+    row.wait_for()
+    row.locator("[data-testid=delete-conversation-forever]").click()
+    page.wait_for_selector("[data-testid=chat-recycle-bin-row]", state="detached")
+    assert chat_store.is_conversation(convo["id"]) is False
+
+
 def test_no_screen_draws_its_own_title_over_the_one_the_shell_draws(page):
     """A real bug this caught, and the reason it is now checked on every screen.
 
@@ -1360,7 +1577,7 @@ def test_asking_to_open_a_section_really_navigates(page, stub):
     assert page.locator("h1").inner_text() == "Memory"
 
 
-# --- App Control: the connector screens, real OAuth, real tools -----------------
+# --- Connector: the connector screens, real OAuth, real tools -----------------
 
 @pytest.fixture
 def oauth_stub():
@@ -1373,7 +1590,7 @@ def oauth_stub():
 def _open_app_control(page):
     page.evaluate("() => { window.location.hash = '#/app-control'; }")
     page.wait_for_url("**#/app-control")
-    assert page.locator("h1").inner_text() == "App Control"
+    assert page.locator("h1").inner_text() == "Connector"
 
 
 def test_a_custom_mcp_connector_connects_end_to_end_against_a_real_server(page, oauth_stub):
@@ -1449,6 +1666,126 @@ def test_toggling_a_connector_off_stops_its_tools_from_being_offered(page):
         ".getAttribute('aria-checked') === 'false'",
     )
     assert connector_capabilities.tool_names_for(connector["id"]) == []
+
+
+def test_an_unconnected_mcp_connector_shows_connect_not_a_toggle(page):
+    """A row that looks the same whether or not sign-in ever finished is
+    exactly what made an added-but-never-authorized connector indistinguishable
+    from a real, working one. `mcp` specifically, since only it has a real
+    Connect flow to hand the row a button for."""
+    from jarvis.connectors import store as connector_store
+
+    _open_app_control(page)
+    page.click("[data-testid=add-connector-menu]")
+    page.click("[data-testid=add-custom-connector]")
+    page.fill("[data-testid=custom-label]", "Never Connected")
+    page.fill("[data-testid=custom-mcp-url]", "https://mcp.example.invalid/mcp")
+    page.click("[data-testid=save-custom-connector]")
+    page.wait_for_selector("[data-testid=modal]")
+    page.click("[data-testid=modal-close]")
+
+    page.click("[data-testid=tab-mcp]")
+    row = page.locator("[data-testid=connector-row]", has_text="Never Connected")
+    row.wait_for()
+    assert row.locator("[data-testid=connect-row]").count() == 1
+    assert row.locator("[role=switch]").count() == 0
+    assert "bg-ink-faint" in row.locator("[data-testid=connection-dot]").get_attribute("class")
+
+    connector = next(c for c in connector_store.list_connectors(kind="mcp")
+                     if c["label"] == "Never Connected")
+    connector_store.update_connector(connector["id"], {
+        "status": {"state": "working", "checkedAt": None, "detail": None}})
+    page.reload(wait_until="networkidle")
+    page.click("[data-testid=tab-mcp]")
+    row = page.locator("[data-testid=connector-row]", has_text="Never Connected")
+    row.wait_for()
+    assert row.locator("[data-testid=connect-row]").count() == 0
+    assert row.locator("[role=switch]").count() == 1
+    assert "bg-state-ok" in row.locator("[data-testid=connection-dot]").get_attribute("class")
+
+
+def test_the_group_permission_control_sets_every_tool_at_once_and_shows_custom(page):
+    """The bulk category control and the per-tool three-button row, both real:
+    setting the group changes every tool in it, and disagreeing tools read
+    back as "Custom" rather than silently picking one."""
+    from jarvis.connectors import store as connector_store
+
+    _open_app_control(page)
+    page.click("[data-testid=add-connector-menu]")
+    page.click("[data-testid=add-custom-connector]")
+    page.click("[data-testid=mechanism-api]")
+    page.fill("[data-testid=custom-label]", "Grouped Ops")
+    page.fill("[data-testid=custom-base-url]", "https://api.example.invalid")
+    page.click("[data-testid=save-custom-connector]")
+    page.wait_for_selector("[data-testid=modal]")
+
+    connector = next(c for c in connector_store.list_connectors(kind="api")
+                     if c["label"] == "Grouped Ops")
+    connector_store.update_connector(connector["id"], {"config": {"operations": [
+        {"name": "search_pets", "description": "Find pets.",
+         "parameters": {"type": "object", "properties": {}}},
+        {"name": "list_pets", "description": "List pets.",
+         "parameters": {"type": "object", "properties": {}}},
+    ]}})
+    page.click("[data-testid=modal-close]")
+    page.click("[data-testid=tab-api]")
+    page.locator("[data-testid=connector-row]", has_text="Grouped Ops").click()
+    page.wait_for_selector("[data-testid=group-permission]")
+
+    # Both tools default to "allow" — the group control reads a real, single value.
+    assert page.locator("[data-testid=group-permission]").input_value() == "allow"
+
+    # Diverge one tool from the other; the group control must now say Custom.
+    # The permission write is a real PATCH round trip, so wait for the button's
+    # own state to flip before reading the (separately re-rendered) group
+    # control — a plain assert right after the click would race the response.
+    page.locator("[data-testid=tool-permission-ask]").first.click()
+    page.wait_for_selector("[data-testid=tool-permission-ask][aria-pressed=true]")
+    assert page.locator("[data-testid=group-permission]").input_value() == "custom"
+
+    # Setting the group applies to every tool in it — both buttons agree again.
+    # The handler awaits each tool's PATCH in sequence (never concurrently —
+    # two requests racing a read-modify-write over the same connector record
+    # could otherwise let the second clobber the first), so give both time.
+    page.locator("[data-testid=group-permission]").select_option("deny")
+    page.wait_for_function(
+        "() => document.querySelectorAll("
+        "'[data-testid=tool-permission-deny][aria-pressed=true]').length === 2",
+        timeout=10_000,
+    )
+
+    # Stored (and looked up) under the PREFIXED name — the only name the
+    # frontend, and therefore the permission it just saved, ever knows.
+    updated = connector_store.get_connector(connector["id"])
+    assert updated["config"]["toolPermissions"] == {
+        "grouped_ops__search_pets": "deny", "grouped_ops__list_pets": "deny"}
+
+    from jarvis.connectors import capabilities as connector_capabilities
+
+    assert connector_capabilities.tool_names_for(connector["id"]) == []
+
+
+def test_unconnected_apps_do_not_appear_in_the_connector_picker(page):
+    """`isPickable()` requires a real `status.state === 'working'`, not just
+    `enabled` — an added-but-never-authorized connector must not look like a
+    usable app in the Scheduled Task editor's own picker."""
+    from jarvis.connectors import store as connector_store
+
+    connector_store.add_connector(type="mcp", label="Working App", enabled=True,
+                                  config={"connectFlow": {"url": "https://mcp.example.invalid/mcp"}})
+    working = next(c for c in connector_store.list_connectors(kind="mcp") if c["label"] == "Working App")
+    connector_store.update_connector(working["id"], {
+        "status": {"state": "working", "checkedAt": None, "detail": None}})
+    connector_store.add_connector(type="mcp", label="Never Connected App", enabled=True,
+                                  config={"connectFlow": {"url": "https://mcp2.example.invalid/mcp"}})
+
+    page.goto(page.url.split("#")[0] + "#/tasks", wait_until="networkidle")
+    page.click("[data-testid=new-task]")
+    page.click("[data-testid=add-connector]")
+    page.wait_for_selector("[data-testid=popover]")
+    popover_text = page.locator("[data-testid=popover]").inner_text()
+    assert "Working App" in popover_text
+    assert "Never Connected App" not in popover_text
 
 
 def test_the_catalogue_lists_official_connectors_with_a_real_resolved_icon(page, scratch):

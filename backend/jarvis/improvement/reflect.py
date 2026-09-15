@@ -16,9 +16,9 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from ..gateway.client import NoModelAvailable, ask
-from ..gateway.routing import Task
-from ..gateway.routing import Role
+from ..model_system.compat import Task, ask
+from ..model_system.fallback import NoModelAvailable
+from ..model_system.request import Role
 from . import store
 from .domains import is_excluded
 

@@ -23,9 +23,9 @@ from typing import Any
 from .. import chat_store
 from ..events import EventType, bus as default_bus
 from ..events.bus import EventBus
-from ..gateway.client import NoModelAvailable, ask
-from ..gateway.routing import Task
-from ..gateway.routing import Role
+from ..model_system.compat import Task, ask
+from ..model_system.fallback import NoModelAvailable
+from ..model_system.request import Role
 from . import store
 from .policy import AUTO_APPROVE, decide
 

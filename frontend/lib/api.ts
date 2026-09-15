@@ -15,6 +15,7 @@ import type {
   Connector,
   ConnectorConnectOutcome,
   ConnectorTool,
+  Conversation,
   DiscoveredModel,
   ExternalService,
   ConversationDetail,
@@ -115,12 +116,23 @@ export const api = {
         `/conversations/${encodeURIComponent(id)}`,
         { method: 'PATCH', ...json(patch) },
       ),
+    /** Moves it to the recycle bin — not a permanent delete. See `purge()`. */
     remove: (id: string) => request<{ ok: true }>(`/conversations/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     activate: (id: string) =>
       request<{ conversation: ConversationDetail['conversation'] }>(
         `/conversations/${encodeURIComponent(id)}/activate`,
         { method: 'POST' },
       ),
+    trash: () => request<{ conversations: Conversation[] }>('/conversations/trash'),
+    restore: (id: string) =>
+      request<{ conversation: ConversationDetail['conversation'] }>(
+        `/conversations/${encodeURIComponent(id)}/restore`,
+        { method: 'POST' },
+      ),
+    /** A real, irreversible delete of one item, from the recycle bin. */
+    purge: (id: string) =>
+      request<{ ok: true }>(`/conversations/${encodeURIComponent(id)}/permanent`, { method: 'DELETE' }),
+    emptyTrash: () => request<{ ok: true; removed: number }>('/conversations/trash', { method: 'DELETE' }),
   },
 
   notifications: {
@@ -135,9 +147,21 @@ export const api = {
       }),
     markAllRead: () =>
       request<{ notifications: Notification[] }>('/notifications/read-all', { method: 'POST' }),
+    /** Moves it to the recycle bin — not a permanent delete. See `purge()`. */
     remove: (id: string) =>
       request<{ ok: true }>(`/notifications/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    /** Moves everything active to the recycle bin — not a permanent delete. */
     clear: () => request<{ ok: true }>('/notifications', { method: 'DELETE' }),
+    trash: (limit?: number) =>
+      request<{ notifications: Notification[] }>(
+        `/notifications/trash${typeof limit === 'number' ? `?limit=${limit}` : ''}`,
+      ),
+    restore: (id: string) =>
+      request<{ ok: true }>(`/notifications/${encodeURIComponent(id)}/restore`, { method: 'POST' }),
+    /** A real, irreversible delete of one item, from the recycle bin. */
+    purge: (id: string) =>
+      request<{ ok: true }>(`/notifications/${encodeURIComponent(id)}/permanent`, { method: 'DELETE' }),
+    emptyTrash: () => request<{ ok: true; removed: number }>('/notifications/trash', { method: 'DELETE' }),
   },
 
   /** Read only. Everything that WRITES — adding a connection, probing an

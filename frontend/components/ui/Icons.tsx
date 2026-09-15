@@ -96,6 +96,28 @@ export const BackIcon = (p: IconProps) => (
   </Svg>
 );
 
+export const CheckIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M5 13l4 4L19 7" />
+  </Svg>
+);
+
+/** Needs a decision before it runs — a clock, not a literal hand: reads clearly
+ *  at 14px, where a raised-hand glyph turns into a smudge. */
+export const AskIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 7v5l3.5 2" />
+  </Svg>
+);
+
+export const BlockIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M6.5 6.5l11 11" />
+  </Svg>
+);
+
 // --- one per section in the drawer -------------------------------------------
 // Drawn on the same grid and stroke as the rest, so a list of twelve reads as
 // one set rather than twelve borrowed glyphs.

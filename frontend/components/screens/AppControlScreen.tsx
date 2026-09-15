@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Field, inputClass } from '@/components/ui/Field';
-import { PlusIcon, SearchIcon } from '@/components/ui/Icons';
+import { AskIcon, BlockIcon, CheckIcon, PlusIcon, SearchIcon } from '@/components/ui/Icons';
 import { Modal } from '@/components/ui/Modal';
 import { Popover } from '@/components/ui/Popover';
 import { Toggle } from '@/components/ui/Toggle';
@@ -44,6 +44,16 @@ const STATUS_LABEL: Record<string, string> = {
 function statusText(connector: Connector): string {
   const state = connector.status?.state;
   return (state && STATUS_LABEL[state]) || connector.status?.detail || 'Not connected';
+}
+
+/** A real signal, not just dimmer text: green once it actually works, amber on
+ *  a real failure, and a plain dot for "added but never tried" — the same
+ *  three-way `status.state` every row already carries, just made visible. */
+function connectionDotClass(connector: Connector): string {
+  const state = connector.status?.state;
+  if (state === 'working') return 'bg-state-ok';
+  if (state === 'error') return 'bg-state-danger';
+  return 'bg-ink-faint';
 }
 
 interface DetailTarget {
@@ -156,6 +166,7 @@ export function AppControlScreen() {
             const entry = connector.source?.type === 'catalog' && connector.source.id
               ? catalogById.get(connector.source.id) ?? null
               : null;
+            const connected = connector.status?.state === 'working';
             return (
               <Card key={connector.id} interactive data-testid="connector-row"
                     className="flex items-center gap-3" onClick={() => openExisting(connector)}>
@@ -164,18 +175,30 @@ export function AppControlScreen() {
                   <p className={`truncate text-[14px] ${connector.enabled ? 'text-ink' : 'text-ink-faint'}`}>
                     {connector.label}
                   </p>
-                  <p className="mt-0.5 truncate text-[12px] text-ink-faint">
+                  <p className="mt-0.5 flex items-center gap-1.5 truncate text-[12px] text-ink-faint">
+                    <span aria-hidden data-testid="connection-dot"
+                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${connectionDotClass(connector)}`} />
                     {statusText(connector)}
                     {!connector.enabled && ' · off'}
                   </p>
                 </div>
-                <Toggle
-                  label={`${connector.enabled ? 'Turn off' : 'Turn on'} ${connector.label}`}
-                  checked={connector.enabled}
-                  onChange={(next) => {
-                    void api.connectors.update(connector.id, { enabled: next }).then(load);
-                  }}
-                />
+                {connector.type === 'mcp' && !connected ? (
+                  <Button
+                    tone="primary"
+                    data-testid="connect-row"
+                    onClick={(event) => { event.stopPropagation(); openExisting(connector); }}
+                  >
+                    Connect
+                  </Button>
+                ) : (
+                  <Toggle
+                    label={`${connector.enabled ? 'Turn off' : 'Turn on'} ${connector.label}`}
+                    checked={connector.enabled}
+                    onChange={(next) => {
+                      void api.connectors.update(connector.id, { enabled: next }).then(load);
+                    }}
+                  />
+                )}
               </Card>
             );
           })}
@@ -597,36 +620,149 @@ function ConnectorDetail({ target, onClose, onChanged }: {
   );
 }
 
+type Permission = 'allow' | 'ask' | 'deny';
+const PERMISSIONS: Permission[] = ['allow', 'ask', 'deny'];
+const PERMISSION_LABEL: Record<Permission, string> = {
+  allow: 'Always allow', ask: 'Need approval', deny: 'Blocked',
+};
+const PERMISSION_ICON: Record<Permission, (p: { className?: string }) => React.ReactElement> = {
+  allow: CheckIcon, ask: AskIcon, deny: BlockIcon,
+};
+const PERMISSION_ACTIVE: Record<Permission, string> = {
+  allow: 'border-accent/40 bg-accent/15 text-accent',
+  ask: 'border-state-warn/40 bg-state-warn/15 text-state-warn',
+  deny: 'border-state-danger/40 bg-state-danger/15 text-state-danger',
+};
+
+/**
+ * A tool an app exposes has no server-declared category — MCP's own wire
+ * format is just a name, a description, and a schema — so this is a
+ * deliberate, zero-cost, zero-model-call heuristic grouping by the verb in the
+ * tool's own name, not a claim of real information architecture. Checks every
+ * word, not just a leading one: a service that names its tools
+ * "servicename-verb" (Notion's real tools do exactly this — "notion-search",
+ * "notion-update-page") would otherwise land entirely in "Other".
+ */
+const GROUP_VERBS: [string, string[]][] = [
+  ['Search & browse', ['search', 'list', 'find', 'query']],
+  ['Read', ['read', 'get', 'fetch']],
+  ['Create & edit', ['create', 'write', 'update', 'edit', 'set', 'upload']],
+  ['Delete & move', ['delete', 'remove', 'move']],
+];
+const GROUP_ORDER = [...GROUP_VERBS.map(([group]) => group), 'Other'];
+
+function groupFor(name: string): string {
+  const words = name
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^a-zA-Z0-9]+/)
+    .map((word) => word.toLowerCase())
+    .filter(Boolean);
+  for (const [group, verbs] of GROUP_VERBS) {
+    if (words.some((word) => verbs.includes(word))) return group;
+  }
+  return 'Other';
+}
+
 function ToolsSection({ tools, permissions, onSetPermission }: {
   tools: ConnectorTool[];
   permissions: Record<string, string>;
-  onSetPermission: (name: string, permission: string) => void;
+  onSetPermission: (name: string, permission: string) => void | Promise<void>;
 }) {
+  const groups = useMemo(() => {
+    const byGroup = new Map<string, ConnectorTool[]>();
+    for (const tool of tools) {
+      const group = groupFor(tool.name);
+      const list = byGroup.get(group);
+      if (list) list.push(tool);
+      else byGroup.set(group, [tool]);
+    }
+    return GROUP_ORDER.filter((group) => byGroup.has(group))
+      .map((group) => [group, byGroup.get(group)!] as const);
+  }, [tools]);
+
   if (tools.length === 0) {
     return <p className="text-[13px] text-ink-faint">Nothing set up yet.</p>;
   }
+
   return (
     <div>
-      <p className="mb-2 text-[12px] font-medium text-ink-muted">Available tools</p>
-      <div className="space-y-1">
-        {tools.map((tool) => (
-          <div key={tool.name} className="flex items-center justify-between gap-3 py-1.5">
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-[13px] text-ink">{tool.name}</p>
-              {tool.confirms && <p className="text-[11px] text-ink-faint">Always confirms</p>}
+      <p className="mb-3 text-[12px] font-medium text-ink-muted">Available tools</p>
+      <div className="space-y-4">
+        {groups.map(([group, groupTools]) => {
+          const values = groupTools.map((tool) => (permissions[tool.name] ?? 'allow') as Permission);
+          const uniform = values.every((value) => value === values[0]) ? values[0] : null;
+          return (
+            <div key={group}>
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-faint">
+                  {group}
+                  <span className="rounded-pill bg-white/[0.06] px-1.5 py-px text-[10px] normal-case tracking-normal text-ink-faint">
+                    {groupTools.length}
+                  </span>
+                </p>
+                <select
+                  className={`${inputClass} w-auto py-1 text-[12px]`}
+                  data-testid="group-permission"
+                  value={uniform ?? 'custom'}
+                  onChange={(event) => {
+                    const next = event.target.value as Permission;
+                    // In sequence, not Promise.all/forEach: each PATCH is a
+                    // real read-modify-write over the same connector record,
+                    // and firing them concurrently risks the second request's
+                    // write clobbering the first's.
+                    void (async () => {
+                      for (const tool of groupTools) {
+                        await onSetPermission(tool.name, next);
+                      }
+                    })();
+                  }}
+                >
+                  <option value="allow">✓ Always allow</option>
+                  <option value="ask">Need approval</option>
+                  <option value="deny">Blocked</option>
+                  {!uniform && <option value="custom" disabled>Custom</option>}
+                </select>
+              </div>
+              <div className="space-y-1">
+                {groupTools.map((tool) => {
+                  const current = (permissions[tool.name] ?? 'allow') as Permission;
+                  return (
+                    <div key={tool.name} className="flex items-center justify-between gap-3 py-1.5">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-[13px] text-ink">{tool.name}</p>
+                        {tool.confirms && <p className="text-[11px] text-ink-faint">Always confirms</p>}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        {PERMISSIONS.map((permission) => {
+                          const Icon = PERMISSION_ICON[permission];
+                          return (
+                            <button
+                              key={permission}
+                              type="button"
+                              title={PERMISSION_LABEL[permission]}
+                              aria-label={`${PERMISSION_LABEL[permission]} for ${tool.name}`}
+                              aria-pressed={current === permission}
+                              data-testid={`tool-permission-${permission}`}
+                              onClick={() => onSetPermission(tool.name, permission)}
+                              className={[
+                                'flex h-6 w-6 items-center justify-center rounded-full border transition duration-150 ease-out',
+                                current === permission
+                                  ? PERMISSION_ACTIVE[permission]
+                                  : 'border-surface-border text-ink-faint hover:text-ink',
+                              ].join(' ')}
+                            >
+                              <Icon className="h-3.5 w-3.5" />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-            <select
-              className={`${inputClass} w-auto py-1 text-[12px]`}
-              data-testid="tool-permission"
-              value={permissions[tool.name] ?? 'allow'}
-              onChange={(event) => onSetPermission(tool.name, event.target.value)}
-            >
-              <option value="allow">Allow</option>
-              <option value="ask">Always ask</option>
-              <option value="deny">Off</option>
-            </select>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

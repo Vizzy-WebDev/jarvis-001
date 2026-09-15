@@ -217,9 +217,12 @@ keyword here is a permanent annoyance, not a one-time one. Re-verified against a
 
 ### Desktop control / Browser / Files have no settings screen
 
-`frontend/components/screens/AppControlScreen.tsx` (nav label: **App Control** — renamed from
-"Connectors" partway through the App Control/Skills/Monitoring/Sandbox upgrade,
-once MCP became one of three mechanisms rather than the only one) shows only the
+`frontend/components/screens/AppControlScreen.tsx` (nav label: **Connector** — renamed from
+"Connectors" to "App Control" partway through the App Control/Skills/Monitoring/Sandbox
+upgrade once MCP became one of three mechanisms rather than the only one, then renamed
+again to "Connector" by direct user request; the component file and `id: 'app-control'`
+were deliberately left as-is both times — only the displayed `label` in `frontend/lib/nav.ts`
+changes, so a bookmark/hash/voice command naming the section by id never breaks) shows only the
 Connectors card now — no Desktop control, Browser, or Files cards. These three are Jarvis's own
 built-in abilities, not things the user "adds" or configures, the same reasoning
 already applied to the Skills screen (see the root `CLAUDE.md`'s "Jarvis's built-in
@@ -309,7 +312,13 @@ Always/Ask/Never control:
   but there is nothing there to click — confirmation timing isn't a dial.
 
 **Tool grouping is a zero-cost, zero-model-call heuristic**, not a claim of real
-information architecture: MCP tool lists carry no server-declared category, so
+information architecture (this section describes real, current behavior again as
+of the Connector rename round — `groupFor()` and the per-tool three-way
+Allow/Ask/Block button row it feeds had regressed to a single flat list with a
+plain `<select>` at some point after this doc was written, with nothing catching
+the drift; both were rebuilt to match this doc's own description, confirmed
+against the same real Notion connector case below rather than trusted from the
+prose alone): MCP tool lists carry no server-declared category, so
 `frontend/components/screens/AppControlScreen.tsx`'s `groupFor()` splits a tool's name into words (handling
 underscores, hyphens, AND camelCase boundaries) and checks every word against a
 small verb list (search/list/find/query → "Search & browse", read/get/fetch →
@@ -430,6 +439,54 @@ mismatch. Fixed by trying both the path-aware and the plain-append forms, in tha
 order, so simpler servers (Notion, and Slack's — whose issuer IS its origin root)
 keep working unchanged. Re-verified live against all three (GitHub, Slack, Notion)
 after the fix.
+
+### `connectors/icons.py` — a real logo for a custom connector too
+
+Real logo fetching (`icon_for()`, cached in `data/connector-icons.json`, a fixed
+public icon service looked up by host — see its own extensive header comment on
+why a connector's own address is never itself fetched) was already solid and
+already wired for every **catalog** connector. It was NOT wired for a **custom**
+one: `routes/connectors.py`'s `_public()` never returned `iconDataUri` for any
+connector, and nothing ever called `icon_for()` using a custom connector's own
+URL/base address as the lookup key — a custom MCP or API connector fell straight
+to `AppIcon`'s generic letter monogram forever, never a settled real answer.
+
+Two changes close this, kept deliberately separate:
+
+- `icons.host_key_for(connector)` — where a connector's own logo could come from,
+  if anywhere: `config.connectFlow.url` for `mcp`, `config.baseUrl` for `api`,
+  `None` for `cli` (no address to resolve from at all, so it correctly stays on
+  the letter mark). `_public()` now always includes `iconDataUri`, resolved
+  **cache-only** (`refresh=False`) — the same reasoning `GET /catalog` already
+  used: a listing response must never block on a network call.
+- The actual resolve happens ONLY in a background sweep
+  (`icons.refresh_every_connector()`/`start()`/`stop()`/`is_enabled()`), gated
+  behind its own `JARVIS_CONNECTOR_ICONS` interlock exactly like every other
+  background-clock subsystem (`assembly.py`'s `start_background_work()`,
+  `main.py`'s `_BACKGROUND_INTERLOCKS` — see root CLAUDE.md's "What runs on its
+  own clock"). **Deliberately NOT resolved inline on connector create/refresh** —
+  a real, live bug caught before it shipped: `POST /api/connectors` and
+  `POST /:id/refresh` are ordinary request handlers a test can call with a
+  fake-but-hostname-shaped address (`test_toggling_a_connector_off_stops_its_tools_from_being_offered`
+  posts `https://api.example.invalid` as a base URL), and resolving inline would
+  have made an ordinary "add a connector" click — and that exact test — a real,
+  blocking network call to the live icon service. `icons.py`'s own IP-literal
+  rejection already makes every LOCAL test stub server safe (`127.0.0.1` is
+  refused before it is even used as a lookup key), but a plausible-looking
+  hostname like `api.example.invalid` is not an IP literal and would have
+  sailed straight through. A freshly-created custom connector shows the generic
+  mark until the next sweep, never a blocked response.
+
+**Connection status on the main list row** (`AppControlScreen.tsx`) now shows a
+real three-way dot (green/`status.state==='working'`, red/`'error'`, grey/
+`'untested'`) next to the status text, and an `mcp` connector that has never
+completed sign-in shows a real **Connect** button in place of the on/off Toggle
+— clicking it opens the same detail view `McpConnect` already drives, rather
+than a switch that looks identical whether or not the connector can do
+anything yet. `frontend/lib/connectors.ts`'s `isPickable()` (the Scheduled
+Task editor's and Morning Briefing's shared connector picker) now also requires
+`status.state === 'working'`, not just `enabled` — an added-but-never-authorized
+connector no longer offers itself as a usable app in either picker.
 
 ## Gotchas
 

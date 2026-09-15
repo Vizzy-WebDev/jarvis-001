@@ -374,9 +374,16 @@ def test_a_task_built_through_the_screen_actually_runs(page, stub):
 
 
 def _connect(label: str, kind: str = "api") -> str:
+    """A genuinely CONNECTED connector, not just an added one — `isPickable()`
+    now requires `status.state == 'working'`, not just `enabled`, so a picker
+    test has to simulate a real completed connection to mean what its own
+    name says."""
     from jarvis.connectors import store
 
-    return store.add_connector(type=kind, label=label)["id"]
+    connector = store.add_connector(type=kind, label=label)
+    store.update_connector(connector["id"], {
+        "status": {"state": "working", "checkedAt": None, "detail": None}})
+    return connector["id"]
 
 
 def test_the_connector_picker_is_a_picker_not_a_list_of_names(page):
@@ -1430,7 +1437,7 @@ def test_asking_to_open_a_section_really_navigates(page, stub):
     assert page.locator("h1").inner_text() == "Memory"
 
 
-# --- App Control: the connector screens, real OAuth, real tools -----------------
+# --- Connector: the connector screens, real OAuth, real tools -----------------
 
 @pytest.fixture
 def oauth_stub():
@@ -1443,7 +1450,7 @@ def oauth_stub():
 def _open_app_control(page):
     page.evaluate("() => { window.location.hash = '#/app-control'; }")
     page.wait_for_url("**#/app-control")
-    assert page.locator("h1").inner_text() == "App Control"
+    assert page.locator("h1").inner_text() == "Connector"
 
 
 def test_a_custom_mcp_connector_connects_end_to_end_against_a_real_server(page, oauth_stub):
@@ -1519,6 +1526,126 @@ def test_toggling_a_connector_off_stops_its_tools_from_being_offered(page):
         ".getAttribute('aria-checked') === 'false'",
     )
     assert connector_capabilities.tool_names_for(connector["id"]) == []
+
+
+def test_an_unconnected_mcp_connector_shows_connect_not_a_toggle(page):
+    """A row that looks the same whether or not sign-in ever finished is
+    exactly what made an added-but-never-authorized connector indistinguishable
+    from a real, working one. `mcp` specifically, since only it has a real
+    Connect flow to hand the row a button for."""
+    from jarvis.connectors import store as connector_store
+
+    _open_app_control(page)
+    page.click("[data-testid=add-connector-menu]")
+    page.click("[data-testid=add-custom-connector]")
+    page.fill("[data-testid=custom-label]", "Never Connected")
+    page.fill("[data-testid=custom-mcp-url]", "https://mcp.example.invalid/mcp")
+    page.click("[data-testid=save-custom-connector]")
+    page.wait_for_selector("[data-testid=modal]")
+    page.click("[data-testid=modal-close]")
+
+    page.click("[data-testid=tab-mcp]")
+    row = page.locator("[data-testid=connector-row]", has_text="Never Connected")
+    row.wait_for()
+    assert row.locator("[data-testid=connect-row]").count() == 1
+    assert row.locator("[role=switch]").count() == 0
+    assert "bg-ink-faint" in row.locator("[data-testid=connection-dot]").get_attribute("class")
+
+    connector = next(c for c in connector_store.list_connectors(kind="mcp")
+                     if c["label"] == "Never Connected")
+    connector_store.update_connector(connector["id"], {
+        "status": {"state": "working", "checkedAt": None, "detail": None}})
+    page.reload(wait_until="networkidle")
+    page.click("[data-testid=tab-mcp]")
+    row = page.locator("[data-testid=connector-row]", has_text="Never Connected")
+    row.wait_for()
+    assert row.locator("[data-testid=connect-row]").count() == 0
+    assert row.locator("[role=switch]").count() == 1
+    assert "bg-state-ok" in row.locator("[data-testid=connection-dot]").get_attribute("class")
+
+
+def test_the_group_permission_control_sets_every_tool_at_once_and_shows_custom(page):
+    """The bulk category control and the per-tool three-button row, both real:
+    setting the group changes every tool in it, and disagreeing tools read
+    back as "Custom" rather than silently picking one."""
+    from jarvis.connectors import store as connector_store
+
+    _open_app_control(page)
+    page.click("[data-testid=add-connector-menu]")
+    page.click("[data-testid=add-custom-connector]")
+    page.click("[data-testid=mechanism-api]")
+    page.fill("[data-testid=custom-label]", "Grouped Ops")
+    page.fill("[data-testid=custom-base-url]", "https://api.example.invalid")
+    page.click("[data-testid=save-custom-connector]")
+    page.wait_for_selector("[data-testid=modal]")
+
+    connector = next(c for c in connector_store.list_connectors(kind="api")
+                     if c["label"] == "Grouped Ops")
+    connector_store.update_connector(connector["id"], {"config": {"operations": [
+        {"name": "search_pets", "description": "Find pets.",
+         "parameters": {"type": "object", "properties": {}}},
+        {"name": "list_pets", "description": "List pets.",
+         "parameters": {"type": "object", "properties": {}}},
+    ]}})
+    page.click("[data-testid=modal-close]")
+    page.click("[data-testid=tab-api]")
+    page.locator("[data-testid=connector-row]", has_text="Grouped Ops").click()
+    page.wait_for_selector("[data-testid=group-permission]")
+
+    # Both tools default to "allow" — the group control reads a real, single value.
+    assert page.locator("[data-testid=group-permission]").input_value() == "allow"
+
+    # Diverge one tool from the other; the group control must now say Custom.
+    # The permission write is a real PATCH round trip, so wait for the button's
+    # own state to flip before reading the (separately re-rendered) group
+    # control — a plain assert right after the click would race the response.
+    page.locator("[data-testid=tool-permission-ask]").first.click()
+    page.wait_for_selector("[data-testid=tool-permission-ask][aria-pressed=true]")
+    assert page.locator("[data-testid=group-permission]").input_value() == "custom"
+
+    # Setting the group applies to every tool in it — both buttons agree again.
+    # The handler awaits each tool's PATCH in sequence (never concurrently —
+    # two requests racing a read-modify-write over the same connector record
+    # could otherwise let the second clobber the first), so give both time.
+    page.locator("[data-testid=group-permission]").select_option("deny")
+    page.wait_for_function(
+        "() => document.querySelectorAll("
+        "'[data-testid=tool-permission-deny][aria-pressed=true]').length === 2",
+        timeout=10_000,
+    )
+
+    # Stored (and looked up) under the PREFIXED name — the only name the
+    # frontend, and therefore the permission it just saved, ever knows.
+    updated = connector_store.get_connector(connector["id"])
+    assert updated["config"]["toolPermissions"] == {
+        "grouped_ops__search_pets": "deny", "grouped_ops__list_pets": "deny"}
+
+    from jarvis.connectors import capabilities as connector_capabilities
+
+    assert connector_capabilities.tool_names_for(connector["id"]) == []
+
+
+def test_unconnected_apps_do_not_appear_in_the_connector_picker(page):
+    """`isPickable()` requires a real `status.state === 'working'`, not just
+    `enabled` — an added-but-never-authorized connector must not look like a
+    usable app in the Scheduled Task editor's own picker."""
+    from jarvis.connectors import store as connector_store
+
+    connector_store.add_connector(type="mcp", label="Working App", enabled=True,
+                                  config={"connectFlow": {"url": "https://mcp.example.invalid/mcp"}})
+    working = next(c for c in connector_store.list_connectors(kind="mcp") if c["label"] == "Working App")
+    connector_store.update_connector(working["id"], {
+        "status": {"state": "working", "checkedAt": None, "detail": None}})
+    connector_store.add_connector(type="mcp", label="Never Connected App", enabled=True,
+                                  config={"connectFlow": {"url": "https://mcp2.example.invalid/mcp"}})
+
+    page.goto(page.url.split("#")[0] + "#/tasks", wait_until="networkidle")
+    page.click("[data-testid=new-task]")
+    page.click("[data-testid=add-connector]")
+    page.wait_for_selector("[data-testid=popover]")
+    popover_text = page.locator("[data-testid=popover]").inner_text()
+    assert "Working App" in popover_text
+    assert "Never Connected App" not in popover_text
 
 
 def test_the_catalogue_lists_official_connectors_with_a_real_resolved_icon(page, scratch):

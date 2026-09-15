@@ -102,7 +102,7 @@ export function ConnectorPicker({
       <Popover open={open} anchorRef={anchorRef} onClose={() => setOpen(false)} width={312}>
         {connectors.length === 0 ? (
           <p className="px-4 py-4 text-[12px] leading-relaxed text-ink-muted">
-            No apps are connected yet. Connect one in App Control and it will show up here.
+            No apps are connected yet. Connect one in the Connector screen and it will show up here.
           </p>
         ) : (
           <div className="scroll-quiet overflow-y-auto py-1">

@@ -1,4 +1,4 @@
-"""App Control's connector routes over HTTP — the catalogue, the OAuth start/
+"""Connector's routes over HTTP — the catalogue, the OAuth start/
 callback round trip, and the shared per-catalogue-entry client — driven
 through a real `TestClient` against the same stub OAuth+MCP server
 `test_connector_oauth.py` already proved `oauth.py` itself against.

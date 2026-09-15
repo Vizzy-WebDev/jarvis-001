@@ -43,6 +43,8 @@ export function Composer({
   onSend,
   onDictationStart,
   isSpeaking,
+  draftText,
+  onDraftConsumed,
 }: {
   disabled: boolean;
   busy: boolean;
@@ -54,6 +56,11 @@ export function Composer({
    *  to have silenced it, and this catches the case where it starts for some
    *  unrelated reason while this is already open. */
   isSpeaking?: () => boolean;
+  /** Text handed in from elsewhere in the app (e.g. "Create with Jarvis" on the
+   *  Skills screen) to drop into the box, unsent, for the person to edit or
+   *  send as-is. */
+  draftText?: string | null;
+  onDraftConsumed?: () => void;
 }) {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -129,6 +136,22 @@ export function Composer({
     el.style.height = 'auto';
     el.style.height = `${el.scrollHeight}px`;
   };
+
+  // A draft handed in from elsewhere lands in the box once, unsent — the
+  // person still decides whether to edit or send it. Consumed immediately so
+  // navigating away and back does not refill it.
+  useEffect(() => {
+    if (!draftText) return;
+    setText(draftText);
+    const box = textRef.current;
+    if (box) {
+      box.value = draftText;
+      grow(box);
+      box.focus();
+    }
+    onDraftConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftText]);
 
   async function addFiles(event: ChangeEvent<HTMLInputElement>) {
     const chosen = Array.from(event.target.files ?? []);

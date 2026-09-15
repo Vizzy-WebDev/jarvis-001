@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 import re
+import threading
 import time
 from typing import Any
 from urllib.parse import urlsplit
@@ -179,3 +181,80 @@ def refresh_all(targets: list[tuple[str, str | None]]) -> int:
         if icon_for(url_or_host, curated_key=curated_key):
             found += 1
     return found
+
+
+def host_key_for(connector: dict[str, Any]) -> str | None:
+    """Where a connector's own real logo could be resolved from, if anywhere.
+
+    A custom (non-catalog) connector has no curated icon key the way a catalog
+    entry does — only its own address. `cli` has no address at all, so it has
+    no real logo source and stays on the generic letter mark, correctly."""
+    config = connector.get("config") or {}
+    if connector.get("type") == "mcp":
+        return (config.get("connectFlow") or {}).get("url") or None
+    if connector.get("type") == "api":
+        return config.get("baseUrl") or None
+    return None
+
+
+# --- the background sweep ------------------------------------------------------
+#
+# A NEW custom connector's logo is never resolved inline on create/refresh —
+# that would make an ordinary "add a connector" click a real network call,
+# indistinguishable at the call site from a test posting a fake address like
+# `https://api.example.invalid` and blocking on a live lookup to the real
+# icon service. Resolution instead happens only here, on its own clock,
+# behind its own interlock — the same discipline every other background-clock
+# subsystem in this app follows (see root CLAUDE.md's "What runs on its own
+# clock" and `jarvis/ops/environment/sampler.py` for the template this
+# mirrors). `_public()` in `routes/connectors.py` always reads the cache only
+# (`refresh=False`) — a freshly-created connector shows the generic letter
+# mark until the next sweep, not a blocked response.
+
+ENABLE_ENV = "JARVIS_CONNECTOR_ICONS"
+#: Rebrands are rare; a fresh custom connector waiting up to this long for its
+#: real logo is an acceptable trade for never blocking a request on it.
+SWEEP_INTERVAL_S = 6 * 60 * 60
+
+_timer: threading.Timer | None = None
+
+
+def refresh_every_connector() -> int:
+    """Resolve a real logo for every mcp/api connector that does not already
+    have a fresh one. The one place this module makes a network call outside
+    of a direct, explicit `icon_for(refresh=True)` request."""
+    from . import store
+
+    targets = [(host, None) for connector in store.list_connectors()
+              for host in [host_key_for(connector)] if host]
+    return refresh_all(targets)
+
+
+def is_enabled() -> bool:
+    return os.environ.get(ENABLE_ENV) == "1"
+
+
+def start() -> bool:
+    global _timer
+    if not is_enabled() or _timer is not None:
+        return False
+
+    def run() -> None:
+        global _timer
+        try:
+            refresh_every_connector()
+        except Exception:  # noqa: BLE001 — a bad sweep must not break the process
+            logger.exception("refreshing connector icons failed")
+        _timer = threading.Timer(SWEEP_INTERVAL_S, run)
+        _timer.daemon = True
+        _timer.start()
+
+    run()
+    return True
+
+
+def stop() -> None:
+    global _timer
+    if _timer is not None:
+        _timer.cancel()
+        _timer = None

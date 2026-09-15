@@ -20,7 +20,7 @@ SECTIONS = {
     "chat-history": "Chat History",
     "models": "Model Settings",
     "skills": "Skills",
-    "app-control": "App Control",
+    "app-control": "Connector",
     "tasks": "Scheduled Tasks",
     "jobs": "Background Jobs",
     "briefing": "Morning Briefing",
@@ -44,7 +44,7 @@ SPEC = CapabilitySpec(
     id="builtin.open_section",
     name="open_section",
     description=(
-        "Open a section of the Jarvis app for the user — Model Settings, Skills, App Control, "
+        "Open a section of the Jarvis app for the user — Model Settings, Skills, Connector, "
         "Scheduled Tasks, Background Jobs, Morning Briefing, Notifications, Chat History, "
         "Memory, Self-Improvement, or Profile & Goals. Use it when they say “open…”, "
         "“show me…” or “go to…” one of those. Planning and shared content are not sections: "

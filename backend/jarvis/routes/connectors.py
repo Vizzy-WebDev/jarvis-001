@@ -35,7 +35,20 @@ def _public(connector: dict) -> dict:
     because a new config field was not on it is the ordinary way that happens.
     """
     config = connector.get("config") or {}
-    return {
+    host_key = icons.host_key_for(connector)
+    config_summary = {"hasSecret": bool(config.get("secretRef"))}
+    permissions = config.get("toolPermissions")
+    if permissions:
+        # Omitted rather than sent as `{}` when there is nothing to report —
+        # keeps a connector with no permission ever set byte-identical to the
+        # recorded Node contract fixture, which predates this field entirely.
+        # Real permissions were ALWAYS missing from this summary before this
+        # line existed — a genuinely live bug, not a hypothetical: the detail
+        # page could never show what a tool was actually set to, because
+        # every read of `config` here discarded it, no matter what the
+        # standing-permission buttons had just saved.
+        config_summary["toolPermissions"] = permissions
+    public = {
         "id": connector["id"], "type": connector["type"], "label": connector.get("label"),
         "description": connector.get("description"),
         "enabled": connector.get("enabled", True),
@@ -43,8 +56,18 @@ def _public(connector: dict) -> dict:
                                               "detail": None},
         "source": connector.get("source") or {"type": "user"},
         "createdAt": connector.get("createdAt"), "updatedAt": connector.get("updatedAt"),
-        "config": {"hasSecret": bool(config.get("secretRef"))},
+        "config": config_summary,
     }
+    # Cache-only (refresh=False), same reasoning as GET /catalog: listing must
+    # never block on a network call. The cache is seeded once, for real, by
+    # the background sweep in `connectors/icons.py`. Omitted rather than sent
+    # as `null` when nothing has resolved — same reasoning as `toolPermissions`
+    # above: keeps a connector with no real logo yet byte-identical to the
+    # recorded Node contract fixture, which predates this field entirely.
+    icon_data_uri = icons.icon_for(host_key, refresh=False) if host_key else None
+    if icon_data_uri:
+        public["iconDataUri"] = icon_data_uri
+    return public
 
 
 @router.get("")
@@ -182,7 +205,7 @@ async def oauth_callback(request: Request):
             kind="connector", level="success" if outcome.get("ok") else "error",
             title="Connector connected." if outcome.get("ok") else "Connector could not connect.",
             body="" if outcome.get("ok") else (outcome.get("error") or "Unknown error."),
-            action={"label": "App Control", "section": "app-control"},
+            action={"label": "Connector", "section": "app-control"},
             meta={"connectorId": outcome["connectorId"]} if outcome.get("connectorId") else None)
     except Exception:  # noqa: BLE001 — the HTML page below still tells the user what happened
         logger.warning("could not record the OAuth callback notification")

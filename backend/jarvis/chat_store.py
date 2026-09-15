@@ -15,14 +15,23 @@ circular-import invariant the root CLAUDE.md describes.
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sqlite3
+import threading
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .db import get_db
 from .jscompat import base36, compact_json, now_iso, now_ms, random_suffix
 
+logger = logging.getLogger(__name__)
+
 TITLE_MAX = 60
 ACTIVE_KEY = "active_conversation_id"
+
+#: How long something sits in the recycle bin before it is gone for good.
+TRASH_RETENTION_DAYS = 30
 
 
 def _make_id() -> str:
@@ -53,6 +62,12 @@ def _row_to_conversation(row: sqlite3.Row) -> dict[str, Any]:
     # response never had.
     if "message_count" in keys and row["message_count"] is not None:
         out["messageCount"] = row["message_count"]
+    # Present only once actually trashed — never sent as null for the
+    # overwhelming common case, so GET /api/conversations' response shape
+    # stays byte-identical to the recorded Node contract fixture for every
+    # row it can return (the active listing excludes anything with this set).
+    if "deleted_at" in keys and row["deleted_at"]:
+        out["deletedAt"] = row["deleted_at"]
     return out
 
 
@@ -122,7 +137,9 @@ def list_conversations(query: str | None = None, include_archived: bool = False)
     """All conversations, newest-updated first, pinned always ahead of unpinned.
 
     `query`, if given, full-text-searches message bodies as well as matching
-    conversation titles — either match surfaces the conversation.
+    conversation titles — either match surfaces the conversation. Never
+    includes anything sitting in the recycle bin, archived or not — that is
+    what `trash_listed()` is for.
     """
     db = get_db()
     q = str(query or "").strip()
@@ -133,7 +150,7 @@ def list_conversations(query: str | None = None, include_archived: bool = False)
         rows = db.execute(
             f"""SELECT c.*, {count_expr}
                 FROM conversations c
-                WHERE ({archived_clause})
+                WHERE c.deleted_at IS NULL AND ({archived_clause})
                   AND (
                     c.title LIKE ?
                     OR c.id IN (
@@ -149,10 +166,32 @@ def list_conversations(query: str | None = None, include_archived: bool = False)
         rows = db.execute(
             f"""SELECT c.*, {count_expr}
                 FROM conversations c
-                WHERE ({archived_clause})
+                WHERE c.deleted_at IS NULL AND ({archived_clause})
                 ORDER BY c.pinned DESC, c.updated_at DESC"""
         ).fetchall()
     return [_row_to_conversation(r) for r in rows]
+
+
+def trash_listed(limit: int | None = None) -> list[dict[str, Any]]:
+    """What is sitting in the recycle bin, most recently deleted first."""
+    count_expr = "(SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count"
+    sql = f"""SELECT c.*, {count_expr}
+              FROM conversations c
+              WHERE c.deleted_at IS NOT NULL
+              ORDER BY c.deleted_at DESC"""
+    if isinstance(limit, int):
+        sql += " LIMIT ?"
+        rows = get_db().execute(sql, (limit,)).fetchall()
+    else:
+        rows = get_db().execute(sql).fetchall()
+    return [_row_to_conversation(r) for r in rows]
+
+
+def is_trashed(conversation_id: str) -> bool:
+    row = get_db().execute(
+        "SELECT deleted_at FROM conversations WHERE id = ?", (conversation_id,)
+    ).fetchone()
+    return bool(row and row["deleted_at"])
 
 
 def get_conversation(conversation_id: str) -> dict[str, Any] | None:
@@ -396,8 +435,95 @@ def set_archived(conversation_id: str, archived: bool) -> dict[str, Any] | None:
 
 
 def delete_conversation(conversation_id: str) -> None:
-    """Deletes a conversation and, via ON DELETE CASCADE, all of its messages."""
-    get_db().execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+    """Moves a conversation to the recycle bin — not a hard delete. See
+    `purge_conversation()` for that, or `restore_conversation()` to undo this.
+
+    Never touches a row already trashed — overwriting its `deleted_at` would
+    reset the 30-day clock on something a previous delete already put there.
+    """
+    get_db().execute(
+        "UPDATE conversations SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
+        (now_iso(), conversation_id),
+    )
+
+
+def restore_conversation(conversation_id: str) -> dict[str, Any] | None:
+    """Brings one back out of the recycle bin."""
+    get_db().execute(
+        "UPDATE conversations SET deleted_at = NULL WHERE id = ?", (conversation_id,)
+    )
+    return get_conversation(conversation_id)
+
+
+def purge_conversation(conversation_id: str) -> bool:
+    """Permanently deletes one, whether or not it was ever trashed first —
+    and, via ON DELETE CASCADE, every message in it."""
+    cursor = get_db().execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+    return cursor.rowcount > 0
+
+
+def empty_conversation_trash() -> int:
+    """Permanently deletes everything currently in the recycle bin. Returns
+    how many."""
+    cursor = get_db().execute("DELETE FROM conversations WHERE deleted_at IS NOT NULL")
+    return cursor.rowcount
+
+
+def purge_expired_conversation_trash(*, older_than_days: int = TRASH_RETENTION_DAYS) -> int:
+    """Permanently deletes anything that has sat in the bin past its time."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).isoformat()
+    cursor = get_db().execute(
+        "DELETE FROM conversations WHERE deleted_at IS NOT NULL AND deleted_at < ?", (cutoff,)
+    )
+    return cursor.rowcount
+
+
+# --- the recycle bin's own clock -----------------------------------------------
+#
+# Same discipline every other background-clock subsystem in this app follows
+# (see root CLAUDE.md's "What runs on its own clock" and
+# `jarvis/ops/environment/sampler.py` for the template) — gated behind its own
+# interlock, off by default, so a test's own `create_app()` never starts a
+# real background thread unasked.
+
+ENABLE_ENV = "JARVIS_CHAT_TRASH_PURGE"
+#: Twice a day is plenty of resolution for a 30-day window.
+_PURGE_INTERVAL_S = 6 * 60 * 60
+
+_purge_timer: threading.Timer | None = None
+
+
+def is_enabled() -> bool:
+    return os.environ.get(ENABLE_ENV) == "1"
+
+
+def start_trash_purge() -> bool:
+    global _purge_timer
+    if not is_enabled() or _purge_timer is not None:
+        return False
+
+    def run() -> None:
+        global _purge_timer
+        try:
+            removed = purge_expired_conversation_trash()
+            if removed:
+                logger.info("[chat_store] purged %d expired conversation(s) from the recycle bin",
+                           removed)
+        except Exception:  # noqa: BLE001 — housekeeping must not break the process
+            logger.exception("purging the chat history recycle bin failed")
+        _purge_timer = threading.Timer(_PURGE_INTERVAL_S, run)
+        _purge_timer.daemon = True
+        _purge_timer.start()
+
+    run()
+    return True
+
+
+def stop_trash_purge() -> None:
+    global _purge_timer
+    if _purge_timer is not None:
+        _purge_timer.cancel()
+        _purge_timer = None
 
 
 def get_active_id() -> str | None:

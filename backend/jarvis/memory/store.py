@@ -318,8 +318,18 @@ def merge_category_into(source: str, target: str) -> None:
 # --- candidates --------------------------------------------------------------
 
 def list_pending_candidates() -> list[dict[str, Any]]:
+    # A candidate sourced from a conversation now sitting in the recycle bin
+    # is suppressed, not deleted — reversible, matching the conversation
+    # itself: restoring the conversation (chat_store.restore_conversation())
+    # brings the candidate back into review with no extra step needed here.
+    # Only a real, permanent delete of the conversation removes the row at
+    # all, via the existing ON DELETE CASCADE.
     rows = get_db().execute(
-        "SELECT * FROM memory_candidates WHERE status = 'pending' ORDER BY created_at").fetchall()
+        """SELECT mc.* FROM memory_candidates mc
+           LEFT JOIN conversations c ON c.id = mc.conversation_id
+           WHERE mc.status = 'pending' AND (mc.conversation_id IS NULL OR c.deleted_at IS NULL)
+           ORDER BY mc.created_at"""
+    ).fetchall()
     return [_row_to_candidate(r) for r in rows]
 
 

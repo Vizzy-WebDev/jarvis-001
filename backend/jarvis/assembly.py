@@ -117,6 +117,8 @@ def start_background_work() -> dict[str, bool]:
     default — `main()` (the real launch path) is what turns them on, so a
     test's own `create_app()` never starts a real background thread unasked.
     """
+    from . import chat_store, notifications
+    from .connectors import icons as connector_icons
     from .cost import balances, prices
     from .heartbeat import engine as heartbeat
     from .heartbeat.triggers import start_triggers
@@ -128,7 +130,8 @@ def start_background_work() -> dict[str, bool]:
 
     started = {"balances": False, "prices": False, "sampler": False, "heartbeat": False,
               "scheduler": False, "monitor": False, "job_supervisor": False,
-              "improvement_cadence": False}
+              "improvement_cadence": False, "notification_trash_purge": False,
+              "connector_icons": False, "chat_trash_purge": False}
 
     # Seeding is NOT behind the interlock. The interlock stops two builds acting
     # on the user's behalf; recording that a local model costs nothing is a fact
@@ -150,6 +153,9 @@ def start_background_work() -> dict[str, bool]:
     started["monitor"] = monitor_engine.start(event_bus=bus)
     started["job_supervisor"] = job_supervisor.start(event_bus=bus)
     started["improvement_cadence"] = improvement_cadence.start()
+    started["notification_trash_purge"] = notifications.start_trash_purge()
+    started["connector_icons"] = connector_icons.start()
+    started["chat_trash_purge"] = chat_store.start_trash_purge()
     return started
 
 

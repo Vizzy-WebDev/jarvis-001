@@ -22,6 +22,7 @@ from jarvis.observers import start_observers, stop_observers
 def _isolated(scratch):
     yield
     stop_observers()
+    notifications.stop_trash_purge()
 
 
 @pytest.fixture
@@ -109,6 +110,101 @@ def test_marking_read_and_clearing():
     assert notifications.remove("nope") is False
     notifications.clear_all()
     assert notifications.listed() == []
+
+
+# --- the recycle bin ------------------------------------------------------------
+
+def test_remove_and_clear_move_to_the_bin_rather_than_deleting():
+    a = notifications.add(kind="system", title="one")
+    notifications.add(kind="system", title="two")
+
+    notifications.remove(a["id"])
+    assert [row["title"] for row in notifications.listed()] == ["two"]  # "one" left the active view...
+    assert len(notifications.trash_listed()) == 1  # ...but recoverable
+
+    notifications.clear_all()
+    assert notifications.listed() == []
+    assert len(notifications.trash_listed()) == 2
+
+
+def test_deleting_something_already_in_the_bin_still_reports_success():
+    a = notifications.add(kind="system", title="one")
+    assert notifications.remove(a["id"]) is True
+    assert notifications.remove(a["id"]) is True  # already trashed, still a real row
+    assert notifications.remove("nope") is False
+
+
+def test_clearing_twice_never_resets_an_earlier_items_own_trash_clock():
+    a = notifications.add(kind="system", title="one")
+    notifications.remove(a["id"])
+    first_stamp = notifications.trash_listed()[0]["trashedAt"]
+
+    notifications.add(kind="system", title="two")
+    notifications.clear_all()  # must not touch "one"'s own trashedAt
+    trashed = {row["id"]: row["trashedAt"] for row in notifications.trash_listed()}
+    assert trashed[a["id"]] == first_stamp
+
+
+def test_restoring_brings_it_back_to_the_active_list():
+    a = notifications.add(kind="system", title="one")
+    notifications.remove(a["id"])
+    assert notifications.restore(a["id"]) is True
+    assert [row["id"] for row in notifications.listed()] == [a["id"]]
+    assert notifications.trash_listed() == []
+
+
+def test_restoring_something_not_in_the_bin_fails_honestly():
+    a = notifications.add(kind="system", title="one")
+    assert notifications.restore(a["id"]) is False   # never trashed
+    assert notifications.restore("nope") is False    # does not exist
+
+
+def test_purge_permanently_deletes_regardless_of_trash_state():
+    a = notifications.add(kind="system", title="one")
+    b = notifications.add(kind="system", title="two")
+    notifications.remove(a["id"])
+
+    assert notifications.purge(a["id"]) is True   # was trashed
+    assert notifications.purge(b["id"]) is True   # was still active
+    assert notifications.purge("nope") is False
+    assert notifications.listed(include_trashed=True) == []
+
+
+def test_empty_trash_removes_only_trashed_items_and_reports_the_count():
+    a = notifications.add(kind="system", title="one")
+    notifications.add(kind="system", title="still active")
+    notifications.remove(a["id"])
+
+    assert notifications.empty_trash() == 1
+    assert notifications.trash_listed() == []
+    assert len(notifications.listed()) == 1
+
+
+def test_purge_expired_trash_only_takes_what_is_past_its_time(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    a = notifications.add(kind="system", title="old")
+    b = notifications.add(kind="system", title="recent")
+    notifications.remove(a["id"])
+    notifications.remove(b["id"])
+
+    stale = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
+    data = notifications._load()
+    for row in data["notifications"]:
+        if row["id"] == a["id"]:
+            row["trashedAt"] = stale
+    notifications.write_json(notifications.FILE, data)
+
+    removed = notifications.purge_expired_trash()
+    assert removed == 1
+    remaining = {row["id"] for row in notifications.trash_listed()}
+    assert remaining == {b["id"]}
+
+
+def test_trash_purge_stays_off_without_its_own_interlock(monkeypatch):
+    monkeypatch.delenv(notifications.ENABLE_ENV, raising=False)
+    assert notifications.is_enabled() is False
+    assert notifications.start_trash_purge() is False
 
 
 # --- the observer -------------------------------------------------------------

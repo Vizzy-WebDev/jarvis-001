@@ -49,8 +49,40 @@ def read_all() -> dict[str, Any]:
     return {"notifications": notifications.mark_all_read()}
 
 
+# --- the recycle bin ------------------------------------------------------------
+# Registered before the "/{notification_id}" routes below: FastAPI matches path
+# operations in registration order, and "/notifications/trash" would otherwise be
+# swallowed by "/notifications/{notification_id}" with notification_id="trash".
+
+@router.get("/notifications/trash")
+def trash_listed(limit: int | None = None) -> dict[str, Any]:
+    return {"notifications": notifications.trash_listed(limit)}
+
+
+@router.delete("/notifications/trash")
+def empty_trash() -> dict[str, Any]:
+    return {"ok": True, "removed": notifications.empty_trash()}
+
+
+@router.post("/notifications/{notification_id}/restore")
+def restore(notification_id: str):
+    if not notifications.restore(notification_id):
+        return JSONResponse({"ok": False, "error": "Not found in the recycle bin."},
+                            status_code=404)
+    return {"ok": True}
+
+
+@router.delete("/notifications/{notification_id}/permanent")
+def permanent(notification_id: str):
+    if not notifications.purge(notification_id):
+        return JSONResponse({"ok": False, "error": "Not found."}, status_code=404)
+    return {"ok": True}
+
+
 @router.delete("/notifications/{notification_id}")
 def remove(notification_id: str):
+    """Moves it to the recycle bin — see `/notifications/{id}/permanent` for a
+    real, irreversible delete."""
     if not notifications.remove(notification_id):
         return JSONResponse({"ok": False, "error": "Not found."}, status_code=404)
     return {"ok": True}
@@ -58,5 +90,7 @@ def remove(notification_id: str):
 
 @router.delete("/notifications")
 def clear() -> dict[str, Any]:
+    """Moves everything active to the recycle bin — see `/notifications/trash`
+    to empty it for good."""
     notifications.clear_all()
     return {"ok": True}

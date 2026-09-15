@@ -63,20 +63,28 @@ def _raw_tools(connector: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
-def _dispatch(connector_id: str, kind: str, tool_name: str,
+def _dispatch(connector_id: str, kind: str, tool_name: str, permission_name: str,
               args: dict[str, Any]) -> dict[str, Any]:
     """Re-read the connector at call time.
 
     Not closed over: its allowlist or its key may have changed since the
     declaration was built, and acting on a stale copy of a permission is the
     kind of mistake that only shows up once it matters.
+
+    `tool_name` (the server's own, unprefixed name) is what actually gets
+    dispatched below — the underlying MCP server/API/CLI has never heard of
+    the prefixed alias Jarvis shows the user. `permission_name` (the prefixed
+    name) is what the standing-permission lookup uses instead, because that is
+    the ONLY name the frontend, and therefore a saved permission, ever knows —
+    checking the raw name here would silently never match a permission the
+    user actually set through the UI.
     """
     connector = store.get_connector(connector_id)
     if connector is None:
         return {"ok": False, "error": "That connection has been removed."}
     if not connector.get("enabled", True):
         return {"ok": False, "error": f'"{connector["label"]}" is switched off.'}
-    if store.tool_permission(connector, tool_name) == "deny":
+    if store.tool_permission(connector, permission_name) == "deny":
         return {"ok": False,
                 "error": f'The user has turned "{tool_name}" off for this connection.'}
 
@@ -112,7 +120,11 @@ def connector_specs(connector: dict[str, Any]) -> list[CapabilitySpec]:
     kind = str(connector.get("type"))
     for tool in _raw_tools(connector):
         name = prefixed_name(connector, tool["name"])
-        permission = store.tool_permission(connector, tool["name"])
+        # The prefixed name — the only one the frontend, and therefore any
+        # permission it saved, ever knows. Looking this up by the raw name
+        # instead (`tool["name"]`) was a real, previously-live bug: it always
+        # missed, so a tool set to "Blocked" through the UI stayed reachable.
+        permission = store.tool_permission(connector, name)
         if permission == "deny":
             # Not declared at all: a tool the user has turned off should not be
             # something the model has to be refused, it should be absent.
@@ -132,8 +144,8 @@ def connector_specs(connector: dict[str, Any]) -> list[CapabilitySpec]:
             # An inferred "risky" and a user's own "ask" both mean confirm, and
             # neither can override the other into not asking.
             risk=Risk.MEDIUM if (classified == "risky" or permission == "ask") else Risk.LOW,
-            handler=(lambda _cid=connector["id"], _kind=kind, _tool=tool["name"], **args:
-                     _dispatch(_cid, _kind, _tool, args)),
+            handler=(lambda _cid=connector["id"], _kind=kind, _tool=tool["name"], _perm=name, **args:
+                     _dispatch(_cid, _kind, _tool, _perm, args)),
             kind=CapabilityKind.CONNECTOR,
             timeout_s=120.0 if kind == "mcp" else 60.0,
             tags=frozenset({"core"}) if kind in ("files", "browser") else frozenset(),

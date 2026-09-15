@@ -259,4 +259,17 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
         CREATE INDEX IF NOT EXISTS idx_ai_usage_request ON ai_usage(request_id);
         """
     ],
+
+    # 25: A recycle bin for chat history, the same shape the notifications
+    # store already uses for its own trash — deleting a conversation moves it
+    # here instead of dropping it (and, via ON DELETE CASCADE, every message
+    # in it) immediately and irreversibly. NULL means "not trashed", so every
+    # existing conversation is unaffected by this migration; a real timestamp
+    # is both the recycle-bin sort key and the 30-day auto-purge clock.
+    25: [
+        """
+        ALTER TABLE conversations ADD COLUMN deleted_at TEXT;
+        CREATE INDEX IF NOT EXISTS idx_conversations_deleted ON conversations(deleted_at);
+        """
+    ],
 }

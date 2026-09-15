@@ -1487,6 +1487,31 @@ def test_the_chat_history_drawer_opens_from_the_hamburger_and_shows_pinned_first
     page.wait_for_selector("[data-testid=chat-history-drawer][data-open=false]")
 
 
+def test_the_drawer_slides_out_near_the_conversation_panel_not_the_left_edge(page):
+    """A previously-real bug: this drawer's positioning was copy-pasted from
+    the main, left-edge app Drawer, so it opened on the opposite side of the
+    screen from its own trigger button — which lives inside the conversation
+    panel, floating over the RIGHT edge of the stage."""
+    page.click("[data-testid=chat-history-menu]")
+    page.wait_for_selector("[data-testid=chat-history-drawer][data-open=true]")
+
+    drawer_box = page.locator("[data-testid=chat-history-drawer]").bounding_box()
+    rail_box = page.locator("[data-testid=conversation-rail]").bounding_box()
+    viewport = page.viewport_size
+    assert drawer_box and rail_box and viewport
+
+    # On the right half of the screen, overlapping or directly adjacent to the
+    # conversation panel — not flush against the left edge, where the main app
+    # Drawer lives. Not exact-edge alignment: the two sit in different CSS
+    # positioning contexts (fixed vs. absolute, different containing blocks),
+    # so what matters is "near the panel," not pixel-identical edges.
+    assert drawer_box["x"] > viewport["width"] / 2
+    assert drawer_box["x"] <= rail_box["x"] + rail_box["width"], \
+        "the drawer should open at or before the conversation panel's right edge"
+    assert drawer_box["x"] >= rail_box["x"] - 60, \
+        "the drawer should open near the conversation panel, not far from it"
+
+
 def test_pinning_from_the_drawer_moves_it_into_the_pinned_group(page):
     from jarvis import chat_store
 
@@ -1502,6 +1527,21 @@ def test_pinning_from_the_drawer_moves_it_into_the_pinned_group(page):
     page.wait_for_selector("[data-testid=drawer-pinned-list]")
     assert "ToPin" in page.locator("[data-testid=drawer-pinned-list]").inner_text()
     assert chat_store.get_conversation(convo["id"])["pinned"] is True
+
+
+def test_clicking_new_chat_repeatedly_on_an_empty_conversation_does_not_duplicate_it(page):
+    """A previously-real bug: reset_conversation() had no guard at all, so
+    repeated clicks with nothing ever sent piled up an unbounded string of
+    empty "New chat" rows."""
+    from jarvis import chat_store
+
+    before = len(chat_store.list_conversations())
+    page.click("[data-testid=new-chat]")
+    page.click("[data-testid=new-chat]")
+    page.click("[data-testid=new-chat]")
+    page.wait_for_timeout(300)
+
+    assert len(chat_store.list_conversations()) == before
 
 
 def test_view_all_in_the_drawer_opens_the_full_chat_history_page(page):
@@ -1528,6 +1568,88 @@ def test_resuming_from_the_drawer_actually_loads_the_transcript(page):
     page.locator("[data-testid=drawer-resume]", has_text="Old Thread").click()
     page.wait_for_selector("[data-testid=chat-history-drawer][data-open=false]")
     page.wait_for_selector("text=Noted: rhubarb pie.", timeout=10_000)
+
+
+def test_a_long_conversation_is_actually_scrollable(page):
+    """A real, severe bug found empirically while testing the reported
+    "can't scroll a long conversation" complaint — and worse than the
+    original report suggested. `Transcript` used `justify-content: flex-end`
+    on its own scroll container to keep a SHORT conversation sitting at the
+    bottom. Once content overflows, Chromium never extends `scrollHeight`
+    past `clientHeight` at all: the older messages render at a NEGATIVE
+    `offsetTop`, genuinely unreachable by scrolling — confirmed on a
+    completely FRESH page load with no resume, no picker, no prior
+    navigation involved at all, so this was never specific to any one way of
+    opening a conversation. Fixed by bottom-anchoring with a `margin-top:
+    auto` spacer instead, which leaves the container's own scroll behaviour
+    at its default (top-anchored, `scrollHeight` growing normally) — this
+    proves the real content is both genuinely scrollable AND reachable, not
+    just that a scrollbar exists.
+    """
+    from jarvis import chat_store, session
+
+    convo = chat_store.create_conversation()
+    for i in range(40):
+        chat_store.append_message(convo["id"], {"role": "user", "text": f"message number {i}"})
+    session.activate_conversation(convo["id"])
+
+    page.goto(page.url, wait_until="networkidle")
+    page.wait_for_selector("text=message number 39", timeout=10_000)
+
+    scroll = page.locator("[data-testid=transcript]").evaluate(
+        "el => ({ top: el.scrollTop, height: el.scrollHeight, client: el.clientHeight })")
+    assert scroll["height"] > scroll["client"], \
+        "a 40-message conversation should overflow a fixed-height panel"
+    # Lands pinned to the bottom (the newest message), same as it always did.
+    assert scroll["top"] + scroll["client"] >= scroll["height"] - 4
+
+    # And the OLDEST message — the one that used to render off-screen at a
+    # negative offset — must be genuinely reachable by scrolling to the top.
+    page.locator("[data-testid=transcript]").evaluate("el => { el.scrollTop = 0; }")
+    page.wait_for_selector("text=message number 0", timeout=5_000)
+
+
+def test_resuming_a_conversation_from_the_drawer_lands_scrolled_to_the_bottom(page):
+    """Resuming from this drawer updates `turns` on the SAME long-lived
+    `Transcript` instance rather than remounting it, so its scroll-pin ref
+    could stay stale `false` from having scrolled up in whatever conversation
+    was open before — landing a freshly-resumed conversation wherever the
+    LAST one happened to be scrolled, not at its own bottom. Keying
+    `ConversationPanel` on the active conversation's id fixes that; this is
+    independent of `test_a_long_conversation_is_actually_scrollable` above,
+    which is the container actually being scrollable at all.
+    """
+    from jarvis import chat_store
+
+    first = chat_store.create_conversation()
+    chat_store.rename_conversation(first["id"], "First Thread")
+    for i in range(40):
+        chat_store.append_message(first["id"], {"role": "user", "text": f"message {i} in the first thread"})
+
+    second = chat_store.create_conversation()
+    chat_store.rename_conversation(second["id"], "Second Thread")
+    for i in range(40):
+        chat_store.append_message(second["id"], {"role": "assistant", "text": f"reply {i} in the second thread"})
+
+    # Resume the first (long) conversation, then deliberately scroll away from
+    # the bottom — this is what leaves the SAME Transcript instance's pin ref
+    # stale `false` for whatever gets resumed next.
+    page.click("[data-testid=chat-history-menu]")
+    page.locator("[data-testid=drawer-resume]", has_text="First Thread").click()
+    page.wait_for_selector("text=message 39 in the first thread", timeout=10_000)
+    page.locator("[data-testid=transcript]").evaluate(
+        "el => { el.scrollTop = 0; el.dispatchEvent(new Event('scroll')); }")
+
+    # Now resume the second (also long) conversation from the same drawer.
+    page.click("[data-testid=chat-history-menu]")
+    page.locator("[data-testid=drawer-resume]", has_text="Second Thread").click()
+    page.wait_for_selector("text=reply 39 in the second thread", timeout=10_000)
+
+    scroll = page.locator("[data-testid=transcript]").evaluate(
+        "el => ({ top: el.scrollTop, height: el.scrollHeight, client: el.clientHeight })")
+    assert scroll["height"] > scroll["client"], "the transcript should be tall enough to scroll at all"
+    assert scroll["top"] + scroll["client"] >= scroll["height"] - 4, \
+        "the newly-resumed conversation should land scrolled to the bottom, not wherever the last one was left"
 
 
 def test_deleting_a_chat_sends_it_to_a_real_recycle_bin_and_back(page):

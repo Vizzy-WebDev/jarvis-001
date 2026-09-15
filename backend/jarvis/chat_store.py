@@ -203,6 +203,14 @@ def is_conversation(conversation_id: str) -> bool:
     return bool(get_db().execute("SELECT 1 FROM conversations WHERE id = ?", (conversation_id,)).fetchone())
 
 
+def has_messages(conversation_id: str) -> bool:
+    """Whether at least one message has ever been sent in this conversation —
+    a single indexed existence check, not a full transcript read."""
+    return bool(get_db().execute(
+        "SELECT 1 FROM messages WHERE conversation_id = ? LIMIT 1", (conversation_id,)
+    ).fetchone())
+
+
 def get_messages(conversation_id: str) -> list[dict[str, Any]]:
     """Every message in a conversation, oldest first."""
     rows = get_db().execute(

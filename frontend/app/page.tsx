@@ -88,6 +88,19 @@ export default function Home() {
    * from the moment the engine was built, forever.
    */
   const sttNotice = useRef<string | null>(null);
+  /**
+   * Keyed onto `ConversationPanel` below so switching conversations always
+   * remounts it — the fix for a real bug: resuming from the chat-history
+   * picker updated `turns` on the SAME long-lived `Transcript` instance,
+   * whose scroll-pin ref could be stale from whatever conversation was open
+   * before, and whose layout had no reason to recompute for a suddenly much
+   * longer transcript set all at once. Resuming from the full Chat History
+   * page happened to dodge this by accident — it navigates through a
+   * different section and back, which unmounts and remounts the whole home
+   * layout anyway. This makes both paths behave the same way on purpose,
+   * without touching `Transcript`'s own (already correct) scroll logic.
+   */
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
 
   // --- what is already true when the page opens ------------------------------
 
@@ -112,6 +125,7 @@ export default function Home() {
           const detail = await api.conversations.open(active.id);
           if (cancelled) return;
           setTurns(detail.messages.filter(isShown).map(toTurn));
+          setActiveConversationId(active.id);
         }
       } catch {
         if (!cancelled) setStatus('Jarvis is not answering — is it running?');
@@ -256,15 +270,24 @@ export default function Home() {
   }, []);
 
   async function newChat() {
+    // An already-empty conversation has nothing to leave behind — creating
+    // another one on top of it is how repeated clicks used to pile up
+    // duplicate empty chats. The backend guards this too (session.py's
+    // reset_conversation reuses an empty conversation instead of inserting a
+    // new row), but this skips the round trip entirely for the common case.
+    if (turns.length === 0) return;
     running.current?.cancel();
+    let created;
     try {
-      const created = await api.conversations.create();
-      await api.conversations.activate(created.conversation.id);
+      // create() already activates the new conversation server-side
+      // (session.py's reset_conversation) — no separate activate() call needed.
+      created = await api.conversations.create();
     } catch (err) {
       if (err instanceof ApiRequestError) setStatus(err.message);
       return;
     }
     setTurns([]);
+    setActiveConversationId(created.conversation.id);
     setBusy(false);
     setOrbState('idle');
   }
@@ -282,6 +305,7 @@ export default function Home() {
       await api.conversations.activate(id);
       const detail = await api.conversations.open(id);
       setTurns(detail.messages.filter(isShown).map(toTurn));
+      setActiveConversationId(id);
     } catch (err) {
       setStatus(err instanceof ApiRequestError ? err.message : 'Could not open that conversation.');
       return;
@@ -557,6 +581,7 @@ export default function Home() {
           style={{ right: 'var(--rail-gutter)', width: 'var(--rail-width)' }}
         >
           <ConversationPanel
+            key={activeConversationId}
             turns={turns}
             notConfigured={!configured}
             busy={busy}

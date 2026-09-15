@@ -84,26 +84,42 @@ def get_active_session_id() -> str:
 
 
 def reset_conversation() -> dict[str, Any]:
-    """Start a new chat, checkpointing the one being left behind."""
+    """Start a new chat, checkpointing the one being left behind.
+
+    If that conversation never received a single message, it is reused
+    instead of inserting another empty row — every caller of this (the "New
+    chat" button, but not only it) used to have no guard against piling up
+    duplicate empty conversations on repeat calls.
+    """
     global _active_id
     previous_id = _active_id or get_active_session_id()
+    reusing_empty = not chat_store.has_messages(previous_id)
 
-    # The most reliable of the checkpoints, since the user just clicked
-    # something. Fire-and-forget: starting a new chat must feel instant, not wait
-    # on a background model call over the conversation being left behind.
-    _fire_and_forget_checkpoint(previous_id, "new_chat")
+    if not reusing_empty:
+        # The most reliable of the checkpoints, since the user just clicked
+        # something. Fire-and-forget: starting a new chat must feel instant,
+        # not wait on a background model call over the conversation being
+        # left behind. Skipped when reusing an empty conversation — there is
+        # nothing in it to checkpoint.
+        _fire_and_forget_checkpoint(previous_id, "new_chat")
 
     # Clears the transcript AND every other piece of per-session state that
     # must not survive a new chat — the sticky model pick, the unlocked-tool set,
     # the sticky style request. Those live in Wave 2 modules and register
     # themselves; see session_hooks for why this is a registry rather than a
-    # remembered list of calls.
+    # remembered list of calls. Run even when reusing: nothing should have
+    # accumulated on an empty conversation, but this is what guarantees that
+    # rather than assuming it.
     conversation.reset_session(previous_id)
     session_hooks.run_session_resets(previous_id)
 
-    conv = chat_store.create_conversation()
-    chat_store.set_active_id(conv["id"])
-    conversation.bind_session(conv["id"])
+    if reusing_empty:
+        conv = chat_store.get_conversation(previous_id)
+        assert conv is not None, "previous_id was just resolved to a real conversation"
+    else:
+        conv = chat_store.create_conversation()
+        chat_store.set_active_id(conv["id"])
+        conversation.bind_session(conv["id"])
     with _lock:
         _active_id = conv["id"]
     return conv

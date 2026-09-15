@@ -80,17 +80,27 @@ export function ChatHistoryDrawer({
         onClick={onClose}
         aria-hidden
       />
+      {/* Anchored to the RIGHT, at the same offset as the conversation panel
+          it's opened from (`right: var(--rail-gutter)`, app/page.tsx) — this
+          used to copy the main app Drawer's left-edge positioning verbatim,
+          which is correct for that global menu but put this one sliding out
+          from the opposite side of the screen from its own trigger button.
+          Still rendered here at the page's top level rather than nested
+          inside the conversation panel, for the reason given where this is
+          used: that panel's own backdrop-blur-xl traps position:fixed
+          descendants. */}
       <aside
         aria-label="Chat history"
         aria-hidden={!open}
         data-testid="chat-history-drawer"
         data-open={open ? 'true' : 'false'}
         className={[
-          'fixed inset-y-0 left-0 z-50 flex w-[300px] max-w-[86vw] flex-col',
-          'border-r border-surface-border bg-surface-raised/95 backdrop-blur-xl shadow-panel',
+          'fixed inset-y-0 z-50 flex w-[300px] max-w-[86vw] flex-col',
+          'border-l border-surface-border bg-surface-raised/95 backdrop-blur-xl shadow-panel',
           'transition-transform duration-200 ease-out',
-          open ? 'translate-x-0' : '-translate-x-full',
+          open ? 'translate-x-0' : 'translate-x-full',
         ].join(' ')}
+        style={{ right: 'var(--rail-gutter)' }}
       >
         <div className="flex items-center gap-2 px-4 pb-3 pt-5">
           <p className="text-[13px] font-semibold text-ink">Chat History</p>

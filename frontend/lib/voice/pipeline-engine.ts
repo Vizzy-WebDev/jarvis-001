@@ -39,10 +39,19 @@ const BARGE_SAMPLE_MS = 100;
 const BARGE_SUSTAIN_MS = 250;
 const BARGE_FLOOR = 0.05;
 
-/** How long a hands-free session may sit quiet in `listening` before dropping to
- *  a real `idle`. The mic stays fully open — only the state changes, so the orb
- *  stops claiming to be listening intently at nothing. */
+/** How long a hands-free session may sit quiet in `listening`, with nothing said
+ *  yet, before it genuinely stops: recognition is torn down and the microphone
+ *  released — the same as a manual stop, not a relabelled display. This is the
+ *  "just clicked the mic, still deciding what to say" window, deliberately more
+ *  patient than FOLLOWUP_GRACE_MS below. */
 const HANDS_FREE_IDLE_MS = 30_000;
+
+/** How long the microphone stays open for a quick follow-up right after Jarvis
+ *  finishes a reply, before the same real stop happens. Deliberately much
+ *  shorter than HANDS_FREE_IDLE_MS: this window is for someone mid-conversation
+ *  who is likely to keep talking immediately, not someone who just sat down and
+ *  hasn't said anything yet. */
+const FOLLOWUP_GRACE_MS = 7_000;
 
 /** The engine-level backstop while speaking, above each sentence's own. */
 const SPEAKING_STUCK_MS = 60_000;
@@ -69,12 +78,27 @@ export class PipelineEngine extends VoiceEngine {
   private echoTailTimer: ReturnType<typeof setTimeout> | null = null;
   private bargeTimer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(private readonly options: { voiceOutput?: string } = {}) {
+  constructor(private readonly options: {
+    voiceOutput?: string;
+    /** Test-only overrides for the two idle timers below, so a test can prove
+     *  real teardown happens without waiting out the real durations. Always
+     *  unset in production. */
+    handsFreeIdleMs?: number;
+    followupGraceMs?: number;
+  } = {}) {
     super();
   }
 
   get voiceOutput(): string {
     return this.options.voiceOutput || 'browser';
+  }
+
+  private get handsFreeIdleMs(): number {
+    return this.options.handsFreeIdleMs ?? HANDS_FREE_IDLE_MS;
+  }
+
+  private get followupGraceMs(): number {
+    return this.options.followupGraceMs ?? FOLLOWUP_GRACE_MS;
   }
 
   async start(): Promise<void> {
@@ -227,8 +251,12 @@ export class PipelineEngine extends VoiceEngine {
   private onRecognitionError(event: SpeechRecognitionErrorEvent): void {
     if (event.error === 'no-speech' || event.error === 'aborted') return;  // ordinary
     if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-      this.emit('error', { message: 'The microphone was blocked. Allow it and try again.' });
+      // stop() first: it ends in setState('idle'), which sets a generic status
+      // text. Emitting the specific message AFTER stop() returns is what makes
+      // it the last write and the one actually seen, rather than being
+      // overwritten in the same tick before anything paints.
       this.stop();
+      this.emit('error', { message: 'The microphone was blocked. Allow it and try again.' });
     } else if (event.error === 'network') {
       this.emit('error', { message: 'Speech recognition needs an internet connection.' });
     } else {
@@ -242,9 +270,9 @@ export class PipelineEngine extends VoiceEngine {
     // belt and braces, so it can never be treated as something someone said.
     if (this.recognitionSuspended || this.speaking || this.muted) return;
 
-    // Real activity: wake from a hands-free rest (the mic was never off, only
-    // the displayed state) and restart the quiet countdown.
-    if (this.state === 'idle' && this.active) this.setState('listening');
+    // Real speech heard: restart the quiet countdown. `idle` now genuinely means
+    // recognition was torn down via stop() (active is always false whenever
+    // state is idle), so there is nothing left to "wake" here.
     this.armIdle();
 
     let interim = '';
@@ -393,6 +421,11 @@ export class PipelineEngine extends VoiceEngine {
     };
 
     source.onmessage = (message) => {
+      // The same staleness guard onerror below already has: a message queued
+      // for a just-superseded stream (interrupt() replaced this.stream_ with a
+      // newer turn's) must not be acted on as if it belonged to the current one.
+      if (this.stream_ !== source) return;
+
       let data: Record<string, string>;
       try {
         data = JSON.parse(message.data);
@@ -506,7 +539,9 @@ export class PipelineEngine extends VoiceEngine {
     this.spokenBuffer = '';
     if (this.bargeTimer) clearInterval(this.bargeTimer);
     this.bargeTimer = null;
-    this.backToListening();
+    // Just replied: a short follow-up window rather than the long first-listen
+    // one, so a hands-free back-and-forth doesn't sit fully open indefinitely.
+    this.backToListening(this.followupGraceMs);
     // Recognition stays suspended a little past the audio itself, and anything
     // the mic queued during that last stretch is dropped so it cannot be
     // finalised once recognition resumes.
@@ -538,24 +573,34 @@ export class PipelineEngine extends VoiceEngine {
 
   // --- resting ----------------------------------------------------------------
 
-  /** The one place every "the turn ended, go back to resting" transition lands. */
-  private backToListening(): void {
+  /**
+   * The one place every "the turn ended, go back to resting" transition lands.
+   * `graceMs` is how long to wait before genuinely stopping — callers that just
+   * finished a reply pass the short follow-up window; every other caller (barge-in
+   * recovery, error paths) takes the default first-listen duration.
+   */
+  private backToListening(graceMs: number = this.handsFreeIdleMs): void {
     if (this.active) {
       this.setState('listening');
-      this.armIdle();
+      this.armIdle(graceMs);
     } else {
       this.disarmIdle();
       this.setState('idle');
     }
   }
 
-  private armIdle(): void {
+  private armIdle(ms: number = this.handsFreeIdleMs): void {
     this.disarmIdle();
     this.idleTimer = setTimeout(() => {
       // Only if still genuinely resting: if something else happened since, this
       // timer is stale and the state change that caused it already disarmed it.
-      if (this.state === 'listening') this.setState('idle');
-    }, HANDS_FREE_IDLE_MS);
+      // Genuinely stops now — the same teardown a manual click triggers — rather
+      // than only relabelling the display while recognition kept running.
+      if (this.state === 'listening') {
+        this.stop();
+        this.emit('paused', { reason: 'Stopped listening — tap the mic to talk again.' });
+      }
+    }, ms);
   }
 
   private disarmIdle(): void {

@@ -718,6 +718,47 @@ def test_stopping_tears_the_engine_down_rather_than_leaving_it_open(voice_page):
         "the continuous-listening socket was left open after stopping"
 
 
+def test_pipeline_engine_stops_for_real_rather_than_being_silently_abandoned(voice_page):
+    """A real, confirmed bug, found while testing the new quiet-window teardown
+    below: on a recognition error, the UI used to just forget the engine (null
+    the ref, flip the mic button off) without ever telling it to actually stop --
+    so a live PipelineEngine kept running underneath, microphone still open,
+    quietly retrying recognition forever, while the screen claimed otherwise.
+
+    This fake-mic Chromium environment cannot drive a clean, error-free speech
+    session at all -- `--use-fake-device-for-media-stream` audio doesn't satisfy
+    the real Web Speech API, which errors immediately with `audio-capture` -- so
+    rather than fighting that, this test uses it as the natural trigger and
+    proves teardown is REAL: `MediaStreamTrack.stop()` is monkey-patched to count
+    real calls (stronger than watching `aria-pressed` alone, which only proves
+    the UI's belief, not the hardware release), a fresh click actually starts a
+    new session rather than silently no-op-ing against an already-dead one, and
+    the mic-blocked-style message is what's shown rather than being immediately
+    overwritten by a generic one (see the same ordering fix in
+    `onRecognitionError`).
+    """
+    voice_page.add_init_script(
+        "window.__stoppedTracks = 0;"
+        "const origStop = MediaStreamTrack.prototype.stop;"
+        "MediaStreamTrack.prototype.stop = function () {"
+        "  window.__stoppedTracks += 1;"
+        "  return origStop.call(this);"
+        "};"
+    )
+    voice_page.reload(wait_until="networkidle")  # the init script only applies from here
+
+    start_engine(voice_page, "pipeline")
+    voice_page.wait_for_selector("[data-testid=mic][aria-pressed=false]", timeout=10_000)
+    assert "microphone" in voice_page.inner_text("[data-testid=status]").lower()
+    assert voice_page.evaluate("window.__stoppedTracks") > 0, \
+        "the microphone track was never actually released"
+
+    # A fresh click must start a NEW session, not no-op against the dead one --
+    # exactly the bug the page.tsx cleanup fix targets.
+    voice_page.click("[data-testid=mic]")
+    voice_page.wait_for_selector("[data-testid=mic][aria-pressed=true]", timeout=5_000)
+
+
 def test_the_realtime_engine_is_offered_from_a_capability_and_fails_honestly(voice_page):
     """Two things at once, and both are the point.
 

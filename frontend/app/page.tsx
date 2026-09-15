@@ -280,6 +280,18 @@ export default function Home() {
     const started = buildEngine(engineId, speakReplies ? voiceId : 'browser');
     started.on('state', ({ state }) => {
       setOrbState(state as OrbState);
+      if (state === 'idle') {
+        // The engine reached idle on its own — an auto-hangup after a quiet
+        // spell, or an internal stop() from an error path — not from a click on
+        // this button. Whatever got us here already released the microphone;
+        // mirroring that reset here is what the manual-stop click branch below
+        // already does by hand. Without it, the button stays stuck "on" and the
+        // next click just re-stops an already-dead engine instead of starting a
+        // fresh one.
+        engine.current = null;
+        sttNotice.current = null;
+        setListening(false);
+      }
       // A standing note wins while resting, because that is when there is
       // nothing more urgent to say and it is exactly when someone is wondering
       // why the engine they picked feels no different. It never overwrites
@@ -309,9 +321,18 @@ export default function Home() {
     started.on('tts_failure', () =>
       setStatus('That voice could not produce audio — check its key on Model Settings.'));
     started.on('error', ({ message }) => {
+      // A real, confirmed bug found while testing this change: this used to
+      // just forget the engine (null the ref, flip `listening` off) without
+      // ever telling it to actually stop — so on a recoverable recognition
+      // error (the browser's SpeechRecognition auto-restarts itself after
+      // most of them) the UI claimed "not listening" while a live engine kept
+      // running underneath, mic still open, quietly retrying forever. stop()
+      // is safe to call here regardless of what state the engine is actually
+      // in, and its own 'state' → idle transition (handled above) already
+      // does the ref/flag reset — this just makes sure that transition
+      // genuinely happens instead of being merely claimed.
+      engine.current?.stop();
       setStatus(message);
-      setListening(false);
-      engine.current = null;
     });
 
     engine.current = started;
@@ -481,7 +502,13 @@ export default function Home() {
 function buildEngine(id: string, voiceOutput: string): VoiceEngine {
   if (id === 'duplex') return new DuplexEngine({ voiceOutput });
   if (id === 'realtime') return new RealtimeEngine();
-  return new PipelineEngine({ voiceOutput });
+  // Test-only: lets Playwright prove the real idle/grace timeouts fire without
+  // waiting out their real durations. Unset in production, so this is a no-op
+  // there — PipelineEngine falls back to its own real constants either way.
+  const testTimers = (window as unknown as {
+    __jarvisTestVoiceTimers?: { handsFreeIdleMs?: number; followupGraceMs?: number };
+  }).__jarvisTestVoiceTimers;
+  return new PipelineEngine({ voiceOutput, ...testTimers });
 }
 
 /** What the status line says for each engine state. */

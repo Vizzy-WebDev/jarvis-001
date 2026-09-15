@@ -21,6 +21,7 @@ def _stop_everything() -> None:
     """Undo every timer `start_background_work()` (or a real `main()` call)
     may have armed — real `threading.Timer`s, not mocks, so a test that
     starts them must also be the one that cancels them."""
+    from jarvis import notifications
     from jarvis.cost import balances, prices
     from jarvis.heartbeat import engine as heartbeat
     from jarvis.heartbeat.triggers import stop_triggers
@@ -32,7 +33,8 @@ def _stop_everything() -> None:
 
     for stop in (prices.stop_price_maintenance, balances.stop, sampler.stop,
                 stop_triggers, heartbeat.stop, scheduler_engine.stop,
-                monitor_engine.stop, job_supervisor.stop, improvement_cadence.stop):
+                monitor_engine.stop, job_supervisor.stop, improvement_cadence.stop,
+                notifications.stop_trash_purge):
         try:
             stop()
         except Exception:  # noqa: BLE001 — teardown must not itself fail the test
@@ -87,7 +89,7 @@ def test_every_gated_subsystem_reports_started_when_every_interlock_is_set(scrat
     # `prices` shares balances' own interlock (JARVIS_COST_REFRESH) rather
     # than having a second one — one flag, two readers, by design.
     for key in ("balances", "prices", "sampler", "heartbeat", "scheduler", "monitor",
-               "job_supervisor", "improvement_cadence"):
+               "job_supervisor", "improvement_cadence", "notification_trash_purge"):
         assert started[key] is True, f"{key} did not start with every interlock set"
 
 
@@ -100,7 +102,7 @@ def test_without_any_interlock_nothing_starts(scratch, monkeypatch):
     started = assembly.start_background_work()
 
     for key in ("balances", "prices", "sampler", "heartbeat", "scheduler", "monitor",
-               "job_supervisor", "improvement_cadence"):
+               "job_supervisor", "improvement_cadence", "notification_trash_purge"):
         assert started[key] is False, f"{key} started with no interlock set"
 
 
@@ -142,6 +144,7 @@ def test_mains_interlock_set_matches_what_start_background_work_actually_starts(
     kind of drift a reading of the code would miss and this test would not:
     every ENABLE_ENV `start_background_work()`'s own subsystems check must be
     one `main()` actually sets."""
+    from jarvis import notifications
     from jarvis.cost import balances
     from jarvis.heartbeat import engine as heartbeat
     from jarvis.improvement import cadence as improvement_cadence
@@ -153,6 +156,6 @@ def test_mains_interlock_set_matches_what_start_background_work_actually_starts(
     gated_by_main = {
         heartbeat.ENABLE_ENV, scheduler_engine.ENABLE_ENV, monitor_engine.ENABLE_ENV,
         job_supervisor.ENABLE_ENV, balances.ENABLE_ENV, improvement_cadence.ENABLE_ENV,
-        sampler.ENABLE_ENV,
+        sampler.ENABLE_ENV, notifications.ENABLE_ENV,
     }
     assert gated_by_main <= set(main_module._BACKGROUND_INTERLOCKS)

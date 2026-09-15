@@ -135,9 +135,21 @@ export const api = {
       }),
     markAllRead: () =>
       request<{ notifications: Notification[] }>('/notifications/read-all', { method: 'POST' }),
+    /** Moves it to the recycle bin — not a permanent delete. See `purge()`. */
     remove: (id: string) =>
       request<{ ok: true }>(`/notifications/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    /** Moves everything active to the recycle bin — not a permanent delete. */
     clear: () => request<{ ok: true }>('/notifications', { method: 'DELETE' }),
+    trash: (limit?: number) =>
+      request<{ notifications: Notification[] }>(
+        `/notifications/trash${typeof limit === 'number' ? `?limit=${limit}` : ''}`,
+      ),
+    restore: (id: string) =>
+      request<{ ok: true }>(`/notifications/${encodeURIComponent(id)}/restore`, { method: 'POST' }),
+    /** A real, irreversible delete of one item, from the recycle bin. */
+    purge: (id: string) =>
+      request<{ ok: true }>(`/notifications/${encodeURIComponent(id)}/permanent`, { method: 'DELETE' }),
+    emptyTrash: () => request<{ ok: true; removed: number }>('/notifications/trash', { method: 'DELETE' }),
   },
 
   /** Read only. Everything that WRITES — adding a connection, probing an

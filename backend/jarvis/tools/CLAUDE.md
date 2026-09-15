@@ -131,8 +131,9 @@ unaffected.
 **Meta tools** (`schedule_task`, `list_tasks`, `cancel_task`, `configure_briefing`,
 `remember_about_me`, `open_section`, `forget_something`, `update_memory`,
 `review_memories`, `checkpoint_memories`, `search_conversations`, `record_lesson`,
-`review_improvements`, `check_myself`, `track_goal`) only make sense in live
-conversation — `meta: true` excludes them from `capabilities/`'s `listCapabilities()`,
+`review_improvements`, `check_myself`, `track_goal`, `notifications_status`,
+`mark_notifications_read`, `clear_notifications`, `empty_notifications_recycle_bin`)
+only make sense in live conversation — `meta: true` excludes them from `capabilities/`'s `listCapabilities()`,
 which the task-creation and briefing-source pickers use. `remember_about_me` through
 `checkpoint_memories` are Memory's write/review path; `search_conversations` is a
 separate, read-only capability (full-text search over every past conversation via

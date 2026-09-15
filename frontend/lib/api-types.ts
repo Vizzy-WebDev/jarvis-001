@@ -115,6 +115,10 @@ export interface Notification {
   read: boolean;
   /** The same fault repeating collapses into one row and counts. */
   count: number;
+  /** Present only once it has been moved to the recycle bin — absent for an
+   *  active notification, never null. Gone for good 30 days after this, or
+   *  sooner if emptied by hand. */
+  trashedAt?: string;
 }
 
 /** One event from `GET /api/chat/stream`. The wire vocabulary is deliberately

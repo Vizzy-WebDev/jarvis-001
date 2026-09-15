@@ -262,6 +262,62 @@ def test_a_notification_can_be_deleted_from_its_own_detail(page):
     assert notifications.listed() == []
 
 
+def test_the_unread_filter_actually_filters(page):
+    from jarvis import notifications
+
+    a = notifications.add(kind="system", title="Read already")
+    notifications.add(kind="system", title="Still unread")
+    notifications.mark_read(a["id"])
+
+    page.goto(page.url.split("#")[0] + "#/notifications", wait_until="networkidle")
+    assert page.locator("[data-testid=notification-row]").count() == 2
+
+    page.click("[data-testid=notification-filter-unread]")
+    rows = page.locator("[data-testid=notification-row]")
+    assert rows.count() == 1
+    assert "Still unread" in rows.inner_text()
+
+    page.click("[data-testid=notification-filter-all]")
+    assert page.locator("[data-testid=notification-row]").count() == 2
+
+
+def test_clearing_sends_notifications_to_a_real_recycle_bin_and_back(page):
+    """The whole point of the recycle bin: Clear must not be a hard delete —
+    it has to be restorable, and only genuinely gone once emptied for good."""
+    from jarvis import notifications
+
+    notifications.add(kind="system", title="Something happened.")
+    page.goto(page.url.split("#")[0] + "#/notifications", wait_until="networkidle")
+
+    page.click("[data-testid=clear-all]")
+    page.wait_for_selector("[data-testid=notification-row]", state="detached")
+    assert notifications.listed() == []
+
+    page.click("[data-testid=open-recycle-bin]")
+    page.wait_for_selector("[data-testid=recycle-bin-row]")
+    assert len(notifications.trash_listed()) == 1
+
+    page.click("[data-testid=restore-notification]")
+    page.wait_for_selector("[data-testid=recycle-bin-row]", state="detached")
+    assert notifications.trash_listed() == []
+    assert len(notifications.listed()) == 1
+
+
+def test_emptying_the_recycle_bin_permanently_deletes(page):
+    from jarvis import notifications
+
+    notifications.add(kind="system", title="Something happened.")
+    notifications.clear_all()
+
+    page.goto(page.url.split("#")[0] + "#/notifications", wait_until="networkidle")
+    page.click("[data-testid=open-recycle-bin]")
+    page.wait_for_selector("[data-testid=recycle-bin-row]")
+
+    page.click("[data-testid=empty-recycle-bin]")
+    page.wait_for_selector("[data-testid=recycle-bin-row]", state="detached")
+    assert notifications.trash_listed() == []
+
+
 def test_a_task_can_be_created_edited_paused_and_deleted_from_the_screen(page):
     from jarvis.scheduler import task_store
 

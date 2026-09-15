@@ -21,10 +21,18 @@ export function NotificationsScreen({ onNavigate }: { onNavigate: (id: string) =
   const [rows, setRows] = useState<Notification[] | null>(null);
   const [open, setOpen] = useState<Notification | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<'all' | 'unread'>('all');
+  const [binOpen, setBinOpen] = useState(false);
+  const [trashCount, setTrashCount] = useState(0);
 
   const load = useCallback(async () => {
     try {
-      setRows((await api.notifications.list()).notifications);
+      const [active, trashed] = await Promise.all([
+        api.notifications.list(),
+        api.notifications.trash(),
+      ]);
+      setRows(active.notifications);
+      setTrashCount(trashed.notifications.length);
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'Could not read your notifications.');
       setRows([]);
@@ -60,15 +68,17 @@ export function NotificationsScreen({ onNavigate }: { onNavigate: (id: string) =
 
   async function remove(id: string) {
     setRows((current) => (current ?? []).filter((n) => n.id !== id));
+    setTrashCount((n) => n + 1);
     setOpen(null);
     await api.notifications.remove(id).catch(() => void load());
   }
 
   const unread = (rows ?? []).filter((row) => !row.read).length;
+  const visibleRows = (rows ?? []).filter((row) => filter === 'all' || !row.read);
 
   return (
     <>
-      <div className="mb-4 flex flex-wrap items-center gap-2">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
         <Button
           data-testid="mark-all-read"
           disabled={!unread}
@@ -84,12 +94,44 @@ export function NotificationsScreen({ onNavigate }: { onNavigate: (id: string) =
           data-testid="clear-all"
           disabled={!(rows ?? []).length}
           onClick={async () => {
+            setTrashCount((n) => n + (rows ?? []).length);
             await api.notifications.clear();
             setRows([]);
           }}
         >
           Clear all
         </Button>
+        <Button
+          data-testid="open-recycle-bin"
+          onClick={() => setBinOpen(true)}
+          className="ml-auto"
+        >
+          Recycle Bin{trashCount ? ` (${trashCount})` : ''}
+        </Button>
+      </div>
+
+      <p className="mb-4 text-[12px] text-ink-faint">
+        Cleared or deleted notifications go to the recycle bin for 30 days before they're gone for good.
+      </p>
+
+      <div className="mb-4 inline-flex rounded-pill border border-surface-border p-0.5">
+        {([['all', 'All'], ['unread', 'Unread']] as [typeof filter, string][]).map(
+          ([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              data-testid={`notification-filter-${id}`}
+              aria-pressed={filter === id}
+              onClick={() => setFilter(id)}
+              className={[
+                'rounded-pill px-3 py-1 text-[12px] transition duration-150 ease-out',
+                filter === id ? 'bg-accent/15 text-accent' : 'text-ink-muted hover:text-ink',
+              ].join(' ')}
+            >
+              {label}{id === 'unread' && unread ? ` (${unread})` : ''}
+            </button>
+          ),
+        )}
       </div>
 
       {error && <p className="mb-4 text-[13px] text-state-danger">{error}</p>}
@@ -101,9 +143,11 @@ export function NotificationsScreen({ onNavigate }: { onNavigate: (id: string) =
           title="Nothing to catch up on."
           body="When a scheduled task fails overnight, or something you asked Jarvis to watch for happens, it lands here — and stays until you have seen it."
         />
+      ) : visibleRows.length === 0 ? (
+        <p className="py-10 text-center text-[13px] text-ink-faint">Nothing unread.</p>
       ) : (
         <ul className="space-y-2" data-testid="notification-list">
-          {rows.map((row) => (
+          {visibleRows.map((row) => (
             <li key={row.id}>
               <Card
                 interactive
@@ -188,8 +232,121 @@ export function NotificationsScreen({ onNavigate }: { onNavigate: (id: string) =
           </>
         )}
       </Modal>
+
+      {binOpen && (
+        <RecycleBin
+          onClose={() => setBinOpen(false)}
+          onChanged={(count) => {
+            setTrashCount(count);
+            void load();
+          }}
+        />
+      )}
     </>
   );
+}
+
+function RecycleBin({ onClose, onChanged }: {
+  onClose: () => void;
+  onChanged: (trashCount: number) => void;
+}) {
+  const [rows, setRows] = useState<Notification[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const found = (await api.notifications.trash()).notifications;
+      setRows(found);
+      onChanged(found.length);
+    } catch (err) {
+      setError(err instanceof ApiRequestError ? err.message : 'Could not read the recycle bin.');
+      setRows([]);
+    }
+    // onChanged is a fresh arrow from the caller every render; only re-run
+    // this on a real reload, not because the parent re-rendered.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function restore(id: string) {
+    setRows((current) => (current ?? []).filter((n) => n.id !== id));
+    await api.notifications.restore(id).catch(() => void load());
+    onChanged((rows ?? []).length - 1);
+  }
+
+  async function deleteForever(id: string) {
+    setRows((current) => (current ?? []).filter((n) => n.id !== id));
+    await api.notifications.purge(id).catch(() => void load());
+    onChanged((rows ?? []).length - 1);
+  }
+
+  async function emptyBin() {
+    setRows([]);
+    await api.notifications.emptyTrash().catch(() => void load());
+    onChanged(0);
+  }
+
+  return (
+    <Modal
+      open
+      title="Recycle Bin"
+      onClose={onClose}
+      footer={
+        <Button
+          tone="danger"
+          data-testid="empty-recycle-bin"
+          disabled={!(rows ?? []).length}
+          onClick={() => void emptyBin()}
+        >
+          Empty recycle bin
+        </Button>
+      }
+    >
+      {error && <p className="mb-3 text-[13px] text-state-danger">{error}</p>}
+      {rows === null ? (
+        <p className="py-6 text-center text-[13px] text-ink-faint">Reading…</p>
+      ) : rows.length === 0 ? (
+        <p className="py-6 text-center text-[13px] text-ink-faint">
+          The recycle bin is empty.
+        </p>
+      ) : (
+        <ul className="space-y-2" data-testid="recycle-bin-list">
+          {rows.map((row) => (
+            <li key={row.id}>
+              <Card data-testid="recycle-bin-row" className="flex items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[14px] text-ink-muted">{row.title}</p>
+                  <p className="mt-0.5 truncate text-[12px] text-ink-faint">
+                    {daysLeft(row.trashedAt)}
+                  </p>
+                </div>
+                <Button data-testid="restore-notification" onClick={() => void restore(row.id)}>
+                  Restore
+                </Button>
+                <Button tone="danger" data-testid="delete-forever"
+                        onClick={() => void deleteForever(row.id)}>
+                  Delete forever
+                </Button>
+              </Card>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Modal>
+  );
+}
+
+/** How long until the automatic 30-day sweep would take it anyway. */
+function daysLeft(trashedAt: string | undefined): string {
+  if (!trashedAt) return '';
+  const trashedMs = new Date(trashedAt).getTime();
+  if (Number.isNaN(trashedMs)) return '';
+  const remaining = 30 - Math.floor((Date.now() - trashedMs) / 86_400_000);
+  if (remaining <= 0) return 'Gone very soon';
+  return `${remaining} day${remaining === 1 ? '' : 's'} left`;
 }
 
 function levelDot(level: string): string {

@@ -226,16 +226,27 @@ connection**, the **models listed under it**, and **one selected model**. That i
 - **There is no "use"/enable step.** A discovered or added model is available; the composer picker
   (or Auto) is the only place a model is chosen. Do not re-add a per-model activation control.
 - **Auto** (`models/auto.py`, `models/attempt.py`, pref `selectedAuto`) is the person's *other*
-  choice, and the only thing that lets Jarvis pick. Deterministic, no chance: candidates are models
-  on usable connections minus those the PROVIDER reported as not chat/tool/image-capable
-  (`facts` `chat`/`tools`/`image`, recorded by `openai_chat._facts` only from what a gateway
-  reported — never from guessing at names); ranked proven-first (most recent success), then
-  reported-tool-capable, then connection order; a model that just failed waits behind the rest
-  (5 min for rate/server/network/reply, 30 min otherwise) but is never removed. It tries up to
-  `MAX_ATTEMPTS` models, a different connection first, only while nothing has been said yet, gives a
-  silent model 45s while others wait, announces every move as `ModelSwitched`, and names every
-  failed model if all fail. Outcomes live in `model_outcomes` (migration 28) — read only by Auto,
-  never shown as a control. Effort is not offered under Auto. Named models and pins bypass all of it.
+  choice, and the only thing that lets Jarvis pick. Deterministic, no chance. Candidates are models
+  on usable connections minus those the PROVIDER reported as not chat/tool/image-capable (`facts`
+  `chat`/`tools`/`image`/`free`, recorded by `openai_chat._facts` only from what a gateway reported —
+  never guessed from names). Ranked: proven first (from `model_outcomes` or replies saved in the chat),
+  then quicker speed class (<=3s / <=8s / slower; unknown = middle; a PREFERENCE only), then most
+  recent success, then reported-tool-capable, then set-up order. A failed model waits behind the rest
+  for 5 min x 2^(failures in a row - 1), capped at 2h, reset by any answer — one rule for every error
+  kind. `auth`/`unreachable` failures hold back the whole connection; 402 (`billing`) holds back only
+  models listed as paid.
+  **Auto moves on ONLY when something actually failed — never because a model is slow.** There is no
+  first-token timeout and no attempt-count cap. An accepted request is left to finish however long it
+  thinks: the wire layer has only `SILENCE_CEILING_S` (600s of *total silence*, an inactivity limit
+  that restarts on every byte) and TCP keep-alive (a live-but-busy server answers probes, a dead
+  connection fails in ~60s). Attempts are bounded by evidence: 2 failed models on a connection and it
+  is left alone for that step, one `auth`/`unreachable` failure leaves it at once, and after a failure
+  `FIND_BUDGET_S` (30s) stops STARTING models that have never worked — it never touches a request in
+  progress. No retry of a busy model while another candidate waits (going elsewhere beats asking
+  again); the last candidate and a named model keep the 2 x 5xx retry. It never switches once a word
+  has been spoken, announces every move as `ModelSwitched`, and names every failed model if all fail.
+  `Resolved.proven`/`plan()` build one `Target` per connection (a per-candidate `.env` read cost
+  seconds). Effort is not offered under Auto. Named models and pins bypass all of it.
 - Facts about a model (`facts_json`) are still only what the provider reported: `maxOutput`, `effort`,
   and for gateways `chat`/`tools`/`image`. Existing rows get them on the next "Refresh models".
 - **Effort is not a model and not a model property we know.** It is offered only for a model whose

@@ -148,8 +148,7 @@ def stream(target: Target, *, model_id: str, messages: list[dict[str, Any]], sys
     streamed: list[str] = []
     final: dict[str, Any] | None = None
 
-    with wire.post_stream(wire.join_url(target.base_url, "responses"), headers=_auth(target), body=body,
-                          read_timeout=target.read_timeout) as response:
+    with wire.post_stream(wire.join_url(target.base_url, "responses"), headers=_auth(target), body=body) as response:
         for event, data in wire.iter_sse(response):
             payload = wire.loads_event(data, "OpenAI")
             if not isinstance(payload, dict):

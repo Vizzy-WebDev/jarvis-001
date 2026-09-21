@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -39,7 +40,8 @@ class StubProvider:
                  models: list[dict[str, Any]] | None = None, list_status: int = 200,
                  reply: str = "Hello from the stub.", tool: tuple[str, dict[str, Any]] | None = None,
                  answers_as: str | None = None, unknown_model: str | None = None,
-                 truncate: bool = False, chat_status: int | None = None) -> None:
+                 truncate: bool = False, chat_status: int | None = None,
+                 first_token_delay: float = 0.0) -> None:
         assert format in FORMATS
         self.format = format
         self.key = key
@@ -50,6 +52,7 @@ class StubProvider:
         self.answers_as = answers_as
         self.unknown_model = unknown_model
         self.truncate = truncate
+        self.first_token_delay = first_token_delay
         self.chat_status = chat_status
         #: Every request received: {method, path, query, headers, body}.
         self.requests: list[dict[str, Any]] = []
@@ -149,6 +152,8 @@ class StubProvider:
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Transfer-Encoding", "chunked")
                 self.end_headers()
+                if stub.first_token_delay:  # accepted, then silent: a model that is thinking
+                    time.sleep(stub.first_token_delay)
                 for chunk in events:
                     payload = chunk.encode()
                     self.wfile.write(f"{len(payload):x}\r\n".encode() + payload + b"\r\n")

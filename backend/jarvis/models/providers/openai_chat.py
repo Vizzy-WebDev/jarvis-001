@@ -197,8 +197,7 @@ def stream(target: Target, *, model_id: str, messages: list[dict[str, Any]], sys
     reported: str | None = None
 
     with wire.post_stream(wire.join_url(target.base_url, "chat/completions"),
-                          headers=_auth(target), body=body,
-                          read_timeout=target.read_timeout) as response:
+                          headers=_auth(target), body=body) as response:
         for _, data in wire.iter_sse(response):
             if data.strip() == "[DONE]":
                 finished_cleanly = True

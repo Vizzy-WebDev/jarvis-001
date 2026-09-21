@@ -44,6 +44,8 @@ class Resolved:
     model: store.Model
     target: Target
     effort: str | None
+    #: Auto only: this model has answered here before (recorded, or in the saved chat).
+    proven: bool = False
 
 
 @dataclass(frozen=True)
@@ -173,8 +175,15 @@ def plan(pin: str | None = None, *, needs_images: bool = False) -> Plan:
             "Auto has no model to choose from" + (" for a message with a picture in it" if needs_images else "")
             + ". Connect a provider on the Model Settings screen.",
             detail={"reason": "none"})
+    # One target per CONNECTION, not per candidate: a target reads the saved key from disk,
+    # and there can be hundreds of candidates on a handful of connections.
+    targets: dict[str, Target] = {}
+    for c in picks:
+        if c.connection.id not in targets:
+            targets[c.connection.id] = target_for(c.connection)
     return Plan(auto=True, attempts=[
-        Resolved(connection=c.connection, model=c.model, target=target_for(c.connection), effort=None)
+        Resolved(connection=c.connection, model=c.model, target=targets[c.connection.id], effort=None,
+                 proven=c.proven)
         for c in picks])
 
 

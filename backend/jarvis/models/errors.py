@@ -11,8 +11,9 @@ class ProviderError(RuntimeError):
     reason ("that model needs a paid plan") turns into a vague one.
 
     `kind` is for code that needs to react, never for display:
-    'auth' | 'forbidden' | 'model' | 'rate' | 'network' | 'server' | 'request'
-    | 'unsupported' | 'reply'.
+    'auth' | 'forbidden' | 'billing' | 'model' | 'rate' | 'unreachable' | 'network'
+    | 'server' | 'request' | 'unsupported' | 'reply'.
+    'auth' and 'unreachable' are about the whole connection, not one model.
     """
 
     def __init__(self, message: str, *, kind: str = "request", status: int | None = None) -> None:

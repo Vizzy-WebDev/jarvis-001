@@ -64,13 +64,14 @@ def all_failed(failures: list[tuple[Resolved, ProviderError]]) -> NoModelAvailab
     )
 
 
-def record(resolved: Resolved, err: ProviderError | None) -> None:
-    """Remember how a real call went, for Auto to read. Never allowed to break the call."""
+def record(resolved: Resolved, err: ProviderError | None, *, ms: int | None = None) -> None:
+    """Remember how a real call went, for Auto to read. Never allowed to break the call.
+    `ms` is how long it took to start answering, for a call that succeeded."""
     from . import store
 
     try:
         if err is None:
-            store.record_success(resolved.connection.id, resolved.model.model_id)
+            store.record_success(resolved.connection.id, resolved.model.model_id, ms)
         else:
             store.record_failure(resolved.connection.id, resolved.model.model_id,
                                  kind=err.kind, status=err.status, message=str(err))
@@ -88,7 +89,10 @@ def same_model(requested: str, reported: str | None) -> bool:
     if not reported:
         return True  # it did not say; that is not a mismatch
     a, b = requested.lower().removeprefix("models/"), reported.lower().removeprefix("models/")
-    return a == b or a.startswith(b) or b.startswith(a)
+    # A gateway's own prefix ("no-think/cc/") is part of ITS name for the model, not the
+    # model's: asked for "gw/claude-x" and answered by "claude-x" is the model asked for.
+    tail = a.rsplit("/", 1)[-1]
+    return any(x and (x == b or x.startswith(b) or b.startswith(x)) for x in (a, tail))
 
 
 def publish_completed(resolved: Resolved, *, session_id: str | None, reported: str | None,

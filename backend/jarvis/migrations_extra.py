@@ -314,4 +314,16 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
         );
         """
     ],
+
+    # 29: How quickly a model has answered (a moving average of the time to its first
+    # word, or to the end of a reply that was only a tool call) and how many times in a
+    # row it has failed. Both are read only by Auto: the first to prefer models that
+    # respond quickly (a preference — a slow model is never excluded), the second to
+    # back off a model that keeps failing without punishing one that hiccupped once.
+    29: [
+        """
+        ALTER TABLE model_outcomes ADD COLUMN ttft_ms INTEGER;
+        ALTER TABLE model_outcomes ADD COLUMN fail_streak INTEGER NOT NULL DEFAULT 0;
+        """
+    ],
 }

@@ -18,10 +18,6 @@ class Target:
 
     base_url: str
     api_key: str | None = None
-    #: Seconds to wait for the provider to say something before giving up on a
-    #: streamed reply. None keeps the generous default. Only Auto shortens it, and
-    #: only while another model is still waiting to be tried.
-    read_timeout: float | None = None
 
 
 @dataclass(frozen=True)

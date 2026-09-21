@@ -252,25 +252,33 @@ class Outcome:
     fail_kind: str | None
     fail_status: int | None
     fail_message: str | None
+    #: Moving average of how long it took to start answering, in milliseconds.
+    ttft_ms: int | None = None
+    #: Failures since it last answered.
+    fail_streak: int = 0
 
 
 @_locked
-def record_success(connection_id: str, model_id: str) -> None:
+def record_success(connection_id: str, model_id: str, ttft_ms: int | None = None) -> None:
     get_db().execute(
-        "INSERT INTO model_outcomes (provider_id, model_id, last_ok_at) VALUES (?, ?, ?) "
-        "ON CONFLICT(provider_id, model_id) DO UPDATE SET last_ok_at = excluded.last_ok_at",
-        (connection_id, model_id, now_iso()))
+        "INSERT INTO model_outcomes (provider_id, model_id, last_ok_at, ttft_ms, fail_streak) "
+        "VALUES (?, ?, ?, ?, 0) "
+        "ON CONFLICT(provider_id, model_id) DO UPDATE SET last_ok_at = excluded.last_ok_at, fail_streak = 0, "
+        "ttft_ms = CASE WHEN excluded.ttft_ms IS NULL THEN model_outcomes.ttft_ms "
+        "               WHEN model_outcomes.ttft_ms IS NULL THEN excluded.ttft_ms "
+        "               ELSE CAST(ROUND(0.6 * model_outcomes.ttft_ms + 0.4 * excluded.ttft_ms) AS INTEGER) END",
+        (connection_id, model_id, now_iso(), ttft_ms))
 
 
 @_locked
 def record_failure(connection_id: str, model_id: str, *, kind: str | None, status: int | None,
                    message: str | None) -> None:
     get_db().execute(
-        "INSERT INTO model_outcomes (provider_id, model_id, last_fail_at, fail_kind, fail_status, fail_message) "
-        "VALUES (?, ?, ?, ?, ?, ?) "
+        "INSERT INTO model_outcomes (provider_id, model_id, last_fail_at, fail_kind, fail_status, fail_message, "
+        "fail_streak) VALUES (?, ?, ?, ?, ?, ?, 1) "
         "ON CONFLICT(provider_id, model_id) DO UPDATE SET last_fail_at = excluded.last_fail_at, "
         "fail_kind = excluded.fail_kind, fail_status = excluded.fail_status, "
-        "fail_message = excluded.fail_message",
+        "fail_message = excluded.fail_message, fail_streak = model_outcomes.fail_streak + 1",
         (connection_id, model_id, now_iso(), kind, status, (message or "")[:400]))
 
 
@@ -280,7 +288,7 @@ def list_outcomes() -> dict[tuple[str, str], Outcome]:
     return {(r["provider_id"], r["model_id"]): Outcome(
         provider_id=r["provider_id"], model_id=r["model_id"], last_ok_at=r["last_ok_at"],
         last_fail_at=r["last_fail_at"], fail_kind=r["fail_kind"], fail_status=r["fail_status"],
-        fail_message=r["fail_message"]) for r in rows}
+        fail_message=r["fail_message"], ttft_ms=r["ttft_ms"], fail_streak=r["fail_streak"] or 0) for r in rows}
 
 
 @_locked

@@ -8,7 +8,9 @@ is about ONE provider's format lives in that provider's own module.
 from __future__ import annotations
 
 import json
+import socket
 import ssl
+import urllib.request
 from contextlib import contextmanager
 from typing import Any, Iterator
 from urllib.parse import urlparse
@@ -22,10 +24,14 @@ from ..errors import ProviderError
 
 CONNECT_TIMEOUT_S = 10.0
 CHECK_TIMEOUT_S = 20.0
-#: A large local model can take a long while to say its first word. Waiting is
-#: normal there, so this is generous; the connect timeout is what catches a
-#: server that simply isn't running.
-STREAM_READ_TIMEOUT_S = 180.0
+#: How long a streamed reply may go with NO bytes at all before it is given up on.
+#: This is an INACTIVITY limit — it restarts on every chunk that arrives, pings
+#: included — never a total-time limit, and it is deliberately huge: a reasoning model
+#: can think silently for minutes, and a slow first word is not a failure. It exists
+#: only so a connection that has truly gone dead cannot hang forever. TCP keep-alive
+#: (below) notices a dead connection far sooner, without touching a model that is
+#: still working. The connect timeout is what catches a server that isn't running.
+SILENCE_CEILING_S = 600.0
 USER_AGENT = "Jarvis/1.0 (personal assistant)"
 
 assistant_text = assistant_text_of
@@ -144,7 +150,7 @@ def network_error(err: Exception, url: str) -> ProviderError:
     if isinstance(err, (httpx.ConnectError, httpx.ConnectTimeout)):
         return ProviderError(
             f"Couldn't reach {host}. If it's a program on this computer, check that it's "
-            "running and that the address is right.", kind="network")
+            "running and that the address is right.", kind="unreachable")
     if isinstance(err, httpx.TimeoutException):
         return ProviderError(f"{host} took too long to answer.", kind="network")
     return ProviderError(f"The connection to {host} broke: {redact_text(str(err))}", kind="network")
@@ -218,15 +224,59 @@ def probe_post(url: str, *, headers: dict[str, str] | None = None,
     return response.status_code, _provider_words(response)
 
 
+_keepalive_options: list[tuple[int, int, int]] | None = None
+
+
+def _keepalive() -> list[tuple[int, int, int]]:
+    """TCP keep-alive settings: every so often the operating system asks the far end
+    whether it is still there. The far end's OS answers even while its model is busy
+    thinking, so a reply that is merely slow passes, and a connection that has died
+    (network dropped, host gone) fails in about a minute — without any application
+    timeout that would also cut off a model that is genuinely reasoning.
+
+    Only options this platform accepts are used: an unsupported one would fail every
+    connection, so each is tried once on a throwaway socket first.
+    """
+    global _keepalive_options
+    if _keepalive_options is None:
+        wanted = [(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)]
+        for name, value in (("TCP_KEEPIDLE", 30), ("TCP_KEEPINTVL", 10), ("TCP_KEEPCNT", 3)):
+            if hasattr(socket, name):
+                wanted.append((socket.IPPROTO_TCP, getattr(socket, name), value))
+        usable = []
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            for option in wanted:
+                try:
+                    probe.setsockopt(*option)
+                    usable.append(option)
+                except OSError:
+                    continue
+        finally:
+            probe.close()
+        _keepalive_options = usable
+    return _keepalive_options
+
+
+def _stream_client(timeout: httpx.Timeout) -> httpx.Client:
+    # Setting socket options needs a custom transport, and a custom transport stops httpx
+    # reading proxy settings from the environment. Where a proxy is configured, keep the
+    # default client (and go without keep-alive) rather than bypass the person's proxy.
+    if urllib.request.getproxies():
+        return httpx.Client(timeout=timeout, verify=_verify())
+    return httpx.Client(timeout=timeout,
+                        transport=httpx.HTTPTransport(verify=_verify(), socket_options=_keepalive()))
+
+
 @contextmanager
 def post_stream(url: str, *, headers: dict[str, str] | None = None,
-                body: dict[str, Any], read_timeout: float | None = None) -> Iterator[httpx.Response]:
+                body: dict[str, Any]) -> Iterator[httpx.Response]:
     """Open a streaming POST. A refusal is raised as a `ProviderError` before any
     of the body is handed over; a connection that breaks part-way is raised as one
     too, from wherever the caller was reading."""
-    timeout = httpx.Timeout(read_timeout or STREAM_READ_TIMEOUT_S, connect=CONNECT_TIMEOUT_S)
+    timeout = httpx.Timeout(SILENCE_CEILING_S, connect=CONNECT_TIMEOUT_S)
     try:
-        with httpx.Client(timeout=timeout, verify=_verify()) as client:
+        with _stream_client(timeout) as client:
             with client.stream("POST", url, json=body,
                                headers=_headers({"Content-Type": "application/json", **(headers or {})})) as response:
                 if response.status_code >= 300:

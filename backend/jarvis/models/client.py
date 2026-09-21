@@ -4,10 +4,12 @@ The one module here that imports the orchestrator, and so the one that must neve
 be imported from anywhere a tool can reach. `assembly.py`, the composition root,
 is what builds it.
 
-It never switches models. There is no fallback chain and no quiet substitution:
-if the selection cannot be run, the turn fails and says why. The one time it
-emits a `ModelSwitched` is when a provider itself reports that a different model
-answered than the one asked for — a fact the person is owed, not a fallback.
+A model the person NAMED is the only model that runs: there is no fallback chain
+and no quiet substitution, and if it can't answer the turn fails and says why. Only
+when the person has chosen Auto can more than one model be tried for a step, and
+then `attempt.py` says every move out loud (`ModelSwitched`). The other time a
+`ModelSwitched` is emitted is when a provider itself reports that a different model
+answered than the one asked for — a fact the person is owed.
 """
 
 from __future__ import annotations
@@ -16,9 +18,13 @@ from typing import Any, Iterator
 
 from ..orchestrator.model_port import ModelEvent, ModelSwitched, StepComplete, TextChunk, ToolCall
 from ..orchestrator.model_port import Usage as PortUsage
-from . import providers, runtime, selection
-from .errors import ProviderError
-from .types import Finished, TextDelta
+from . import attempt, runtime, selection
+from .providers import _wire as wire
+from .types import TextDelta
+
+
+def _has_pictures(messages: list[dict[str, Any]]) -> bool:
+    return any(kind == "image" for m in messages for kind, _, _ in wire.media_of(m))
 
 
 class JarvisModelClient:
@@ -34,31 +40,30 @@ class JarvisModelClient:
         need: dict[str, bool] | None = None,
     ) -> Iterator[ModelEvent]:
         """`role` says what kind of turn this is and changes nothing about which
-        model runs it: there is one selected model, and every kind of turn uses it."""
-        resolved = selection.resolve(model_id)
+        model runs it: the person's one choice — a named model, or Auto — covers
+        every kind of turn."""
+        plan = selection.plan(model_id, needs_images=_has_pictures(messages))
         selection.check_needs(need)
-        provider = providers.for_format(resolved.connection.format)
 
-        finished: Finished | None = None
-        try:
-            for event in provider.stream(
-                resolved.target, model_id=resolved.model.model_id, messages=messages,
-                system=system, tools=tools, effort=resolved.effort, facts=resolved.model.facts,
-            ):
-                if isinstance(event, TextDelta):
-                    yield TextChunk(event.text)
-                elif isinstance(event, Finished):
-                    finished = event
-        except ProviderError as err:
-            raise runtime.failure(resolved, err) from err
-        if finished is None:
-            raise runtime.failure(resolved, ProviderError("The reply stopped part-way.", kind="reply"))
+        run = attempt.run(plan, messages=messages, system=system, tools=tools, named=model_id is None)
+        while True:
+            try:
+                event = next(run)
+            except StopIteration as done:
+                result = done.value
+                break
+            if isinstance(event, TextDelta):
+                yield TextChunk(event.text)
+            elif isinstance(event, attempt.Moved):
+                yield ModelSwitched(to_model_id=event.to_model_id, from_model_id=event.from_model_id,
+                                    reason=event.reason)
+        resolved, finished = result.resolved, result.finished
 
         if not runtime.same_model(resolved.model.model_id, finished.model_id):
             yield ModelSwitched(
                 to_model_id=finished.model_id or "",
                 from_model_id=resolved.model.model_id,
-                reason="the provider reported that a different model answered than the one you picked",
+                reason="the provider reported that a different model answered than the one asked for",
             )
 
         runtime.publish_completed(

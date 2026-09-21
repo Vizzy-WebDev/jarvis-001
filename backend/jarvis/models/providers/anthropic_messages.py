@@ -208,7 +208,8 @@ def stream(target: Target, *, model_id: str, messages: list[dict[str, Any]], sys
     usage: dict[str, Any] = {}
     finished = False
 
-    with wire.post_stream(wire.join_url(target.base_url, "messages"), headers=_auth(target), body=body) as response:
+    with wire.post_stream(wire.join_url(target.base_url, "messages"), headers=_auth(target), body=body,
+                          read_timeout=target.read_timeout) as response:
         for event, data in wire.iter_sse(response):
             payload = wire.loads_event(data, "Anthropic")
             if not isinstance(payload, dict):

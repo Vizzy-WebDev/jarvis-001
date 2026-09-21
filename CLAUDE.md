@@ -219,9 +219,25 @@ connection**, the **models listed under it**, and **one selected model**. That i
   its status. A failed *discovery* changes nothing and never blocks adding a model by hand.
 - **Selected / available / executed are kept apart** (`models/selection.py`). The selection is the
   person's and only they change it. An unavailable one (connection deleted, key gone, model removed)
-  is *reported*, by name, and stays selected. **Nothing here ever falls back to another model** — the
-  client never emits `ModelSwitched` as a fallback (only when a provider itself reports a different
-  model answered), and `StepComplete.model_id` is what the provider *said* answered.
+  is *reported*, by name, and stays selected. **A model the person NAMED is never replaced** — no
+  fallback, ever; a failure is reported in the provider's own words plus a line saying Jarvis stayed
+  on it and Auto exists. The only retry is the SAME model, twice, when the provider answered 5xx.
+  `StepComplete.model_id` is what the provider *said* answered.
+- **There is no "use"/enable step.** A discovered or added model is available; the composer picker
+  (or Auto) is the only place a model is chosen. Do not re-add a per-model activation control.
+- **Auto** (`models/auto.py`, `models/attempt.py`, pref `selectedAuto`) is the person's *other*
+  choice, and the only thing that lets Jarvis pick. Deterministic, no chance: candidates are models
+  on usable connections minus those the PROVIDER reported as not chat/tool/image-capable
+  (`facts` `chat`/`tools`/`image`, recorded by `openai_chat._facts` only from what a gateway
+  reported — never from guessing at names); ranked proven-first (most recent success), then
+  reported-tool-capable, then connection order; a model that just failed waits behind the rest
+  (5 min for rate/server/network/reply, 30 min otherwise) but is never removed. It tries up to
+  `MAX_ATTEMPTS` models, a different connection first, only while nothing has been said yet, gives a
+  silent model 45s while others wait, announces every move as `ModelSwitched`, and names every
+  failed model if all fail. Outcomes live in `model_outcomes` (migration 28) — read only by Auto,
+  never shown as a control. Effort is not offered under Auto. Named models and pins bypass all of it.
+- Facts about a model (`facts_json`) are still only what the provider reported: `maxOutput`, `effort`,
+  and for gateways `chat`/`tools`/`image`. Existing rows get them on the next "Refresh models".
 - **Effort is not a model and not a model property we know.** It is offered only for a model whose
   own provider reported levels (today, Anthropic's list API) and is sent only if that model was
   reported to accept it. `prefs.balance` (fast/balanced/quality) is a different thing — how much

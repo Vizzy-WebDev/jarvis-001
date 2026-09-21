@@ -8,7 +8,7 @@ import { Card } from '@/components/ui/Card';
 import { inputClass } from '@/components/ui/Field';
 import { CloseIcon } from '@/components/ui/Icons';
 import { api, ApiRequestError } from '@/lib/api';
-import type { ModelSelection, ProviderConnection } from '@/lib/api-types';
+import type { ProviderConnection } from '@/lib/api-types';
 import { announceModelsChanged } from '@/lib/useModels';
 
 export type Notice = { tone: 'ok' | 'warn'; text: string };
@@ -33,19 +33,18 @@ function keyLine(connection: ProviderConnection): { text: string; bad: boolean }
  * last found working, and which models are available through it. Its three
  * actions are kept apart because they answer different questions: **Test** asks
  * whether the connection works and is the only thing that changes its status;
- * **Refresh models** asks what it offers and never touches the status; using a
- * model happens in a turn. Adding a model by hand is always here, because a
+ * **Refresh models** asks what it offers and never touches the status. There is
+ * no "use" or "enable" step: a model that is listed is available, and which one
+ * answers is chosen in the composer (or left to Auto). Adding a model by hand is always here, because a
  * provider that cannot list its models — or could not just now — is still usable.
  */
 export function ConnectionCard({
   connection,
-  selection,
   onNotice,
   onEdit,
   onDelete,
 }: {
   connection: ProviderConnection;
-  selection: ModelSelection;
   onNotice: (notice: Notice | null) => void;
   onEdit: (connection: ProviderConnection) => void;
   onDelete: (connection: ProviderConnection) => void;
@@ -96,11 +95,6 @@ export function ConnectionCard({
         throw err;
       }
     }
-    announceModelsChanged();
-  });
-
-  const use = (modelId: string) => run(`use:${modelId}`, async () => {
-    await api.models.select({ providerId: connection.id, modelId, effort: null });
     announceModelsChanged();
   });
 
@@ -182,7 +176,6 @@ export function ConnectionCard({
         ) : (
           <ul className="scroll-quiet max-h-72 overflow-y-auto border-t border-surface-border" data-testid="model-list">
             {shown.map((model) => {
-              const active = selection.providerId === connection.id && selection.modelId === model.id;
               return (
                 <li key={model.id} data-testid="model-row" data-model-id={model.id}
                     className="flex items-center gap-2 border-b border-surface-border px-3 py-2 last:border-b-0">
@@ -198,16 +191,6 @@ export function ConnectionCard({
                       </p>
                     )}
                   </div>
-                  {active ? (
-                    <span data-testid="in-use" className="rounded-pill bg-accent/15 px-2.5 py-1 text-[11px] text-accent">
-                      In use
-                    </span>
-                  ) : (
-                    <Button data-testid="use-model" disabled={busy !== null} onClick={() => void use(model.id)}
-                            className="!px-2.5 !py-1 !text-[12px]">
-                      Use
-                    </Button>
-                  )}
                   <button type="button" aria-label={`Remove ${model.label} from the list`}
                           title="Remove from this list" data-testid="remove-model"
                           disabled={busy !== null} onClick={() => void remove(model.id)}

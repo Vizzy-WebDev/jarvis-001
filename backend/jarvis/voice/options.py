@@ -28,13 +28,9 @@ def _ready_models() -> list[Any]:
     """The model that would answer — the selected one, when it can be run — as a
     list of one, or an empty list. Voice uses whichever model text uses, so this
     is the same question `/api/status` asks."""
-    from ..models import selection, store
+    from ..models import selection
 
-    if selection.availability().state != "ok":
-        return []
-    provider_id, model_id, _ = selection.chosen()
-    model = store.get_model(provider_id, model_id) if provider_id and model_id else None
-    return [model] if model else []
+    return [c.model for c in selection.ready()[:1]]
 
 
 def realtime_models() -> list[Any]:

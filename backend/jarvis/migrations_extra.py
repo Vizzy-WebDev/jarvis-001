@@ -293,4 +293,25 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
         );
         """
     ],
+
+    # 28: What actually happened when a model was called — the last time it
+    # answered and the last time it failed, and why. Written after every real call
+    # and read by ONE thing: Auto, which prefers models that have worked here and
+    # steers around ones that just failed. It is a record of outcomes, never a
+    # switch: nothing here enables, disables or hides a model, an explicit choice
+    # ignores it entirely, and it is not shown as a control anywhere.
+    28: [
+        """
+        CREATE TABLE IF NOT EXISTS model_outcomes (
+          provider_id  TEXT NOT NULL REFERENCES model_providers(id) ON DELETE CASCADE,
+          model_id     TEXT NOT NULL,
+          last_ok_at   TEXT,
+          last_fail_at TEXT,
+          fail_kind    TEXT,
+          fail_status  INTEGER,
+          fail_message TEXT,
+          PRIMARY KEY (provider_id, model_id)
+        );
+        """
+    ],
 }

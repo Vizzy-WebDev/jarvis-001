@@ -119,6 +119,9 @@ def error_for(status: int, words: str, url: str, *, missing: str = "model") -> P
         return ProviderError(f"The provider didn't accept the key (401).{tail}", kind="auth", status=status)
     if status == 403:
         return ProviderError(f"The provider refused this request (403).{tail}", kind="forbidden", status=status)
+    if status == 402:
+        return ProviderError(f"The provider says this needs credit on the account (402).{tail}",
+                             kind="billing", status=status)
     if status == 404:
         if missing == "address":
             return ProviderError(
@@ -217,11 +220,11 @@ def probe_post(url: str, *, headers: dict[str, str] | None = None,
 
 @contextmanager
 def post_stream(url: str, *, headers: dict[str, str] | None = None,
-                body: dict[str, Any]) -> Iterator[httpx.Response]:
+                body: dict[str, Any], read_timeout: float | None = None) -> Iterator[httpx.Response]:
     """Open a streaming POST. A refusal is raised as a `ProviderError` before any
     of the body is handed over; a connection that breaks part-way is raised as one
     too, from wherever the caller was reading."""
-    timeout = httpx.Timeout(STREAM_READ_TIMEOUT_S, connect=CONNECT_TIMEOUT_S)
+    timeout = httpx.Timeout(read_timeout or STREAM_READ_TIMEOUT_S, connect=CONNECT_TIMEOUT_S)
     try:
         with httpx.Client(timeout=timeout, verify=_verify()) as client:
             with client.stream("POST", url, json=body,

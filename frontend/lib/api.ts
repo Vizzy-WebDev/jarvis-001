@@ -203,7 +203,7 @@ export const api = {
     remove: (id: string) =>
       request<{ ok: true; availability: ModelAvailability }>(
         `/models/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-    select: (choice: { providerId: string; modelId: string; effort?: string | null }) =>
+    select: (choice: { providerId: string; modelId: string; effort?: string | null } | { auto: true }) =>
       request<{ ok: true; selection: ModelSelection; availability: ModelAvailability }>(
         '/models/select', { method: 'POST', ...json(choice) }),
   },

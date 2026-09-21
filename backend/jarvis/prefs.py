@@ -29,6 +29,10 @@ DEFAULTS: dict[str, Any] = {
     "selectedProviderId": None,
     "selectedModelId": None,
     "selectedEffort": None,
+    # True when they chose Auto instead of naming a model: Jarvis then picks per
+    # turn from the models that are set up (see models/auto.py). Choosing a model
+    # by name turns it off; nothing else does.
+    "selectedAuto": False,
     # How much work Jarvis does AROUND a model on a turn, not which model: 'fast'
     # caps the tool-use rounds and skips the optional extra checks, 'quality'
     # forces the answer check on. Applies to every model alike — including ones

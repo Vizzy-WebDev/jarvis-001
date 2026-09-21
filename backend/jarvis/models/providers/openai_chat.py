@@ -4,8 +4,9 @@ says it is OpenAI-compatible.
 
 This is NOT OpenAI's own integration (`openai_responses.py`). It exists for the
 servers that copied the older, simpler chat format, and it stays honest about
-what that means: no reasoning controls, and no model-capability data — a server
-of this kind lists its models by name and says nothing more about them.
+what that means: no reasoning controls, and no model-capability data of its own — a
+plain server of this kind lists its models by name and says nothing more about them.
+(A gateway that does describe its models is read in `_facts`, and only as it says.)
 """
 
 from __future__ import annotations
@@ -60,7 +61,48 @@ def discover(target: Target) -> list[Discovered]:
         if err.status == 404:
             raise Unsupported("This server doesn't offer a list of its models — add the model ID by hand.") from err
         raise
-    return [Discovered(model_id=str(r["id"])) for r in rows]
+    return [Discovered(model_id=str(r["id"]), facts=_facts(r)) for r in rows]
+
+
+#: Kinds of model a gateway can list that never take a chat turn.
+_NOT_CHAT_TYPES = {"video", "image", "audio", "speech", "tts", "stt", "transcription",
+                   "embedding", "embeddings", "rerank", "moderation"}
+
+
+def _facts(row: dict[str, Any]) -> dict[str, Any] | None:
+    """What a gateway said about this model, and only that.
+
+    Plain OpenAI-style servers say nothing beyond the name, and get nothing here.
+    Gateways such as OmniRoute and OpenRouter do say more — a `type`, the
+    modalities in and out, whether tool calling works — and those are kept as
+    reported. A key that is absent means the provider did not say.
+    """
+    facts: dict[str, Any] = {}
+    arch = row.get("architecture") if isinstance(row.get("architecture"), dict) else {}
+    outputs = row.get("output_modalities") or arch.get("output_modalities")
+    inputs = row.get("input_modalities") or arch.get("input_modalities")
+    kind = row.get("type")
+    if (isinstance(kind, str) and kind.lower() in _NOT_CHAT_TYPES) or (
+            isinstance(outputs, list) and outputs and "text" not in outputs):
+        facts["chat"] = False
+    caps = row.get("capabilities") if isinstance(row.get("capabilities"), dict) else {}
+    supported = row.get("supported_parameters")
+    if isinstance(caps.get("tool_calling"), bool):
+        facts["tools"] = caps["tool_calling"]
+    elif isinstance(supported, list) and supported:
+        facts["tools"] = "tools" in supported
+    if isinstance(inputs, list) and inputs:
+        facts["image"] = "image" in inputs
+    # A price, where the gateway states one. Kept because "needs credit" is a fact about
+    # paid models only; a model it lists as free keeps working on an account with none.
+    pricing = row.get("pricing") if isinstance(row.get("pricing"), dict) else {}
+    try:
+        prices = [float(pricing[k]) for k in ("prompt", "completion") if k in pricing]
+    except (TypeError, ValueError):
+        prices = []
+    if prices:
+        facts["free"] = all(p == 0 for p in prices)
+    return facts or None
 
 
 # --- the conversation, in this format ------------------------------------------------
@@ -155,7 +197,8 @@ def stream(target: Target, *, model_id: str, messages: list[dict[str, Any]], sys
     reported: str | None = None
 
     with wire.post_stream(wire.join_url(target.base_url, "chat/completions"),
-                          headers=_auth(target), body=body) as response:
+                          headers=_auth(target), body=body,
+                          read_timeout=target.read_timeout) as response:
         for _, data in wire.iter_sse(response):
             if data.strip() == "[DONE]":
                 finished_cleanly = True

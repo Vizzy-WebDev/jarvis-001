@@ -16,13 +16,13 @@ def models() -> dict[str, Any]:
     Read from the selection and what is stored about it — no provider is called.
     A model that is merely selected is not reported usable: 'usable' means the
     selection resolves to a connection with what it needs."""
-    from ...models import selection, store
+    from ...models import selection
 
     state = selection.availability()
     provider_id, model_id, _ = selection.chosen()
-    if state.state == "ok" and provider_id and model_id:
-        connection = store.get_connection(provider_id)
-        return {"usable": [{"modelId": model_id, "connection": connection.label if connection else None}],
+    if state.state == "ok":
+        return {"usable": [{"modelId": c.model.model_id, "connection": c.connection.label}
+                           for c in selection.ready()[:5]],
                 "blocked": [], "soonestRetryMs": None}
     if state.state == "none":
         return {"usable": [], "blocked": [], "soonestRetryMs": None}

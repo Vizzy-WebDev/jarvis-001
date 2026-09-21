@@ -1,5 +1,11 @@
 """Which model is selected, and whether that choice can be run right now.
 
+The person chooses in one of two ways. They can NAME a model, and then that exact
+model runs every turn — no other is ever used in its place. Or they can choose Auto,
+and then Jarvis picks per turn from the models that are set up (`auto.py` says how).
+Auto is the person's own choice, and it is the only thing that lets more than one
+model be tried for a turn.
+
 Three separate things, never run together:
 
 * **Selected** is the person's own choice, held as preferences. Only they change it.
@@ -21,7 +27,7 @@ from typing import Any
 
 from .. import config, prefs
 from ..ai import NoModelAvailable
-from . import kinds, store
+from . import auto, kinds, store
 from .types import Target
 
 #: The one thing a plain connection cannot do at all, and so the one thing to
@@ -38,6 +44,15 @@ class Resolved:
     model: store.Model
     target: Target
     effort: str | None
+
+
+@dataclass(frozen=True)
+class Plan:
+    """What one model call may run on. `auto` is False for a named model, and then
+    `attempts` is exactly one entry — the only model that will be used."""
+
+    auto: bool
+    attempts: list[Resolved]
 
 
 @dataclass(frozen=True)
@@ -66,10 +81,9 @@ def target_for(connection: store.Connection) -> Target:
     return Target(base_url=kinds.base_url_for(connection.kind, connection.base_url), api_key=key)
 
 
-def _needs_key_but_has_none(connection: store.Connection) -> bool:
-    kind = kinds.KINDS.get(connection.kind)
-    return bool(kind and kind.key == "required"
-                and not (connection.secret_ref and config.get_secret(connection.secret_ref)))
+def is_auto() -> bool:
+    """Has the person chosen Auto, rather than naming a model?"""
+    return bool(prefs.get_prefs().get("selectedAuto"))
 
 
 def _why_not(connection: store.Connection | None, model: store.Model | None, model_id: str) -> Availability:
@@ -81,13 +95,18 @@ def _why_not(connection: store.Connection | None, model: store.Model | None, mod
         return Availability("missing_model",
                             f"The model you picked ({model_id}) is no longer set up on {connection.label}. "
                             "Choose a model on the Model Settings screen.")
-    if _needs_key_but_has_none(connection):
+    if auto.lacks_key(connection):
         return Availability("no_key", f"{connection.label} has no key saved. "
                                       "Add one on the Model Settings screen.")
     return Availability("ok", None)
 
 
 def availability() -> Availability:
+    if is_auto():
+        if auto.candidates():
+            return Availability("ok", None)
+        return Availability("none", "Auto has no model to choose from yet. Connect a provider on "
+                                    "the Model Settings screen.")
     provider_id, model_id, _ = chosen()
     if not provider_id or not model_id:
         return Availability("none", "No model is selected yet. Connect a provider and choose a model "
@@ -119,7 +138,8 @@ def _pinned(pin: str) -> tuple[store.Connection, store.Model]:
 
 
 def resolve(pin: str | None = None) -> Resolved:
-    """What to run a request on, or `NoModelAvailable` saying why not."""
+    """What to run a NAMED model on, or `NoModelAvailable` saying why not. Under Auto
+    there is no single answer; a caller that can be under Auto uses `plan`."""
     effort: str | None = None
     if pin:
         connection, model = _pinned(pin)
@@ -139,6 +159,37 @@ def resolve(pin: str | None = None) -> Resolved:
     return Resolved(connection=connection, model=model, target=target_for(connection), effort=effort)
 
 
+def plan(pin: str | None = None, *, needs_images: bool = False) -> Plan:
+    """The models a call may run on, in the order to try them.
+
+    A named model — the person's selection, or a pin — is a plan of exactly one and
+    is refused, in words, if it can't be run. Only Auto yields several.
+    """
+    if pin or not is_auto():
+        return Plan(auto=False, attempts=[resolve(pin)])
+    picks = auto.candidates(needs_images=needs_images)
+    if not picks:
+        raise NoModelAvailable(
+            "Auto has no model to choose from" + (" for a message with a picture in it" if needs_images else "")
+            + ". Connect a provider on the Model Settings screen.",
+            detail={"reason": "none"})
+    return Plan(auto=True, attempts=[
+        Resolved(connection=c.connection, model=c.model, target=target_for(c.connection), effort=None)
+        for c in picks])
+
+
+def ready() -> list[auto.Candidate]:
+    """What could answer right now: the named model when it can be run, or what Auto
+    would choose from. Read from what is stored; no provider is called."""
+    if is_auto():
+        return auto.candidates()
+    provider_id, model_id, _ = chosen()
+    if availability().state != "ok" or not provider_id or not model_id:
+        return []
+    connection, model = store.get_connection(provider_id), store.get_model(provider_id, model_id)
+    return [auto.Candidate(connection, model)] if connection and model else []
+
+
 def check_needs(need: dict[str, bool] | None) -> None:
     for name, wanted in (need or {}).items():
         if wanted and name in _UNSUPPORTED_NEEDS:
@@ -154,6 +205,13 @@ def set_selection(provider_id: str, model_id: str, effort: str | None) -> dict[s
         raise LookupError("That model isn't set up.")
     if effort not in effort_levels(model):
         effort = None
-    prefs.set_prefs({"selectedProviderId": provider_id, "selectedModelId": model_id,
-                     "selectedEffort": effort})
+    prefs.set_prefs({"selectedAuto": False, "selectedProviderId": provider_id,
+                     "selectedModelId": model_id, "selectedEffort": effort})
     return {"selectedProviderId": provider_id, "selectedModelId": model_id, "selectedEffort": effort}
+
+
+def set_auto() -> None:
+    """Let Jarvis choose. The named model is forgotten, and so is its effort: effort
+    belongs to a particular model, and under Auto there is no particular model."""
+    prefs.set_prefs({"selectedAuto": True, "selectedProviderId": None,
+                     "selectedModelId": None, "selectedEffort": None})

@@ -16,7 +16,9 @@ const SEARCH_FROM = 8;
  * levels, how hard it works.
  *
  * Two separate choices, kept apart on purpose. **The model** is a choice among the
- * models available through the connected providers. **Effort** is not a model and
+ * models available through the connected providers — or **Auto**, which leaves the
+ * choice to Jarvis for each message. A model picked by name is the only one that
+ * runs; Auto is the only thing that ever lets Jarvis pick. **Effort** is not a model and
  * never creates one: it is a setting on the selected model, and it appears ONLY
  * when the provider itself reported which levels that model accepts. Nothing here
  * knows what levels exist — they arrive with the model — so a model that reported
@@ -47,11 +49,25 @@ export function ModelPicker() {
   // What the trigger says. A selection that cannot be run says so here, where the
   // person will see it, rather than showing a model name that looks fine.
   const trouble = availability && availability.state !== 'ok' && availability.state !== 'none';
-  const label = selected
-    ? selected.model.label
-    : connections.length
-      ? 'Choose a model'
-      : 'Add a model';
+  const auto = selection?.auto === true;
+  const label = auto
+    ? 'Auto'
+    : selected
+      ? selected.model.label
+      : connections.length
+        ? 'Choose a model'
+        : 'Add a model';
+
+  async function chooseAuto() {
+    setError(null);
+    try {
+      await api.models.select({ auto: true });
+      announceModelsChanged();
+      setOpen(false);
+    } catch (err) {
+      setError(err instanceof ApiRequestError ? err.message : 'Auto could not be selected.');
+    }
+  }
 
   async function choose(connection: ProviderConnection, model: ProviderModel) {
     setError(null);
@@ -143,6 +159,23 @@ export function ModelPicker() {
               </div>
             )}
             <div className="scroll-quiet min-h-0 flex-1 overflow-y-auto py-1" data-testid="picker-models">
+              {!needle && (
+                <button
+                  type="button"
+                  data-testid="pick-auto"
+                  aria-pressed={auto}
+                  onClick={() => void chooseAuto()}
+                  className="flex w-full items-center gap-2 border-b border-surface-border px-3.5 py-2.5 text-left transition hover:bg-white/[0.05]"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[13px] text-ink">Auto</span>
+                    <span className="block text-[11px] leading-snug text-ink-faint">
+                      Jarvis picks a model for each message
+                    </span>
+                  </span>
+                  {auto && <CheckIcon className="h-4 w-4 shrink-0 text-accent" />}
+                </button>
+              )}
               {connections.map((connection) => {
                 const shown = connection.models.filter(matches);
                 if (!shown.length && needle) return null;

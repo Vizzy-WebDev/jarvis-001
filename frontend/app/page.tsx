@@ -294,7 +294,7 @@ export default function Home() {
             patch((turn) => ({ ...turn, text: event.spokenText, interrupted: true }));
             break;
           case 'error':
-            patch((turn) => ({ ...turn, text: event.error, streaming: false }));
+            patch((turn) => ({ ...turn, text: event.error, streaming: false, failed: true }));
             break;
           case 'done':
             // Same real-id swap as `routed` above, for the reply's own bubble.

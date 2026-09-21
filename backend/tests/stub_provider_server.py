@@ -179,8 +179,13 @@ class StubProvider:
             return {"models": [{"name": f"models/{m['id']}", "displayName": m.get("display_name", m["id"]),
                                 "supportedGenerationMethods": m.get("methods", ["generateContent"])}
                                for m in self.models]}
+        #: What a gateway such as OmniRoute or OpenRouter adds beyond the id, passed through
+        #: as given so a test can say what the provider "reported".
+        extra = ("type", "capabilities", "architecture", "input_modalities", "output_modalities",
+                 "supported_parameters", "pricing")
         return {"object": "list", "data": [{"id": m["id"], "object": "model", "created": m.get("created", 1),
-                                            "owned_by": "stub"} for m in self.models]}
+                                            "owned_by": "stub", **{k: m[k] for k in extra if k in m}}
+                                           for m in self.models]}
 
     def _is_generation_path(self, path: str) -> bool:
         return path.endswith({"openai-responses": "/responses", "openai-chat": "/chat/completions",

@@ -70,7 +70,8 @@ def _selection_view() -> dict[str, Any]:
     provider_id, model_id, effort = selection.chosen()
     state = selection.availability()
     return {
-        "selection": {"providerId": provider_id, "modelId": model_id, "effort": effort},
+        "selection": {"auto": selection.is_auto(), "providerId": provider_id, "modelId": model_id,
+                      "effort": effort},
         "availability": {"state": state.state, "message": state.message},
     }
 
@@ -96,6 +97,17 @@ def _run_discovery(connection: store.Connection) -> dict[str, Any]:
     return {"ok": True, **store.record_discovery(connection.id, found)}
 
 
+def _learn_what_providers_say() -> None:
+    """Auto reads what each provider has reported about its models (tool support, what
+    it takes in and gives out, price). Models listed before that was recorded have none
+    of it, so a connection whose models carry no facts is asked once more for its list —
+    the same call as "Refresh models", best-effort, and never a change to any status."""
+    for connection in store.list_connections():
+        models = store.list_models(connection.id)
+        if models and all(m.facts is None for m in models):
+            _run_discovery(connection)
+
+
 def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
@@ -114,6 +126,10 @@ def list_connections() -> dict[str, Any]:
 
 @router.post("/select")
 def select(body: dict[str, Any] = Body(default_factory=dict)):
+    if body.get("auto") is True:  # "let Jarvis choose" — the alternative to naming a model
+        selection.set_auto()
+        _learn_what_providers_say()
+        return {"ok": True, **_selection_view()}
     provider_id, model_id = _text(body.get("providerId")), _text(body.get("modelId"))
     if not provider_id or not model_id:
         return _fail("Choose a model to select.", 400)
@@ -121,7 +137,7 @@ def select(body: dict[str, Any] = Body(default_factory=dict)):
         stored = selection.set_selection(provider_id, model_id, _text(body.get("effort")) or None)
     except LookupError as err:
         return _fail(str(err), 404)
-    return {"ok": True, "selection": {"providerId": stored["selectedProviderId"],
+    return {"ok": True, "selection": {"auto": False, "providerId": stored["selectedProviderId"],
                                       "modelId": stored["selectedModelId"],
                                       "effort": stored["selectedEffort"]},
             "availability": _selection_view()["availability"]}

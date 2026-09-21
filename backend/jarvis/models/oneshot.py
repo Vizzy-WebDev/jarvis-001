@@ -12,9 +12,7 @@ import re
 from typing import Any
 
 from ..ai import Answer
-from . import providers, runtime, selection
-from .errors import ProviderError
-from .types import Finished
+from . import attempt, runtime, selection
 
 _JSON_NOTE = ("\n\nReply with a single JSON object and nothing else — no commentary and no code fence.")
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
@@ -38,32 +36,28 @@ def ask(prompt: str, *, system: str = "", want_json: bool = False,
         media: list[dict[str, Any]] | None = None, need: dict[str, bool] | None = None,
         model_id: str | None = None, only: bool = False, role: str = "utility",
         background: bool = False) -> Answer:
-    """Ask the selected model once.
+    """Ask the selected model once — or, under Auto, whichever model Auto picks.
 
-    `only` is accepted and unused: it meant "do not fall back", and nothing here
-    ever falls back. Raises `NoModelAvailable` — the same plain error the turn
+    `only` is accepted and unused: it meant "do not fall back", and a named model is
+    never replaced (Auto, which the person chose, is the only thing that moves on).
+    Raises `NoModelAvailable` — the same plain error the turn
     loop uses — when the selection cannot be run or the provider refuses.
     """
-    resolved = selection.resolve(model_id)
-    selection.check_needs(need)
-    provider = providers.for_format(resolved.connection.format)
-
     message: dict[str, Any] = {"role": "user", "text": prompt}
     if media:
         message["media"] = media
-    finished: Finished | None = None
-    try:
-        for event in provider.stream(
-            resolved.target, model_id=resolved.model.model_id, messages=[message],
-            system=(system or "") + (_JSON_NOTE if want_json else ""), tools=[],
-            effort=resolved.effort, facts=resolved.model.facts,
-        ):
-            if isinstance(event, Finished):
-                finished = event
-    except ProviderError as err:
-        raise runtime.failure(resolved, err) from err
-    if finished is None:
-        raise runtime.failure(resolved, ProviderError("The reply stopped part-way.", kind="reply"))
+    plan = selection.plan(model_id, needs_images=any(m.get("kind", "image") == "image" for m in media or []))
+    selection.check_needs(need)
+
+    run = attempt.run(plan, messages=[message], system=(system or "") + (_JSON_NOTE if want_json else ""),
+                      tools=[], named=model_id is None)
+    while True:  # nobody is watching this one speak; only how it ended matters
+        try:
+            next(run)
+        except StopIteration as done:
+            result = done.value
+            break
+    resolved, finished = result.resolved, result.finished
 
     runtime.publish_completed(
         resolved, session_id=None, reported=finished.model_id, usage=finished.usage,

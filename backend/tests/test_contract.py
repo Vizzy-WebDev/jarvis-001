@@ -79,8 +79,10 @@ ADDED_KEYS: dict[tuple[str, str], set[str]] = {
     # Semantic verification of consequential chat answers: this build's own
     # feature, off by default. See jarvis/ops/consequence.py. And the person's own
     # choice of model (the connection, the provider's model id, and an effort where
-    # the provider reports levels) — None until they choose. See jarvis/models/.
-    ("GET", "/api/prefs"): {"verifyChatAnswers", "selectedProviderId", "selectedModelId", "selectedEffort"},
+    # the provider reports levels) — None until they choose — or Auto, which lets
+    # Jarvis pick per turn instead. See jarvis/models/.
+    ("GET", "/api/prefs"): {"verifyChatAnswers", "selectedProviderId", "selectedModelId", "selectedEffort",
+                            "selectedAuto"},
     # What the screen-watching badge is lit FOR. The original could only say
     # that something was watching; several things can be (a glance, a monitor,
     # sharing left on), and which one it is decides whether "stop" means

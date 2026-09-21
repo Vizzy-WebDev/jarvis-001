@@ -162,6 +162,8 @@ export interface ProviderConnection {
 }
 
 export interface ModelSelection {
+  /** True when the person chose Auto: Jarvis picks per message, and no model is named. */
+  auto: boolean;
   providerId: string | null;
   modelId: string | null;
   effort: string | null;

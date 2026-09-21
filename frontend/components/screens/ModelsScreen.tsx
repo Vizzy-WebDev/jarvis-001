@@ -38,7 +38,7 @@ export function ModelsScreen() {
   }, []);
 
   const connections = overview?.connections ?? [];
-  const selection = overview?.selection ?? { providerId: null, modelId: null, effort: null };
+  const selection = overview?.selection ?? { auto: false, providerId: null, modelId: null, effort: null };
   const availability = overview?.availability;
   const trouble = availability && availability.state !== 'ok' && availability.state !== 'none';
 
@@ -123,9 +123,14 @@ export function ModelsScreen() {
         </p>
       )}
 
-      {inUse && !trouble && (
+      {(inUse || selection.auto) && !trouble && (
         <p data-testid="in-use-summary" className="text-[13px] text-ink-muted">
-          Jarvis is using <span className="text-ink">{inUse}</span>.
+          {selection.auto ? (
+            <>Jarvis is choosing a model for each message (<span className="text-ink">Auto</span>).</>
+          ) : (
+            <>Jarvis is using <span className="text-ink">{inUse}</span>.</>
+          )}{' '}
+          Every model listed below is already available — pick one, or Auto, from the model list beside the message box.
         </p>
       )}
 
@@ -142,7 +147,7 @@ export function ModelsScreen() {
 
       <div className="space-y-3" data-testid="connection-list">
         {connections.map((connection) => (
-          <ConnectionCard key={connection.id} connection={connection} selection={selection}
+          <ConnectionCard key={connection.id} connection={connection}
                           onNotice={setNotice} onEdit={setEditing} onDelete={setDeleting} />
         ))}
       </div>
@@ -163,7 +168,7 @@ export function ModelsScreen() {
             This removes the connection, its saved key and its {deleting.models.length} listed
             model{deleting.models.length === 1 ? '' : 's'}.
             {selection.providerId === deleting.id
-              ? ' It is the one Jarvis is using, so Jarvis won’t be able to answer until you choose another.'
+              ? ' It is the one Jarvis is using, so Jarvis won’t be able to answer until you choose another (or choose Auto).'
               : ''}
           </p>
         )}

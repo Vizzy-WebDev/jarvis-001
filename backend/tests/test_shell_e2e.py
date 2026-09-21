@@ -623,8 +623,16 @@ def test_connecting_a_provider_and_using_a_model_reaches_that_model_at_the_provi
     assert backend_models(live_server)["selection"]["modelId"] is None
     assert httpx.get(f"{live_server}/api/status").json() == {"configured": False}
 
-    page.locator("[data-testid=model-row][data-model-id=stub-model-b] [data-testid=use-model]").click()
-    page.wait_for_selector("[data-testid=model-row][data-model-id=stub-model-b] [data-testid=in-use]")
+    # There is no "Use" step on this screen: every listed model is already available, and nothing
+    # here activates one. A model is chosen where a message is written.
+    assert page.locator("[data-testid=use-model]").count() == 0
+    assert page.locator("[data-testid=in-use]").count() == 0
+    page.evaluate("location.hash = '#/'")
+    page.wait_for_selector("[data-testid=model-picker]")
+    page.click("[data-testid=model-picker]")
+    page.click("[data-testid=pick-model][data-model-id=stub-model-b]")
+    page.wait_for_function(
+        "() => document.querySelector('[data-testid=model-picker-label]').innerText === 'stub-model-b'")
     assert backend_models(live_server)["selection"]["modelId"] == "stub-model-b"
     assert httpx.get(f"{live_server}/api/status").json() == {"configured": True}
 
@@ -632,6 +640,58 @@ def test_connecting_a_provider_and_using_a_model_reaches_that_model_at_the_provi
     page.wait_for_function("() => document.body.innerText.includes('Hello from the stub.')", timeout=90_000)
     assert stub.posts()[-1]["body"]["model"] == "stub-model-b"  # the model that was chosen — on the wire
     assert page.inner_text("[data-testid=model-picker-label]") == "stub-model-b"
+
+
+def test_auto_is_in_the_picker_lets_jarvis_choose_and_naming_a_model_turns_it_off(
+        page, live_server, serve_provider):
+    stub = serve_provider("openai-chat", reply="Chosen for you.")
+    connect(live_server, stub)
+    page.reload(wait_until="load")
+    page.wait_for_selector("[data-testid=model-picker]")
+
+    page.click("[data-testid=model-picker]")
+    page.wait_for_selector("[data-testid=pick-auto]")
+    assert_really_visible(page, "[data-testid=pick-auto]")
+    page.click("[data-testid=pick-auto]")
+    page.wait_for_function(
+        "() => document.querySelector('[data-testid=model-picker-label]').innerText === 'Auto'")
+    selection = backend_models(live_server)["selection"]
+    assert selection == {"auto": True, "providerId": None, "modelId": None, "effort": None}
+    assert httpx.get(f"{live_server}/api/status").json() == {"configured": True}
+
+    say(page, "hello there")
+    page.wait_for_function("() => document.body.innerText.includes('Chosen for you.')", timeout=90_000)
+    assert stub.posts()[-1]["body"]["model"] == "stub-model-a"  # Auto picked one; the wire says which
+
+    # Naming a model takes the choice back — and only that model runs from then on.
+    page.click("[data-testid=model-picker]")
+    assert page.get_attribute("[data-testid=pick-auto]", "aria-pressed") == "true"
+    page.click("[data-testid=pick-model][data-model-id=stub-model-b]")
+    page.wait_for_function(
+        "() => document.querySelector('[data-testid=model-picker-label]').innerText === 'stub-model-b'")
+    assert backend_models(live_server)["selection"]["auto"] is False
+    say(page, "and now?")
+    for _ in range(90):
+        if len(stub.posts()) >= 2:
+            break
+        page.wait_for_timeout(1_000)
+    assert stub.posts()[-1]["body"]["model"] == "stub-model-b"
+
+
+def test_a_failed_message_looks_like_a_failure_names_the_model_and_says_how_auto_would_help(
+        page, live_server, serve_provider):
+    stub = serve_provider("openai-chat", unknown_model="stub-model-a")
+    connect_and_select(live_server, stub, "stub-model-a")
+    page.reload(wait_until="load")
+    page.wait_for_selector("[data-testid=model-picker]")
+
+    say(page, "hello")
+    page.wait_for_selector("[data-testid=turn-error]", timeout=90_000)
+    text = page.inner_text("[data-testid=turn-error]")
+    assert "stub-model-a" in text and "does not exist" in text          # the model, and the provider's own words
+    assert "Jarvis stays on the model you picked" in text and "Auto" in text
+    assert page.get_attribute("[data-testid=turn-error]", "role") == "alert"
+    assert [r["body"]["model"] for r in stub.posts()] == ["stub-model-a"]  # nothing else was tried
 
 
 def test_a_key_typed_into_the_form_is_used_and_never_shown_back(page, live_server, serve_provider):
@@ -662,8 +722,12 @@ def test_a_provider_with_no_model_list_still_takes_a_model_by_its_id(page, live_
     page.click("[data-testid=add-model-submit]")
     page.wait_for_selector("[data-testid=model-row][data-model-id=my-private-model]")
     assert "added by hand" in page.inner_text("[data-testid=model-row]")
-    page.click("[data-testid=use-model]")
-    page.wait_for_selector("[data-testid=in-use]")
+    page.evaluate("location.hash = '#/'")
+    page.wait_for_selector("[data-testid=model-picker]")
+    page.click("[data-testid=model-picker]")
+    page.click("[data-testid=pick-model][data-model-id=my-private-model]")
+    page.wait_for_function(
+        "() => document.querySelector('[data-testid=model-picker-label]').innerText === 'my-private-model'")
 
     say(page, "hi")
     page.wait_for_function("() => document.body.innerText.includes('Answered without a list.')", timeout=90_000)
@@ -707,7 +771,7 @@ def test_the_composer_picker_offers_effort_only_for_a_model_whose_provider_repor
     page.wait_for_function(
         "() => document.querySelector('[data-testid=effort-low]').getAttribute('aria-pressed') === 'true'")
     assert backend_models(live_server)["selection"] == {
-        "providerId": backend_models(live_server)["connections"][0]["id"], "modelId": "opus-x", "effort": "low"}
+        "auto": False, "providerId": backend_models(live_server)["connections"][0]["id"], "modelId": "opus-x", "effort": "low"}
 
     page.keyboard.press("Escape")
     say(page, "think about this")

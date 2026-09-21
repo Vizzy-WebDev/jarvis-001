@@ -237,3 +237,61 @@ def record_discovery(connection_id: str, discovered: list[Any]) -> dict[str, int
         db.execute("ROLLBACK")
         raise
     return {"added": added, "updated": updated}
+
+
+# --- outcomes ------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Outcome:
+    """What last happened when this model was really called. A record, not a verdict."""
+
+    provider_id: str
+    model_id: str
+    last_ok_at: str | None
+    last_fail_at: str | None
+    fail_kind: str | None
+    fail_status: int | None
+    fail_message: str | None
+
+
+@_locked
+def record_success(connection_id: str, model_id: str) -> None:
+    get_db().execute(
+        "INSERT INTO model_outcomes (provider_id, model_id, last_ok_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(provider_id, model_id) DO UPDATE SET last_ok_at = excluded.last_ok_at",
+        (connection_id, model_id, now_iso()))
+
+
+@_locked
+def record_failure(connection_id: str, model_id: str, *, kind: str | None, status: int | None,
+                   message: str | None) -> None:
+    get_db().execute(
+        "INSERT INTO model_outcomes (provider_id, model_id, last_fail_at, fail_kind, fail_status, fail_message) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(provider_id, model_id) DO UPDATE SET last_fail_at = excluded.last_fail_at, "
+        "fail_kind = excluded.fail_kind, fail_status = excluded.fail_status, "
+        "fail_message = excluded.fail_message",
+        (connection_id, model_id, now_iso(), kind, status, (message or "")[:400]))
+
+
+@_locked
+def list_outcomes() -> dict[tuple[str, str], Outcome]:
+    rows = get_db().execute("SELECT * FROM model_outcomes").fetchall()
+    return {(r["provider_id"], r["model_id"]): Outcome(
+        provider_id=r["provider_id"], model_id=r["model_id"], last_ok_at=r["last_ok_at"],
+        last_fail_at=r["last_fail_at"], fail_kind=r["fail_kind"], fail_status=r["fail_status"],
+        fail_message=r["fail_message"]) for r in rows}
+
+
+@_locked
+def recent_answers(limit: int = 300) -> dict[str, str]:
+    """`{model id: when it last answered}` from the saved replies themselves — the
+    provider-reported id each assistant message was stored with. Real evidence a model
+    worked here, available from before outcomes were recorded."""
+    rows = get_db().execute(
+        "SELECT m, MAX(t) AS t FROM ("
+        "  SELECT json_extract(payload, '$.modelId') AS m, created_at AS t FROM ("
+        "    SELECT payload, created_at FROM messages WHERE role = 'assistant' AND payload IS NOT NULL "
+        "    ORDER BY id DESC LIMIT ?)) "
+        "WHERE m IS NOT NULL GROUP BY m", (limit,)).fetchall()
+    return {r["m"]: r["t"] for r in rows}

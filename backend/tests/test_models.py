@@ -34,10 +34,12 @@ TOOLS = [{"name": "get_time", "description": "What time is it.",
 
 
 @pytest.fixture
-def client(scratch):
+def client(scratch, monkeypatch):
     from jarvis import assembly
     from jarvis.main import create_app
+    from jarvis.models import attempt
 
+    monkeypatch.setattr(attempt, "_BUSY_WAITS_S", (0.0, 0.0))  # the retry is real; its pause need not be
     assembly.reset_for_tests()
     conversation.reset_for_tests()
     yield TestClient(create_app())
@@ -744,7 +746,7 @@ def test_connections_models_and_the_selection_survive_a_restart(client, serve, s
     fresh = TestClient(create_app())
     after = fresh.get("/api/models").json()
     assert after == before
-    assert after["selection"] == {"providerId": connection_id, "modelId": "opus-x", "effort": "max"}
+    assert after["selection"] == {"auto": False, "providerId": connection_id, "modelId": "opus-x", "effort": "max"}
     assert config.get_secret(f"model_{connection_id}") == SECRET
     # ...and it still works, with the same key and the same model, without being told again.
     events, error = run_step()
@@ -976,3 +978,422 @@ def test_the_kinds_the_interface_offers_say_what_each_needs(client):
     assert by_id["custom"]["chooseFormat"] is True and by_id["custom"]["address"] == "required"
     assert [f["id"] for f in body["formats"]] == list(FORMATS)
     assert not re.search(r"family|capabilit|version|lifecycle|provenance", json.dumps(body), re.IGNORECASE)
+
+
+# ================================================================================
+# Auto — and the promise that a model the person NAMED is never replaced
+# ================================================================================
+
+def choose_auto(client):
+    reply = client.post("/api/models/select", json={"auto": True})
+    assert reply.status_code == 200, reply.text
+    return reply.json()
+
+
+def two_connections(client, serve, *, first: dict | None = None, second: dict | None = None,
+                    first_models=None, second_models=None):
+    """Two providers with different model ids, connected in that order."""
+    one = serve("openai-chat", models=first_models or [{"id": "one-a"}, {"id": "one-b"}], **(first or {}))
+    two = serve("openai-chat", models=second_models or [{"id": "two-a"}], **(second or {}))
+    first_id = add(client, one, label="One")["connection"]["id"]
+    second_id = add(client, two, label="Two")["connection"]["id"]
+    return one, two, first_id, second_id
+
+
+def posted_models(stub: StubProvider) -> list[str]:
+    return [r["body"]["model"] for r in stub.posts()]
+
+
+def test_choosing_auto_is_stored_and_reported_and_naming_a_model_turns_it_off(client, serve):
+    stub = serve("openai-chat")
+    connection_id = add(client, stub)["connection"]["id"]
+
+    body = choose_auto(client)
+    assert body["selection"] == {"auto": True, "providerId": None, "modelId": None, "effort": None}
+    assert body["availability"]["state"] == "ok"
+    assert client.get("/api/models").json()["selection"]["auto"] is True
+    assert client.get("/api/status").json() == {"configured": True}
+
+    body = select(client, connection_id, "stub-model-b").json()
+    assert body["selection"]["auto"] is False and body["selection"]["modelId"] == "stub-model-b"
+    assert client.get("/api/models").json()["selection"]["auto"] is False
+
+
+def test_auto_with_nothing_connected_says_so_plainly(client):
+    body = choose_auto(client)
+    assert body["availability"]["state"] == "none" and "Auto has no model" in body["availability"]["message"]
+    assert client.get("/api/status").json() == {"configured": False}
+    events, error = run_step()
+    assert events == [] and error is not None and "Auto has no model to choose from" in str(error)
+
+
+def test_auto_answers_from_a_connected_model_and_says_nothing_about_switching(client, serve):
+    from jarvis.orchestrator.model_port import ModelSwitched, StepComplete
+
+    stub = serve("openai-chat")
+    add(client, stub)
+    choose_auto(client)
+    events, error = run_step()
+    assert error is None and posted_models(stub) == ["stub-model-a"]
+    assert not any(isinstance(e, ModelSwitched) for e in events)
+    assert isinstance(events[-1], StepComplete) and events[-1].model_id == "stub-model-a"
+
+
+def test_auto_never_involves_chance(client, serve):
+    from jarvis.models import auto
+
+    two_connections(client, serve)
+    choose_auto(client)
+    orders = {tuple((c.connection.label, c.model.model_id) for c in auto.candidates()) for _ in range(20)}
+    assert len(orders) == 1
+    assert list(orders)[0] == (("One", "one-a"), ("One", "one-b"), ("Two", "two-a"))
+
+
+def test_auto_moves_on_when_the_first_model_fails_before_saying_anything_and_says_so(client, serve):
+    from jarvis.orchestrator.model_port import ModelSwitched, StepComplete, TextChunk
+
+    one, two, *_ = two_connections(client, serve, first={"unknown_model": "one-a"})
+    choose_auto(client)
+    events, error = run_step()
+    assert error is None
+    switched = [e for e in events if isinstance(e, ModelSwitched)]
+    assert len(switched) == 1 and switched[0].from_model_id == "one-a" and switched[0].to_model_id == "two-a"
+    assert "Auto moved on from one-a on One" in switched[0].reason  # what it left, and why
+    # The announcement comes before the words it is about.
+    assert events.index(switched[0]) < events.index(next(e for e in events if isinstance(e, TextChunk)))
+    assert events[-1].model_id == "two-a" and isinstance(events[-1], StepComplete)
+    # It went to the OTHER connection, not to a second model on the one that had just refused.
+    assert posted_models(one) == ["one-a"] and posted_models(two) == ["two-a"]
+
+
+def test_after_a_failure_auto_goes_straight_to_what_worked(client, serve):
+    from jarvis.orchestrator.model_port import ModelSwitched
+
+    one, two, *_ = two_connections(client, serve, first={"unknown_model": "one-a"})
+    choose_auto(client)
+    run_step()
+    events, error = run_step()
+    assert error is None and not any(isinstance(e, ModelSwitched) for e in events)
+    assert posted_models(one) == ["one-a"]  # not asked again
+    assert posted_models(two) == ["two-a", "two-a"]
+
+
+def test_a_named_model_that_fails_is_never_replaced_and_the_error_says_how_to_change_that(client, serve):
+    one, two, first_id, _ = two_connections(client, serve, first={"unknown_model": "one-a"})
+    assert select(client, first_id, "one-a").status_code == 200
+    events, error = run_step()
+    assert events == [] and error is not None
+    assert "does not exist" in str(error)  # the provider's own words
+    assert "Jarvis stays on the model you picked" in str(error) and "Auto" in str(error)
+    assert posted_models(one) == ["one-a"] and two.posts() == []
+    assert error.detail["reason"] == "provider_error"
+
+
+def test_auto_does_not_take_over_a_reply_that_has_already_started(client, serve):
+    from jarvis.orchestrator.model_port import TextChunk
+
+    one, two, *_ = two_connections(client, serve, first={"truncate": True})
+    choose_auto(client)
+    events, error = run_step()
+    assert any(isinstance(e, TextChunk) for e in events)  # words were already out
+    assert error is not None and "stopped part-way" in str(error)
+    assert two.posts() == []  # so nobody else finishes the sentence
+
+
+def test_when_every_model_fails_auto_names_each_one_and_why(client, serve):
+    one, two, *_ = two_connections(client, serve, first={"unknown_model": "one-a"},
+                                   first_models=[{"id": "one-a"}], second={"unknown_model": "two-a"})
+    choose_auto(client)
+    events, error = run_step()
+    assert events == [] and error is not None
+    text = str(error)
+    assert "Auto tried 2 models and none could answer" in text and "one-a on One" in text and "two-a on Two" in text
+    assert error.detail["reason"] == "auto_exhausted"
+    assert [a["model"] for a in error.detail["attempts"]] == ["one-a", "two-a"]
+
+
+def test_auto_gives_up_after_a_few_models_rather_than_trying_the_whole_catalogue(client, serve):
+    from jarvis.models import auto
+
+    dead = [serve("openai-chat", chat_status=400, models=[{"id": f"dead-{i}"}]) for i in range(auto.MAX_ATTEMPTS)]
+    fine = serve("openai-chat", models=[{"id": "fine"}])
+    for i, stub in enumerate(dead):
+        add(client, stub, label=f"Dead{i}")
+    add(client, fine, label="Fine")
+    choose_auto(client)
+    events, error = run_step()
+    assert error is not None and f"Auto tried {auto.MAX_ATTEMPTS} models" in str(error)
+    assert fine.posts() == []
+    # ...and the next message doesn't repeat the mistake: the dead ones now wait behind it.
+    events, error = run_step()
+    assert error is None and posted_models(fine) == ["fine"]
+
+
+def test_a_model_the_provider_says_is_not_for_chat_is_never_chosen(client, serve):
+    from jarvis.models import auto
+
+    stub = serve("openai-chat", models=[
+        {"id": "clip", "type": "video"},
+        {"id": "pictures-only", "output_modalities": ["image"]},
+        {"id": "no-tools", "capabilities": {"tool_calling": False}},
+        {"id": "good", "capabilities": {"tool_calling": True}},
+        {"id": "silent"},
+    ])
+    connection_id = add(client, stub)["connection"]["id"]
+    assert store.get_model(connection_id, "clip").facts == {"chat": False}
+    assert store.get_model(connection_id, "no-tools").facts == {"tools": False}
+    assert store.get_model(connection_id, "silent").facts is None  # it said nothing, so nothing is claimed
+    choose_auto(client)
+    # Reported tool-capable first; one that said nothing is left in, not guessed at.
+    assert [c.model.model_id for c in auto.candidates()] == ["good", "silent"]
+    run_step()
+    assert posted_models(stub) == ["good"]
+    # A person can still name one of the ones Auto passes over — that is their call.
+    assert select(client, connection_id, "clip").status_code == 200
+
+
+def test_a_message_with_a_picture_only_goes_to_a_model_that_did_not_say_it_cannot_see(client, serve):
+    from jarvis.models import auto
+
+    stub = serve("openai-chat", models=[{"id": "blind", "input_modalities": ["text"]},
+                                        {"id": "sighted", "input_modalities": ["text", "image"]}])
+    add(client, stub)
+    choose_auto(client)
+    assert [c.model.model_id for c in auto.candidates(needs_images=True)] == ["sighted"]
+    run_step()
+    assert posted_models(stub) == ["blind"]
+    run_step(messages=[{"role": "user", "text": "what is this",
+                        "media": [{"kind": "image", "mimeType": "image/png", "dataBase64": "AAAA"}]}])
+    assert posted_models(stub)[-1] == "sighted"
+
+
+def test_auto_prefers_what_worked_and_steers_around_what_just_failed_by_how_it_failed(client, serve):
+    from datetime import datetime, timedelta, timezone
+
+    from jarvis.models import auto
+
+    stub = serve("openai-chat", models=[{"id": "a"}, {"id": "b"}, {"id": "c"}, {"id": "d"}])
+    cid = add(client, stub)["connection"]["id"]
+
+    def ids(now=None):
+        return [c.model.model_id for c in auto.candidates(now=now)]
+
+    assert ids() == ["a", "b", "c", "d"]
+
+    store.record_success(cid, "c")
+    assert ids() == ["c", "a", "b", "d"]  # what has worked comes first
+
+    store.record_failure(cid, "a", kind="model", status=404, message="no such model")
+    store.record_failure(cid, "b", kind="server", status=503, message="busy")
+    now = datetime.now(timezone.utc)
+    assert ids(now) == ["c", "d", "a", "b"]  # both just failed: behind the untried one
+    assert ids(now + timedelta(minutes=10)) == ["c", "b", "d", "a"]  # a hiccup passes sooner than a refusal
+    assert ids(now + timedelta(minutes=40)) == ["c", "a", "b", "d"]  # both forgiven, back in their own order
+    assert ids(now) == ids(now)  # the same question gets the same answer
+
+    store.record_failure(cid, "c", kind="rate", status=429, message="slow down")
+    assert ids(now) == ["d", "c", "a", "b"]  # a proven model that just failed waits as well — proven first among the waiting
+    store.record_success(cid, "c")
+    assert ids()[0] == "c"  # and answering again clears it at once
+
+
+def test_a_pinned_model_is_exact_even_while_auto_is_on(client, serve):
+    one, two, *_ = two_connections(client, serve)
+    choose_auto(client)
+    events, error = run_step(model_id="two-a")
+    assert error is None and posted_models(two) == ["two-a"] and one.posts() == []
+    events, error = run_step(model_id="not-a-model")
+    assert error is not None and "isn't set up on any connection" in str(error)
+
+
+def test_a_busy_provider_is_asked_again_before_a_named_model_is_given_up_on(client, serve):
+    stub, *_ = connect_and_select(client, serve, "openai-chat")
+    stub.chat_status = 503
+    events, error = run_step()
+    assert error is not None and "problem on its end" in str(error)
+    assert len(stub.posts()) == 3  # once, and twice more — the same model each time
+    assert set(posted_models(stub)) == {"stub-model-a"}
+
+
+def test_auto_gives_a_busy_model_one_quick_retry_and_then_goes_elsewhere(client, serve):
+    one, two, *_ = two_connections(client, serve, first={"chat_status": 503})
+    choose_auto(client)
+    events, error = run_step()
+    assert error is None and len(one.posts()) == 2 and posted_models(two) == ["two-a"]  # one quick retry, then on
+
+
+def test_what_really_happened_is_recorded_for_auto_to_read(client, serve):
+    one, two, first_id, second_id = two_connections(client, serve, first={"unknown_model": "one-a"})
+    assert select(client, first_id, "one-a").status_code == 200
+    run_step()
+    failed = store.list_outcomes()[(first_id, "one-a")]
+    assert failed.fail_kind == "model" and failed.fail_status == 404 and failed.last_ok_at is None
+    assert select(client, second_id, "two-a").status_code == 200
+    run_step()
+    assert store.list_outcomes()[(second_id, "two-a")].last_ok_at
+
+
+def test_a_reply_a_provider_module_cannot_read_is_a_plain_error_and_not_a_crash(client, serve, monkeypatch):
+    from types import SimpleNamespace
+
+    from jarvis.models import attempt
+
+    connect_and_select(client, serve, "openai-chat")
+
+    def broken(*args, **kwargs):
+        raise KeyError("index")
+        yield  # pragma: no cover - makes this a generator, like the real one
+
+    monkeypatch.setattr(attempt.providers, "for_format", lambda _format: SimpleNamespace(stream=broken))
+    events, error = run_step()
+    assert error is not None and "couldn't read" in str(error)
+    assert error.detail["kind"] == "reply"  # said in words, with the same shape as any other failure
+
+
+def test_auto_gives_a_silent_model_less_time_only_while_another_is_still_waiting(client, serve, monkeypatch):
+    from types import SimpleNamespace
+
+    from jarvis.models import attempt, auto
+    from jarvis.models.errors import ProviderError
+
+    for i in range(auto.MAX_ATTEMPTS):
+        add(client, serve("openai-chat", models=[{"id": f"m{i}"}]), label=f"C{i}")
+    choose_auto(client)
+    waited: list[float | None] = []
+
+    def refuses(target, **kwargs):
+        waited.append(target.read_timeout)
+        raise ProviderError("no such model", kind="model", status=404)
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(attempt.providers, "for_format", lambda _format: SimpleNamespace(stream=refuses))
+    events, error = run_step()
+    assert error is not None
+    # While others were still waiting a silent model got the short wait; the last one, the generous default.
+    assert waited == [auto.FAST_READ_TIMEOUT_S] * (auto.MAX_ATTEMPTS - 1) + [None]
+
+
+def test_ask_under_auto_moves_on_too_since_nobody_is_watching_it_speak(client, serve):
+    one, two, *_ = two_connections(client, serve, first={"unknown_model": "one-a"})
+    choose_auto(client)
+    answer = ai.ask("What is the answer?")
+    assert answer.model_id == "two-a" and posted_models(one) == ["one-a"]
+
+
+def test_a_plain_server_that_reports_nothing_about_its_models_gets_no_facts_invented(client, serve):
+    stub = serve("openai-chat")
+    connection_id = add(client, stub)["connection"]["id"]
+    assert [m.facts for m in store.list_models(connection_id)] == [None, None]
+
+
+def test_auto_is_offered_to_voice_and_the_environment_report_like_any_other_choice(client, serve):
+    from jarvis.ops.environment import reachability
+    from jarvis.voice import options
+
+    add(client, serve("openai-chat"))
+    choose_auto(client)
+    usable = reachability.models()["usable"]
+    assert usable and usable[0]["modelId"] == "stub-model-a"
+    assert len(options._ready_models()) == 1
+
+
+def test_a_gateways_reported_price_is_kept_and_a_402_is_its_own_kind_of_failure(client, serve):
+    stub = serve("openai-chat", models=[
+        {"id": "paid", "pricing": {"prompt": "0.000002", "completion": "0.000008"}},
+        {"id": "free-one", "pricing": {"prompt": "0", "completion": "0"}},
+        {"id": "unpriced"},
+    ])
+    cid = add(client, stub)["connection"]["id"]
+    assert store.get_model(cid, "paid").facts == {"free": False}
+    assert store.get_model(cid, "free-one").facts == {"free": True}
+    assert store.get_model(cid, "unpriced").facts is None
+    from jarvis.models.providers import _wire
+
+    err = _wire.error_for(402, "Insufficient credits.", "https://x/v1")
+    assert err.kind == "billing" and err.status == 402 and "credit" in str(err)
+
+
+def test_when_the_account_is_out_of_credit_paid_models_wait_and_free_ones_carry_on(client, serve):
+    from datetime import datetime, timedelta, timezone
+
+    from jarvis.models import auto
+
+    stub = serve("openai-chat", models=[
+        {"id": "a-paid", "pricing": {"prompt": "1", "completion": "1"}},
+        {"id": "b-paid", "pricing": {"prompt": "1", "completion": "1"}},
+        {"id": "c-free", "pricing": {"prompt": "0", "completion": "0"}},
+        {"id": "d-unpriced"},
+    ])
+    cid = add(client, stub)["connection"]["id"]
+
+    def ids(now=None):
+        return [c.model.model_id for c in auto.candidates(now=now)]
+
+    assert ids() == ["a-paid", "b-paid", "c-free", "d-unpriced"]
+    store.record_failure(cid, "a-paid", kind="billing", status=402, message="Insufficient credits")
+    assert ids() == ["c-free", "d-unpriced", "a-paid", "b-paid"]  # b-paid was never tried, and still waits
+    later = datetime.now(timezone.utc) + timedelta(minutes=45)
+    assert ids(later) == ["a-paid", "b-paid", "c-free", "d-unpriced"]  # credit may have been added by now
+
+
+def test_auto_starts_from_a_model_that_already_answered_in_the_saved_conversation(client, serve):
+    from jarvis.db import get_db
+    from jarvis.models import auto
+
+    stub = serve("openai-chat", models=[{"id": "aaa"}, {"id": "zzz-worked"}])
+    add(client, stub)
+    assert [c.model.model_id for c in auto.candidates()] == ["aaa", "zzz-worked"]
+    db = get_db()
+    db.execute("INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('c1', 't', 'x', 'x')")
+    db.execute("INSERT INTO messages (conversation_id, seq, role, text, payload, created_at) "
+               "VALUES ('c1', 1, 'assistant', 'hi', ?, '2026-09-21T11:00:00.000Z')",
+               (json.dumps({"modelId": "zzz-worked"}),))
+    assert [c.model.model_id for c in auto.candidates()] == ["zzz-worked", "aaa"]
+
+
+def test_choosing_auto_asks_each_connection_once_more_for_what_it_says_about_its_models(client, serve):
+    stub = serve("openai-chat", models=[{"id": "clip", "type": "video"}, {"id": "chat-ok"}])
+    cid = add(client, stub)["connection"]["id"]
+    # Listed before facts were recorded: as if from an earlier version.
+    from jarvis.db import get_db
+
+    get_db().execute("UPDATE provider_models SET facts_json = NULL WHERE provider_id = ?", (cid,))
+    assert store.get_model(cid, "clip").facts is None
+    choose_auto(client)
+    assert store.get_model(cid, "clip").facts == {"chat": False}
+    from jarvis.models import auto
+
+    assert [c.model.model_id for c in auto.candidates()] == ["chat-ok"]
+
+
+def test_a_402_mid_step_skips_the_paid_models_on_that_connection_but_not_the_free_ones(client, serve):
+    from jarvis.models import auto
+
+    paid = {"prompt": "1", "completion": "1"}
+    free = {"prompt": "0", "completion": "0"}
+    stub = serve("openai-chat", chat_status=None, models=[
+        {"id": "a-paid", "pricing": paid}, {"id": "b-paid", "pricing": paid},
+        {"id": "c-paid", "pricing": paid}, {"id": "d-free", "pricing": free}])
+    add(client, stub, label="Gateway")
+    choose_auto(client)
+
+    seen = []
+    from jarvis.models import attempt
+    from jarvis.models.errors import ProviderError
+    from jarvis.models.types import Finished
+    from types import SimpleNamespace
+
+    def fake(target, **kwargs):
+        seen.append(kwargs["model_id"])
+        if kwargs["model_id"].endswith("paid"):
+            raise ProviderError("Insufficient credits.", kind="billing", status=402)
+        yield Finished(text="ok", model_id=kwargs["model_id"])
+
+    import pytest as _pytest
+
+    with _pytest.MonkeyPatch.context() as mp:
+        mp.setattr(attempt.providers, "for_format", lambda _f: SimpleNamespace(stream=fake))
+        events, error = run_step()
+    assert error is None
+    assert seen == ["a-paid", "d-free"]  # b-paid and c-paid were never asked: the account has no credit
+    assert events[-1].model_id == "d-free"

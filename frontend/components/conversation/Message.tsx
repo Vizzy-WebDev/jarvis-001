@@ -35,6 +35,8 @@ export type Turn = {
   attachments?: Attachment[];
   /** A barge-in cut it off; what is shown is what was actually heard. */
   interrupted?: boolean;
+  /** The turn failed and `text` is why — shown as a problem, not as Jarvis speaking. */
+  failed?: boolean;
 };
 
 export function attachmentOf(event: TurnEvent): Turn['attachment'] {
@@ -267,9 +269,13 @@ export function Message({
   return (
     <div className={`animate-fade-up flex flex-col ${mine ? 'items-end' : 'items-start'}`}>
       <div
+        role={turn.failed ? 'alert' : undefined}
+        data-testid={turn.failed ? 'turn-error' : undefined}
         className={[
           'max-w-[88%] rounded-lg px-3.5 py-2.5 text-[14px] leading-relaxed',
-          mine ? 'bg-bubble-user text-ink' : 'bg-bubble-assistant text-ink',
+          turn.failed
+            ? 'border border-state-danger/30 bg-state-danger/[0.08] text-ink'
+            : mine ? 'bg-bubble-user text-ink' : 'bg-bubble-assistant text-ink',
         ].join(' ')}
       >
         {shown.map((attachment, index) => (

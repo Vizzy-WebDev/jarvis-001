@@ -18,6 +18,10 @@ class Target:
 
     base_url: str
     api_key: str | None = None
+    #: Seconds to wait for the provider to say something before giving up on a
+    #: streamed reply. None keeps the generous default. Only Auto shortens it, and
+    #: only while another model is still waiting to be tried.
+    read_timeout: float | None = None
 
 
 @dataclass(frozen=True)
@@ -28,7 +32,9 @@ class Discovered:
     needs, and nothing else: `{"maxOutput": int}` where a request must state an
     output ceiling and the ceiling differs per model, and
     `{"effort": {"levels": [...], "default": ...}}` where it reported which
-    reasoning-effort levels the model accepts. It is never filled in from a table
+    reasoning-effort levels the model accepts. A gateway that describes its models
+    may also give `{"chat": False}` (not a text model), `{"tools": bool}` and
+    `{"image": bool}` — only ever as reported, and read only by Auto. It is never filled in from a table
     of what we believe a model can do — a key that is absent means the provider
     did not say, and nothing is offered or assumed on its behalf.
     """

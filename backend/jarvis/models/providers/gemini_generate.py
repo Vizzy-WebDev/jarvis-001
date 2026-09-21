@@ -193,7 +193,8 @@ def stream(target: Target, *, model_id: str, messages: list[dict[str, Any]], sys
     usage: dict[str, Any] = {}
     seen_any = False
 
-    with wire.post_stream(url, headers=_auth(target), body=body) as response:
+    with wire.post_stream(url, headers=_auth(target), body=body,
+                          read_timeout=target.read_timeout) as response:
         for _, data in wire.iter_sse(response):
             chunk = wire.loads_event(data, "Google")
             if not isinstance(chunk, dict):

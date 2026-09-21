@@ -94,7 +94,7 @@ SYSTEM = ("You check whether a result actually answers what was asked. Judge onl
 
 def verify_semantic_match(*, request: str, result_summary: str,
                           result_text: str | None = None) -> Verdict:
-    from ..model_system.compat import ask
+    from ..ai import ask
 
     prompt = "\n\n".join(filter(None, [
         f'The request was: "{request}"',
@@ -103,8 +103,7 @@ def verify_semantic_match(*, request: str, result_summary: str,
     ]))
 
     try:
-        answer = ask(prompt, system=SYSTEM, want_json=True,
-                     task=_background_task(request))
+        answer = ask(prompt, system=SYSTEM, want_json=True)
     except Exception as err:  # noqa: BLE001 — no model available is the common case
         logger.info("semantic check could not run: %s", err)
         return Verdict(checked=False, matches=None)
@@ -115,10 +114,3 @@ def verify_semantic_match(*, request: str, result_summary: str,
     reason = data.get("reason")
     return Verdict(checked=True, matches=data["matches"],
                    reason=reason if isinstance(reason, str) and reason else None)
-
-
-def _background_task(text: str) -> Any:
-    from ..model_system.compat import Task
-    from ..model_system.request import Role
-
-    return Task(text=text, role=Role.UTILITY, needs_tools=False)

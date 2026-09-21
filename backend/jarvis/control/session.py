@@ -1,7 +1,7 @@
 """Driving the computer toward a goal: plan, look, decide, check, act, look again.
 
-Its own loop rather than the chat turn loop, for the same reason the original
-kept them apart: a control session is long-running, carries a fresh view of the
+Its own loop rather than the chat turn loop, for the same reason it is kept
+apart: a control session is long-running, carries a fresh view of the
 screen every step, and must never be able to reach the chat tool catalogue —
 rescheduling itself mid-click is not something a desktop task should be able to
 do. Its actions are the fixed set below, plus whatever connectors the user has
@@ -431,7 +431,7 @@ def _wait_for_approval(approval_id: str, timeout_s: float) -> str:
 
     Polling rather than subscribing: the answer is a database row either way,
     and a session that missed a single in-memory event would wait forever — the
-    exact failure the original had to add a timeout to paper over.
+    failure a bare in-memory wait would have.
     """
     from ..policy import approvals as approvals_store
 
@@ -733,9 +733,9 @@ def start(goal: str, plan: str = "", *, client: Any = None, event_bus: Any = Non
         _active = session
 
     if client is None:
-        from ..model_system.gateway import Gateway
+        from ..orchestrator.model_port import NoModelClient
 
-        client = Gateway()
+        client = NoModelClient()
 
     def work() -> None:
         # A test drives the loop with its own runner and has no screen to draw

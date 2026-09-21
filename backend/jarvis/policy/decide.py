@@ -1,10 +1,7 @@
 """The permission decision — pure, deterministic, model-independent (§7).
 
-Follows the pattern the audit found to be the strongest thing in the existing
-codebase: a side-effect-free decision function that every caller asks and none
-second-guesses. The three existing policy modules were verified by exhaustive
-truth table and their safety floors genuinely hold; this is built the same way so
-it can be checked the same way.
+A side-effect-free decision function that every caller asks and none second-guesses,
+verified by exhaustive truth table so its safety floors can be checked the same way.
 
 The floors below are not overridable by any autonomy level, any surface, or any
 instruction from the model or the user in the moment:
@@ -84,9 +81,8 @@ def decide(
     """Decide whether this call may proceed.
 
     `allowed_names`, when given, is an allowlist enforced HERE rather than by the
-    caller. In the Node implementation the equivalent check lives in the turn
-    runner, so every other caller — the scheduler, briefings, the Live voice path
-    — gets no enforcement at all. A restriction that only one caller applies is
+    caller. A check that lived only in the turn runner would give every other caller — the
+    scheduler, briefings, the Live voice path — no enforcement at all. A restriction that only one caller applies is
     not a restriction.
     """
     now = time.time() if now is None else now

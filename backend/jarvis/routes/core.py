@@ -12,8 +12,6 @@ from typing import Any
 
 from fastapi import APIRouter, Body
 
-from ..model_system.credentials import CredentialStatus
-from ..model_system.registry import list_models
 from ..prefs import get_prefs, set_prefs
 
 router = APIRouter(prefix="/api")
@@ -22,15 +20,8 @@ router = APIRouter(prefix="/api")
 @router.get("/status")
 def status() -> dict[str, Any]:
     """Whether any model is actually usable — what the first-run flow checks.
-
-    "Configured" means at least one enabled model has whatever credential it
-    actually needs. Deliberately not "a connection exists": a saved connection
-    whose key was never entered is exactly the state this flow exists to catch,
-    and reporting it as configured sends the user to a chat box that cannot
-    answer.
-    """
-    usable = any(m.enabled and m.provider.credential_status is CredentialStatus.CONFIGURED
-                for m in list_models())
+    Nothing is, while there is no AI model system."""
+    usable = False
     # Exactly the recorded shape, deliberately: the contract harness only catches
     # unintended divergence if the intended response stays byte-identical too.
     # Counts belong here when a screen actually needs them, not before.

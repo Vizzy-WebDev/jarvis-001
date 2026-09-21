@@ -112,7 +112,7 @@ def conflicted_memory_ids() -> set[str]:
 
     The other half of "a conflict always needs a human": while it waits, the OLD,
     possibly-wrong memory must stop being asserted to the model as settled fact
-    every turn. Confirmed live in the original — a memory reading "uses a Mac"
+    every turn. Confirmed live — a memory reading "uses a Mac"
     kept being injected while a pending candidate said the opposite.
     """
     rows = get_db().execute(

@@ -29,9 +29,7 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
 
-from .model_system.compat import Task, ask
-from .model_system.fallback import NoModelAvailable
-from .model_system.request import Role
+from .ai import NoModelAvailable, ask
 from .webtext import to_text
 
 logger = logging.getLogger(__name__)
@@ -200,7 +198,6 @@ def _synthesise(question: str, sources: list[Source]) -> tuple[str, str | None]:
         system=("You answer questions from supplied sources. You never assert "
                 "anything the sources do not support, and you say when they are "
                 "silent or disagree."),
-        task=Task(text=question, needs_tools=False, role=Role.UTILITY),
     )
     return answer.text.strip(), answer.model_id
 
@@ -210,15 +207,15 @@ def _synthesise(question: str, sources: list[Source]) -> tuple[str, str | None]:
 def _model_search(question: str) -> Research:
     """The escalation: a model that can search for itself.
 
-    Not a separate code path so much as a different prompt — the gateway picks a
-    candidate that declares `webSearch`, and if none does, this fails honestly
+    Not a separate code path so much as a different prompt — it asks for a model that
+    can search (`need={"webSearch": True}`), and if none can, this fails honestly
     rather than pretending a plain model searched anything.
     """
     try:
         answer = ask(
             f"Look this up and answer it: {question}",
             system="You research questions and answer from what you find, citing where.",
-            task=Task(text=question, needs_tools=False, need={"webSearch": True}),
+            need={"webSearch": True},
         )
     except NoModelAvailable as err:
         return Research(ok=False, via="model-search", query=question,

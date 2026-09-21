@@ -11,28 +11,9 @@ from typing import Any
 
 
 def models() -> dict[str, Any]:
-    from ...model_system import health
-    from ...model_system.credentials import CredentialStatus
-    from ...model_system.registry import list_models
-
-    usable, blocked = [], []
-    for model in list_models():
-        if not model.enabled:
-            continue
-        if model.provider.credential_status is not CredentialStatus.CONFIGURED:
-            blocked.append({"modelId": model.id, "reason": "needs a key"})
-            continue
-        if not health.is_eligible(model.id):
-            record = health.status_of(model.id) or {}
-            blocked.append({"modelId": model.id,
-                            "reason": record.get("detail") or record.get("state") or "unavailable",
-                            "retryInMs": health.retry_after_ms(model.id)})
-            continue
-        usable.append(model.id)
-
-    soonest = [b["retryInMs"] for b in blocked if b.get("retryInMs")]
-    return {"usable": usable, "blocked": blocked,
-            "soonestRetryMs": min(soonest) if soonest else None}
+    """Which AI models could answer right now. None, while there is no model
+    system."""
+    return {"usable": [], "blocked": [], "soonestRetryMs": None}
 
 
 def voice() -> dict[str, Any]:

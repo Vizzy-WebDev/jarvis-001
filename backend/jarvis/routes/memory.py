@@ -18,8 +18,7 @@ takes a conversation id. Deleting is deliberately two steps: archive, then
 delete, because the screen's own undo depends on the row still existing.
 
 **Profile is not a second store.** "Profile & Goals" is the `About You` category,
-and these routes are the adapter — the same seam the original kept as its own
-module. Order is the one difference worth stating: memories come back
+and these routes are the adapter — a thin seam over `memory/store.py`. Order is the one difference worth stating: memories come back
 newest-first, which is right for browsing, and these notes read oldest-first,
 which is the order they were written in.
 """

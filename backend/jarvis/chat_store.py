@@ -1,6 +1,6 @@
 """Chat History persistence — every conversation's full transcript, on disk.
 
-A port of server/chat-store.js. Built on db.py's SQLite connection; nothing else
+Built on db.py's SQLite connection; nothing else
 in the project touches SQLite directly for this data.
 
 A "conversation" here is the persisted record; the in-memory session is the
@@ -56,15 +56,13 @@ def _row_to_conversation(row: sqlite3.Row) -> dict[str, Any]:
         "pinned": bool(row["pinned"]),
         "archived": bool(row["archived"]),
     }
-    # Mirrors `messageCount: row.message_count ?? undefined` — the key is absent
-    # entirely, not null, when the query did not compute a count. JSON.stringify
-    # drops an undefined value, so emitting null here would add a field the Node
-    # response never had.
+    # The key is absent entirely, not null, when the query did not compute a count:
+    # the response contract never had a null here, so emitting one would add a field.
     if "message_count" in keys and row["message_count"] is not None:
         out["messageCount"] = row["message_count"]
     # Present only once actually trashed — never sent as null for the
     # overwhelming common case, so GET /api/conversations' response shape
-    # stays byte-identical to the recorded Node contract fixture for every
+    # stays byte-identical to the recorded contract fixture for every
     # row it can return (the active listing excludes anything with this set).
     if "deleted_at" in keys and row["deleted_at"]:
         out["deletedAt"] = row["deleted_at"]

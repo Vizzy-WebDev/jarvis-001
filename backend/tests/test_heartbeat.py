@@ -207,7 +207,7 @@ def test_no_model_available_is_tier_three_not_tier_one(monkeypatch):
     def unavailable(*_a, **_kw):
         raise RuntimeError("everything is rate limited")
 
-    monkeypatch.setattr("jarvis.model_system.compat.ask", unavailable)
+    monkeypatch.setattr("jarvis.ai.ask", unavailable)
     verdict = decision.decide_attention({"summary": "something"})
     assert verdict.tier == 3 and verdict.emergency is False
 
@@ -218,7 +218,7 @@ def test_an_unreadable_verdict_is_not_guessed_at(monkeypatch):
     class Answer:
         data = "not json at all"
 
-    monkeypatch.setattr("jarvis.model_system.compat.ask", lambda *a, **k: Answer())
+    monkeypatch.setattr("jarvis.ai.ask", lambda *a, **k: Answer())
     assert decision.decide_attention({"summary": "s"}).tier == 3
 
 
@@ -228,7 +228,7 @@ def test_an_emergency_flag_means_nothing_outside_quiet_hours(monkeypatch):
     class Answer:
         data = {"tier": 1, "reason": "urgent", "emergency": True, "emergencyReason": "money"}
 
-    monkeypatch.setattr("jarvis.model_system.compat.ask", lambda *a, **k: Answer())
+    monkeypatch.setattr("jarvis.ai.ask", lambda *a, **k: Answer())
     monkeypatch.setattr(decision, "is_quiet_now", lambda *a, **k: False, raising=False)
     monkeypatch.setattr("jarvis.heartbeat.quiet_hours.is_quiet_now", lambda *a, **k: False)
     verdict = decision.decide_attention({"summary": "s"})

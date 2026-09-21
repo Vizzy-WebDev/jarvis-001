@@ -5,10 +5,9 @@ other people's windows; a stop button drawn by the same process that is busy
 clicking is a stop button that can be blocked by exactly the thing you need to
 stop. A separate process keeps drawing and keeps responding.
 
-Built with `tkinter` from the standard library rather than the PowerShell WinForms
-window the original spawned. Same properties — always on top, small, unmissable —
-with no second language in the build and no compile step that can fail on a
-machine where the assemblies were not referenced.
+Built with `tkinter` from the standard library rather than a PowerShell WinForms
+window: always on top, small, unmissable, with no second language in the build and no
+compile step that can fail on a machine where the assemblies were not referenced.
 
 Three stops, and this file owns two of them:
 

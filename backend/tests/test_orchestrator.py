@@ -266,7 +266,7 @@ def test_a_high_risk_tool_call_parks_for_a_human_and_ends_the_turn(reg):
 
 def test_voice_does_not_bypass_the_gate(reg):
     """§8: 'A dangerous action should never bypass the gate simply because it
-    originated from voice mode.' This is the defect verified in the Node app."""
+    originated from voice mode.' This is a defect that was verified live."""
     ran = []
     add(reg, "send_message", risk=Risk.HIGH, handler=lambda **_: ran.append(1))
     model = StubModel(call_tool("send_message"))
@@ -367,10 +367,10 @@ def test_an_interruption_records_what_was_actually_heard(reg):
     assert not any(isinstance(e, Done) for e in events)
 
 
-# --- real vocal laughter (S7) -------------------------------------------------
+# --- real vocal laughter -------------------------------------------------
 
 def test_a_laugh_marker_becomes_a_reaction_and_never_appears_in_text(reg):
-    """The property S7's audit needed: the model can genuinely write `[[laugh]]`
+    """The property under test: the model can genuinely write `[[laugh]]`
     (STYLE_FRAMEWORK tells it to, per personality.py), and it must reach the
     user as a real, separate `reaction` event — never as visible text, and
     never spoken as words by a voice reading `Chunk`/`Done` text aloud."""

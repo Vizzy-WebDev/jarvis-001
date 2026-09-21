@@ -22,9 +22,8 @@ interesting ones:
   that cannot be interrupted must say so, so the orchestrator does not promise
   the user something it cannot deliver.
 
-* **result_schema** — the audit found tool results are "an informal union with no
-  schema", with two separate call sites each picking five fields out of it by
-  hand. Optional, because not every capability has a machine-checkable shape, but
+* **result_schema** — tool results are otherwise an informal union with no
+  schema, with each call site picking fields out of it by hand. Optional, because not every capability has a machine-checkable shape, but
   present so those that do can declare it.
 """
 

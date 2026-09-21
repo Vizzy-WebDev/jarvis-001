@@ -5,12 +5,8 @@ end built to a static export that FastAPI itself serves.** One process, one port
 to `127.0.0.1` only. Non-technical end user — keep error messages and setup steps in
 plain language.
 
-This replaced a Node.js + Express implementation, retired at the S6 cutover. That build
-is gone from the tree but remains in git history, and the record of what it actually did
-survives in `backend/tests/contract/fixtures/` (45 recorded HTTP exchanges, replayed on
-every test run by `test_contract.py`). Session-by-session build history — how the
-project got here, decisions made along the way, real bugs and how they were found —
-lives in `handoff-archive.md`.
+The behaviour this app promises is pinned by `backend/tests/contract/fixtures/` (42
+recorded HTTP exchanges, replayed on every test run by `test_contract.py`).
 
 ## Run it
 
@@ -66,16 +62,16 @@ starts itself" is answerable by reading a single function.
 
 ## Testing
 
-Unlike the Node build, this one has a real automated suite. Use it.
+The project has a real automated suite. Use it.
 
 ```
-cd backend && python -m pytest tests -q          # ~1300 tests
-cd backend && python -m pytest tests/test_shell_e2e.py -q   # 65 Playwright tests, real browser
+cd backend && python -m pytest tests -q          # ~1200 tests
+cd backend && python -m pytest tests/test_shell_e2e.py -q   # 73 Playwright tests, real browser
 cd frontend && npm run typecheck && npm run build
 ```
 
 Run the first two as two SEPARATE invocations, not combined into one `pytest tests -q`
-call — putting ~1390 tests through one process has produced spurious browser-test
+call — putting ~1270 tests through one process has produced spurious browser-test
 failures from resource pressure that disappear the moment the failing test is re-run on
 its own. Two commands, both green, is the real signal; one combined run that shows a
 handful of e2e failures is noise until each is confirmed to fail in isolation too.
@@ -83,10 +79,9 @@ handful of e2e failures is noise until each is confirmed to fail in isolation to
 Three layers, each catching what the others cannot:
 
 - **Unit/integration tests** (`backend/tests/`) over the real modules.
-- **The contract harness** (`test_contract.py`) replays 45 real HTTP exchanges recorded
-  from the Node server. It is the durable record of the behaviour this app promised
-  before the rewrite, and it outlived the implementation it was recorded from. A route
-  that answers differently fails here even when its own tests pass.
+- **The contract harness** (`test_contract.py`) replays 42 recorded HTTP
+  exchanges — the durable record of the behaviour the API promises. A route that answers
+  differently fails here even when its own tests pass.
 - **Playwright** (`test_shell_e2e.py`) drives the built front end in a real browser
   against a real FastAPI on a scratch port — this is what catches a screen that renders
   but never calls its route, and any layout regression a component test cannot see.
@@ -98,13 +93,11 @@ three, so use them rather than rolling your own. A module that hardcodes a path 
 to its own source file bypasses this entirely — use `store.py`'s `data_dir()` for any new
 `data/` subdirectory.
 
-When a test genuinely needs a real, already-configured model, it is safe to point
-`JARVIS_ENV_PATH` at the user's **real** `.env` (reading a secret touches nothing) while
-still using a scratch `JARVIS_DATA_DIR` and a separate `PORT`. All of the user's models
-being rate-limited at once is the normal state, not an edge case: `tests/stub_openai_server.py`
-is a real HTTP stub speaking the genuine OpenAI wire format, and `tests/stub_oauth_server.py`
-is a real PKCE-verifying OAuth server. Prefer a real stub server over mocking the module
-under test — every subsystem verified that way found bugs that mocks would have hidden.
+When a test genuinely needs a real credential, it is safe to point `JARVIS_ENV_PATH` at
+the user's **real** `.env` (reading a secret touches nothing) while still using a scratch
+`JARVIS_DATA_DIR` and a separate `PORT`. `tests/stub_oauth_server.py` is a real
+PKCE-verifying OAuth server. Prefer a real stub server over mocking the module under
+test — every subsystem verified that way found bugs that mocks would have hidden.
 
 **To verify what a model actually DID, not what it said it did, read the real
 `tool_calls`/`tool_results` payloads out of the `messages` table** (`jarvis/db.py`,
@@ -129,86 +122,14 @@ script claims to have written to rather than trusting its own success output.
 
 ## Pre-merge validation gate
 
-Run this against a scratch instance — never the user's real port or data — before
-merging any branch into `main`, and report each result plainly rather than summarising
-as "passed":
-
-1. **Syntax sweep** — `python -m compileall backend/jarvis` and `cd frontend && npm run
-   typecheck`. Zero failures.
-2. **Fresh-install boot** — start the real `jarvis.main` in the background
-   (`run_in_background: true`) with `JARVIS_DATA_DIR`/`JARVIS_ENV_PATH` pointed at empty
-   scratch paths and an unusual `PORT`. Must come up with no unhandled exception.
-3. **Migrations + tool loader** — read the scratch `jarvis.db` read-only and confirm
-   `PRAGMA user_version` reached 25: `jarvis/migrations.py`'s `MIGRATION_SQL` (19,
-   the ones ported byte-for-byte from the Node build) plus
-   `migrations_extra.py`'s `EXTRA_MIGRATION_SQL` (6, this build's own — the latest
-   being the conversations recycle bin's `deleted_at` column, migration 25, added
-   after the AI Model System's own migration 24). Counting only
-   the first file gives 19 and a false failure — the gate caught exactly that mistake
-   in this document. **The database is created lazily on first use**, so hit a route
-   before looking for the file. Confirm `load_tools()` (or a route that touches the
-   capability registry) succeeds with no import error — currently 60 tools across 33
-   modules; a real launch's own startup log is not a reliable place to see the count,
-   since nothing in this project configures root logging by default and `jarvis.*`
-   loggers have no handler attached unless something else in the process added one.
-4. **Route smoke test** — `curl` a real GET (200), a route taking an id with a
-   nonexistent one (a clean 404, not a crash), and `/` (the real `index.html` from the
-   static mount).
-5. **Any recently-fixed security behaviour** — re-confirm it live rather than by reading
-   the code, e.g. `GET /api/artifacts/:id`'s forced-download headers on a plain request.
-6. **The full suites** — `pytest tests -q` and the Playwright file, run as the two
-   separate commands above, both green.
-
-Teardown: stop the scratch server by the PID actually bound to the scratch port, delete
-the scratch directory, and confirm the user's real instance/port is unaffected.
-
-## Structure
-
-```
-backend/
-  jarvis/
-    main.py           FastAPI app + router mounting + the static mount for frontend/out. 127.0.0.1 only.
-    assembly.py        The composition root — builds the registry/orchestrator once; start_background_work().
-    routes/           One module per area, mounted in main.py. A surface over subsystems, no business logic.
-    config.py         .env read/write (get_secret/save_secret/delete_secret). JARVIS_ENV_PATH override.
-    store.py          Atomic JSON read/write for data/*.json. JARVIS_DATA_DIR override. data_dir().
-    db.py             The one SQLite connection; migrations.py + migrations_extra.py hold the schema (25 total).
-    session.py        Owns the active conversation id. session_hooks.py: per-session state cleared on "new chat".
-    conversation.py   Neutral, model-agnostic transcript store.
-    chat_store.py     Conversation/message CRUD + full-text search over SQLite.
-    prompt.py         The shared system instruction, with its stable/volatile split.
-    personality.py    The Adaptive Communication Register — tone floors, sticky style, real vocal laughter.
-    capabilities/     The contract (spec.py), the registry, and execute.py — the one dispatcher.
-    orchestrator/     pipeline.py: the turn loop. context.py, model_port.py.
-    catalog/          What a model IS: family, version, capabilities, effort scheme. Owns nothing.
-    gateway/          Deployments, connections, slots, routing, effort, availability, latency, probing.
-    adapters/         One module per wire format: anthropic, gemini, openai_compatible.
-    policy/           approvals.py, decide.py — the permission layer, independent of model behaviour.
-    events/           The typed event bus. observers/ subscribe to it (cost, security, verification, improvement...).
-    intent/           The fast-path router: what needs a model call and what does not.
-    tools/            Auto-loaded built-in capabilities. See its own CLAUDE.md.
-    skills/           Folder Skills ONLY — SKILL.md instructions. Never a built-in tool.
-    connectors/       MCP/API/CLI/browser/files connectors, the catalogue, OAuth, icons.
-    memory/ jobs/ scheduler/ improvement/ self/ heartbeat/ ops/ cost/ artifacts/
-    control/ monitor/ sandbox/ content/ projects/ documents/ tts/ stt/ voice/
-                      Each has its own CLAUDE.md — read it when working in that directory.
-                      So do catalog/ and gateway/ — read both before touching either.
-  tests/              ~1300 tests, plus contract/fixtures/ (45 recorded Node exchanges).
-frontend/
-  app/page.tsx        The shell: stage, orb, conversation panel, composer, drawer, router.
-  components/         screens/ (one per section), ui/ (the shared primitives), conversation/, stage/.
-  lib/                api.ts (the ONE typed client), api-types.ts, nav.ts (the SECTIONS registry),
-                      voice/ (three engines, players, turn detector), useHashRoute.ts.
-  out/                The BUILT export FastAPI serves. Committed on purpose — see "Run it".
-data/                 (git-ignored) JSON stores + jarvis.db (SQLite).
-```
+Before merging any branch into `main`, run the `pre-merge-gate` skill (`.claude/skills/pre-merge-gate/`).
 
 ## The rules that do not bend
 
 **The import invariant.** Nothing under `jarvis/tools/` may import the loader, the
 executor, the orchestrator or the gateway — directly or transitively. `load_tools()`
-imports every module in that package, so an import back is a cycle (in the Node original
-the equivalent deadlocked and looked like a hung server). A tool needing something only
+imports every module in that package, so an import back is a cycle that deadlocks
+and looks like a hung server. A tool needing something only
 the registry can answer receives it via `build(registry)`. `tests/test_architecture.py`
 asserts this rather than trusting it.
 
@@ -236,8 +157,7 @@ ask-and-answer round trip with no human reply in between.
 Skills screen, any browse/gallery view, or any picker listing "things Jarvis can do". A
 Skill is knowledge Jarvis doesn't already have; never a rename of an existing ability.
 Structurally enforced: a Skills UI may only read the folder-reading path, which has no
-code route back to a built-in. This regressed three times in the Node build despite
-being called out each time.
+code route back to a built-in. This has regressed before despite being called out.
 
 **Any route serving content a model or user could have written must force
 `Content-Disposition: attachment`, unconditionally** — never behind a query parameter a
@@ -257,42 +177,33 @@ explicit direct/playful/devil's-advocate requests) shape delivery only; they're 
 from a turn with nobody listening (`background=True` — a scheduled task's or a job
 worker's own turn), matching `prompt.py`'s `has_audience` gate on `stable_instruction()`.
 
-## The model system — `jarvis/catalog/` and `jarvis/gateway/`
+## There is no AI model system right now
 
-Two axes cross, and neither contains the other. The **catalog** says what a model IS —
-provider, family, version, capabilities, what reasoning control it offers. A **connection**
-says how to REACH one — address, credential, wire format. They meet at a **deployment**:
-one version through one connection, which is the thing the router chooses between and the
-thing a person actually created.
+The old one (`jarvis/model_system/` — providers, registry, router, fallback, adapters, the model
+screens and their routes) was deleted in full, and its `ai_*` tables dropped by migration 26. A
+replacement is being built separately; until it exists Jarvis **cannot answer any AI request**, and
+that is the intended state, not a bug to work around. Do not recreate pieces of the old design.
 
-That crossing is the whole point. The same model reached with your own key and through a
-gateway reselling it is ONE version with TWO routes — separate keys, separate prices,
-separate rate limits — and the flat model row it replaced could not express that at all.
+What stands in for it, deliberately minimal:
 
-Four facts follow from it, and each is asserted somewhere rather than trusted:
+- `orchestrator/model_port.py` — the `ModelClient` protocol the turn loop streams from, the event
+  shapes it consumes (`TextChunk`, `StepComplete`, `ModelSwitched`, ...), and `NoModelClient`, which
+  fails every turn with `ModelUnavailable` (surfaced as a `no_model` failure).
+- `ai.py` — `ask()`/`ask_model()` for everything outside the turn loop (research, memory review,
+  improvement, heartbeat, projects, scheduled briefings). Both report "no model" until replaced;
+  each caller already has a plain "no model" branch.
+- `GET /api/status` reports `configured: false`; `/api/voice/options` offers no model-backed engine;
+  `/api/live` answers "No model with a realtime voice is set up yet."
+- The Model Settings screen (AI provider models only) shows a "being rebuilt" note. Speech-service keys
+  (`external-services`) live in the Settings panel (`components/shell/ServiceKeys.tsx`), not there.
+- The cost ledger (`cost/`, `observers/cost.py`) is kept and idle: it records from
+  `MODEL_CALL_*` events that nothing publishes at the moment.
 
-- **Cooldowns and latency are keyed on the deployment**, so one rate-limited reseller
-  cannot take a model offline on the key that still works. Refused-parameter facts are
-  keyed on the VERSION instead, because that is a fact about the model, not the route.
-- **A capability has three states.** Only a definite `NO` excludes a candidate;
-  `UNKNOWN` is offered and allowed to fail honestly, because that is the only way anyone
-  finds out. `routing.MUST_BE_CERTAIN` names the one exception — web search, whose
-  absence fails silently rather than visibly.
-- **A role's slot leads the ranking and never restricts it.** Five roles (conversation,
-  voice, control, background, utility); each resolves to a PIN the router moves to the
-  front, so an assignment that is benched, switched off or deleted degrades to ordinary
-  ranking instead of taking the turn down.
-- **Nothing is guessed from a model's name.** Price comes from recorded spend, speed from
-  recorded time-to-first-token, quality from the catalog, and every remaining unknown
-  stays unknown. The build that inferred these from regexes matched `mini` inside
-  "ge**mini**" and ranked Gemini Pro as cheap and fast.
-
-Read `catalog/CLAUDE.md` and `gateway/CLAUDE.md` before changing any of it.
+Nothing under `jarvis/tools/` may import the orchestrator; `ai.py` is the seam a tool may use.
 
 ## The Adaptive Communication Register — `jarvis/personality.py`
 
-The tone/delivery layer, ported after the S6 cutover (S7) — a real gap the migration
-initially left behind, not present under any name until this file existed. Regex-based
+The tone/delivery layer. Regex-based
 floors (`detect_floors()`) deliberately biased narrow — a false positive here only costs
 tone, so "this fucking build is broken again" correctly does NOT read as distress aimed
 at the user's own state. A sticky per-session style request ("give it to me straight")
@@ -306,35 +217,16 @@ plays when it fires.
 
 ## Gotchas
 
-- **Gemini model names deprecate fast and docs pages are unreliable.** When a model or
-  API shape matters, check the installed `google-genai` package directly or hit the live
-  API — not a fetched doc page, which described an API that did not exist in the SDK.
-- **Free-tier quota varies wildly by model and drifts over time.** Some models are
-  retired entirely for new keys. Verify against the live API rather than a remembered
-  number. Whenever a role is left unassigned, prompt-driven behaviour is only as reliable
-  as whichever candidate actually answers — frequently a weak free-tier fallback, not the
-  preferred model. The technique that separates "is the code broken" from "is the model
-  just not following instructions": a small read-only script that calls one specific,
-  known-working deployment through the real adapter with the exact failing text.
 - **Gemini's `thought_signature` must round-trip verbatim** on tool-calling turns — push
   the model's own response content back, not a hand-rebuilt object, or follow-up calls
   get rejected with a 400.
 - **Streaming + function calls**: each chunk is an incremental delta, not cumulative.
   Concatenate parts across all chunks to reconstruct the turn.
-- **SDK error messages are raw JSON**, not human-readable, and each provider buries the
-  real text at a different depth. Every adapter has a friendly-error path — follow it for
-  any new error surface shown to the user.
 - **On Windows, a ZIP entry's path must be an explicit, hand-built forward-slash string**
-  — never derived from filesystem traversal. Both `Compress-Archive` and .NET's
-  `CreateFromDirectory()` write backslash entry names, which is invalid per the Open
-  Packaging Conventions spec real Office requires, and makes a fresh `.docx` fail to open
+  — never derived from filesystem traversal. Backslash entry names are invalid per the Open
+  Packaging Conventions spec real Office requires, and make a fresh `.docx` fail to open
   at all. Verify by reading entry names back out of a generated archive, not by
   confirming the file exists.
-- **`spawn('powershell.exe', ['-Command', ...several args])` breaks on any value
-  containing a space** — this project's own install path has one. Build ONE fully-formed
-  command string (each value single-quoted, embedded quotes doubled) and pass exactly one
-  argument after `-Command`. The cmdlet name itself must stay unquoted; quoting it turns
-  the line into a string expression rather than an invocation.
 - **A tool contract communicated only as prose in the system prompt is not something a
   model can satisfy** — it needs a real, declared, schema-visible argument. A model that
   sticks strictly to its declared schema (common on weaker models) has nowhere to put a

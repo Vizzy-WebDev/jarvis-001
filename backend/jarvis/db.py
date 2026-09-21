@@ -1,17 +1,15 @@
 """The single SQLite connection for Chat History, Memory, Jobs, Self-Improvement,
-Self-Model and Operational Awareness — the only module in the Python port that
+Self-Model and Operational Awareness — the only module in the backend that
 knows SQLite exists. Everything else goes through chat_store.py or a subsystem's
 own store module, never through this file's connection handle directly.
 
-A port of server/db.js. The schema is deliberately NOT redesigned: the DDL in
-migrations.py was extracted verbatim from the Node implementation so this opens
-the owner's existing data/jarvis.db as a no-op, and so the two implementations
-can run against the same file during the migration.
+The schema is stable: the DDL in migrations.py is never rewritten, so the owner's
+existing data/jarvis.db opens as a no-op.
 
-Two Python-specific details worth knowing:
+Two details worth knowing:
 
-1. `sqlite3.Connection.executescript()` is NOT used, even though the Node code
-   hands whole multi-statement scripts to `conn.exec()`. executescript() issues
+1. `sqlite3.Connection.executescript()` is NOT used, even though it would take
+   whole multi-statement scripts. executescript() issues
    an implicit COMMIT before it runs, which would silently break the explicit
    BEGIN/COMMIT wrapper each migration runs inside — a half-applied migration
    with its user_version already bumped is exactly the failure this file must
@@ -72,9 +70,9 @@ def _split_sql(script: str) -> list[str]:
 
 
 def _now_iso() -> str:
-    """An ISO-8601 timestamp in the same shape as JS's `new Date().toISOString()`
-    (milliseconds, trailing 'Z') — rows written here sit alongside rows the Node
-    app wrote, and a differently-shaped timestamp would sort wrongly against them."""
+    """An ISO-8601 timestamp with milliseconds and a trailing 'Z' — the shape every
+    stored timestamp uses, since a differently-shaped one would sort wrongly against
+    the rows already on disk."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + (
         f"{datetime.now(timezone.utc).microsecond // 1000:03d}Z"
     )
@@ -178,7 +176,7 @@ _EXTRA_STEPS: dict[int, Callable[[sqlite3.Connection], None]] = {
     10: _migration_10,
 }
 
-# The Node-derived steps plus this build's own. Kept as one ordered mapping so
+# The original schema steps plus the later ones. Kept as one ordered mapping so
 # migrate() stays a single loop over consecutive versions.
 ALL_MIGRATION_SQL: dict[int, list[str]] = {**MIGRATION_SQL, **EXTRA_MIGRATION_SQL}
 MIGRATION_COUNT = max(ALL_MIGRATION_SQL)
@@ -197,7 +195,7 @@ def _apply_migration(conn: sqlite3.Connection, version: int) -> None:
 def migrate(conn: sqlite3.Connection) -> None:
     """Bring `conn` up to the current schema, one migration per transaction.
 
-    Mirrors db.js's loop exactly: each step runs inside its own BEGIN/COMMIT and
+    Each step runs inside its own BEGIN/COMMIT and
     bumps user_version within that same transaction, so a failure mid-step rolls
     back both the schema change and the version bump together.
     """

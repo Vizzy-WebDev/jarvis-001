@@ -1,6 +1,6 @@
 """A desktop that isn't there, so the real code above it can be tested anyway.
 
-The same technique as `stub_openai_server.py`: everything ABOVE the boundary is
+The technique: everything ABOVE the boundary is
 the real implementation — the real tools, the real control loop, the real
 guard — and only the last inch, the one that would touch a mouse, is scripted.
 

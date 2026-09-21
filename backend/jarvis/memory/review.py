@@ -23,9 +23,7 @@ from typing import Any
 from .. import chat_store
 from ..events import EventType, bus as default_bus
 from ..events.bus import EventBus
-from ..model_system.compat import Task, ask
-from ..model_system.fallback import NoModelAvailable
-from ..model_system.request import Role
+from ..ai import NoModelAvailable, ask
 from . import store
 from .policy import AUTO_APPROVE, decide
 
@@ -120,8 +118,6 @@ def extract_and_file(transcript: str, *, conversation_id: str | None = None,
         answer = ask(
             _prompt(transcript, memories, categories, pending_before),
             system=SYSTEM, want_json=True,
-            # Nothing is waiting on this, so cost matters more than latency.
-            task=Task(text="extract durable facts", role=Role.UTILITY, needs_tools=False),
         )
     except NoModelAvailable as err:
         # Losing the material silently is the failure mode that matters here: the

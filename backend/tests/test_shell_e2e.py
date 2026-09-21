@@ -27,11 +27,8 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
-from jarvis.model_system.registry import add_model, list_models
 
 from stub_oauth_server import StubOAuthServer
-from stub_openai_server import StubModelServer
 
 pytest.importorskip("playwright.sync_api", reason="playwright is not installed")
 
@@ -54,19 +51,7 @@ pytestmark = [
 
 
 @pytest.fixture
-def stub(scratch):
-    """A model that answers, registered in the scratch data dir only."""
-    server = StubModelServer()
-    server.base_url = base_url = server.start()
-    provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
-                            base_url=base_url, auth_method=AuthMethod.NONE, key_required=False)
-    add_model(provider_id=provider.id, native_model_id="stub-model")
-    yield server
-    server.stop()
-
-
-@pytest.fixture
-def page(stub, live_server):
+def page(live_server):
     with sync_playwright() as play:
         browser = play.chromium.launch(executable_path=str(CHROME), args=["--no-sandbox"])
         context = browser.new_context(viewport={"width": 1440, "height": 900})
@@ -115,19 +100,6 @@ def test_every_section_is_reachable_from_the_hamburger(page):
 
 # --- it actually talks to the backend ------------------------------------------
 
-def test_a_typed_message_streams_a_real_reply(page, stub):
-    stub.says("The kettle is on.")
-
-    page.fill("[data-testid=composer-input]", "what are you up to")
-    page.press("[data-testid=composer-input]", "Enter")
-
-    page.wait_for_selector("text=The kettle is on.", timeout=15_000)
-    # The user's own words stayed on screen too — a transcript that shows only
-    # the reply is a transcript that lost half the conversation.
-    assert "what are you up to" in page.locator("[data-testid=transcript]").inner_text()
-    # It really went over the wire to the model, not into a stub in the browser.
-    assert stub.requests, "the backend never called the model"
-
 
 def _turn_containing(page, text: str):
     """The one direct child of the transcript whose bubble holds `text` — every
@@ -135,56 +107,6 @@ def _turn_containing(page, text: str):
     this is how a test reaches into a SPECIFIC message's own action row rather
     than the first Copy/Edit/Retry button on the page."""
     return page.locator("[data-testid=transcript] > div", has_text=text).first
-
-
-def test_copy_puts_the_messages_own_text_on_the_clipboard(page, stub):
-    stub.says("The kettle is on.")
-    page.context.grant_permissions(["clipboard-read", "clipboard-write"])
-
-    page.fill("[data-testid=composer-input]", "what are you up to")
-    page.press("[data-testid=composer-input]", "Enter")
-    page.wait_for_selector("text=The kettle is on.", timeout=15_000)
-
-    _turn_containing(page, "what are you up to").locator("[data-testid=copy-message]").click()
-    assert page.evaluate("() => navigator.clipboard.readText()") == "what are you up to"
-
-    _turn_containing(page, "The kettle is on.").locator("[data-testid=copy-message]").click()
-    assert page.evaluate("() => navigator.clipboard.readText()") == "The kettle is on."
-
-
-def test_editing_a_message_replaces_it_and_the_stale_reply_after_it(page, stub):
-    """Edit is truncate-and-resend, not append: the original question, its old
-    reply, and nothing else are what disappear."""
-    stub.says("First answer.")
-    page.fill("[data-testid=composer-input]", "original question")
-    page.press("[data-testid=composer-input]", "Enter")
-    page.wait_for_selector("text=First answer.", timeout=15_000)
-
-    stub.says("Second answer.")
-    _turn_containing(page, "original question").locator("[data-testid=edit-message]").click()
-    page.fill("[data-testid=edit-message-input]", "edited question")
-    page.click("[data-testid=save-edit]")
-
-    page.wait_for_selector("text=Second answer.", timeout=15_000)
-    transcript = page.locator("[data-testid=transcript]").inner_text()
-    assert "edited question" in transcript
-    assert "original question" not in transcript
-    assert "First answer." not in transcript
-
-
-def test_retry_regenerates_the_reply_without_changing_the_question(page, stub):
-    stub.says("Wrong-sounding answer.")
-    page.fill("[data-testid=composer-input]", "same question")
-    page.press("[data-testid=composer-input]", "Enter")
-    page.wait_for_selector("text=Wrong-sounding answer.", timeout=15_000)
-
-    stub.says("Better answer.")
-    _turn_containing(page, "Wrong-sounding answer.").locator("[data-testid=retry-message]").click()
-
-    page.wait_for_selector("text=Better answer.", timeout=15_000)
-    transcript = page.locator("[data-testid=transcript]").inner_text()
-    assert transcript.count("same question") == 1
-    assert "Wrong-sounding answer." not in transcript
 
 
 def test_the_bell_reads_what_the_backend_stored(page):
@@ -218,33 +140,6 @@ def test_the_conversation_floats_over_the_stage_and_reserves_no_column(page):
     # The stage is not squeezed into the space to the LEFT of the panel: it runs
     # underneath it, which is what "floats over" means.
     assert stage["x"] + stage["width"] > rail["x"] + rail["width"] / 2
-
-
-def test_nothing_on_the_page_moves_or_resizes_the_orb(page, stub):
-    """Anchor 2, and the one that has historically broken: a long reply, an
-    attachment chip or an opening panel used to push the layout around."""
-    before = box(page, "[data-testid=orb-canvas]")
-
-    stub.says("A much longer answer. " * 60)
-    page.fill("[data-testid=composer-input]", "say a lot")
-    page.press("[data-testid=composer-input]", "Enter")
-    page.wait_for_selector("text=A much longer answer.", timeout=15_000)
-    page.click("[data-testid=settings]")
-    page.wait_for_selector("[data-testid=settings-panel]")
-
-    after = box(page, "[data-testid=orb-canvas]")
-    assert after == before
-
-
-def test_the_page_itself_never_grows_a_scrollbar(page, stub):
-    """Everything long scrolls inside the panel that owns it."""
-    stub.says("Another long answer. " * 80)
-    page.fill("[data-testid=composer-input]", "again")
-    page.press("[data-testid=composer-input]", "Enter")
-    page.wait_for_selector("text=Another long answer.", timeout=15_000)
-
-    grew = page.evaluate("document.documentElement.scrollHeight > window.innerHeight + 1")
-    assert grew is False
 
 
 # --- the composer's real shape -------------------------------------------------
@@ -287,38 +182,6 @@ def test_attachments_scroll_sideways_and_never_stack(page, tmp_path):
 
     # And the composer still did not push the orb around.
     assert page.evaluate("document.documentElement.scrollHeight <= window.innerHeight + 1")
-
-
-def test_a_sent_image_shows_in_the_senders_own_bubble_and_expands_on_click(page, tmp_path, stub):
-    """Two previously-real gaps, closed together: an attachment the user sent
-    used to vanish from the transcript entirely once sent (their own bubble
-    carried only text, never the file) — and nothing anywhere in the
-    transcript was clickable to see a full-size view."""
-    import base64
-
-    png = base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
-    path = tmp_path / "photo.png"
-    path.write_bytes(png)
-
-    stub.says("Nice photo.")
-    page.set_input_files("input[type=file]", [str(path)])
-    page.wait_for_selector("[data-testid=attachments]")
-    page.click("[data-testid=send]")
-
-    page.wait_for_selector("text=Nice photo.", timeout=15_000)
-    tile = page.locator("[data-testid=attachment-tile]").first
-    tile.wait_for()
-    img_src = tile.locator("img").get_attribute("src")
-    assert img_src and "/api/uploads/" in img_src and img_src.endswith("/content")
-
-    tile.click()
-    page.wait_for_selector("[data-testid=attachment-lightbox]")
-    lightbox_img = page.locator("[data-testid=attachment-lightbox] img")
-    assert lightbox_img.get_attribute("src") == img_src
-
-    page.keyboard.press("Escape")
-    page.wait_for_selector("[data-testid=attachment-lightbox]", state="detached")
 
 
 # --- nothing is a static display ----------------------------------------------
@@ -440,29 +303,6 @@ def test_a_task_can_be_created_edited_paused_and_deleted_from_the_screen(page):
     assert task_store.list_tasks() == []
 
 
-def test_a_task_built_through_the_screen_actually_runs(page, stub):
-    """The check the first version of this screen did not have, and the reason
-    it shipped broken: it wrote `action.prompt` where the engine reads
-    `action["text"]`, so every task it created was accepted happily and then
-    failed the moment it ran. Creating and editing a task proves nothing about
-    whether it works."""
-    from jarvis.scheduler import engine, task_store
-
-    page.goto(page.url.split("#")[0] + "#/tasks", wait_until="networkidle")
-    page.click("[data-testid=new-task]")
-    page.fill("[data-testid=task-title]", "Daily nudge")
-    page.fill("[data-testid=task-prompt]", "remind me to stretch")
-    page.click("[data-testid=modal] >> text=Save")
-    page.wait_for_selector("[data-testid=task-row]")
-
-    stub.says("Time to stretch.")
-    [task] = task_store.list_tasks()
-    run = engine.run_task_now(task["id"])
-
-    assert run["ok"] is True, run.get("error")
-    assert "stretch" in run["summary"].lower()
-
-
 def _connect(label: str, kind: str = "api") -> str:
     """A genuinely CONNECTED connector, not just an added one — `isPickable()`
     now requires `status.state == 'working'`, not just `enabled`, so a picker
@@ -502,7 +342,7 @@ def test_the_connector_picker_is_a_picker_not_a_list_of_names(page):
 
 
 def test_a_long_connector_list_is_capped_and_see_more_opens_the_rest(page):
-    """The cap is not cosmetic: the original found live that an unbounded list
+    """The cap is not cosmetic: it was found live that an unbounded list
     runs off the bottom of the screen."""
     for name in ("Notion", "Gmail", "Slack", "GitHub", "Google Drive", "Linear", "Jira"):
         _connect(name)
@@ -560,160 +400,14 @@ def test_a_connector_chosen_here_is_what_the_task_saves(page):
     assert task["action"]["connectors"] == [connector_id]
 
 
-def test_the_model_picker_offers_auto_and_every_real_model(page, stub):
-    """Auto is the default and always first. A pinned model is saved on the
-    task, and the run history reports which model actually answered — which can
-    differ, since the gateway treats a pin as an ordering."""
-    from jarvis.scheduler import engine, task_store
-
-    page.goto(page.url.split("#")[0] + "#/tasks", wait_until="networkidle")
-    page.click("[data-testid=new-task]")
-    page.wait_for_selector("[data-testid=task-model]")
-
-    options = page.locator("[data-testid=task-model] option")
-    assert options.count() >= 2, "the stub model never reached the picker"
-    assert "Auto" in options.nth(0).inner_text()
-
-    pinned = options.nth(1).get_attribute("value")
-    page.select_option("[data-testid=task-model]", pinned)
-    page.fill("[data-testid=task-prompt]", "say something")
-    page.click("[data-testid=modal] >> text=Save")
-    page.wait_for_selector("[data-testid=task-row]")
-
-    [task] = task_store.list_tasks()
-    assert task["action"]["modelId"] == pinned
-
-    stub.says("Something.")
-    run = engine.run_task_now(task["id"])
-    assert run["ok"] is True and run["modelId"] == pinned
-
-
-def test_an_approval_in_the_transcript_is_a_real_control(page, stub):
-    """The one place a static display is not merely unhelpful but wrong: the run
-    is stopped, waiting for this answer."""
-    ran = []
-    from jarvis.assembly import get_registry
-    from jarvis.capabilities import CapabilitySpec, Risk
-
-    get_registry().register(CapabilitySpec(
-        id="builtin.send_the_email", name="send_the_email",
-        description="send an email", input_schema={"type": "object", "properties": {}},
-        risk=Risk.HIGH, handler=lambda **kw: ran.append(kw) or "sent"))
-
-    stub.calls_tool("send_the_email", {})
-    stub.says("Sent.")
-
-    page.fill("[data-testid=composer-input]", "email the invoice")
-    page.press("[data-testid=composer-input]", "Enter")
-
-    page.wait_for_selector("[data-testid=approval]", timeout=15_000)
-    assert not ran, "it acted before anyone said yes"
-
-    page.click("[data-testid=approve]")
-    page.wait_for_selector("[data-testid=approval] >> text=You allowed this", timeout=15_000)
-    assert ran, "allowing it did not actually run anything"
-
-
 # --- the models screen ---------------------------------------------------------
-
-def test_the_balance_dial_is_reachable_and_takes_effect_on_the_next_turn(page, stub):
-    """It was not, before this. `balance` was stored, defaulted and read by the
-    router on every turn, and no screen anywhere set it — so the one control
-    over "what should Jarvis favour when it chooses for itself" existed only in
-    a JSON file."""
-    from jarvis import prefs
-
-    page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
-    page.wait_for_selector("[data-testid=balance]", timeout=15_000)
-    assert page.input_value("[data-testid=balance]") == "balanced"
-
-    page.select_option("[data-testid=balance]", "quality")
-    page.wait_for_timeout(400)
-
-    assert prefs.get_prefs()["balance"] == "quality"
-
-
-def test_the_by_model_view_shows_what_a_model_actually_is(page, stub):
-    """The crossing axis, made visible: this view groups by what a model IS,
-    where the default view groups by whose key reaches it."""
-    page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
-    page.wait_for_selector("[data-testid=view-model]", timeout=15_000)
-
-    page.click("[data-testid=view-model]")
-    page.wait_for_selector("[data-testid=catalog-list]", timeout=15_000)
-
-    assert page.locator("[data-testid=catalog-version]").count() >= 1
-    page.locator("[data-testid=catalog-version] button").first.click()
-    page.wait_for_selector("[data-testid=version-facts]", timeout=10_000)
-
-    # Three states reach the browser. A capability nobody has established is
-    # marked as unknown, never rendered as a flat no.
-    assert "?" in page.inner_text("[data-testid=version-facts]")
-
-
-
-
-def test_a_model_can_be_added_through_the_screen_and_then_answers(page, stub):
-    """The front door: nothing works until a model is added, so this walks the
-    real three steps — pick a provider, give the address, choose models — and
-    then proves the thing that was added can actually hold a conversation."""
-    stub.models = [{"id": "alpha"}, {"id": "beta"}]
-
-    page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
-    page.click("[data-testid=add-model]")
-    page.click("[data-testid=provider-local]")
-    page.fill("[data-testid=base-url]", stub.base_url)
-    page.click("[data-testid=find-models]")
-
-    page.wait_for_selector("[data-testid=found-alpha]", timeout=15_000)
-    page.click("[data-testid=found-alpha]")
-    # Adding ONE model asks the specific question — can this model produce a
-    # token — so the stub needs something to answer with.
-    stub.says("ready")
-    page.click("[data-testid=add-models]")
-
-    page.wait_for_selector("[data-testid=connection-list] >> text=alpha", timeout=15_000)
-    # Beside the one the fixture already registered — "alpha" is the one this
-    # test actually added, through the real screen.
-    assert "alpha" in [m.native_model_id for m in list_models()]
-
-    # And it is a real, usable model, not just a row: ask it something.
-    stub.says("Hello from alpha.")
-    page.goto(page.url.split("#")[0] + "#/", wait_until="networkidle")
-    page.fill("[data-testid=composer-input]", "are you there")
-    page.press("[data-testid=composer-input]", "Enter")
-    page.wait_for_selector("text=Hello from alpha.", timeout=15_000)
-
-
-def test_an_address_with_nothing_at_it_says_what_it_tried(page):
-    """The failure this whole flow was rebuilt for: one generic sentence with no
-    way to tell what went wrong."""
-    page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
-    page.click("[data-testid=add-model]")
-    page.click("[data-testid=provider-custom]")
-    page.fill("[data-testid=base-url]", "http://127.0.0.1:19999")
-    page.click("[data-testid=find-models]")
-
-    page.wait_for_selector("text=What Jarvis tried", timeout=20_000)
-    assert page.locator("[data-testid=modal]").inner_text().strip()
-
-
-def test_removing_a_connection_says_what_goes_with_it(page, stub):
-    page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
-    page.wait_for_selector("[data-testid=connection-card]")
-    page.locator("[data-testid=connection-card]").first.get_by_text("Remove").click()
-
-    # The count is stated before it happens, not discovered afterwards.
-    assert "1 model" in page.locator("[data-testid=modal]").inner_text()
-    page.click("[data-testid=confirm-remove]")
-    page.wait_for_selector("[data-testid=connection-card]", state="detached")
-    assert list_models() == []
 
 
 def test_a_service_key_is_saved_and_never_shown_again(page):
     from jarvis import config
 
-    page.goto(page.url.split("#")[0] + "#/models", wait_until="networkidle")
+    page.click("[data-testid=settings]")
+    page.wait_for_selector("[data-testid=settings-panel]")
     page.click("[data-testid=add-service]")
     page.fill("[data-testid=service-label]", "Deepgram")
     page.fill("[data-testid=service-key]", "dg-secret-value-999")
@@ -725,24 +419,6 @@ def test_a_service_key_is_saved_and_never_shown_again(page):
 
 
 # --- the voice pickers ---------------------------------------------------------
-
-def test_the_voice_pickers_offer_only_what_is_actually_available(page, stub):
-    """Every option is computed from real state — a connected model's declared
-    capabilities, a configured key — and an unavailable engine always arrives
-    with a reason. "Not available" on its own is what people file bugs about
-    when the fix was ten seconds away."""
-    page.click("[data-testid=settings]")
-    page.wait_for_selector("[data-testid=engine-options]")
-
-    # A model is connected (the fixture's), so the two engines that only need a
-    # model are live; the realtime one is not, because nothing declares it.
-    assert page.is_enabled("[data-testid=engine-pipeline]")
-    assert page.is_enabled("[data-testid=engine-duplex]")
-    assert page.is_disabled("[data-testid=engine-realtime]")
-    assert "realtime" in page.inner_text("[data-testid=engine-realtime]").lower()
-
-    # The browser's own voice is always there: no key, no account, no server.
-    assert page.locator("[data-testid=voice-browser]").count() == 1
 
 
 def test_a_configured_voice_provider_appears_beside_the_browsers_own(page):
@@ -796,7 +472,7 @@ def test_mute_is_a_real_separate_control_disabled_with_no_session(page):
 # --- the engines that need a microphone ----------------------------------------
 
 @pytest.fixture
-def voice_page(stub, live_server):
+def voice_page(live_server):
     """A browser with a FAKE microphone, so an engine can genuinely start.
 
     Chromium's fake device is a real capture device as far as the page is
@@ -854,20 +530,6 @@ def test_with_no_recognition_key_it_says_it_fell_back_rather_than_pretending(voi
         "() => (document.querySelector('[data-testid=status]')?.textContent || '')"
         ".toLowerCase().includes('browser')",
         timeout=15_000)
-
-
-def test_a_typed_message_still_flows_while_that_engine_is_listening(voice_page, stub):
-    """A typed turn goes through the running engine, not around it — the same
-    path speech would take once there is speech to take it."""
-    stub.says("Both hands are free.")
-    start_engine(voice_page, "duplex")
-    voice_page.wait_for_timeout(1000)
-
-    voice_page.fill("[data-testid=composer-input]", "can you hear me")
-    voice_page.press("[data-testid=composer-input]", "Enter")
-
-    voice_page.wait_for_selector("text=Both hands are free.", timeout=15_000)
-    assert stub.requests, "the backend never called the model"
 
 
 def test_stopping_tears_the_engine_down_rather_than_leaving_it_open(voice_page):
@@ -1350,16 +1012,6 @@ def test_weather_and_headlines_are_shown_but_not_offered_as_things_to_add(page):
     assert page.locator("[data-testid=briefing-headlines]").locator("button, input").count() == 0
 
 
-def test_a_briefing_is_composed_for_real_and_says_which_model_wrote_it(page, stub):
-    stub.says("Good morning. Nothing is scheduled today.")
-
-    go_to(page, "briefing")
-    page.click("[data-testid=briefing-preview]")
-    page.wait_for_selector("text=Good morning. Nothing is scheduled today.", timeout=20_000)
-    assert "Written by" in page.inner_text("[data-testid=briefing-result]")
-    assert stub.requests, "the backend never called a model"
-
-
 def test_a_watch_shows_in_the_shell_and_stopping_it_reaches_every_tab(page):
     """A click here and a spoken "stop watching that" must never leave two
     windows disagreeing, which is why this broadcasts. Checked in a SECOND tab,
@@ -1507,49 +1159,6 @@ def test_the_skill_list_is_filtered_and_sorted_for_real(page):
     page.click("[data-testid=skill-sort-name]")
     names = page.locator("[data-testid=skill-row]").all_inner_texts()
     assert names[0].startswith("aaa-first")
-
-
-def test_chat_history_searches_what_was_SAID_not_the_titles(page, stub):
-    """Search runs on the server over the full transcript. Filtering titles in
-    the browser would quietly answer a much worse question."""
-    stub.says("The kettle is on.")
-    page.fill("[data-testid=composer-input]", "put the kettle on")
-    page.press("[data-testid=composer-input]", "Enter")
-    page.wait_for_selector("text=The kettle is on.", timeout=15_000)
-
-    go_to(page, "chat-history")
-    page.wait_for_selector("[data-testid=history-row]")
-    # The word appears nowhere in any title, only inside the conversation.
-    page.fill("[data-testid=history-search]", "kettle")
-    page.wait_for_function(
-        "() => document.querySelectorAll('[data-testid=history-row]').length === 1")
-
-    page.fill("[data-testid=history-search]", "zzz-nothing-said-this")
-    page.wait_for_selector("[data-testid=history-row]", state="detached")
-
-
-def test_opening_a_conversation_shows_what_was_said_without_resuming_it(page, stub):
-    """Reading an old thread is the common thing and resuming it by accident is
-    not, so they are two different actions."""
-    # Deliberately not a question with a fast path: "what day is it" is answered
-    # from the clock with no model call at all, so a scripted reply would never
-    # be reached and this would fail for a reason that has nothing to do with
-    # chat history.
-    stub.says("Because it rained.")
-    page.fill("[data-testid=composer-input]", "why did the picnic get cancelled")
-    page.press("[data-testid=composer-input]", "Enter")
-    page.wait_for_selector("text=Because it rained.", timeout=15_000)
-
-    go_to(page, "chat-history")
-    page.click("[data-testid=history-row]")
-    # The container renders before the fetch resolves, so waiting for it alone
-    # reads the empty state rather than the conversation.
-    page.wait_for_selector("[data-testid=conversation-messages] >> text=Because it rained.",
-                           timeout=10_000)
-    body = page.inner_text("[data-testid=conversation-messages]")
-    assert "why did the picnic get cancelled" in body and "Because it rained." in body
-    # It is already the live one, so there is nothing to resume.
-    assert page.locator("[data-testid=resume-conversation]").count() == 0
 
 
 def test_the_chat_history_drawer_opens_from_the_hamburger_and_shows_pinned_first(page):
@@ -1848,20 +1457,6 @@ def test_no_screen_draws_its_own_title_over_the_one_the_shell_draws(page):
         page.wait_for_url(f"**#/{section}")
         count = page.locator("h1").count()
         assert count == 1, f"{section} draws {count} titles"
-
-
-def test_asking_to_open_a_section_really_navigates(page, stub):
-    """The tool returns WHERE to go and the browser goes there, through the same
-    hash router the drawer drives — so a spoken request and a click land in
-    exactly the same place."""
-    stub.calls_tool("open_section", {"section": "memory"})
-    stub.says("Opening Memory.")
-
-    page.fill("[data-testid=composer-input]", "open my memory")
-    page.press("[data-testid=composer-input]", "Enter")
-
-    page.wait_for_url("**#/memory", timeout=20_000)
-    assert page.locator("h1").inner_text() == "Memory"
 
 
 # --- Connector: the connector screens, real OAuth, real tools -----------------

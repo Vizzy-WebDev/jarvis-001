@@ -1,9 +1,9 @@
-"""store.py and config.py must stay byte-compatible with the Node originals.
+"""store.py and config.py must keep the on-disk formats stable.
 
-Both implementations read and write the same data/ directory and the same .env
-during the migration, so "close enough" is not a passing grade: a difference in
-JSON indentation or .env line format shows up as a spurious file change, and an
-ops config-integrity check that hashes file contents would flag it as tampering.
+Files already in data/ and an existing .env must keep loading, so "close enough" is not a
+passing grade: a difference in JSON indentation or .env line format shows up as a spurious
+file change, and an ops config-integrity check that hashes file contents would flag it as
+tampering.
 """
 
 from __future__ import annotations
@@ -54,15 +54,8 @@ def test_data_dir_honours_the_override(scratch):
 # --- config.py --------------------------------------------------------------
 
 def test_env_round_trips(scratch):
-    config.save_provider_key("gemini", "gem-123")
     config.save_secret("deepgram", "dg-456")
-    config.set_active_provider("anthropic")
-    assert config.get_provider_key("gemini") == "gem-123"
     assert config.get_secret("deepgram") == "dg-456"
-    assert config.get_active_provider() == "anthropic"
-
-def test_active_provider_defaults_to_gemini(scratch):
-    assert config.get_active_provider() == "gemini"
 
 def test_delete_secret_drops_the_line_entirely(scratch):
     config.save_secret("deepgram", "dg-456")
@@ -70,18 +63,10 @@ def test_delete_secret_drops_the_line_entirely(scratch):
     assert config.get_secret("deepgram") is None
     assert "DEEPGRAM" not in scratch.env_path.read_text(encoding="utf-8")
 
-def test_legacy_provider_refs_share_one_variable(scratch):
-    # get_secret('gemini') and get_provider_key('gemini') must read the exact
-    # same value, so migrating an existing .env never duplicates a key into a
-    # second variable.
-    config.save_secret("gemini", "one-key")
-    assert config.get_provider_key("gemini") == "one-key"
-    assert "JARVIS_SECRET_GEMINI" not in scratch.env_path.read_text(encoding="utf-8")
-
 def test_quoted_values_are_unquoted_and_comments_skipped(scratch):
     scratch.env_path.write_text(
-        '# a comment\nGEMINI_API_KEY="quoted-key"\nBAD_LINE_NO_EQUALS\n\n',
+        '# a comment\nJARVIS_SECRET_DEEPGRAM="quoted-key"\nBAD_LINE_NO_EQUALS\n\n',
         encoding="utf-8",
     )
-    assert config.get_provider_key("gemini") == "quoted-key"
+    assert config.get_secret("deepgram") == "quoted-key"
 

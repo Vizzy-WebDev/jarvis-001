@@ -5,10 +5,9 @@ code path that can return a built-in ability — the distinction is structural, 
 a filter that could be forgotten. A screen listing "things Jarvis can do" is a
 different question with a different answer, and it does not belong on this path.
 
-The Node app also served the built-in tool catalogue at `/api/skills`, from when
-the two were one word. That route is deliberately NOT reproduced: it is the exact
-shape of the mistake this build's Skills rule exists to prevent, and its contract
-fixture reports as unported rather than being satisfied by something misleading.
+The built-in tool catalogue is deliberately NOT served at `/api/skills`: that is the exact
+shape of the mistake this build's Skills rule exists to prevent, and the contract fixture for
+it reports as unported rather than being satisfied by something misleading.
 """
 
 from __future__ import annotations

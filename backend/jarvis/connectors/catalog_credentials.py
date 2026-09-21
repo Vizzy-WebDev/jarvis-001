@@ -5,7 +5,7 @@ what a real product does when it registers one OAuth client centrally for
 every user (Claude's own Gmail/Drive connectors work this way; Anthropic did
 that registration once, invisibly, and no individual Claude user ever sees a
 Client ID field for them). Google's/GitHub's/Slack's real OAuth servers don't
-support automatic registration (verified live in the Node build — no
+support automatic registration (verified live — no
 `registration_endpoint`), so SOME registration has to happen somewhere; this
 is what makes it happen exactly once per catalog entry instead of once per
 connector.

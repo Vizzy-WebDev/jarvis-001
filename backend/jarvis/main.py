@@ -1,18 +1,16 @@
-"""The FastAPI application — the Python counterpart to server/server.js.
+"""The FastAPI application.
 
-Binds 127.0.0.1 only, exactly like the original: nothing about Jarvis is
-reachable from anywhere else on the network, and that is a property of the app,
-not of the user's firewall.
+Binds 127.0.0.1 only: nothing about Jarvis is reachable from anywhere else on the
+network, and that is a property of the app, not of the user's firewall.
 
 ONE PROCESS, ONE PORT. The Next.js front end is built to static files and served
 by this app, rather than run as a second server on a second port. That keeps the
 owner's launch experience to a single window and a single desktop shortcut,
-which is the reason the original stack was chosen and is not worth giving up for
+which is worth more than
 server-side rendering a local single-user app would never use.
 
-Routes are registered as small routers under jarvis/routes/, grouped the same way
-server.js groups them, so the port can be checked group by group against the
-recorded contract fixtures rather than all at once.
+Routes are registered as small routers under jarvis/routes/, one module per area, each
+checked against the recorded contract fixtures.
 """
 
 from __future__ import annotations
@@ -25,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .routes import (
     approvals, artifacts, automation, connectors, control, conversations, core, events,
-    external_services, improvement, jobs, memory, models, notifications, realtime,
+    external_services, improvement, jobs, memory, notifications, realtime,
     sandbox, skills, speech, tasks, turn, uploads, voice,
 )
 
@@ -58,10 +56,8 @@ def create_app() -> FastAPI:
     app.include_router(connectors.router)
     app.include_router(control.router)
     app.include_router(external_services.router)
-    app.include_router(models.router)
     app.include_router(speech.router)
     app.include_router(realtime.router)
-    app.include_router(models.connections_router)
     app.include_router(notifications.router)
     app.include_router(tasks.router)
     app.include_router(memory.router)

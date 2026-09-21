@@ -339,7 +339,7 @@ def test_no_model_available_is_never_reported_as_a_pass_or_a_fail(monkeypatch):
     def unavailable(*_a, **_kw):
         raise RuntimeError("everything is rate limited")
 
-    monkeypatch.setattr("jarvis.model_system.compat.ask", unavailable)
+    monkeypatch.setattr("jarvis.ai.ask", unavailable)
     verdict = verify.verify_semantic_match(request="r", result_summary="s")
     assert verdict.checked is False and verdict.matches is None and verdict.failed is False
 
@@ -348,7 +348,7 @@ def test_an_unreadable_reply_is_not_guessed_at(monkeypatch):
     class Answer:
         data = {"probably": "yes"}
 
-    monkeypatch.setattr("jarvis.model_system.compat.ask", lambda *a, **k: Answer())
+    monkeypatch.setattr("jarvis.ai.ask", lambda *a, **k: Answer())
     assert verify.verify_semantic_match(request="r", result_summary="s").checked is False
 
 
@@ -356,7 +356,7 @@ def test_a_real_mismatch_is_reported_as_one(monkeypatch):
     class Answer:
         data = {"matches": False, "reason": "it answered a different question"}
 
-    monkeypatch.setattr("jarvis.model_system.compat.ask", lambda *a, **k: Answer())
+    monkeypatch.setattr("jarvis.ai.ask", lambda *a, **k: Answer())
     verdict = verify.verify_semantic_match(request="r", result_summary="s")
     assert verdict.failed is True and verdict.reason
 
@@ -502,18 +502,12 @@ def test_a_job_that_finishes_the_wrong_thing_is_treated_exactly_like_a_stall(mon
     """No second recovery mechanism: a checked mismatch spends the same single
     retry, on the same counter, and escalates the same way a stall does."""
     from jarvis import assembly, conversation
-    from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
-    from jarvis.model_system.registry import add_model
     from jarvis.jobs import job_store, orchestrator, worker
 
-    from stub_openai_server import StubModelServer
+    from scripted_model import ScriptedModel, install
 
-    stub = StubModelServer()
-    base_url = stub.start()
+    stub = install(assembly, ScriptedModel())
     try:
-        provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
-                                base_url=base_url, auth_method=AuthMethod.NONE, key_required=False)
-        add_model(provider_id=provider.id, native_model_id="stub-model")
         monkeypatch.setattr("jarvis.ops.verify.verify_semantic_match",
                             lambda **kw: verify.Verdict(True, False, "it answered something else"))
 
@@ -533,26 +527,18 @@ def test_a_job_that_finishes_the_wrong_thing_is_treated_exactly_like_a_stall(mon
         assert job_store.get_job(job["id"])["status"] == "done"
     finally:
         worker.join_all()
-        stub.stop()
         assembly.reset_for_tests()
         conversation.reset_for_tests()
-        stub.stop()
 
 
 def test_a_job_whose_result_could_not_be_checked_still_completes(monkeypatch):
     from jarvis import assembly, conversation
-    from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
-    from jarvis.model_system.registry import add_model
     from jarvis.jobs import job_store, worker
 
-    from stub_openai_server import StubModelServer
+    from scripted_model import ScriptedModel, install
 
-    stub = StubModelServer()
-    base_url = stub.start()
+    stub = install(assembly, ScriptedModel())
     try:
-        provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
-                                base_url=base_url, auth_method=AuthMethod.NONE, key_required=False)
-        add_model(provider_id=provider.id, native_model_id="stub-model")
         monkeypatch.setattr("jarvis.ops.verify.verify_semantic_match",
                             lambda **kw: verify.Verdict(False, None))
         stub.says("Finished.")
@@ -560,7 +546,6 @@ def test_a_job_whose_result_could_not_be_checked_still_completes(monkeypatch):
         assert worker.run_job(job["id"], event_bus=EventBus())["status"] == "done"
     finally:
         worker.join_all()
-        stub.stop()
         assembly.reset_for_tests()
         conversation.reset_for_tests()
 

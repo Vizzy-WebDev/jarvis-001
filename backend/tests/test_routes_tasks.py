@@ -76,7 +76,7 @@ def test_a_task_missing_its_recurrence_or_action_is_refused(client):
 
 def test_a_skill_action_naming_something_that_does_not_exist_is_refused(client):
     """The store cannot make this check — it is a leaf and must never import the
-    capability registry — so the route makes it, exactly as the original does."""
+    capability registry — so the route makes it."""
     refused = client.post("/api/tasks", json={
         "recurrence": EVERY_MORNING,
         "action": {"type": "skill", "skillName": "not_a_real_ability"}})

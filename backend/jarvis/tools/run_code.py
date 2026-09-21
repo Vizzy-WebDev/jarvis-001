@@ -2,9 +2,8 @@
 
 The tool's own description is BUILT at load time from what the sandbox probe
 found, so it can never claim isolation the machine does not have. That is the
-whole point: in the original, the description promised a sandbox that the
-`restricted` backend did not implement, and the model repeated the promise to
-the user.
+whole point: a description that promised a sandbox the `restricted` backend does not
+implement would be repeated by the model to the user.
 
 Risk follows the same fact. With real isolation this is MEDIUM — it changes
 things, but only inside a container. Without it, running model-written code as

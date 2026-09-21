@@ -36,9 +36,9 @@ CONTRACT_HEADERS = {
 }
 
 # Transport/server headers deliberately NOT compared, with why:
-#   x-powered-by   Express-specific; FastAPI will never emit it, by design
+#   x-powered-by   emitted by the server the fixtures were recorded from; FastAPI never emits it
 #   date           wall-clock, differs every request
-#   etag           Express's own body hash; FastAPI does not emit one
+#   etag           the recorded server's own body hash; FastAPI does not emit one
 #   content-length derived from the body, which is compared directly anyway
 #   connection / keep-alive / transfer-encoding  per-connection plumbing
 #   server         names the server software, which is the thing changing
@@ -62,7 +62,7 @@ VOLATILE_KEYS = {
 
 PLACEHOLDER = "<normalised>"
 
-# The recorder (tools/record/proxy.mjs) scrubs any NON-EMPTY STRING under a key
+# The recorder that produced the fixtures scrubs any NON-EMPTY STRING under a key
 # whose name looks credential-bearing before it ever reaches a fixture file —
 # fixtures are committed, secrets are not. That rule is reproduced here, applied
 # to BOTH sides, because a value the recording deliberately does not carry
@@ -109,8 +109,8 @@ class Normaliser:
     def headers(self, headers: dict[str, Any]) -> dict[str, str]:
         """Reduce headers to the contract-bearing subset, lower-cased.
 
-        content-type is compared without its charset parameter: FastAPI and
-        Express spell the same media type differently ("application/json" vs
+        content-type is compared without its charset parameter: the recorded
+        server and FastAPI spell the same media type differently ("application/json" vs
         "application/json; charset=utf-8") while meaning exactly the same thing
         to a browser.
         """

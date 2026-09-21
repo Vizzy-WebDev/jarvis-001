@@ -1,7 +1,7 @@
 """The context assembler (§23): relevance, a real budget, and honest accounting.
 
-The property under test is not "memory appears in the prompt" — the original did
-that by injecting everything. It is that what appears was CHOSEN, that the choice
+The property under test is not "memory appears in the prompt" — injecting everything
+would do that. It is that what appears was CHOSEN, that the choice
 is explainable, and that the budget is never silently exceeded.
 """
 
@@ -138,7 +138,7 @@ def test_no_memories_means_no_empty_memory_heading():
     assert "What you remember about the user" not in system
 
 
-# --- the adaptive communication register: has_audience gating (S7) -----------
+# --- the adaptive communication register: has_audience gating -----------
 
 def test_a_turn_with_someone_listening_gets_both_halves_of_the_register():
     system = RelevanceContext().assemble(
@@ -149,11 +149,10 @@ def test_a_turn_with_someone_listening_gets_both_halves_of_the_register():
 
 
 def test_a_background_turn_gets_neither_half_of_the_register():
-    """Node's own `hasAudience = !background or addressed`: a scheduled task's
+    """`has_audience = not background`: a scheduled task's
     or job worker's own turn has nobody to warm up, push back on, or joke
     with — so it gets neither STYLE_FRAMEWORK nor a floors section, matching
-    the root CLAUDE.md's documented scope. Regression test for the bug S7
-    found live: STYLE_FRAMEWORK had been baked unconditionally into
+    the root CLAUDE.md's documented scope. Regression test for a bug found live: STYLE_FRAMEWORK had been baked unconditionally into
     `stable_instruction()`, which leaked it onto every background turn."""
     system = RelevanceContext().assemble(
         session_id="s2", text="give it to me straight", background=True).system

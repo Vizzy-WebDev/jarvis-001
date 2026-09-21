@@ -13,8 +13,6 @@ from starlette.testclient import TestClient
 
 from jarvis import external_services
 from jarvis.voice import options as voice
-from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
-from jarvis.model_system.registry import add_model
 
 
 @pytest.fixture
@@ -24,53 +22,11 @@ def client(scratch):
     return TestClient(create_app())
 
 
-def _connect(adapter: str, *, key: str | None = "k"):
-    provider = add_provider(label=adapter, kind=ProviderKind.NATIVE, adapter=adapter,
-                            base_url="https://example.test", auth_method=AuthMethod.API_KEY,
-                            key_required=True, secret=key)
-    return add_model(provider_id=provider.id, native_model_id=f"{adapter}-model")
-
-
 def test_with_nothing_configured_every_engine_says_why_not(client):
     engines = client.get("/api/voice/options").json()["engines"]
     assert [e["available"] for e in engines] == [False, False, False]
     assert all(e["reason"] for e in engines), \
         "an unavailable engine with no reason is the shape of thing people file bugs about"
-
-
-def test_a_plain_model_unlocks_the_engines_that_only_need_a_model(client):
-    _connect("openai_compatible")
-    engines = {e["id"]: e for e in client.get("/api/voice/options").json()["engines"]}
-    assert engines["pipeline"]["available"] is True
-    assert engines["duplex"]["available"] is True
-    # It declares no realtime API of its own, so that one stays unavailable.
-    assert engines["realtime"]["available"] is False
-
-
-def test_realtime_appears_because_an_adapter_DECLARES_it(client, monkeypatch):
-    """Not because the code recognises a provider. Flipping the declaration on
-    an adapter that does not have one is enough to make the engine appear —
-    which is the whole point, and would fail against a hardcoded name."""
-    from jarvis.model_system.adapters import openai_compatible
-
-    _connect("openai_compatible")
-    assert voice.realtime_models() == []
-
-    monkeypatch.setattr(openai_compatible, "SUPPORTS_REALTIME", True)
-
-    engines = {e["id"]: e for e in client.get("/api/voice/options").json()["engines"]}
-    assert engines["realtime"]["available"] is True
-    assert engines["realtime"]["models"][0]["label"] == "openai_compatible-model"
-
-
-def test_a_realtime_capable_model_that_is_not_ready_does_not_count(client):
-    """Declaring the capability is not enough — it has to actually be usable."""
-    provider = add_provider(label="g", kind=ProviderKind.NATIVE, adapter="gemini",
-                            auth_method=AuthMethod.API_KEY, key_required=True)
-    add_model(provider_id=provider.id, native_model_id="live-model")  # no key saved
-
-    engines = {e["id"]: e for e in client.get("/api/voice/options").json()["engines"]}
-    assert engines["realtime"]["available"] is False
 
 
 def test_the_browsers_voice_is_always_there_and_always_first(client):

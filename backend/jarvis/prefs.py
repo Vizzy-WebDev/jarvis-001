@@ -1,14 +1,11 @@
 """App-wide preferences that aren't a single model's business.
 
-A port of server/prefs.js. Follows the same "merge over defaults" pattern, so
-adding a preference later stays backward-compatible with whatever is already
-saved on disk — and, during the migration, so this reads a prefs.json the Node
-app wrote and vice versa.
+Follows a "merge over defaults" pattern, so adding a preference later stays
+backward-compatible with whatever is already saved on disk.
 
-The defaults are reproduced exactly, including the ones that are deliberately
-NOT opt-in dials. Changing a default here silently changes behaviour for anyone
-who has never opened the corresponding screen, which is why each is annotated
-with the reasoning the original recorded.
+Defaults include ones that are deliberately NOT opt-in dials. Changing a default here
+silently changes behaviour for anyone who has never opened the corresponding screen, which
+is why each is annotated with its reasoning.
 """
 
 from __future__ import annotations
@@ -19,30 +16,13 @@ from .store import read_json, write_json
 
 FILE = "prefs"
 
-#: Three preferences that used to live here are gone: `autoSelect`,
-#: `manualModelId` and `voiceModelId`.
-#:
-#: All three were stored, served by this route, and read by absolutely nothing —
-#: so anyone who set one had been running with a control that silently did not
-#: work. A persisted per-role pin briefly existed to replace them
-#: (`gateway/slots.py`) and was itself removed: routing still classifies a turn
-#: by role (`gateway/routing.py`'s `Role`) for scoring purposes, but there is no
-#: stored per-role model/effort override any more — that's an application-level
-#: settings concern, not something the gateway should hold.
-#:
-#: `autoSelect` is deleted outright rather than moved. It expressed "use the
-#: manual pick instead of ranking", which a pin either exists or does not
-#: already says — a separate boolean for it could only ever disagree with the
-#: thing it described.
 DEFAULTS: dict[str, Any] = {
-    "balance": "balanced",          # 'fast' | 'balanced' | 'quality'
     "clarifySensitivity": "balanced",  # 'more' | 'balanced' | 'less'
     # Last-resort fallback only — in practice the client always sends its own
     # choice. None rather than a provider name: no provider is guaranteed
     # configured, and the TTS seam handles None cleanly.
     "ttsProvider": None,
-    # How much Memory saves without asking. 'ask' reproduces the original
-    # approval-first behaviour exactly, and is the default so nothing changes
+    # How much Memory saves without asking. 'ask' is approval-first, and is the default so nothing changes
     # for anyone who has not turned the dial up themselves. A candidate that
     # conflicts with an existing memory always requires approval regardless —
     # that floor lives in the memory policy, never here.

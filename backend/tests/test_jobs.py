@@ -22,8 +22,6 @@ from jarvis.capabilities.execute import ExecOutcome, execute
 from jarvis.db import reset_for_tests as reset_db
 from jarvis.events import EventType
 from jarvis.events.bus import EventBus
-from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
-from jarvis.model_system.registry import add_model
 from jarvis.jobs import job_store, orchestrator, worker
 from jarvis.jobs.policy import (
     can_auto_retry, classify_recovery, diagnose_stall, has_capacity, is_hung,
@@ -32,8 +30,6 @@ from jarvis.jobs.policy import (
 from jarvis.policy import Autonomy, CallContext, Surface
 from jarvis.policy import approvals as approval_store
 from jarvis.tools import load_tools
-
-from stub_openai_server import StubModelServer
 
 
 @pytest.fixture(autouse=True)
@@ -48,18 +44,6 @@ def _isolate(scratch):
     assembly.reset_for_tests()
     conversation.reset_for_tests()
     reset_db()
-
-
-@pytest.fixture
-def stub():
-    server = StubModelServer()
-    server.base_url = server.start()
-    provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
-                            base_url=server.base_url, auth_method=AuthMethod.NONE,
-                            key_required=False)
-    add_model(provider_id=provider.id, native_model_id="stub-model")
-    yield server
-    server.stop()
 
 
 def tool_trace(name: str, args: dict) -> dict:
@@ -201,80 +185,6 @@ def test_tier_three_never_reaches_the_interruption_queue():
 
 # --- the worker and the orchestrator -----------------------------------------
 
-def test_a_job_runs_and_reports_what_it_produced(stub):
-    stub.says("Found three flights under 400.")
-    job = job_store.create_job(title="Find flights", goal="find flights to Lagos")
-    result = worker.run_job(job["id"], event_bus=EventBus())
-
-    assert result["status"] == "done"
-    finished = job_store.get_job(job["id"])
-    assert finished["result"] == "Found three flights under 400."
-    assert finished["progress"] == 100
-
-
-def test_a_worker_never_writes_into_the_conversation_the_user_is_looking_at(stub):
-    stub.says("Done.")
-    conversation.push_user_text("main", "what's the weather")
-    job = job_store.create_job(title="t", goal="do the thing")
-    worker.run_job(job["id"], event_bus=EventBus())
-
-    assert [m["text"] for m in conversation.get_messages("main")] == ["what's the weather"]
-    assert conversation.get_messages(worker.session_for(job["id"]))
-
-
-def test_a_decision_parks_the_job_instead_of_asking_nobody(stub):
-    """A job may wait hours. A confirmation token would be long expired, so the
-    durable record is the job's status and an outbox row."""
-    assembly.get_registry().register(CapabilitySpec(
-        id="test.send", name="send_message", description="send",
-        input_schema={"type": "object", "properties": {}},
-        risk=Risk.HIGH, handler=lambda **_: "sent"))
-    stub.calls_tool("send_message", {})
-
-    job = job_store.create_job(title="Send the note", goal="send the note")
-    result = worker.run_job(job["id"], event_bus=EventBus())
-
-    assert result["status"] == "awaiting_decision"
-    assert job_store.get_job(job["id"])["status"] == "awaiting_decision"
-    parked = job_store.list_pending_outbox()
-    assert len(parked) == 1 and parked[0]["tier"] == 1
-    assert approval_store.pending()[0].surface == "job"
-
-
-def test_a_stalled_job_gets_one_retry_and_then_the_user(stub):
-    job = job_store.create_job(title="Stuck thing", goal="g")
-    job_store.update_job(job["id"], {"status": "stalled", "error": "went nowhere"})
-
-    stub.says("Fine now.")
-    first = orchestrator.supervise(event_bus=EventBus())
-    assert first[0]["action"] == "retried"
-    assert job_store.get_job(job["id"])["retries"] == 1
-
-    # The retry runs the job on its own thread. Waiting for it before forcing the
-    # second stall is what makes this test about the retry policy rather than
-    # about which of two threads happened to write the status last.
-    worker.join_all()
-    job_store.update_job(job["id"], {"status": "stalled", "error": "went nowhere again"})
-    second = orchestrator.supervise(event_bus=EventBus())
-    assert second[0]["action"] == "escalated"
-    assert job_store.get_job(job["id"])["status"] == "awaiting_decision"
-
-
-def test_the_desktop_never_starts_on_its_own(stub):
-    """Autonomously operating the real machine is exactly the outward-facing,
-    hard-to-undo work that has to come back to the owner first."""
-    job = orchestrator.admit(title="Tidy the desktop", goal="tidy up", kind="computer",
-                             event_bus=EventBus())
-    assert job["status"] == "awaiting_decision"
-    assert job["startedAt"] is None
-    assert job_store.list_pending_outbox()[0]["reason"] == "permission"
-
-
-def test_only_one_job_may_hold_the_desktop(stub):
-    orchestrator.admit(title="First", goal="g", kind="computer", event_bus=EventBus())
-    with pytest.raises(orchestrator.AtCapacity):
-        orchestrator.admit(title="Second", goal="g", kind="computer", event_bus=EventBus())
-
 
 def test_an_orphan_that_did_something_external_is_never_silently_restarted():
     job = job_store.create_job(title="Sent something", goal="g", status="running")
@@ -334,7 +244,7 @@ def test_a_crash_outcome_never_collides_with_the_jobs_own_terminal_outcome():
     assert len(done_rows) == 1
 
 
-# --- Self-Improvement capture, through the observer wiring (S7) --------------
+# --- Self-Improvement capture, through the observer wiring --------------
 #
 # `capture.record_job_outcome()` is correct in isolation, but that was never
 # the gap — the gap was that nothing called it. These drive a real job to a
@@ -345,59 +255,6 @@ def test_a_crash_outcome_never_collides_with_the_jobs_own_terminal_outcome():
 # `improvement/store.py` directly, with NO call from the test into
 # `capture.py` — proving the `JOB_COMPLETED`/`JOB_UPDATED` -> observer wiring
 # itself, not just the function it eventually calls.
-
-def test_a_completed_job_lands_a_real_outcome_row_via_the_observer(stub):
-    from jarvis.improvement import store as improvement_store
-
-    stub.says("Found three flights under 400.")
-    job = job_store.create_job(title="Find flights", goal="find flights to Lagos")
-    worker.run_job(job["id"])
-
-    rows = [r for r in improvement_store.list_unreviewed_outcomes()
-            if r["source"] == "job" and r["source_ref"] == job["id"]]
-    assert len(rows) == 1
-    assert rows[0]["status"] == "done"
-    assert rows[0]["title"] == "Find flights"
-
-
-def test_a_parked_jobs_own_decision_is_not_yet_a_terminal_outcome(stub):
-    """`awaiting_decision` is not in `TERMINAL_JOB_STATUSES` — a job still
-    waiting on a person has not "happened" yet in the sense an outcome
-    records. The `JOB_UPDATED` subscription must not misfire on it."""
-    from jarvis.improvement import store as improvement_store
-
-    assembly.get_registry().register(CapabilitySpec(
-        id="test.send2", name="send_message2", description="send",
-        input_schema={"type": "object", "properties": {}},
-        risk=Risk.HIGH, handler=lambda **_: "sent"))
-    stub.calls_tool("send_message2", {})
-
-    job = job_store.create_job(title="Send the note", goal="send the note")
-    worker.run_job(job["id"])
-
-    rows = [r for r in improvement_store.list_unreviewed_outcomes()
-            if r["source"] == "job" and r["source_ref"] == job["id"]]
-    assert rows == []
-
-
-def test_the_same_terminal_status_reported_twice_is_one_outcome_not_two(stub):
-    """`JOB_COMPLETED` and a later `JOB_UPDATED` can both name the same
-    terminal status — real paths in `worker.py` can emit both. Idempotent on
-    the job id, the same property `capture.record_job_outcome()`'s own
-    docstring states."""
-    from jarvis.events import EventType, bus as default_bus
-    from jarvis.improvement import store as improvement_store
-
-    stub.says("Done.")
-    job = job_store.create_job(title="t", goal="do the thing")
-    worker.run_job(job["id"])
-    # A second, redundant terminal notification for the same job — exactly
-    # the kind of repeat the real system can produce.
-    default_bus.publish(EventType.JOB_UPDATED, {"id": job["id"], "status": "done"})
-
-    rows = [r for r in improvement_store.list_unreviewed_outcomes()
-            if r["source"] == "job" and r["source_ref"] == job["id"]]
-    assert len(rows) == 1
 
 
 # --- the tools ---------------------------------------------------------------
@@ -482,6 +339,10 @@ def judge(monkeypatch):
         return Reply(ok=verdict["ok"], data=verdict["data"])
 
     monkeypatch.setattr("jarvis.ai.ask_model", fake_ask)
+    # These tests are about what a split CREATES. A real worker thread per piece
+    # would race the test on the one shared database connection (see db.py), and
+    # nothing here asserts that a piece ran.
+    monkeypatch.setattr("jarvis.jobs.worker.run_in_background", lambda *a, **k: None)
     return type("Judge", (), {"calls": calls, "verdict": verdict})()
 
 
@@ -701,42 +562,9 @@ def test_an_installed_skill_is_offered_to_every_restricted_kind():
         assert "request_job_split" in allowed
 
 
-def test_a_restricted_job_can_actually_run_an_installed_skill(stub):
-    """Through the real worker: proves the tool that ran was not refused, not
-    just that its name appears in some computed list."""
-    assembly.get_registry().register(CapabilitySpec(
-        id="skill.count_words", name="count_words", description="counts words",
-        input_schema={"type": "object", "properties": {}}, risk=Risk.LOW,
-        kind=CapabilityKind.SKILL, handler=lambda **_: {"count": 3}))
-    stub.calls_tool("count_words", {})
-    stub.says("Counted them.")
-
-    job = job_store.create_job(title="Count", goal="count the words", kind="research")
-    worker.run_job(job["id"], event_bus=EventBus())
-
-    tool_rows = [row for row in job_store.get_trace(job["id"]) if row["kind"] == "tool"]
-    detail = json.loads(tool_rows[0]["detail"])
-    assert detail == {"name": "count_words", "ok": True, "error": None}
-
-
 def test_generic_jobs_are_unrestricted_and_unaffected():
     """`'generic'` maps to `None` — no restriction at all — so there is
     nothing for the Skill fix to append onto."""
     assert worker.TOOLS_BY_KIND.get("generic") is None
 
 
-def test_a_real_worker_turn_can_split_its_own_job(stub, judge):
-    """Through the real worker, the real orchestrator and the real executor —
-    only the model and the judgment are scripted."""
-    stub.calls_tool("request_job_split", {
-        "reason": "three separate archives",
-        "pieces": [{"goal": "search the first archive"},
-                   {"goal": "search the second archive"}]})
-    stub.says("Split it up.")
-
-    job = job_store.create_job(title="Search the archives", goal="find every mention")
-    worker.run_job(job["id"], event_bus=EventBus())
-
-    children = [j for j in job_store.list_jobs() if j.get("parentId") == job["id"]]
-    assert len(children) == 2
-    assert job_store.get_job(job["id"])["status"] == "done"

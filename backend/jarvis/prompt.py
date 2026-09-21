@@ -67,12 +67,10 @@ PAST_CONVERSATIONS = """Past conversations — everything the user has said to y
 def stable_instruction(*, has_audience: bool = True) -> str:
     """The half that does not change between turns, and can therefore be cached.
 
-    `has_audience` mirrors Node's own `systemInstructionParts()`: `!background
-    or addressed`. A turn with nobody listening — a scheduled task's own run, a
-    job worker's own turn — gets no delivery register at all, since there is no
-    one for warmth, directness or playfulness to be aimed at. This still stays
-    cacheable: it just caches as one of two stable prefixes (audience / no
-    audience) instead of one, which is exactly what Node's own design does too.
+    `has_audience` is `not background`. A turn with nobody listening — a scheduled task's own
+    run, a job worker's own turn — gets no delivery register at all, since there is no one
+    for warmth, directness or playfulness to be aimed at. This still stays cacheable: it
+    just caches as one of two stable prefixes (audience / no audience) instead of one.
     """
     from .personality import STYLE_FRAMEWORK
 

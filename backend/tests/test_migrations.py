@@ -1,14 +1,9 @@
-"""The schema this port produces must be indistinguishable from the Node one.
+"""Migrations: the schema a fresh database reaches, and the runner around it.
 
-This is the highest-stakes test in the suite. The owner's real data/jarvis.db
-holds their memories, conversations, jobs and self-model history; the Python
-backend is meant to open that exact file with no conversion. Every test here
-therefore compares against the REAL Node migration runner rather than against a
-schema this port wrote down for itself.
-
-The DDL itself is extracted mechanically (tools/record/extract-migrations.mjs),
-so what these tests really guard is the runner around it: transaction framing,
-ordering, idempotency, and the three migrations carrying logic beyond DDL.
+This is the highest-stakes test in the suite. The owner's real data/jarvis.db holds their
+memories, conversations, jobs and self-model history, and the backend must open that exact
+file with no conversion. What these tests guard is the runner around the migration SQL:
+transaction framing, ordering, idempotency, and the migrations carrying logic beyond DDL.
 """
 
 from __future__ import annotations
@@ -24,7 +19,7 @@ from jarvis.db import MIGRATION_COUNT, get_db
 
 #: Tables this build deliberately EXTENDS rather than leaves alone, and the exact
 #: columns it adds. Named here so the assertions below can allow precisely this
-#: and nothing else: a column appearing that is not on this list, or a Node column
+#: and nothing else: a column appearing that is not on this list, or an original column
 #: changing, is still a failure.
 EXTENDED_TABLES = {
     "memories": {"importance", "expires_at"},

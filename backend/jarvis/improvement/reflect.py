@@ -6,8 +6,8 @@ needs corroboration. Keeping those steps separate is what makes "notice a
 pattern, don't patch a one-off" real rather than aspirational.
 
 **Outcomes are only marked reviewed when the call actually succeeded.** The
-original discarded them whenever its one model call failed, which on a roster
-that is routinely all rate-limited at once means silently losing real material.
+original discarded them whenever its one model call failed, which whenever no model
+is available means silently losing real material.
 """
 
 from __future__ import annotations
@@ -16,9 +16,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from ..model_system.compat import Task, ask
-from ..model_system.fallback import NoModelAvailable
-from ..model_system.request import Role
+from ..ai import NoModelAvailable, ask
 from . import store
 from .domains import is_excluded
 
@@ -82,12 +80,10 @@ def reflect(force: bool = False) -> dict[str, Any]:
         return {"ran": False, "reason": "nothing to reflect on"}
 
     try:
-        answer = ask(_prompt(outcomes), system=SYSTEM, want_json=True,
-                     task=Task(text="reflect on recent work", role=Role.UTILITY,
-                               needs_tools=False))
+        answer = ask(_prompt(outcomes), system=SYSTEM, want_json=True)
     except NoModelAvailable as err:
         # The outcomes stay unreviewed on purpose: losing real material because
-        # the roster was rate-limited is exactly the failure this avoids.
+        # no model was available is exactly the failure this avoids.
         logger.info("reflection skipped — no model available: %s", err)
         return {"ran": False, "reason": "no model available", "keptForLater": len(outcomes)}
 

@@ -8,9 +8,8 @@ happens when the check runs but its result is never stored — is worse than not
 checking, because the record then asserts something false.
 
 Artifacts live under the data directory, so a test with a scratch data directory
-cannot write into the user's real one. That is deliberate: the original had two
-stores that resolved paths relative to their own source file and wrote into the
-real folder during scratch runs.
+cannot write into the user's real one. That is deliberate: a store that resolves
+paths relative to its own source file writes into the real folder during scratch runs.
 """
 
 from __future__ import annotations

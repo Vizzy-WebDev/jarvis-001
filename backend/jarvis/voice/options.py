@@ -3,14 +3,13 @@
 **The rule this file exists to enforce: an engine or a voice is offered because
 a capability check says it is available, never because this code knows a
 provider's name.** Nowhere below is a brand compared against a string. A
-realtime engine appears when some connection's adapter DECLARES `realtime` and
-that connection is ready to use; if another provider ships a realtime API later
-it appears by declaring the same flag, with no change here.
+realtime engine appears when some model DECLARES `realtime` and is ready to use.
+There is no AI model system at the moment, so no model-backed engine is offered.
 
 Three separate choices, deliberately not collapsed into one:
 
 1. **Which model answers** — any configured model, exactly as text already does.
-   The gateway routes it; nothing in the voice path touches that decision.
+   Nothing in the voice path touches that decision.
 2. **Which voice speaks** — any configured provider, plus the browser's own,
    which is free, offline, needs no key and is therefore always available.
 3. **Which engine runs the loop** — a pipeline turn, continuous listening, or a
@@ -22,28 +21,17 @@ from __future__ import annotations
 from typing import Any
 
 from .. import stt, tts
-from ..model_system.adapters import get_adapter
-from ..model_system.credentials import CredentialStatus
-from ..model_system.providers import list_providers
-from ..model_system.registry import ResolvedModel, list_models
 
 
-def _ready_models() -> list[ResolvedModel]:
-    return [m for m in list_models()
-            if m.enabled and m.provider.credential_status is CredentialStatus.CONFIGURED]
+def _ready_models() -> list[Any]:
+    """Models ready to answer. None, while there is no model system."""
+    return []
 
 
-def realtime_models() -> list[ResolvedModel]:
-    """Every ready model whose adapter declares a realtime API of its own."""
-    out = []
-    for m in _ready_models():
-        try:
-            supports = getattr(get_adapter(m.provider.adapter), "SUPPORTS_REALTIME", False)
-        except KeyError:
-            supports = False
-        if supports:
-            out.append(m)
-    return out
+def realtime_models() -> list[Any]:
+    """Models that offer a realtime voice session of their own. None, while
+    there is no model system."""
+    return []
 
 
 def list_engines() -> list[dict[str, Any]]:
@@ -114,5 +102,5 @@ def status() -> dict[str, Any]:
             # degraded state: the browser's own recognition is a real path.
             "serverProxied": stt.is_configured(),
         },
-        "connections": len(list_providers()),
+        "connections": 0,
     }

@@ -1,12 +1,10 @@
 """Per-session state that must be cleared when a conversation is reset.
 
-Exists to stop a real omission. In the Node original, "start a new chat" clears
-FOUR things, not one: the in-memory transcript, the session's sticky model pick,
-its unlocked-tool set, and its sticky style request. Three of those live in
-modules that land in Wave 2, so a Wave 1 port that simply called the transcript
-reset would look complete, pass its tests, and quietly leak a pinned model and an
-unlocked confirm-gated tool across the "new chat" boundary — the unlocked-tool
-leak being a genuine safety property, not a tidiness one.
+Exists to stop a real omission. "Start a new chat" must clear FOUR things, not one: the
+in-memory transcript, the session's sticky model pick, its unlocked-tool set, and its sticky
+style request. Calling only the transcript reset would look complete, pass its tests, and
+quietly leak a pinned model and an unlocked tool across the "new chat" boundary — the
+unlocked-tool leak being a genuine safety property, not a tidiness one.
 
 Rather than leave a comment asking someone to remember, each of those modules
 registers its own cleanup here as it is ported, and the session layer calls

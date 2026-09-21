@@ -17,9 +17,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from ..model_system.compat import Task, ask
-from ..model_system.fallback import NoModelAvailable
-from ..model_system.request import Role
+from ..ai import NoModelAvailable, ask
 from . import store
 from .domains import is_excluded
 
@@ -75,8 +73,7 @@ def synthesize(force: bool = False) -> dict[str, Any]:
             return {"ran": False, "reason": "today's budget for this is spent"}
 
     try:
-        answer = ask(_prompt(lessons), system=SYSTEM, want_json=True,
-                     task=Task(text="look for patterns", role=Role.UTILITY, needs_tools=False))
+        answer = ask(_prompt(lessons), system=SYSTEM, want_json=True)
     except NoModelAvailable as err:
         logger.info("synthesis skipped — no model available: %s", err)
         return {"ran": False, "reason": "no model available"}

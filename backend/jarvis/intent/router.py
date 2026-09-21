@@ -23,8 +23,7 @@ reliably, and pretending otherwise would be fake intelligence of exactly the kin
 orchestrator treats a hint as a suggestion and lets the model decide.
 
 Pure and dependency-free by design, so the whole rule set can be exercised as a
-truth table — the pattern the audit found to be the most reliable thing in this
-codebase.
+truth table.
 """
 
 from __future__ import annotations

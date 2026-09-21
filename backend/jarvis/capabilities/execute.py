@@ -4,11 +4,9 @@ Every guarantee §5 asks for is enforced here rather than left to each caller:
 the declared timeout, the retry policy, cancellation, argument validation,
 idempotency (§49), argument redaction (§25), and the tool.* events (§38).
 
-The reason it is one place is the audit finding it exists to fix: today the only
-tool timeout in the system lives inside the turn runner, so the scheduler,
-briefings and the Live voice path invoke tools unbounded, and the allowlist check
-sits in that same runner so no other caller enforces it either. A guarantee only
-one caller applies is not a guarantee.
+The reason it is one place: a timeout or allowlist enforced only inside the turn runner
+would leave the scheduler, briefings and the Live voice path invoking tools unbounded and
+unrestricted. A guarantee only one caller applies is not a guarantee.
 
 **Honesty about timeouts (§45).** Python cannot kill a thread. When a
 non-cancellable capability exceeds its timeout, we stop *waiting* — the work may

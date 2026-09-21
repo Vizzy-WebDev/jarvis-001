@@ -11,10 +11,8 @@ maintenance refresh produces no finding — there is nothing to judge — so it 
 plain periodic timer, off behind an interlock like every other timer here.
 
 A reader is registered, not hardcoded into a dispatch: adding a provider is one
-`register_reader()` call. Today only OpenRouter has one, because it is the only
-provider whose credentials this build currently stores. ElevenLabs and Deepgram
-arrive with the external-service key store, in a later wave; this is a stated
-gap, not a silent one.
+`register_reader()` call. No reader is registered at the moment — the one that
+existed read the old model system's connections, which no longer exist.
 """
 
 from __future__ import annotations
@@ -62,42 +60,6 @@ def refresh_all() -> dict[str, Any]:
         store.record_balance(provider_ref, detail)
         read.append(provider_ref)
     return {"read": read, "failed": failed}
-
-
-# --- the one reader this build can actually authenticate today ---------------
-
-def _openrouter_balance() -> dict[str, Any] | None:
-    import httpx
-
-    from ..model_system.credentials import resolve
-    from ..model_system.providers import list_providers
-
-    provider = next((p for p in list_providers() if "openrouter.ai" in (p.base_url or "")), None)
-    if provider is None:
-        return None
-    key = resolve(provider.credential_ref)
-    if not key:
-        return None
-
-    response = httpx.get("https://openrouter.ai/api/v1/credits",
-                         headers={"Authorization": f"Bearer {key}"}, timeout=20.0)
-    response.raise_for_status()
-    data = response.json().get("data") or {}
-    total = data.get("total_credits")
-    used = data.get("total_usage")
-    detail: dict[str, Any] = {"provider": "openrouter", "currency": "USD"}
-    # Only what the provider actually returned. A "remaining" that this code
-    # computed from two numbers it was not given is not a reported figure.
-    if isinstance(total, (int, float)):
-        detail["totalCredits"] = float(total)
-    if isinstance(used, (int, float)):
-        detail["totalUsage"] = float(used)
-    if "totalCredits" in detail and "totalUsage" in detail:
-        detail["remaining"] = detail["totalCredits"] - detail["totalUsage"]
-    return detail
-
-
-register_reader("openrouter", _openrouter_balance)
 
 
 # --- the timer ---------------------------------------------------------------

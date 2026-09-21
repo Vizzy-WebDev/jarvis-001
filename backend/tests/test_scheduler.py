@@ -266,25 +266,18 @@ def test_a_scheduled_task_may_do_ordinary_work_but_never_a_high_risk_action(scra
     briefings." Setting up a task is not consent for whatever it later decides
     to delete.
 
-    Driven through the REAL task runner and a real model turn, because this is
+    Driven through the REAL task runner and a real (scripted-model) turn, because this is
     exactly the kind of rule that survives in a policy unit test and quietly
     stops applying at the one call site that matters.
     """
     from jarvis import assembly, conversation
     from jarvis.capabilities import CapabilitySpec
-    from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
-    from jarvis.model_system.registry import add_model
-
-    from stub_openai_server import StubModelServer
+    from scripted_model import ScriptedModel, install
 
     assembly.reset_for_tests()
     conversation.reset_for_tests()
-    stub = StubModelServer()
-    base = stub.start()
+    stub = install(assembly, ScriptedModel())
     try:
-        provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
-                                base_url=base, auth_method=AuthMethod.NONE, key_required=False)
-        add_model(provider_id=provider.id, native_model_id="stub-model")
 
         did = {"medium": 0, "high": 0}
         caps = assembly.get_registry()
@@ -319,7 +312,6 @@ def test_a_scheduled_task_may_do_ordinary_work_but_never_a_high_risk_action(scra
         assert [a.capability for a in pending] == ["delete_everything"]
         assert pending[0].surface == "scheduled"
     finally:
-        stub.stop()
         assembly.reset_for_tests()
         conversation.reset_for_tests()
 
@@ -382,7 +374,7 @@ def test_an_explicit_tool_list_still_wins_outright():
 
 
 def test_a_pinned_model_reaches_the_gateway_and_the_run_says_which_one_answered(monkeypatch):
-    """The pin is an ORDERING, not a requirement — `gateway/routing.py` puts it
+    """The pin is an ORDERING, not a requirement — the model layer puts it
     first and falls through if it fails — so what the run history must report is
     the model that actually answered, not the one that was asked for."""
     from jarvis.orchestrator import Done
@@ -419,30 +411,23 @@ def test_a_task_with_no_pin_asks_for_no_particular_model(monkeypatch):
     assert seen["model_id"] is None
 
 
-# --- Self-Improvement capture, on every run (S7) ------------------------------
+# --- Self-Improvement capture, on every run ------------------------------
 #
 # `capture.record_task_outcome()` is correct in isolation, but nothing ever
 # called it. `run_task_now()` calls it directly (no event to subscribe to —
 # see `observers/improvement.py`'s own header), so this drives a real task
-# through the real engine and a real stub model, and reads the row back from
+# through the real engine and a scripted model, and reads the row back from
 # `improvement/store.py` with no call from the test into `capture.py` itself.
 
 def test_a_completed_task_run_lands_a_real_outcome_row(scratch):
     from jarvis import assembly, conversation
-    from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
-    from jarvis.model_system.registry import add_model
     from jarvis.improvement import store as improvement_store
-
-    from stub_openai_server import StubModelServer
+    from scripted_model import ScriptedModel, install
 
     assembly.reset_for_tests()
     conversation.reset_for_tests()
-    stub = StubModelServer()
-    base = stub.start()
+    stub = install(assembly, ScriptedModel())
     try:
-        provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
-                                base_url=base, auth_method=AuthMethod.NONE, key_required=False)
-        add_model(provider_id=provider.id, native_model_id="stub-model")
         stub.says("All tidied up.")
 
         task = task_store.create_task(
@@ -460,7 +445,6 @@ def test_a_completed_task_run_lands_a_real_outcome_row(scratch):
         assert rows[0]["entity_ref"] == task["id"]
         assert rows[0]["title"] == "Nightly cleanup"
     finally:
-        stub.stop()
         assembly.reset_for_tests()
         conversation.reset_for_tests()
 

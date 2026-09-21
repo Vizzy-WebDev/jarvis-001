@@ -103,7 +103,7 @@ def test_empty_text_is_refused_before_any_provider_is_asked(client):
 def test_one_call_can_override_the_saved_default(client, monkeypatch):
     """A configured provider is not automatically THE provider: the saved
     preference decides, and a single call can name a different one without
-    changing it. Matches the original — and it is why a service can be
+    changing it. That is why a service can be
     connected and still silent until a voice is chosen."""
     external_services.add_or_update(label="ElevenLabs", key="k")
     monkeypatch.setattr(elevenlabs, "stream",

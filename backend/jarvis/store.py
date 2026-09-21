@@ -1,13 +1,11 @@
 """Reading/writing the structured JSON files under data/ (models, tasks,
 briefing config, ...).
 
-A faithful port of server/store.js. Kept dependency-free on purpose, matching
-the original. Writes are atomic (temp file + rename) so a crash or power loss
-mid-write can never leave a half-written, corrupt JSON file behind.
+Kept dependency-free on purpose. Writes are atomic (temp file + rename) so a crash or power
+loss mid-write can never leave a half-written, corrupt JSON file behind.
 
-FORMAT COMPATIBILITY IS THE POINT OF THIS FILE. The Node app and this one must
-be able to read each other's output byte for byte during the migration, so the
-serialisation here deliberately mirrors `JSON.stringify(value, null, 2)`:
+FORMAT COMPATIBILITY IS THE POINT OF THIS FILE. Files already on disk must keep loading and
+newly written ones must be byte-stable, so the serialisation here deliberately mirrors `JSON.stringify(value, null, 2)`:
 two-space indent, `": "` between key and value, no trailing newline, and no
 \\uXXXX escaping of non-ASCII (JSON.stringify emits raw UTF-8; ensure_ascii
 would not).
@@ -52,7 +50,7 @@ def _file_path(name: str) -> Path:
 # what lets the ops config-integrity check tell apart a change this app itself
 # made through a real route from one that happened some other way. Records the
 # WRITTEN CONTENT's own hash, not just a timestamp: a time-window heuristic was
-# tried in the original and found genuinely wrong — a legitimate write's
+# tried and found genuinely wrong — a legitimate write's
 # timestamp stays "recent" long enough to wrongly excuse a LATER, unrelated
 # external change landing inside the same window.
 _last_writes: dict[str, dict[str, Any]] = {}
@@ -110,7 +108,7 @@ def data_dir() -> Path:
     there rather than a single JSON file. Respects JARVIS_DATA_DIR exactly like
     every other function here — a module that hardcodes a path relative to its
     own source file bypasses test isolation entirely (a real bug found the hard
-    way in the original: a connector wrote a 145MB browser profile into the real
+    way: a connector wrote a 145MB browser profile into the real
     data/ directory during a scratch test run)."""
     return _ensure_data_dir()
 
@@ -119,7 +117,7 @@ def reset_for_tests() -> None:
     """Test-only: forget this process's record of what it recently wrote.
 
     Production code never calls this — the record lives for the process lifetime,
-    exactly as it does in the Node original. Tests need it because they share one
+    for the process lifetime. Tests need it because they share one
     process across many scratch data directories, and a hash left over from a
     previous directory could wrongly "explain" a file in the next one, which is
     precisely the confusion the content-hash design exists to prevent.

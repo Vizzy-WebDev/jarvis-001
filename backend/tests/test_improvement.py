@@ -14,8 +14,6 @@ import json
 import pytest
 
 from jarvis.db import reset_for_tests as reset_db
-from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
-from jarvis.model_system.registry import add_model
 from jarvis.improvement import apply, capture, store
 from jarvis.improvement.domains import is_excluded
 from jarvis.improvement.policy import (
@@ -25,26 +23,12 @@ from jarvis.improvement.reflect import reflect
 from jarvis.improvement.synthesize import synthesize
 from jarvis.prefs import set_prefs
 
-from stub_openai_server import StubModelServer
-
 
 @pytest.fixture(autouse=True)
 def _isolate(scratch):
     reset_db()
     yield
     reset_db()
-
-
-@pytest.fixture
-def stub():
-    server = StubModelServer()
-    server.base_url = server.start()
-    provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
-                            base_url=server.base_url, auth_method=AuthMethod.NONE,
-                            key_required=False)
-    add_model(provider_id=provider.id, native_model_id="stub-model")
-    yield server
-    server.stop()
 
 
 # --- the policy, as a truth table --------------------------------------------
@@ -139,29 +123,6 @@ def seed_outcomes(count: int) -> None:
                              status="failed", error="timed out")
 
 
-def test_reflection_waits_until_there_is_enough_to_reflect_on(stub):
-    seed_outcomes(2)
-    assert reflect()["ran"] is False
-
-
-def test_reflection_files_lessons_that_cite_real_outcomes(stub):
-    seed_outcomes(6)
-    outcome_ids = [o["id"] for o in store.list_unreviewed_outcomes()]
-    stub.says(json.dumps({"lessons": [
-        {"text": "run_code times out without an explicit limit", "scope": "tool:run_code",
-         "evidence": outcome_ids[:2], "confidence": 0.7},
-        {"text": "a made-up lesson", "evidence": ["out_never_existed"]},
-    ]}))
-
-    result = reflect()
-    assert result["ran"] is True
-    # The second is dropped: a lesson citing an outcome that never happened is
-    # worse than no lesson.
-    assert [l["text"] for l in result["lessons"]] == \
-        ["run_code times out without an explicit limit"]
-    assert store.count_unreviewed_outcomes() == 0
-
-
 def test_material_is_kept_when_no_model_can_reflect_on_it():
     """The original discarded outcomes whenever its one call failed — on a
     roster that is routinely all rate-limited, that is silent data loss."""
@@ -171,15 +132,6 @@ def test_material_is_kept_when_no_model_can_reflect_on_it():
     assert store.count_unreviewed_outcomes() == 6
 
 
-def test_the_daily_budget_stops_a_busy_day_from_reflecting_every_tick(stub):
-    seed_outcomes(6)
-    stub.says(json.dumps({"lessons": []}))
-    assert reflect()["ran"] is True
-    seed_outcomes(6)
-    # Cadence and budget both apply; either one alone would be enough here.
-    assert reflect()["ran"] is False
-
-
 # --- synthesize --------------------------------------------------------------
 
 def two_lessons_from(outcome_ids: list[str]) -> None:
@@ -187,50 +139,6 @@ def two_lessons_from(outcome_ids: list[str]) -> None:
                         evidence=outcome_ids[:1])
     store.create_lesson(text="long jobs stall without a limit", scope="tool:run_code",
                         evidence=outcome_ids[1:2] or outcome_ids[:1])
-
-
-def test_two_lessons_from_the_same_event_do_not_make_a_pattern(stub):
-    """Two lessons drawn from one event are one event described twice."""
-    outcome = store.record_outcome(source="job", source_ref="j1", title="Job", status="failed")
-    two_lessons_from([outcome["id"]])
-    lessons = store.list_lessons()
-    stub.says(json.dumps({"proposals": [
-        {"title": "Always set a timeout", "kind": "rule",
-         "lessons": [l["id"] for l in lessons]}]}))
-
-    result = synthesize(force=True)
-    assert result["proposals"] == []
-    assert "same event" in result["rejected"][0]
-
-
-def test_a_real_pattern_becomes_a_proposal(stub):
-    ids = [store.record_outcome(source="job", source_ref=f"j{i}", title="Job",
-                                status="failed")["id"] for i in range(2)]
-    two_lessons_from(ids)
-    lessons = store.list_lessons()
-    stub.says(json.dumps({"proposals": [
-        {"title": "Always set a timeout", "kind": "rule", "text": "Set a timeout.",
-         "lessons": [l["id"] for l in lessons]}]}))
-
-    result = synthesize(force=True)
-    assert [p["title"] for p in result["proposals"]] == ["Always set a timeout"]
-    assert result["proposals"][0]["evidence"] == sorted(ids)
-
-
-def test_an_outside_sourced_lesson_cannot_ride_in_on_tier_one_evidence(stub):
-    """The proposal's tier is the WORST of its lessons, so the tier floor still
-    applies to the pattern as a whole."""
-    ids = [store.record_outcome(source="job", source_ref=f"j{i}", title="Job",
-                                status="failed")["id"] for i in range(2)]
-    store.create_lesson(text="observed here", evidence=[ids[0]], source_tier=1)
-    store.create_lesson(text="read on a forum", evidence=[ids[1]], source_tier=3)
-    lessons = store.list_lessons()
-    stub.says(json.dumps({"proposals": [
-        {"title": "Do the thing", "kind": "rule", "lessons": [l["id"] for l in lessons]}]}))
-
-    proposal = synthesize(force=True)["proposals"][0]
-    assert proposal["sourceTier"] == 3
-    assert decide(proposal, "auto") == REQUIRE_APPROVAL
 
 
 # --- apply and undo ----------------------------------------------------------

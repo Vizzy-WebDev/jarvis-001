@@ -13,7 +13,7 @@ dimension costs real reads and a caller that wanted one should not silently pay
 for nine.
 
 This reads Memory, Jobs and Self-Improvement; it owns none of them. And nothing
-under this package imports the executor, the orchestrator or the gateway: a
+under this package imports the executor or the orchestrator: a
 strong self-assessment can make Jarvis sound more confident about a claim, and it
 structurally cannot skip a confirmation or an approval. `tests/test_architecture.py`
 asserts that rather than trusting it.

@@ -1,8 +1,7 @@
-"""Recording what a model call cost, from the event the gateway already publishes.
+"""Recording what a model call cost, from the `MODEL_CALL_COMPLETED` event.
 
-The turn loop must not know that cost tracking exists — in the Node original it
-imported the cost recorder directly, which is one of six imports that made the
-loop untestable in isolation. Here the gateway says what happened and this
+The turn loop must not know that cost tracking exists: it would be one more import that
+makes the loop untestable in isolation. Here whatever made the call says what happened and this
 subscribes.
 
 **Keyed on the presence of `usage`.** The orchestrator publishes the same event

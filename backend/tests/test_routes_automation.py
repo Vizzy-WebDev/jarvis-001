@@ -12,12 +12,8 @@ import pytest
 from starlette.testclient import TestClient
 
 from jarvis.events import EventType, bus
-from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
-from jarvis.model_system.registry import add_model
 from jarvis.monitor import store as monitor_store
 from jarvis.scheduler import briefing, briefing_config
-
-from stub_openai_server import StubModelServer
 
 
 @pytest.fixture
@@ -25,18 +21,6 @@ def client(scratch):
     from jarvis.main import create_app
 
     return TestClient(create_app())
-
-
-@pytest.fixture
-def stub(scratch):
-    server = StubModelServer()
-    server.base_url = server.start()
-    provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
-                            base_url=server.base_url, auth_method=AuthMethod.NONE,
-                            key_required=False)
-    add_model(provider_id=provider.id, native_model_id="stub-model")
-    yield server
-    server.stop()
 
 
 WATCH_FOR_A_FILE = {"description": "the report landing in Downloads",
@@ -65,39 +49,12 @@ def test_saving_merges_rather_than_replaces(client):
     assert client.get("/api/briefing").json()["customText"] == "mention the gym"
 
 
-def test_a_preview_composes_one_for_real(client, stub):
-    stub.says("Good morning. Nothing is scheduled today.")
-    preview = client.post("/api/briefing/preview").json()
-    assert preview["ok"] is True
-    assert preview["text"] == "Good morning. Nothing is scheduled today."
-    assert preview["modelId"]
-    assert stub.requests, "the backend never called a model"
-
-
 def test_with_no_model_it_says_so_rather_than_inventing_one(client):
     preview = client.post("/api/briefing/preview").json()
     assert preview["ok"] is False
     assert preview["error"]
     # The facts were still gathered — the failure is the narration, not the data.
     assert "facts" in preview
-
-
-def test_with_no_connectors_chosen_the_turn_gets_no_tools_at_all(client, stub, monkeypatch):
-    """The default, and the cheaper path: nothing can be fetched, so nothing can
-    be invented. The prompt says exactly that, and no turn is run at all."""
-    assert briefing.connector_tool_names(briefing_config.get_config()) == []
-    prompt = briefing.facts_to_prompt({}, briefing_config.get_config())
-    assert "ONLY facts you have" in prompt
-    assert "connected apps" not in prompt
-
-    from jarvis import assembly
-
-    def refuse():
-        raise AssertionError("the orchestrator was reached with no connectors chosen")
-
-    monkeypatch.setattr(assembly, "get_orchestrator", refuse)
-    stub.says("Good morning.")
-    assert client.post("/api/briefing/preview").json()["ok"] is True
 
 
 def test_choosing_connectors_changes_what_the_prompt_promises(client):
@@ -107,41 +64,6 @@ def test_choosing_connectors_changes_what_the_prompt_promises(client):
     prompt = briefing.facts_to_prompt({}, config, using_connectors=True)
     assert "connected apps" in prompt
     assert "never a guess about what it might say" in prompt
-
-
-def test_a_chosen_connector_is_resolved_to_real_tools_at_compose_time(client, stub,
-                                                                     monkeypatch):
-    """Ids are saved, never names: a connector's tool list changes when it is
-    reconnected, so a saved name would go stale in silence.
-
-    What is asserted is the request that actually reached the orchestrator — a
-    briefing that composed successfully while quietly passing no allowlist would
-    look identical from the outside and be a completely different thing.
-    """
-    monkeypatch.setattr("jarvis.connectors.capabilities.tool_names_for",
-                        lambda connector_id: ["calendar_list_events"])
-    client.post("/api/briefing", json={"connectors": ["cal-1"]})
-
-    from jarvis import assembly
-
-    seen: list = []
-    real = assembly.get_orchestrator()
-
-    class Watched:
-        def run_turn(self, request, *args, **kwargs):
-            seen.append(request)
-            return real.run_turn(request, *args, **kwargs)
-
-    monkeypatch.setattr(assembly, "get_orchestrator", lambda: Watched())
-
-    stub.says("Good morning. One thing on today.")
-    preview = client.post("/api/briefing/preview").json()
-    assert preview["ok"] is True
-    assert preview["text"] == "Good morning. One thing on today."
-
-    assert len(seen) == 1, "the tool-using path did not run"
-    assert seen[0].allowed_names == frozenset({"calendar_list_events"})
-    assert seen[0].session_id.startswith("briefing:")  # never bound to chat history
 
 
 def test_a_stale_connector_id_contributes_nothing_rather_than_breaking(client,

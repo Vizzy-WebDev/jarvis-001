@@ -1,7 +1,7 @@
 """The chat turn over HTTP.
 
 `GET`, not `POST`, because the browser's `EventSource` can only make a GET with
-no body — the same reason the original does. The message rides in the query
+no body (the same reason as the other streaming routes). The message rides in the query
 string; attachments will ride there as ids, never paths.
 
 The turn events are translated to a small wire vocabulary here rather than

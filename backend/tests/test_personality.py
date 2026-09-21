@@ -1,4 +1,4 @@
-"""The adaptive communication register (S7): floors, sticky style, and the
+"""The adaptive communication register: floors, sticky style, and the
 reaction-marker scanner — all pure, all deterministic, all testable with no
 server and no model.
 
@@ -64,7 +64,7 @@ def test_explicit_direct_and_playful_floors():
 
     assert detect_floors("lighten up a bit").explicit_playful
     assert detect_floors("have fun with this one").explicit_playful
-    # The gap S7's audit found and fixed: filler tolerated between "just" and
+    # A gap found and fixed: filler tolerated between "just" and
     # the actual request.
     assert detect_floors("I just want to joke around today").explicit_playful
 
@@ -211,7 +211,7 @@ def test_scanner_extracts_a_marker_fed_all_at_once():
 
 
 def test_scanner_extracts_a_marker_fed_character_by_character():
-    """The actual property S7 needs: some adapters stream a token at a time,
+    """The actual property: some adapters stream a token at a time,
     so a marker can arrive split across an arbitrary number of feed() calls."""
     scanner = create_reaction_scanner()
     events = _drain(scanner, "that's hilarious [[laugh]] okay anyway")

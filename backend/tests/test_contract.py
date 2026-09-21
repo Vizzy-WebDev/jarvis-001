@@ -1,13 +1,10 @@
-"""Replay the recorded Node contract against the FastAPI port.
+"""Replay the recorded contract against the FastAPI app.
 
-Every fixture under tests/contract/fixtures/ is a real exchange captured from the
-running Node server by tools/record/proxy.mjs. A route counts as ported only once
-it answers the recorded request the same way the Node server did.
+Every fixture under tests/contract/fixtures/ is a real recorded HTTP exchange. A route counts
+as covered once it answers the recorded request the same way it was recorded.
 
-Routes that have not been ported yet are reported as SKIPPED, not failed — the
-suite is a live progress meter for the migration as well as a regression guard,
-and a wall of red for work not yet started would just train everyone to ignore
-it. What is never skipped is a route that EXISTS in the port: once it answers at
+Routes with no implementation are reported as SKIPPED, not failed — a wall of red for work
+not yet started would just train everyone to ignore it. What is never skipped is a route that EXISTS in the port: once it answers at
 all, it must answer correctly.
 """
 
@@ -31,27 +28,27 @@ FIXTURES = sorted(FIXTURE_DIR.glob("*.json"))
 MAX_NORMALISED_FIELDS = 40
 
 #: Keys this build ADDS to a recorded response, per route, because the feature
-#: behind them does not exist in the Node app at all.
+#: behind them did not exist when the fixtures were recorded.
 #:
 #: Every entry is a deliberate, named divergence and nothing more: the recorded
 #: keys must still be present and byte-identical, so this can never hide a
 #: changed or dropped value — only an added one. A new preference is the one
-#: shape of divergence a port that is also building new things cannot avoid, and
+#: shape of divergence a growing app cannot avoid, and
 #: editing the RECORDING to accommodate it would quietly destroy the thing the
 #: recording is for.
-#: Routes this build has deliberately NOT ported yet, with the reason. They
+#: Routes this build has deliberately NOT implemented, with the reason. They
 #: report as skipped, exactly like a route nobody has started — the difference is
 #: that this one is a decision somebody made, written down where it will be read
 #: next time rather than rediscovered.
 DEFERRED_ROUTES: dict[tuple[str, str], str] = {
-    # Not deferred — deliberately never built. The Node app served its BUILT-IN
+    # Not deferred — deliberately never built. The recording served its BUILT-IN
     # tool catalogue at this path, from when tools and folder Skills were one
     # word, and reproducing it is exactly the mistake the Skills rule exists to
     # prevent: a built-in ability offered as an installable Skill. The Skills
     # screen reads /api/skills/installed, which reads folders and structurally
     # cannot return a built-in.
     ("GET", "/api/skills"):
-        "the Node route served built-in tools under the Skills name; this build "
+        "the recorded route served built-in tools under the Skills name; this build "
         "will not reproduce that — see routes/skills.py",
 }
 
@@ -110,17 +107,11 @@ ADDED_KEYS: dict[tuple[str, str], set[str]] = {
 #: in the recording is still compared byte for byte, which is what keeps this
 #: from becoming a way to wave away a response that quietly stopped answering.
 #:
-#: Removing anything at all needs a better reason than tidiness. These three
-#: qualify: `autoSelect`, `manualModelId` and `voiceModelId` were served by the
-#: preferences route and read by NOTHING in either build, so a person who set
-#: one had been running with a control that silently did nothing. A persisted
-#: per-role pin briefly replaced the two model ids and was itself removed as an
-#: application-level concern; `autoSelect` is gone outright, since "use the
-#: manual pick rather than ranking" is a question a pin existing or not already
-#: answers, and a separate boolean for it could only ever disagree with the
-#: thing it described.
+#: Removing anything at all needs a better reason than tidiness. These four qualify:
+#: `autoSelect`, `manualModelId`, `voiceModelId` and `balance` were preferences of the
+#: AI model system, which has been deleted in full — nothing reads them any more.
 REMOVED_KEYS: dict[tuple[str, str], set[str]] = {
-    ("GET", "/api/prefs"): {"autoSelect", "manualModelId", "voiceModelId"},
+    ("GET", "/api/prefs"): {"autoSelect", "manualModelId", "voiceModelId", "balance"},
 }
 
 
@@ -272,7 +263,7 @@ def _json_or_text(response):
 
 def test_fixtures_exist():
     """A harness with no fixtures passes vacuously — which is worse than failing."""
-    assert FIXTURES, "no contract fixtures recorded; run tools/record/proxy.mjs + drive.mjs"
+    assert FIXTURES, "no contract fixtures found under tests/contract/fixtures/"
 
 
 # A credential prefix on its own proves nothing — 'sk-' occurs inside the

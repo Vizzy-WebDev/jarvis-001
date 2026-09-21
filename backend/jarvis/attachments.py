@@ -112,7 +112,7 @@ def prepare_for_turn(ids: list[str] | None, *, session_id: str) -> Prepared:
             if not _can_take_rich_files():
                 prepared.notes.append(
                     f'"{name}" is a PDF, and none of the available models can read one '
-                    "directly right now. A Gemini model can. Tell the user that rather than "
+                    "directly right now. Tell the user that rather than "
                     "guessing at the contents.")
                 continue
             try:
@@ -161,10 +161,9 @@ def prepare_for_turn(ids: list[str] | None, *, session_id: str) -> Prepared:
 
 
 def _can_take_rich_files() -> bool:
-    from .model_system.request import Preferences, Requirements
-    from .model_system.router import rank
-
-    return bool(rank(Requirements(capabilities={"video": True}), Preferences()))
+    """Whether some model can read a PDF or watch video directly. No model
+    system exists yet, so nothing can."""
+    return False
 
 
 def _register(path: Path, name: str, session_id: str) -> str:

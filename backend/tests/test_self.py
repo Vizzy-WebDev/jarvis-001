@@ -188,10 +188,8 @@ def test_the_goal_is_reported_as_a_reading_not_a_verified_account():
 
 # --- notable tool outcomes reaching Self-Improvement --------------------------
 #
-# `record_attempt()`'s own rolling tally survived the S6 cutover intact; the
-# OTHER half of the Node original's self-capture.js — a NOTABLE outcome also
-# becoming `improvement_outcomes` material — did not, until now (see
-# self/CLAUDE.md's own entry on this). These drive real events through the
+# `record_attempt()` keeps a rolling tally; the OTHER half is a NOTABLE outcome also
+# becoming `improvement_outcomes` material (see self/CLAUDE.md). These drive real events through the
 # real observer wiring (`start_observers()`), not a direct call into
 # `capture.py`, so they prove the bus -> observer edge itself, the same
 # discipline test_jobs.py already uses for job/task capture.

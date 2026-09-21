@@ -2,7 +2,7 @@
 
 The behaviour worth pinning: a key goes in and never comes back out, the
 structure/secret split holds, and adding under an existing name is a refusal
-rather than a silent overwrite — a real, confirmed bug in the original.
+rather than a silent overwrite — a real, confirmed bug.
 """
 
 from __future__ import annotations

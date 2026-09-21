@@ -689,7 +689,7 @@ def disconnect(connector_id: str) -> None:
 
 async def recheck_no_auth_connectors() -> None:
     """Re-checks every connector currently saved as needing no authorization: if
-    its server actually publishes protected-resource metadata, the original
+    its server actually publishes protected-resource metadata, the earlier
     conclusion was wrong (a real, verified case: some servers answer both
     `initialize` and `tools/list` anonymously yet still publish real metadata,
     gating only actual tool calls) — demoted back to needing a real connect,

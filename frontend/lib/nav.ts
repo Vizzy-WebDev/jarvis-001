@@ -39,7 +39,7 @@ export const SECTIONS: Section[] = [
   { id: 'chat-history', label: 'Chat History', group: 'Assistant', ready: true,
     blurb: 'Every past conversation, searchable.' },
   { id: 'models', label: 'Model Settings', group: 'Brain', ready: true,
-    blurb: 'The models Jarvis can think with, and the keys they need.' },
+    blurb: 'The AI models Jarvis can think with. Being rebuilt.' },
   { id: 'skills', label: 'Skills', group: 'Abilities', ready: true,
     blurb: 'Folders of instructions Jarvis can follow.' },
   { id: 'app-control', label: 'Connector', group: 'Abilities', ready: true,

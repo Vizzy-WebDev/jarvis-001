@@ -1,15 +1,13 @@
 """Where screenshots and screen recordings live, and when they expire.
 
 One module for both, because they differ only in extension and retention
-numbers — the original had two near-identical files and both carried the same
-bug.
+numbers.
 
-**That bug is the reason this file's paths are built the way they are.** Both
-originals derived their directory from the source file's own location and
-honoured only their own dedicated environment variable, so a test run isolated
-the documented way — `JARVIS_DATA_DIR` pointed at a scratch directory — still
-wrote screenshots and videos into the user's REAL data folder. It was observed
-happening live, during the Node-to-Python migration. Here the directory comes
+**A bug this module must not reintroduce is the reason its paths are built the way they are.**
+A directory derived from the source file's own location, honouring only its own dedicated
+environment variable, means a test run isolated the documented way — `JARVIS_DATA_DIR` pointed at
+a scratch directory — still writes screenshots and videos into the user's REAL data folder. Here
+the directory comes
 from `store.data_dir()` like every other data path, and the dedicated variable
 is only an explicit override on top.
 

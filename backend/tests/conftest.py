@@ -1,11 +1,7 @@
 """Shared fixtures for the test suite.
 
-During the migration the most valuable tests here compared this implementation
-against the real Node one living in server/. That app was retired at the S6
-cutover, so those tests went with it — there is nothing left to compare against
-by definition. What survives is the durable half: tests/contract/fixtures/ holds
-45 real HTTP exchanges recorded from the Node server, replayed by
-test_contract.py, so the behaviour it promised still has a witness.
+The durable record of the API's behaviour is tests/contract/fixtures/: 45 recorded HTTP
+exchanges, replayed by test_contract.py, so the behaviour the API promises has a witness.
 """
 
 from __future__ import annotations
@@ -25,8 +21,8 @@ if str(BACKEND_ROOT) not in sys.path:
 
 @pytest.fixture
 def scratch(tmp_path, monkeypatch):
-    """An isolated data dir + .env, wired through the same overrides the Node app
-    uses. Testing must never touch the user's real data/, .env or port."""
+    """An isolated data dir + .env, wired through the standard overrides
+    (`JARVIS_DATA_DIR`, `JARVIS_ENV_PATH`, `PORT`). Testing must never touch the user's real data/, .env or port."""
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     env_path = tmp_path / ".env"

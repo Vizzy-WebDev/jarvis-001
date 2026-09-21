@@ -1,8 +1,8 @@
 """Secrets never reach a file, a log, or the model.
 
-A provider's raw error can quote the request that caused it. That text is
-stored in data/model-availability.json, written to the log, and — for a
-connector — handed back to the model and saved in the conversation. Every one of
+A service's raw error can quote the request that caused it. That text can be
+stored, written to the log, and — for a connector — handed back to the model and
+saved in the conversation. Every one of
 those is somewhere a key must not be.
 """
 
@@ -52,7 +52,7 @@ def test_a_key_shape_is_caught_even_when_nothing_was_saved(env):
 
 
 def test_an_unrelated_short_value_is_left_alone(env):
-    """Node's four-character floor: a trivially short stored secret would
+    """A four-character floor: a trivially short stored secret would
     otherwise blank out text wherever those characters happen to appear."""
     config.save_secret("tiny", "ab")
     assert redact("about half of that") == "about half of that"

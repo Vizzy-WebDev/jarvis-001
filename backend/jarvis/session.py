@@ -1,10 +1,7 @@
 """Which conversation is currently active, and switching between them.
 
-The session-management half of server/brain.js. The turn-running half (runTurn
-and its merge-and-restart coordinator) belongs to the live turn engine and lands
-with it in Wave 2 — splitting them here is deliberate: everything in this file is
-pure store manipulation that Wave 1's routes need, and none of it depends on a
-model being reachable.
+Everything in this file is pure store manipulation, and none of it depends on a model being
+reachable; the turn-running half lives in `orchestrator/`.
 
 `get_active_session_id()` is the ONE place the "which conversation is open"
 decision is made, so every caller stays in sync with whatever the user has open,

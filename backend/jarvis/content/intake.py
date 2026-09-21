@@ -5,9 +5,6 @@ package: it answers "what is this" from cheap metadata — YouTube's public oEmb
 endpoint, a page's own title, a file's size on disk — which is what lets Jarvis
 say "that's a 40-minute video about X, what do you want from it?" and then
 genuinely wait, rather than reading the thing first and asking afterwards.
-
-The other half is `prepare_for()`: putting a source in front of a model that can
-actually watch or see it, cheapest route first.
 """
 
 from __future__ import annotations
@@ -19,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from ..media import file_kind, human_size, inline_attachment, mime_type_for, TooBig
+from ..media import file_kind, human_size
 from ..webtext import BROWSER_UA, fetch_article
 
 logger = logging.getLogger(__name__)
@@ -294,76 +291,3 @@ def intake_description(kind: str | None) -> str:
         "document": "I read the document.",
         "text": "I read the text as given.",
     }.get(kind or "", "I looked at what was provided.")
-
-
-# --- putting it in front of a model -------------------------------------------
-
-class CannotPrepare(RuntimeError):
-    """This model cannot take this source. The message is for the user."""
-
-
-def prepare_for(model: Any, source: dict[str, Any]) -> dict[str, Any]:
-    """Media for a model that can genuinely watch or see this, plus a cleanup.
-
-    `model` is a `model_system.registry.ResolvedModel` — capability support
-    is read from what THIS model actually declares, tri-state, and only a
-    confirmed `NO` refuses; a model nobody has asked about is tried anyway.
-
-    Two routes, cheapest first: INLINE base64 (no upload, works on every
-    adapter) for small images and PDFs, and UPLOADED for video, audio, and
-    anything over the inline cap. The uploaded route pins the file to ONE
-    model's API key, which is why its caller must disable fallback.
-    """
-    from ..model_system.adapters import get_adapter
-    from ..model_system.capabilities import Support
-
-    caps = model.capabilities
-    adapter = get_adapter(model.provider.adapter)
-
-    if source.get("kind") == "youtube":
-        if caps.video_input is Support.NO:
-            raise CannotPrepare("That model cannot watch video.")
-        return {"media": [{"kind": "video", "mimeType": "video/*", "uri": source["url"]}],
-                "cleanup": None}
-
-    if source.get("kind") != "file":
-        raise CannotPrepare("That kind of source is read as text, not watched.")
-
-    path = Path(source["filePath"])
-    kind = file_kind(path)
-    mime_type = mime_type_for(path)
-    is_pdf = mime_type == "application/pdf"
-
-    if kind == "video" and caps.video_input is Support.NO:
-        raise CannotPrepare("That model cannot watch video.")
-    if kind == "audio" and caps.audio_input is Support.NO:
-        raise CannotPrepare("That model cannot listen to audio.")
-    if kind == "image" and caps.vision is Support.NO:
-        raise CannotPrepare("That model cannot see images.")
-    if is_pdf and caps.video_input is Support.NO:
-        raise CannotPrepare("That model cannot read a PDF directly.")
-    if not path.exists():
-        raise CannotPrepare("I can't find that file — check the path is right.")
-
-    if kind == "image" or is_pdf:
-        try:
-            return {"media": inline_attachment(path, mime_type), "cleanup": None}
-        except TooBig:
-            pass                         # over the cap: fall through to uploading
-        except OSError as err:
-            raise CannotPrepare("I couldn't read that file.") from err
-
-    upload = getattr(adapter, "upload_file", None)
-    if not callable(upload):
-        raise CannotPrepare(
-            "That file is too big to send directly, and this model's provider has nowhere "
-            "to upload it. A Gemini model can handle files this size."
-            if kind == "image" or is_pdf else
-            f"Taking in {'audio' if kind == 'audio' else 'video'} needs a model that can "
-            "accept file uploads — Gemini can.")
-
-    uploaded = upload(model.provider, str(path), mime_type)
-    return {"media": [{"kind": "image" if kind == "image" else "video",
-                       "mimeType": uploaded.get("mimeType", mime_type),
-                       "uri": uploaded["uri"]}],
-            "cleanup": uploaded.get("cleanup")}

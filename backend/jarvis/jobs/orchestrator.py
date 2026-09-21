@@ -47,8 +47,8 @@ def is_enabled() -> bool:
     return os.environ.get(ENABLE_ENV) == "1"
 
 #: How many jobs may be in flight at once, when the user has not said. Small on
-#: purpose: these compete for the same rate-limited model roster as the
-#: conversation the user is having.
+#: purpose: these compete for the same models as the conversation the user is
+#: having.
 MAX_ACTIVE_JOBS = 3
 
 #: No heartbeat for this long on a running job means the process is gone.

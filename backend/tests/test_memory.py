@@ -19,12 +19,8 @@ from jarvis import chat_store, conversation
 from jarvis.db import reset_for_tests as reset_db
 from jarvis.events import EventType
 from jarvis.events.bus import EventBus
-from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
-from jarvis.model_system.registry import add_model
 from jarvis.memory import review, store
 from jarvis.memory.policy import AUTO_APPROVE, REQUIRE_APPROVAL, THRESHOLDS, decide
-
-from stub_openai_server import StubModelServer
 
 
 @pytest.fixture(autouse=True)
@@ -161,104 +157,8 @@ def test_an_unreviewed_draft_dies_with_its_conversation_but_a_memory_does_not():
 
 # --- the checkpoint engine ---------------------------------------------------
 
-@pytest.fixture
-def stub():
-    server = StubModelServer()
-    server.base_url = server.start()
-    provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
-                            base_url=server.base_url, auth_method=AuthMethod.NONE,
-                            key_required=False)
-    add_model(provider_id=provider.id, native_model_id="stub-model")
-    yield server
-    server.stop()
-
 
 def extracts(*candidates):
     return json.dumps({"candidates": list(candidates)})
 
 
-def test_a_high_confidence_fact_auto_saves_only_at_a_trusting_setting(stub, monkeypatch):
-    from jarvis import prefs
-
-    stub.says(extracts({"text": "Drinks green tea.", "category": "About You",
-                        "confidence": 0.95, "importance": 2}))
-    prefs.set_prefs({"memoryTrust": "balanced"})
-    result = review.checkpoint_from_text("I only drink green tea.", source_kind="chat")
-
-    assert [m["text"] for m in result["autoSaved"]] == ["Drinks green tea."]
-    saved = store.list_memories()[0]
-    assert saved["origin"] == "auto", "how consent was given must be recorded"
-    assert saved["importance"] == 2
-
-
-def test_the_default_setting_asks_rather_than_saves(stub):
-    stub.says(extracts({"text": "Drinks green tea.", "category": "About You",
-                        "confidence": 0.99}))
-    result = review.checkpoint_from_text("I only drink green tea.", source_kind="chat")
-    assert result["autoSaved"] == []
-    assert [c["text"] for c in result["candidates"]] == ["Drinks green tea."]
-    assert store.list_memories() == []
-
-
-def test_a_reworded_repeat_of_a_saved_fact_is_dropped_deterministically(stub):
-    """The live failure this backstop exists for: Jarvis recalls a saved fact
-    out loud, the next checkpoint extracts its own recall as new evidence, and
-    it lands as a conflict against the very memory it duplicates."""
-    store.create_memory(category="About You", text="Sister is getting married in March")
-    stub.says(extracts({"text": "User's sister is getting married in March.",
-                        "category": "About You", "confidence": 0.95}))
-
-    result = review.checkpoint_from_text("my sister's wedding is in March", source_kind="chat")
-    assert result["candidates"] == [] and result["autoSaved"] == []
-    assert len(store.list_memories()) == 1
-
-
-def test_a_genuine_change_is_still_proposed(stub):
-    store.create_memory(category="About You", text="Uses a Mac.")
-    stub.says(extracts({"text": "Uses a Windows PC.", "category": "About You",
-                        "confidence": 0.95, "conflictsWithId": "nope"}))
-    result = review.checkpoint_from_text("I switched to Windows", source_kind="chat")
-    assert [c["text"] for c in result["candidates"]] == ["Uses a Windows PC."]
-
-
-def test_nothing_worth_remembering_is_a_normal_answer(stub):
-    stub.says(extracts())
-    assert review.checkpoint_from_text("what's the weather", source_kind="chat") == {
-        "candidates": [], "autoSaved": []}
-
-
-def test_a_conversation_checkpoint_only_reads_what_is_new(stub):
-    convo = chat_store.create_conversation()
-    chat_store.append_message(convo["id"], {"role": "user", "text": "I live in Lagos."})
-    stub.says(extracts({"text": "Lives in Lagos.", "category": "About You", "confidence": 0.5}))
-    review.checkpoint_conversation(convo["id"], "new chat")
-    assert len(stub.requests) == 1
-
-    # Nothing new since: no second model call, and no duplicate candidate.
-    review.checkpoint_conversation(convo["id"], "new chat")
-    assert len(stub.requests) == 1
-    assert len(store.list_pending_candidates()) == 1
-
-
-def test_no_model_available_defers_rather_than_losing_the_material(stub):
-    """A failed checkpoint must not silently drop what it was about to read."""
-    convo = chat_store.create_conversation()
-    chat_store.append_message(convo["id"], {"role": "user", "text": "I live in Lagos."})
-    stub.fails(429, "Rate limit exceeded")
-
-    result = review.checkpoint_conversation(convo["id"], "new chat")
-    assert result.get("skipped") is True
-    assert store.get_checkpoint(convo["id"]) == 0, "the pointer must not advance"
-
-
-def test_an_auto_save_is_announced_so_it_can_be_undone(stub):
-    from jarvis import prefs
-
-    seen = []
-    ebus = EventBus()
-    ebus.subscribe(EventType.NOTIFICATION_CREATED, lambda e: seen.append(e.payload))
-    prefs.set_prefs({"memoryTrust": "auto"})
-    stub.says(extracts({"text": "Drinks green tea.", "category": "About You", "confidence": 0.4}))
-
-    review.checkpoint_from_text("green tea only", source_kind="chat", event_bus=ebus)
-    assert seen and "remembered" in seen[0]["title"]

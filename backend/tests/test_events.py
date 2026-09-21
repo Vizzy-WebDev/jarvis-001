@@ -1,6 +1,6 @@
 """The event bus (§38).
 
-The properties tested are the ones the Node implementation lacked: a named
+The properties tested: a named
 vocabulary that rejects typos, isolation so one bad observer cannot break a turn,
 and a publisher that never blocks on a slow UI consumer.
 """

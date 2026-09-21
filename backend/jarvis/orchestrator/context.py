@@ -218,13 +218,9 @@ class RelevanceContext:
 
         # The adaptive communication register — both its stable half
         # (STYLE_FRAMEWORK, via has_audience below) and its per-turn half
-        # (the floors) share the same gate Node's own `systemInstructionParts`
-        # uses: `hasAudience = !background or addressed`. A briefing's own
-        # turn also runs with `background=True` today (there is no separate
-        # `addressed` flag threaded through `TurnRequest`/`Surface` the way
-        # the Node build had one), so a briefing gets neither half either —
-        # narrower than the Node design, disclosed rather than silently
-        # matched with plumbing this wave didn't scope.
+        # (the floors) share one gate: `has_audience = not background`. A briefing's own
+        # turn also runs with `background=True` (there is no separate `addressed` flag
+        # threaded through `TurnRequest`/`Surface`), so a briefing gets neither half.
         has_audience = not background
         floors_text = ""
         if has_audience:

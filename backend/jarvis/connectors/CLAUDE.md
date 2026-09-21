@@ -1,542 +1,153 @@
-<!-- Ported from the Node build during the S6 cutover. The architecture, the
-invariants and the live-caught bugs described here all carried over deliberately and
-still hold. File paths have been updated to their real Python counterparts and are
-verified to exist. Function names written in camelCase (`getToolDeclarations()`) are
-the NODE originals, kept because the surrounding reasoning is about them; the Python
-equivalent is the snake_case function doing that job in the same module. Where a Node
-module had no Python counterpart, the text says so rather than pointing at a file that
-does not exist. -->
+# Connectors (`jarvis/connectors/`)
 
-# App Control connectors (`jarvis/connectors/*.py`)
+A connector is one saved way to reach something beyond raw desktop control: a record in
+`data/connectors.json`, `{id, type, label, enabled, config, status}` (`store.py`, a leaf: the JSON
+store and the clock).
 
-**This whole area was fully rebuilt** (not patched), including the MCP transport itself
-in a second pass after the first left it as untouched legacy code — see "Standing
-permission vs. runtime confirmation" below for why and what changed. Everything in this
-section describes the current, rebuilt state.
+Two groups of type:
+- **Singletons** — `files` and `browser` (`SINGLETON_TYPES`). Jarvis's own built-in abilities: there
+  is one set of "your browser settings", not a list. `get_or_create_singleton()` creates them on
+  demand; the user never adds one and they have no App Control card. Their tool names are NOT
+  prefixed (`UNPREFIXED_TYPES`).
+- **The three peer, user-facing mechanisms** — `mcp`, `api`, `cli` (`USER_TYPES`). A user adds them
+  either from the **Official Connectors** directory (`catalog.json`, listed by `catalog.py`) or as a
+  **Custom Connector**, the one place a user picks a mechanism directly. None is "the real one" with
+  the others bolted on: `capabilities.py` reads each mechanism's client module through the same
+  interface, and every tool from any of them goes through the same permission filter and the same
+  risk check before it reaches a model.
 
-A connector is one saved way to reach something beyond raw desktop control:
-`data/connectors.json`, `{id, type, label, enabled, config, status}`. `browser`
-and `files` are **singletons** (`getOrCreateSingleton()` — there's one "your
-browser settings", not a list of them) — Jarvis's own built-in abilities, not
-user-added connectors, no App Control card. `mcp`, `api`, and `cli` are the
-three **peer, user-facing mechanisms** — the ONLY kinds a user ever adds
-themselves, either from the **Official Connectors** directory (bundled,
-`connectors/catalog.json` + `catalog.py` — every entry already knows
-which mechanism it needs, so browsing never asks) or as a **Custom
-Connector** (the one place a user picks a mechanism directly — App
-Control's "Add custom connector" form asks MCP server URL / API base
-address + key / CLI command, matching whichever they chose). None of the
-three is privileged as "the real one" with the others bolted on:
-`connectors/capabilities.py`'s `rawToolsFor()` reads each mechanism's own client
-module through the same interface, and every tool — regardless of
-mechanism — goes through the exact same standing-permission filter and
-`classifyToolRisk()` risk check before it ever reaches a model.
+## `capabilities.py` — every connector's tools, merged into what the model can call
 
-Every enabled connector's tools merge into `capabilities/`'s existing
-`getToolDeclarations()`/`listCapabilities()`/`invoke()` as a **third** source alongside
-built-in tools and folder Skills (`connectors/capabilities.py`'s `getToolDeclarations()`,
-wrapped by `capabilities/`'s `connectorCapabilities()`) — a connector tool is
-indistinguishable from any other capability to the model.
+`connector_specs(connector)` turns each tool into a `CapabilitySpec` of `CapabilityKind.CONNECTOR`;
+`sync(registry)` registers every enabled connector's tools and unregisters what is gone;
+`refresh_tools(connector_id)` is the ONLY place that reaches out to ask a connector what it can do
+(for MCP it caches the tool list in the connector's config, for an API connector it re-reads its
+OpenAPI spec), so building a declaration list never starts a process or makes a request.
+`tool_names_for(connector_id)` resolves a connector's current capability names on demand — a
+scheduled task or briefing saves connector IDS and asks here at every run, because a tool list
+changes when a connector reconnects. Non-singleton tool names are prefixed `<label>__<tool>`.
 
-- **`skills/files.py`** — read/write/list/move, every path resolved to absolute and checked
-  against the allowlist BEFORE any `fs` call (never trust a relative path or a `..`
-  segment). Tool names are NOT prefixed (`list_files`, `read_file`, ... — a singleton
-  connector can't collide with another one of the same type).
-- **`browser_connector.py`** — drives a real, VISIBLE Chrome/Edge window over CDP via a plain
-  WebSocket (the already-installed `ws`), its own dedicated profile dir + fixed debug
-  port 9333, entirely separate from the user's normal browser — a deliberate choice, kept
-  even after the "reuse an already-open Chrome window" requirement was revisited: a real
-  Chrome tab's accessibility tree is not reliably populated for generic UI-Automation
-  reading the way this connector's own CDP `Runtime.evaluate` reads real DOM text, so
-  isolation was kept for reliability; the visible window only opens at all when a task
-  genuinely needs to click/type/interact with a page (see `prompt.py`'s "Browsing"
-  section and each tool's own tightened description — a plain lookup never reaches this
-  connector). Click/type/read all go through `Runtime.evaluate` running a small script in
-  the page (see the Gotchas section below for why the Input domain's raw event dispatch
-  isn't used) rather than driving it with the desktop mouse — reading a page's real
-  text/DOM beats a screenshot guess. Tool names also unprefixed (`browser_navigate`,
-  `browser_click`, ...). **`renderPageHeadless(url)`** is a second, genuinely separate
-  code path (own port 9334, own profile, `--headless=new`, never a visible window,
-  launched fresh and torn down per call rather than kept running) — `read_web_page.py`'s
-  own fallback when a plain `fetch()` comes back too thin to be real content (a
-  JS-rendered single-page app with no server-rendered HTML), so even a page a plain fetch
-  can't read stays invisible rather than falling back to the visible connector.
-  `launchAndConnect()`/`navigateOn()`/`evaluateOn()` are the shared bootstrap both this
-  and `ensureBrowser()` build on, so the cold-start fragility fixes (the flat post-devtools
-  pause, the bootstrap retry loop) live in exactly one place for both.
-- **`mcp_client.py`** — the **local/stdio** MCP transport: hand-written JSON-RPC 2.0
-  over a spawned process's stdin/stdout (not the `@modelcontextprotocol/sdk` — see the
-  no-new-dependencies rule), one persistent process per connector (same
-  request/response id-matching shape as `control/control/desktop.py`). `initialize` →
-  `notifications/initialized` → `tools/list` → `tools/call`. **Hidden internal
-  plumbing only, never a user-facing choice** — Jarvis runs locally, so a locally-
-  spawned server is a real capability an Official Connector's `connectFlow` can use
-  internally (`{kind: 'stdio', command, args, env}`), but the user only ever sees a
-  name and a Connect button, never "this one happens to run as a local process."
-- **`connectors/mcp_client.py`** — the **remote** MCP transport real hosted servers speak
-  (Notion, GitHub, Slack, Stripe, ...): Streamable HTTP, every JSON-RPC call a POST to
-  one URL carrying a bearer token and an `Mcp-Session-Id` once assigned. A response may
-  come back as plain `application/json` OR `text/event-stream` (SSE) — a server MAY
-  upgrade to streaming even for a single request/response, so both are parsed. Plain
-  `fetch()`, no new dependency.
-- **`api_client.py`** — the **API key** mechanism. `discoverFromSpec(specUrl)` parses a
-  real OpenAPI/Swagger JSON document's `paths` into one proposed operation per
-  method+path, for the user to tick before anything saves (same "propose, user
-  confirms" shape as CLI discovery below); `dispatch()` runs a saved operation with
-  plain `fetch()`, injecting the key server-side (`config.py`'s `getSecret()`) so it
-  never reaches the model. See the two real bugs this surfaced in the gotchas below —
-  both found by testing against real, live public APIs, not by reasoning about the code.
-- **`cli_client.py`** — the **CLI** mechanism. `discoverCommands(command)` runs the
-  real `<command> --help` and asks a model to propose a subcommand list
-  (`{name, description, argv, args}`) for the user to review/tick — the model never
-  invents an executable command, only proposes data. `dispatch()` substitutes each
-  `{placeholder}` in a saved `argv` template with exactly the matching supplied value,
-  one argv entry each, and runs via `spawn(command, argv, {shell: false})` — **never a
-  raw shell string, anywhere** — same discipline as `skills/open_app.py`'s allowlist;
-  nothing about a call can inject an extra flag or chain a second command.
-- **`oauth.py`** — OAuth 2.1 + PKCE client, the auth mechanism behind every remote `mcp`
-  connector (official or custom). First runs `probeAuthorization()` — a real
-  unauthenticated `initialize` + `tools/list` against the server itself — since some
-  servers (Google's Gmail/Drive MCP servers, confirmed live) answer the handshake
-  anonymously and only gate real tool calls; a server that needs nothing at all is saved
-  as `connectFlow.kind: 'none'` and connects with no browser tab. Otherwise discovers the
-  server's OAuth setup (RFC 9728 Protected Resource Metadata → RFC 8414 Authorization
-  Server Metadata, both path-aware before falling back to a bare-origin guess — see the
-  RFC 9728/8414 compliance bug below), then obtains a client in the MCP spec's own
-  priority order (`obtainClientCredentials()`): **1.** a pre-registered or previously
-  manually-typed Client ID; **2.** a Client ID Metadata Document (`connectors/oauth.py`;
-  needs a real publicly-reachable address for this Jarvis, via `setPublicBaseUrl()` —
-  absent that, this step is skipped entirely, not a regression); **3.** RFC 7591 Dynamic
-  Client Registration when the server supports it (`token_endpoint_auth_method: 'none'`
-  — a public client authenticated only by PKCE, no pre-shared secret needed at all —
-  this is why Notion/GitHub/Slack/Stripe-style "Connect" buttons need nothing from the
-  user); **4.** none of the above worked — returns `{needsManualClient: true, reason,
-  message}` (`manualClientHint()`) rather than throwing, so a real, per-connector,
-  service-worded explanation is persisted on `connectFlow.manualClient` and the connector
-  is never left stuck. `manualClient`'s message is shown as plain status text on the
-  connector detail page, above a collapsed, optional Client ID/Secret entry point — see
-  "Client ID/Secret UI, round 5" below for the current shape and the four rounds that
-  preceded it. The redirect lands on Jarvis's OWN
-  already-running server (`GET /api/connectors/oauth/callback`) — no separate temporary
-  listener needed. Token sets are one `JSON.stringify`'d value under the connector's
-  `config.secretRef`, through the existing `config.py` `saveSecret()`/`getSecret()` — no
-  new secret store. `getAccessToken()` silently refreshes an expiring token; never a
-  second Connect prompt for a still-valid connection.
-- **`connectors/oauth.py`** — the single source of truth for what Jarvis calls itself as
-  an OAuth client: `redirectUri()`, the Client ID Metadata Document body
-  (`clientMetadataDocument()`), and the DCR registration body derived from the same
-  object (`clientRegistrationBody()`) — so the document an authorization server fetches
-  and the body DCR posts can never drift apart. `cimdUrl()` returns null (CIMD silently
-  skipped, DCR still runs) until `setPublicBaseUrl()` is configured — Jarvis binds to
-  `127.0.0.1` only, so a remote authorization server can never fetch a document Jarvis
-  serves locally without a real, publicly-reachable address in front of it.
-- **`catalog_credentials.py`** — one Client ID/Secret **per catalog entry**, and
-  shared by every connector that catalog entry ever creates for this install. No UI
-  calls its `register-client` route (see "Client ID/Secret UI, round 5" below) — the
-  per-connector Advanced Settings section talks to `POST /:id/connect` directly instead,
-  a separate mechanism for a separate purpose (one-off override vs. set-once-globally). The
-  route stays reachable server-side, meant to be called directly (e.g. by Claude,
-  given real credentials outside the app) if the user ever wants Gmail/Drive/GitHub/
-  Slack actually connected. This exists specifically because Google/GitHub/Slack's
-  real OAuth servers don't support automatic registration (verified live — no
-  `registration_endpoint`), unlike Notion/Composio: SOME registration has to happen
-  somewhere, and this is what makes it happen once per service instead of once per
-  connector. It's the single-user-install equivalent of what a real product with a
-  backend does — Claude's own Gmail/Drive connectors never ask because Anthropic
-  registered one OAuth client centrally, invisibly, shared by every Claude user forever;
-  a Jarvis install has no such backend, so the user plays that role for their own
-  install, exactly once, instead of never. `main.py`'s `POST
-  /api/connectors/catalog/:catalogId/ensure` checks this BEFORE creating a brand-new
-  connector record and, if a credential is already registered, seeds the new
-  connector's `connectFlow.clientId` and its own `connclient_<id>` secret at creation
-  time — so `oauth.py` needs no awareness this happened at all; `existingFlow.clientId`
-  in `startConnect()` is just already populated, and the connector goes straight to a
-  real `authUrl` on its very first Connect click, same as Notion's DCR path. The Client
-  ID lives in `data/catalog-credentials.json` (git-ignored, like everything under
-  `data/`) — never in the bundled, hand-verified `catalog.json`, which stays read-only
-  at runtime on purpose (see `get-catalog.py`'s own doc comment). The secret never
-  touches that JSON file either — same `saveSecret()`/`getSecret()` every other
-  credential in this codebase uses, under `catalogclient_<catalogId>`.
-- **`get-catalog.py`** — the bundled **Official Connectors** directory. Every entry is
-  `{id, label, icon, description, connectFlow}`; clicking Connect on any of them runs
-  the exact same `oauth.py` flow a Custom Connector's own URL would, just pre-filled —
-  **official connectors are just curated + pre-filled custom connectors**, same
-  mechanism underneath, never a different code path. **Catalog honesty rule**: an entry
-  is only added once its `connectFlow` has been tested end to end against the real
-  service — never on the strength of "the transport code should work in theory."
-  Notion, GitHub, Slack, Google Drive, and Gmail are the entries today for exactly that
-  reason — **Figma was deliberately NOT added**: verified live (its own real docs page,
-  fetched directly) that Figma's remote MCP server only accepts pre-approved catalog
-  clients (VS Code, Cursor, Claude Code) — dynamic client registration returns 403 for
-  anyone else, personal access tokens are rejected at the MCP endpoint, and the only way
-  in for a new client is a waitlist. No guided-setup form can work around a server that
-  refuses the client itself; revisit only if Figma's own policy changes.
+**Standing permission and runtime confirmation are two different things, deliberately not merged.**
+- A standing PERMISSION (`store.tool_permission()`: `allow` | `ask` | `deny`, default `allow`, set
+  per tool by the user) answers "may Jarvis use this at all". A `deny` tool is not declared at all, so
+  the model never has to be refused. The lookup uses the PREFIXED name, since that is the only name the
+  frontend, and therefore any saved permission, knows. Looking it up by the raw server name was a real
+  bug: it always missed, so a tool set to "Blocked" stayed reachable. `_dispatch` re-checks at call
+  time and re-reads the connector, since a permission or key may have changed since the declaration.
+- A runtime CONFIRMATION comes from the risk classifier. A tool is `Risk.MEDIUM` (so it needs
+  approval, through `policy/decide.py`) if it is classified `risky` OR its standing permission is
+  `ask`; neither can suppress the other, so "always allow" does not stop a risky tool confirming.
+  Connector tools are never HIGH.
 
-`connectors/capabilities.py` prefixes an `mcp`/`api`/`cli` connector's tool names as
-`{sanitized-label}__{name}` to avoid collisions across multiple connectors (files and
-browser skip this since they're singletons), and routes a call by reading
-`connector.type`: `'api'` → `api_client.py`, `'cli'` → `cli_client.py`, `'mcp'` →
-`connector.config.connectFlow.kind` (`'stdio'` → `mcp_client.py`, `'oauth_dcr'` /
-`'oauth_guided'` → `connectors/mcp_client.py`). `connectFlow`/mechanism is internal
-bookkeeping the model never sees as a "type" — the UI shows it only once, as the App
-Control tab a connector lives in and the one question "Add custom connector" asks.
+Errors from a connector are passed through `redact.py`'s `redact_text()` before they go back to the
+model, the saved conversation and the next provider's request, since a service that quotes a request
+back could otherwise send a key straight through.
 
-### Standing permission vs. runtime confirmation — how the current design was reached
+## `risk.py` — how dangerous is a tool nobody here declared?
 
-This area was fully rebuilt (not patched, three rounds in one session) after an original
-3-way Always/Ask/Never permission dropdown was found to conflate two genuinely separate
-requirements: **standing permission** ("is Jarvis allowed to use this tool at all") and
-**runtime confirmation** ("does it pause to ask right now, regardless of standing
-permission"). Along the way, a real risk-classifier bug surfaced: `classifyActionRisk()`
-was scanning a tool's entire raw MCP description (real ones run to a couple thousand
-characters with usage examples) with plain substring matching — "SharePoint" matched
-"share", "in sidebar order" matched "order". Fixed with word-tokenized matching
-(`guard.py`) plus truncating to the first sentence before it ever reaches the classifier
-(`shortDescription()`). **Two more real bugs in this same area, found later, both in
-`jarvis/control/CLAUDE.md`'s Gotchas**: `classifyActionRisk()` was lowercasing an
-identifier before ever checking its camelCase boundary (silently undoing the
-word-tokenization fix above for any tool name shaped like `COMPOSIO_MULTI_EXECUTE_TOOL`
-— it never actually tokenized into `[..., "execute", ...]`, yet was still landing on
-'risky' regardless, via a different path); and `classifyToolRisk()` (below) now trusts a
-tool's real description over its bare name once one exists, specifically because a
-generic gateway/dispatcher tool (Composio's own `COMPOSIO_MULTI_EXECUTE_TOOL` is the
-confirmed live example) can have a risky-sounding word baked into its own name with no
-relation to what any given call actually does — the description is the more honest
-signal when there's a real one to read. The rebuild produced `api_client.py`/`cli_client.py` as real,
-working mechanisms (not just permission-model theory) and the standing permission
-(Allowed/Not-allowed toggle, see "Connector detail pages" below) fully separated from
-runtime confirmation (automatic, `classifyToolRisk()`, no per-tool override at all). Full
-three-round account: handoff-archive.md's "connector/permissions full rebuild" session entry.
-`order` was tried as a risky keyword and dropped — it matched "in sidebar order"
-(sequence) as often as "place an order" (purchase); `purchase`/`buy`/`checkout`
-already cover the money-spending case without that ambiguity, and once something is
-risky it can no longer be silenced with the standing-permission toggle, so a bad
-keyword here is a permanent annoyance, not a one-time one. Re-verified against a real
-27-tool Notion connector: 4 tools classify risky (`update-page`, `move-pages`,
-`update-data-source`, `update-view`) — all genuine "changes something" actions.
+A built-in declares its own risk; a connector tool's name and description come from a server this
+build has never seen, so risk is inferred, bluntly and word-based, because the cost is asymmetric (a
+false "risky" costs one confirmation, a false "safe" sends the email). Pure: no I/O, no state.
+- **Whole words, never substrings.** Substring matching found "share" in "SharePoint" and "order" in
+  "in sidebar order".
+- **camelCase is split in a tool's NAME but not in its description.** A name is an identifier where
+  `updatePet` really means update; a description is prose where SharePoint is a proper noun, and
+  splitting it re-creates the false positive. Lowercasing an identifier BEFORE splitting destroys the
+  boundaries — keep the real casing into `words()` for identifiers only.
+- Only Jarvis's OWN connectors may declare a risk; anything from an outside server is always
+  classified and cannot declare itself safe.
+- `control/guard.py` imports these word lists rather than copying them, so there is one vocabulary.
+- **Structural blind spot:** a generic "run whatever tool was found" dispatcher (a gateway-style MCP
+  server such as Composio's) hides its real danger in its arguments, which a static per-declaration
+  classifier never sees.
 
-### Desktop control / Browser / Files have no settings screen
+## The mechanisms
 
-`frontend/components/screens/AppControlScreen.tsx` (nav label: **Connector** — renamed from
-"Connectors" to "App Control" partway through the App Control/Skills/Monitoring/Sandbox
-upgrade once MCP became one of three mechanisms rather than the only one, then renamed
-again to "Connector" by direct user request; the component file and `id: 'app-control'`
-were deliberately left as-is both times — only the displayed `label` in `frontend/lib/nav.ts`
-changes, so a bookmark/hash/voice command naming the section by id never breaks) shows only the
-Connectors card now — no Desktop control, Browser, or Files cards. These three are Jarvis's own
-built-in abilities, not things the user "adds" or configures, the same reasoning
-already applied to the Skills screen (see the root `CLAUDE.md`'s "Jarvis's built-in
-abilities... must never appear in the Skills screen") — it just took a direct question
-from the user ("shouldn't these be Jarvis's own capability, not something on the
-interface?") to notice it hadn't been applied here too. What used to live on those
-cards:
+- **`files_connector.py`** (`files`) — read, write, list and move, inside an allowlist that starts
+  EMPTY and grows only through conversation: an operation outside it fails with a plain error, the
+  model asks, and only after an explicit yes does `tools/allow_folder.py` remember the folder. Every
+  path is resolved and checked BEFORE any filesystem call (a relative path and `..` look like they stay
+  put and do not; a symlink is only caught by resolving it).
+- **`browser_connector.py`** (`browser`) — a real, VISIBLE browser window Jarvis drives when a page
+  has to be interacted with (`browser_navigate`, `browser_read_page`, `browser_click`, ...), through
+  Playwright as an optional import: no browser installed means a plain answer, not a stack trace. **Its
+  own window and profile under the data folder, never the user's** — a task that borrows someone's
+  browser inherits their logins and open work. A page is read by running a script against it (real
+  text and elements), never by looking at a picture and guessing coordinates. It is separate from
+  `webrender.py`, which renders a page headlessly for a background lookup and closes it; a background
+  lookup must never navigate a page the user is watching. `NAV_TIMEOUT_MS` and `MAX_TEXT_CHARS` bound it.
+- **`mcp_client.py`** (`mcp`) — an MCP server over stdio or HTTP, using the official MCP client library
+  (already a dependency). **It connects per call, not once and kept**: a held-open subprocess is a
+  lifecycle to get wrong, so a call is slower than against a warm process, and that trade is stated
+  rather than hidden. The tool LIST is cached in the connector's config, so listing declarations never
+  starts a server. Tokens live behind the connector's `secretRef` (see `oauth.py`).
+- **`api_client.py`** (`api`) — an HTTP API as tools. Operations come from an OpenAPI document
+  (`discover_from_spec()`) or are added by hand. **The key never reaches the model**: it is a secret
+  reference read at call time, and a declaration carries only name, description and parameters.
+- **`cli_client.py`** (`cli`) — a local program as tools. Every command is a SAVED TEMPLATE: a fixed
+  program and argv list where only marked placeholders are filled from the model's arguments, so the
+  model chooses VALUES and never the command or a flag. No shell — the program is executed directly with
+  an argument list, so quoting, globbing and `;` mean nothing — and the child gets
+  `jarvis/childenv.py`'s scrubbed environment, so a program in a template cannot read the user's model
+  API keys.
 
-- **The safety blocklist, autonomy, and screenshot retention** (`control/safety.py`'s
-  `DEFAULTS`) are now **fixed, non-editable defaults** — no screen, no API write path
-  (`GET`/`POST /api/safety` were removed; `getSafetyConfig()` is still called
-  in-process by `session.py`/`control/captures.py`/`guard.py`, only its HTTP exposure
-  is gone). The user's explicit choice: these are "sensible hardcoded defaults," not
-  something worth a settings UI.
-- **The Files folder allowlist** has no form either — it starts empty and grows only
-  through conversation. `jarvis/tools/allow_folder.py` is the only way it changes:
-  `confirm: 'always'` (reusing the existing read-back-and-confirm gate in
-  `capabilities/`, the same mechanism `remember_about_me` uses, rather than trusting
-  the model's own judgment about what counts as a real "yes"), with its own small
-  hardcoded denylist (`C:\Windows`, `C:\Program Files`, `C:\Program Files (x86)`) that
-  can never be granted regardless of what's asked — the same "sensible hardcoded floor"
-  idea as the blocklist above, applied to the filesystem. `prompt.py` tells the model to
-  ask the user by name for the specific folder it needs before ever calling this. Meta
-  skill (`meta: true`) — granting new access only makes sense in a live conversation,
-  never during an unattended scheduled task.
-- **Browser** loses its on/off toggle and Test button — it's simply always available,
-  same as Desktop control already was (that card never had an enable/disable control
-  either, only settings).
+## `oauth.py` — OAuth 2.1 + PKCE for remote MCP connectors
 
-**A real startup-ordering bug this surfaced**: `getOrCreateSingleton('files', ...)` /
-`getOrCreateSingleton('browser', ...)` used to only ever run as a side effect of the
-now-removed cards' `GET /api/connectors/files` / `GET /api/connectors/browser` fetching
-them on page load. A fresh install that never visited that page would never have either
-connector record, and `connectors/capabilities.py`'s `getToolDeclarations()` would silently
-never find one to register `list_files`/`browser_navigate`/etc. from — losing both
-abilities entirely for a new user, invisibly. Fixed by seeding both singleton records
-once at server startup (`main.py`, right after `startScheduler()`), unconditionally,
-not lazily from a UI visit that no longer exists.
+The mechanism behind both a catalogue entry and a custom MCP connector (an official entry is a
+curated, pre-filled custom one). **Generic by construction: no code branches on a service's name or
+domain; every decision is driven by what a server's own metadata says.** It follows the MCP
+Authorization spec (RFC 9728 protected-resource metadata, RFC 8414 authorization-server metadata,
+OAuth 2.1 + PKCE, RFC 9207 `iss` mix-up mitigation, RFC 8707 resource indicators).
 
-### Connector detail pages, per-tool permissions, and the guided-setup flow
+Flow: probe (one real unauthenticated request; a non-401 means no OAuth is needed, and a 401's own
+`WWW-Authenticate` is the authoritative place to look next, never a guess) → discover the protected
+resource and the authorization server, verifying PKCE support → obtain client credentials
+(pre-registered or manually supplied first, else Dynamic Client Registration) → `start_connect()`
+builds the authorize URL, or reports `noAuthNeeded` with no browser tab at all → `handle_callback()`
+validates `iss` and redeems the code on Jarvis's own already-running server (pending flows are stored
+in `connector-oauth-pending` for `PENDING_FLOW_TTL_S`) → `get_access_token()` returns a valid token,
+silently refreshing an expiring one.
 
-Two separate surfaces, kept deliberately apart after an implementation slip got
-corrected mid-build: the **Connectors** card on the main page lists only what's
-already added (connected or mid-setup); **"Browse connectors"** (one of "+ Add"'s
-two options, alongside "Add custom connector") is the full Official Connectors
-directory with its own search — looking through everything never clutters the main
-list. Clicking any row, from either surface, opens the same connector detail page
-(`frontend/components/screens/AppControlScreen.tsx`) — not a hash route; `frontend/components/screens/AppControlScreen.tsx` swaps
-its own container's content internally between its list view(s) and this view,
-same "wipe and rebuild" pattern every screen uses, just at a finer grain within one
-section.
+- It is built ON the MCP SDK's OAuth building blocks (PKCE, discovery URL orderings, the RFC 7591
+  registration request, `WWW-Authenticate` parsing) but NOT the SDK's `OAuthClientProvider`, which
+  blocks on one in-process redirect/callback pair and cannot span two separate HTTP requests with a
+  browser round trip between them.
+- The SDK's registration helper returns a request object of a transitive dependency's type; use it only
+  to resolve the endpoint and build the body, then send it through this project's own `httpx`.
+- **CIMD (Client ID Metadata Document) is deliberately not implemented**: it only pays off with a
+  publicly reachable https address, which this project has none of.
+- **A manual Client ID/Secret is optional and collapsed by default** ("Advanced settings" on the MCP
+  connect card in `AppControlScreen.tsx`). It is sent on Connect only when filled in; left blank the
+  request is unchanged and the automatic chain (discovery → dynamic registration) still runs first. A
+  failed automatic attempt returns a `manualClient` hint explaining what to do; the section is never
+  auto-expanded.
+- `catalog_credentials.py` stores ONE Client ID/Secret per catalogue entry, registered once by the user
+  and shared by every connector that entry creates (the closest a single-user install with no backend
+  gets to a product registering one client centrally), because some real providers do not support
+  dynamic registration. It is a leaf over `store.py`'s JSON helpers; the secret goes through
+  `config.save_secret()`.
 
-**Per-tool permissions — two genuinely separate things, not one dropdown.**
-Rebuilt after the user re-read their own original spec and pointed out it
-described two different paragraphs ("Connector/tool permissions" vs.
-"Permission and safety... regardless of what standing permissions I've
-configured") that an earlier version had conflated into a single 3-way
-Always/Ask/Never control:
+## Catalogue, icons, routes
 
-- **Standing permission** (`config.toolPermissions: {[toolName]: 'blocked'|'ask'}`)
-  — is Jarvis allowed to use this tool AT ALL, and (separately) does an
-  otherwise-allowed call to it always pause to confirm. **Corrected — this
-  used to say the model was 2-state (Allowed/Not-allowed) with `'ask'` a
-  dead legacy value; that was stale even against this file's OWN later
-  section below, which documents `'ask'` as a real, current control. It is
-  genuinely 3 stored values, not 2**, confirmed directly in
-  `connectors/capabilities.py`'s `getToolDeclarations()`: a key's absence means
-  allowed (the default for every newly-discovered tool); `'blocked'` (a
-  legacy `'never'` reads the same) filters the tool out of the model-facing
-  list completely — though it still shows on the detail page, toggle
-  included, so the user can change their mind; `'ask'` lets the tool
-  through but is carried alongside its declaration so the confirm
-  computation always honors it, same as a genuinely `risky` tool would.
-  Combined with the fully independent, automatic risk-based confirm below,
-  a tool's real behavior is one of **4 outcomes**: unreachable (blocked),
-  always confirms (ask, OR automatically risky regardless of this setting),
-  or usable with no extra confirmation (allowed and not risky).
-- **Runtime confirmation** — whether using an *allowed* tool pauses to
-  confirm right now. Purely automatic, from `guard.py`'s
-  `classifyActionRisk()` via `connectors/capabilities.py`'s exported
-  `classifyToolRisk(name, description)` — **no per-tool setting anywhere
-  changes this**, matching "regardless of what standing permissions I've
-  configured" literally. The detail page shows a small read-only "Always
-  confirms" badge (`main.py`'s `publicConnector()` attaches a `risk` field
-  to each `mcpTools` entry using the very same `classifyToolRisk()`, so the
-  badge can never drift out of sync with what actually happens at runtime)
-  but there is nothing there to click — confirmation timing isn't a dial.
-
-**Tool grouping is a zero-cost, zero-model-call heuristic**, not a claim of real
-information architecture (this section describes real, current behavior again as
-of the Connector rename round — `groupFor()` and the per-tool three-way
-Allow/Ask/Block button row it feeds had regressed to a single flat list with a
-plain `<select>` at some point after this doc was written, with nothing catching
-the drift; both were rebuilt to match this doc's own description, confirmed
-against the same real Notion connector case below rather than trusted from the
-prose alone): MCP tool lists carry no server-declared category, so
-`frontend/components/screens/AppControlScreen.tsx`'s `groupFor()` splits a tool's name into words (handling
-underscores, hyphens, AND camelCase boundaries) and checks every word against a
-small verb list (search/list/find/query → "Search & browse", read/get/fetch →
-"Read", create/write/update/edit/set/upload → "Create & edit", delete/remove/move →
-"Delete & move", else "Other"). **Checking every word, not just a leading one, was
-a real fix mid-build**: the first pass only matched a verb anchored to the very
-start of the tool name (`search_x`), which silently put every one of Notion's real
-tools — `notion-search`, `notion-fetch`, `notion-update-page`, `notion-delete-page`
-— into "Other", since Notion's own naming convention leads with the service name,
-not the verb. Caught by actually connecting a real service in testing, not by
-reading the code.
-
-**The guided-setup flow** (`connectFlow.kind: 'oauth_guided'`) is what an Official
-Connector already known in advance to need a manually-created app/Client ID (GitHub,
-Slack, Google Drive — see the "known-service shortcuts" verification table below)
-falls back to: that catalog entry's own `connectFlow.guide.steps` as a numbered
-list, a redirect-URI box (computed client-side as `window.location.origin +
-'/api/connectors/oauth/callback'`, with a Copy button — the most common failure
-mode in a manual flow like this is a mistyped redirect URI) with a copy button,
-then Client ID/Secret fields and Connect — **historical, kept for accuracy about
-what `guide.steps`/`guide.note` are for; this numbered-steps modal specifically is
-still not what renders** (round 5, below, is a plain collapsed two-field section
-with no step-by-step walkthrough) — see "Client ID/Secret UI, round 5" just below.
-Server-side, three small routes replace what was one merged "official connect"
-route: `POST /api/connectors/catalog/:catalogId/ensure` (find-or-create the
-connector record — no OAuth attempt), `POST /api/connectors/custom` (create-only,
-same reasoning), and the one generic `POST /api/connectors/:id/connect` (starts
-OAuth for ANY existing mcp connector, official or custom, optionally with
-`{clientId, clientSecret}` — still accepted server-side, just never sent by any
-UI any more) — separating "create the record" from "start connecting" is what
-lets the SAME detail page own the whole connect experience regardless of how the
-user got there.
-
-**Client ID/Secret UI, round 5 — reversed back in, 2026-08-25, by explicit direct
-user request. The "do not re-add without being asked again" rule from rounds 1-4
-below was honored — the user did ask again — so this is not a regression, it's
-the next round of the same history.** The history, kept in full since the shape
-of round 5 only makes sense in light of it:
-1. Inline, unconditional Client ID/Secret fields on every connector's detail page.
-2. Inline, but only shown once a failure or `guide` justified it.
-3. Removed from the page; a "Have a Client ID for this service?" link + a
-   guided-setup modal, both gated correctly on a real, per-connector recorded
-   failure (`connectFlow.manualClient`) — genuinely correct, live-verified, no
-   longer "unconditional" in any sense.
-4. The user, shown (3) working exactly as designed against their own real Google
-   Drive connector, said they didn't want to see any of it, ever, even
-   correctly-gated — "I did not ask you to remove any connector but I want you to
-   remove that advance setting that is there." Every Client ID/Secret field,
-   link, and modal was deleted outright (not just unlinked) from `public/`.
-5. **Current state.** After a separate investigation session (see
-   handoff-archive.md's entry on the "MCP Client ID regression" — spoiler: there
-   wasn't one; the user's belief that a mandatory field had appeared came from
-   an incorrect explanation in-app Jarvis itself gave in an earlier chat, not
-   from any real UI or code change) confirmed the automatic chain was never
-   broken, the user asked for this exact, narrower shape: a genuinely optional
-   Client ID/Secret pair, inside a **collapsed-by-default "Advanced settings"**
-   toggle on `frontend/components/screens/AppControlScreen.tsx`'s `buildMcpConnectSection()` (the MCP
-   Connect/Reconnect card) — present on every connector's Connect screen, never
-   auto-expanded (not even when `connectFlow.manualClient` is populated from a
-   past failure — the failure text above it already explains what's wrong; the
-   toggle doesn't editorialize on top of that), and reusing the existing
-   `.tool-group-toggle`-style collapse pattern rather than inventing a new one.
-   The two fields are read and sent as `{clientId, clientSecret}` on every
-   Connect click, exactly the shape `POST /:id/connect` already accepted before
-   this round (see "Connector detail pages" above) — left blank, the request is
-   byte-for-byte what it always was (`JSON.stringify` drops `undefined` keys),
-   confirmed live via a captured network request. `oauth.py`'s CIMD→DCR chain is
-   completely unchanged and still runs first, unconditionally, on every attempt;
-   the two fields only ever reach `obtainClientCredentials()` as its existing
-   `manualClientId`/`manualClientSecret` fallback parameters. **Not added:** the
-   Add-custom-connector form's own fields, a Name/URL edit surface on this card,
-   any per-service branching, or auto-expanding the section on failure — none of
-   that was asked for. If a sixth round ever changes this again, keep entries 1-5
-   rather than deleting them — the shape of each round only makes sense next to
-   what it replaced.
-
-**What round 5 actually fixes, concretely:** Gmail/Google Drive/GitHub/Slack stay
-in the catalog, automatic registration still fails for them exactly as it always
-has (verified live, repeatedly — no `registration_endpoint` on any of the four's
-real authorization servers), but a user who has (or registers) their own OAuth
-app for one of these can now paste its Client ID/Secret into the collapsed
-section and click Connect again to retry — live-verified end to end: a manual
-Client ID on the GitHub connector correctly skipped DCR and produced a real,
-working `github.com/login/oauth/authorize` URL. `catalog_credentials.py`'s
-`register-client` route (a one-time, per-catalog-entry credential, called
-directly rather than through any screen) is untouched and still the only way to
-make a connector "just work" with zero user input at all, the same as Composio's
-one-click experience — the two mechanisms coexist: register-client for a
-zero-friction default, Advanced Settings for a one-off/per-connector override.
-
-**Known-service shortcuts — verified live, not from docs/blog posts alone.** Every
-catalog entry's real endpoint AND its Dynamic Client Registration support were
-checked directly (`curl` against the real OAuth discovery documents), not assumed
-from search results:
-
-| Service | Real endpoint | DCR (one-click)? |
-|---|---|---|
-| Notion | `https://mcp.notion.com/mcp` | Yes — `oauth_dcr` |
-| GitHub | `https://api.githubcopilot.com/mcp/` | No — `oauth_guided` |
-| Slack | `https://mcp.slack.com/mcp` | No — `oauth_guided`; **also carries a real, unresolved risk**: Slack's OAuth docs require an HTTPS redirect URI and Jarvis's is plain HTTP — only a real click-through can confirm whether Slack's authorize step accepts it |
-| Google Drive | `https://drivemcp.googleapis.com/mcp/v1` | No — `oauth_guided` |
-
-**A real RFC 9728/8414 compliance bug this surfaced, in `oauth.py`'s `discover()`**:
-the original discovery logic assumed a protected resource always sits at its
-origin's root, guessing `{origin}/.well-known/oauth-protected-resource` and, for
-its authorization server, `{authServerBase}/.well-known/oauth-authorization-server`
-— both APPENDING the well-known segment. This works for Notion (whose resource
-and issuer both happen to sit at their origin root) but silently failed for
-GitHub: its MCP resource is at `/mcp/`, not the origin root, and per RFC 9728/8414
-the well-known document then lives at
-`{origin}/.well-known/oauth-<kind><resource-or-issuer-path>` — the well-known
-segment INSERTED BEFORE the path. Found by hitting GitHub's real endpoint directly:
-a plain `curl` to the guessed path 404'd, but the resulting 401's own
-`WWW-Authenticate` header carried the real path in its `resource_metadata` hint
-(`https://api.githubcopilot.com/.well-known/oauth-protected-resource/mcp/`) —
-worth remembering as a diagnostic technique for any future OAuth discovery
-mismatch. Fixed by trying both the path-aware and the plain-append forms, in that
-order, so simpler servers (Notion, and Slack's — whose issuer IS its origin root)
-keep working unchanged. Re-verified live against all three (GitHub, Slack, Notion)
-after the fix.
-
-### `connectors/icons.py` — a real logo for a custom connector too
-
-Real logo fetching (`icon_for()`, cached in `data/connector-icons.json`, a fixed
-public icon service looked up by host — see its own extensive header comment on
-why a connector's own address is never itself fetched) was already solid and
-already wired for every **catalog** connector. It was NOT wired for a **custom**
-one: `routes/connectors.py`'s `_public()` never returned `iconDataUri` for any
-connector, and nothing ever called `icon_for()` using a custom connector's own
-URL/base address as the lookup key — a custom MCP or API connector fell straight
-to `AppIcon`'s generic letter monogram forever, never a settled real answer.
-
-Two changes close this, kept deliberately separate:
-
-- `icons.host_key_for(connector)` — where a connector's own logo could come from,
-  if anywhere: `config.connectFlow.url` for `mcp`, `config.baseUrl` for `api`,
-  `None` for `cli` (no address to resolve from at all, so it correctly stays on
-  the letter mark). `_public()` now always includes `iconDataUri`, resolved
-  **cache-only** (`refresh=False`) — the same reasoning `GET /catalog` already
-  used: a listing response must never block on a network call.
-- The actual resolve happens ONLY in a background sweep
-  (`icons.refresh_every_connector()`/`start()`/`stop()`/`is_enabled()`), gated
-  behind its own `JARVIS_CONNECTOR_ICONS` interlock exactly like every other
-  background-clock subsystem (`assembly.py`'s `start_background_work()`,
-  `main.py`'s `_BACKGROUND_INTERLOCKS` — see root CLAUDE.md's "What runs on its
-  own clock"). **Deliberately NOT resolved inline on connector create/refresh** —
-  a real, live bug caught before it shipped: `POST /api/connectors` and
-  `POST /:id/refresh` are ordinary request handlers a test can call with a
-  fake-but-hostname-shaped address (`test_toggling_a_connector_off_stops_its_tools_from_being_offered`
-  posts `https://api.example.invalid` as a base URL), and resolving inline would
-  have made an ordinary "add a connector" click — and that exact test — a real,
-  blocking network call to the live icon service. `icons.py`'s own IP-literal
-  rejection already makes every LOCAL test stub server safe (`127.0.0.1` is
-  refused before it is even used as a lookup key), but a plausible-looking
-  hostname like `api.example.invalid` is not an IP literal and would have
-  sailed straight through. A freshly-created custom connector shows the generic
-  mark until the next sweep, never a blocked response.
-
-**Connection status on the main list row** (`AppControlScreen.tsx`) now shows a
-real three-way dot (green/`status.state==='working'`, red/`'error'`, grey/
-`'untested'`) next to the status text, and an `mcp` connector that has never
-completed sign-in shows a real **Connect** button in place of the on/off Toggle
-— clicking it opens the same detail view `McpConnect` already drives, rather
-than a switch that looks identical whether or not the connector can do
-anything yet. `frontend/lib/connectors.ts`'s `isPickable()` (the Scheduled
-Task editor's and Morning Briefing's shared connector picker) now also requires
-`status.state === 'working'`, not just `enabled` — an added-but-never-authorized
-connector no longer offers itself as a usable app in either picker.
+- `catalog.json` / `catalog.py` — the bundled directory. **An entry is only listed once its real
+  endpoint has been verified live**, not recalled from documentation; that is why it is short. Each
+  `connectFlow` drops straight into a connector's config, so connecting from the catalogue runs the same
+  flow a custom connector does. There is no "ready" versus "needs setup" badge.
+- `icons.py` — real, current logos, fetched and cached (`data/connector-icons.json`), refreshed every
+  `REFRESH_AFTER_S` (14 days), with a background resolver gated by `JARVIS_CONNECTOR_ICONS`. **No
+  address a user or config supplied is ever fetched**: a connector's host is only a LOOKUP KEY against
+  one fixed public icon service, and any other address fetched is a constant in the file. Following a
+  connector's own URL would let anything on the machine's network be reached from here. A host that is
+  not a plausible hostname is refused before it is used as a key. The interface's monogram shows while
+  nothing has resolved.
+- `routes/connectors.py` — list, catalogue, `POST /{id}/connect`, `/disconnect`, `/refresh`, the OAuth
+  callback and redirect-uri routes, and catalogue client registration.
 
 ## Gotchas
 
-- **A freshly cold-started Chrome's CDP endpoint can respond over HTTP before its
-  internal engine is fully warmed up** — `waitForDevtools` succeeding (the
-  `/json/version` HTTP endpoint is up) does NOT mean a CDP command sent over a
-  freshly-opened WebSocket to a page target will get answered. A command sent within
-  roughly the first second of Chrome's own process life can go completely unanswered —
-  no error, no close event, the socket just never responds — while the identical
-  command a second or two later on a fresh connection works instantly. `ensureBrowser()`
-  adds a flat ~1.2s pause after `waitForDevtools()` succeeds and before ever opening the
-  WebSocket/sending anything; the retry loop around the first two commands
-  (`Page.enable`/`Runtime.enable`) is defense in depth, not sufficient alone — only the
-  upfront delay fixes it.
-- **`Runtime.evaluate` + a page script beats the CDP Input domain for ordinary
-  click/type** — dispatching raw mouse/keyboard events through
-  `Input.dispatchMouseEvent` etc. works but is materially more code and more fragile
-  across sites; running `element.click()` / setting `.value` via the native property
-  setter + a real `input` event (needed for React/Vue-controlled inputs, which override
-  the plain value setter) inside `Runtime.evaluate` is simpler and reliable against real
-  sites. Reach for the Input domain only if a site is found to reject script-driven
-  interaction.
-- **`new URL(path, baseUrl)` is not "append path to base" when `path` starts with
-  `/`** — a leading-slash relative reference resolves against the base's ORIGIN in the
-  WHATWG URL spec, discarding the base's own path entirely
-  (`new URL('/pet/findByStatus', 'https://petstore3.swagger.io/api/v3')` silently drops
-  `/api/v3`). `api_client.py`'s `dispatch()` does plain string concatenation
-  (`baseUrl.replace(/\/$/, '') + path`) then parses the result — this only shows up when
-  the base URL itself has a non-empty path, which a naive test against
-  `https://example.com` would never catch.
-- **Two real, still-live OpenAPI/Swagger spec shapes exist, and only testing against
-  both catches it.** OpenAPI 3.x declares its base address as `servers[0].url` (often
-  relative, resolve against the spec document's own origin); Swagger 2.0 has no
-  `servers` array at all, using `host` + `basePath` + `schemes` instead
-  (`petstore.swagger.io/v2` is a real, still-live example). `discoverFromSpec()`
-  normalizes both to one absolute `baseUrl`.
-- **Lowercasing an identifier before checking camelCase boundaries destroys the
-  boundary — a safety bug, not just a display one, when the result feeds the risk
-  scan.** `sanitizeName()` lowercased first, so `"updatePet"` collapsed to the single
-  token `"updatepet"` — cosmetic for the tools list (everything landed in "Other"), but
-  `guard.py`'s word-tokenized risk scan (see "Standing permission" above) can then never
-  match `"updatepet"` against the keyword `"update"`, since a word-boundary match
-  requires `"update"` as its own token. A genuinely risky operation silently stopped
-  being classified as risky. Fixed the same way `groupFor()` (above) and `guard.py`'s
-  own tokenizer already do it: split camelCase boundaries into their own separator
-  BEFORE lowercasing, never after.
-- **A module that hardcodes a path relative to its OWN source file bypasses the
-  `JARVIS_DATA_DIR` test-isolation convention entirely** (see the root `CLAUDE.md`'s
-  testing section) — `browser_connector.py` computed its Chrome profile directory from
-  `__dirname`, not `JARVIS_DATA_DIR`, so a scratch test run once wrote a 145MB browser
-  profile straight into the real project's `data/` folder. Fixed by using `store.py`'s
-  `dataDir()` export, same as any other module needing its own subdirectory under
-  `data/`.
+- **Never assume a connector's tool list is current.** Read it through `tool_names_for()` /
+  `refresh_tools()`; do not store names.
+- **A connector's own server metadata is authoritative for OAuth.** If a new service does not work,
+  fix the generic flow, not by branching on the service.
+- **`connector_specs()` runs on every declaration build**, so it must never start a process, make a
+  network call or block. Anything that does belongs in `refresh_tools()`.

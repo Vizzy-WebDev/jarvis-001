@@ -1,167 +1,102 @@
-<!-- Ported from the Node build during the S6 cutover. The architecture, the
-invariants and the live-caught bugs described here all carried over deliberately and
-still hold. File paths have been updated to their real Python counterparts and are
-verified to exist. Function names written in camelCase (`getToolDeclarations()`) are
-the NODE originals, kept because the surrounding reasoning is about them; the Python
-equivalent is the snake_case function doing that job in the same module. Where a Node
-module had no Python counterpart, the text says so rather than pointing at a file that
-does not exist. -->
-
-# Heartbeat + Trigger + Proactive Attention (`jarvis/heartbeat/*.py`)
+# Heartbeat + Trigger + Proactive Attention (`jarvis/heartbeat/`)
 
 See the root `CLAUDE.md`'s "Heartbeat" section for the decisions that matter beyond this
-file (why the Interruption Broker needed generalizing, the reliability guarantees, the
-quiet-hours/emergency design, the real dedup bug live testing caught). This file is the
-module-by-module breakdown.
+file (why the Interruption Broker was generalized, the reliability guarantees, the
+quiet-hours/emergency design). This file is the module-by-module breakdown.
 
-**Named for the user's own term for this mechanism — unrelated to `jobs/job_store.py`'s
-`heartbeat_at` column**, which is worker-liveness tracking for a single running job, a
-different concept entirely. Don't confuse the two while reading either directory.
+**Unrelated to `jobs/job_store.py`'s `heartbeat_at` column**, which is worker-liveness
+tracking for a single running job. Don't confuse the two.
 
 ## The chain
 
-`schedule_store.py` (leaf) persists each registered item's own next-due time —
-restart-safety depends on this being real, never in-memory. `heartbeat/triggers.py` (pure,
-zero imports) is the entire plug-in surface: `registerSource({id, defaultIntervalMs,
-listItems(), check(itemKey)})`. `engine.py` ticks once a minute, reconciles every
-source's current item list against the schedule, then processes whatever's due
-SEQUENTIALLY up to a per-tick cap — what turns a big restart catch-up into several ticks
-of steady work instead of one burst, and what makes the `running` overlap guard
-meaningful. `heartbeat/triggers.py` is the event-driven half, reacting to a job going
-`awaiting_decision` immediately rather than waiting for the next poll — both paths
-funnel into `engine.py`'s exported `routeFinding()`, the ONE place a finding becomes a
-notification, an outbox row, and (Tier 1, available, not quiet-hours-blocked) real
-proactive speech. `__init__.py`'s `startHeartbeat()` wires all of it, called once from
-`main.py` beside the other three `start*()` calls.
+- `sources/registry.py` (pure, no imports) is the whole plug-in surface. A `Source` has an
+  `id`, a `default_interval_ms`, `list_items()` (what it is watching, as `{itemKey,
+  intervalMs?}`) and `check(item_key)` returning `{finding, checkState}`. A new source is
+  one `register()` call.
+- `schedule_store.py` (leaf) persists each item's own next-due time, so restart-safety is
+  real and never in-memory.
+- `engine.py` ticks every `TICK_SECONDS` (60), gated by `JARVIS_HEARTBEAT`. `reconcile()`
+  syncs each source's current items against the schedule; `tick()` then processes what is due
+  SEQUENTIALLY up to `PER_TICK_CAP` (20), which turns a big restart backlog into several
+  ticks of steady work instead of one burst of model calls. A source whose `list_items()`
+  throws is skipped for the tick; an item whose `check()` throws still advances its schedule
+  (in a `finally`), so a consistently failing check does not retry on every tick forever.
+  `register_default_sources()` is the one place that lists what is watched by default:
+  jobs, commitments, the environment source, and the diagnosis source (its checks are
+  registered first so the first tick has real checks).
+- `triggers.py` is the event-driven half: it subscribes to the event bus and reacts to a job
+  going `awaiting_decision` immediately, instead of waiting for the next poll. Both entry
+  points feed the same `route_finding()` — one pipeline, so "should this interrupt someone"
+  is decided in exactly one place. Started from `assembly.start_background_work()`.
+- **`route_finding()`** is the ONE place a finding becomes a notification, an outbox row
+  and, for Tier 1 when allowed, real proactive speech. Order: skip if an undelivered row for
+  that `source_id:item_key` already exists → `decide_attention()` → publish a
+  `NOTIFICATION_CREATED` event (the durable record, written before any delivery is
+  considered) → Tier 3 stops there → otherwise add an outbox row → Tier 1 speaks only if
+  `_may_speak_now()`.
 
-## `outbox.py` — the generalized Interruption Broker
+## `outbox.py` — the Interruption Broker
 
-Owns the `outbox` table (db.py migration 13 — a real rebuild of the old job-only
-`job_outbox`, not an ALTER, since SQLite can't relax a NOT NULL foreign key in place).
-`source` (`'job'` | `'heartbeat'`) and `source_ref` are new; `job_id` stays its own
-column, still real and still cascading, so every existing Jobs call site is unaffected.
-**`jobs/job_store.py`'s own `addOutboxEntry`/`getOutboxForJob`/`listPendingOutbox`/
-`markOutboxDelivered` are now thin wrappers over this file** (`source:'job'`,
-`sourceRef:jobId` baked in) — Jobs' own code (`orchestrator.py`, `worker.py`,
-`orchestrator.py`, `main.py`'s job routes) needed zero changes to keep working
-identically. `getPendingForSourceRef(source, sourceRef)` is the dedup lookup a source's
-own routing should check before parking a second undelivered row for the same finding —
-but see the next section for why this alone is NOT sufficient for every tier.
+Owns the `outbox` table (`source` is `job` or `heartbeat`, plus `source_ref`; `job_id` stays
+its own cascading column). `jobs/job_store.py`'s outbox functions are thin wrappers over this
+file with `source='job'` bound. `pending_for_source_ref()` is the dedup lookup `route_finding()`
+uses — but it is NOT sufficient by itself, see the next section. `orchestrator/context.py`
+drains pending Tier 1/2 rows into the next turn the user starts.
 
-## The dedup bug live testing caught — read this before touching `check()` in a source
+## Dedup: read this before touching `check()` in a source
 
-**A Tier 3 verdict never creates an outbox row at all** (see `engine.py`'s
-`routeFinding()` — `if (verdict.tier === 3) return` happens right after the notification
-is written, before any outbox insert). `outbox.py`'s dedup
-(`getPendingForSourceRef`) only ever finds something to dedup against when a Tier 1/2
-row exists and is still undelivered. **Confirmed live**, not hypothetical: the first
-version of `heartbeat/triggers.py` had no dedup of its own at all, assuming `routeFinding()`'s
-outbox-based check was enough — a job whose Tier 1 permission ask kept getting judged
-Tier 3 by `decision.py` (a routine, low-stakes automation request, correctly not worth
-interrupting for) produced a **fresh finding, a fresh spent `decision.py` model call, AND
-a fresh notification on every single tick, forever**, since nothing ever recorded "this
-exact ask was already reported." **The fix: a source with a persistent underlying
-condition must track its OWN "have I already reported this" state via
-`schedule_store.py`'s `checkState` (read with `getItem(sourceId, itemKey)`, written by
-returning `{finding, checkState}` from `check()`), the same way `heartbeat/triggers.py`
-already did for its own `notifiedApproaching`/`notifiedOverdue` flags.**
-`heartbeat/triggers.py` now remembers the specific outbox entry id (`lastReportedOutboxId`) it
-last reported and only fires again once that id actually changes — a genuinely new ask,
-not the same still-unanswered one. **Any future source with a condition that can stay
-true across many ticks needs this same discipline** — outbox-based dedup alone is only
-ever real for Tier 1/2.
+**A Tier 3 verdict never creates an outbox row**, so outbox-based dedup only ever finds
+something for Tier 1/2. A source whose condition can stay true across many ticks — a job whose
+permission ask keeps being judged Tier 3, say — would otherwise produce a fresh finding, a
+fresh spent model call AND a fresh notification on every tick, forever. This happened live.
 
-**The trigger path needed the identical fix, for a subtler reason.** `heartbeat/triggers.py`'s
-reaction to a job's `awaiting_decision` transition calls the source's `check()` directly,
-outside the normal tick — if it doesn't ALSO persist the `checkState` that call returns
-(via `schedule-store.upsertItem()` + `markDone()`, the same two calls `engine.py`'s own
-`processDueItem()` makes), the trigger's own dedup memory is silently lost, letting one
-redundant re-fire slip through on the very next regular tick even though nothing had
-changed. `heartbeat/triggers.py` does this explicitly now — see its own inline comment.
+**The rule: such a source tracks its OWN "already reported" state in `checkState`** (read
+back with `schedule_store.get_item()`, written by returning `{finding, checkState}` from
+`check()`). `jobs_source.py` remembers the specific outbox entry id it last reported and only
+fires again when that id changes; `commitments_source.py` keeps its own approaching/overdue
+flags. The trigger path needs the same care: it calls the source's `check()` outside the
+normal tick, so it must ALSO persist the returned `checkState` (`upsert_item()` +
+`mark_done()`) or its dedup memory is silently lost and one redundant re-fire slips through.
 
-## `sources/heartbeat/triggers.py` and `sources/heartbeat/triggers.py`
+## Sources
 
-Both leaf-adjacent, both registered from `__init__.py`. `heartbeat/triggers.py` (job_store.py +
-outbox.py + schedule_store.py, no model calls of its own) closes the actual gap
-this whole build exists for: a Tier 1 job outbox row sits completely silent —
-structurally invisible to the user — until they happen to start a new conversation
-themselves, at which point `prompt.py`'s drain finally surfaces it. This source turns
-"sitting silently in the outbox" into a real Heartbeat finding. It deliberately does NOT
-duplicate Jobs' own completion/failure notifications (already fired directly via
-`addNotification()` in `worker.py`/`orchestrator.py`) — only the specific gap above.
-
-`heartbeat/triggers.py` derives a deadline from an ordinary Memory row that has no
-deadline column at all. Deterministic parsing (`scheduler/recurrence.py`, zero dependencies, zero
-quota) is the always-on first pass; a budgeted model call (`improvement/store.py`, its own daily
-ledger — never Self-Improvement's) is spent at most once per memory TEXT VERSION, only
-when the parser came back empty. `scheduler/recurrence.py`'s own header comment is explicit that
-its coverage is a deliberately incomplete safety net, not a claim of completeness — the
-model fallback is what closes the gap, not a second attempt at exhaustive regex coverage.
+- `sources/jobs_source.py` closes the real gap this subsystem exists for: a Tier 1 outbox
+  row otherwise sits silent until the user happens to start a new conversation. It does NOT
+  duplicate Jobs' own completion/failure notifications, only that gap. A cheap database read,
+  so it runs every 3 minutes.
+- `sources/commitments_source.py` watches memories carrying a real `expiresAt` — the
+  structured field extraction fills in for things that stop being true on a known date — and
+  notices two moments: shortly before, and once it has passed. It is deliberately built on the
+  structured field rather than parsing dates out of prose.
+- The environment and diagnosis sources live in `ops/` (see `ops/CLAUDE.md`).
 
 ## `decision.py` — the one urgency-reasoning step
 
-Used ONLY by Heartbeat/Trigger findings — Jobs' own tier assignment at its own call
-sites (`worker.py`, `orchestrator.py`) is untouched and never calls this; those are
-mechanical "does this need the owner" facts, not a judgment call. One model call
-answers both the tier (1/2/3) AND — only when quiet hours are active — whether this
-clears the emergency bar, to keep quota cost down. No model available, or an
-unparseable reply, is NEVER treated as Tier 1 or an emergency by default; it falls back
-to Tier 3. Silence is the safe failure direction in both places. Verified live against a
-real model: an "overdrawn bank account in the next hour" finding correctly came back
-Tier 1 (and, tested during quiet hours, `emergency:true` with a real stated reason);
-an "overdue coffee filters" commitment correctly came back Tier 3 in both cases — and
-the urgent verdict's own reasoning cited a real approved memory about the user's
-finances, confirming the "weigh against known priorities" design is actually happening,
-not just generic reasoning.
+`decide_attention(finding)` is used ONLY by Heartbeat/Trigger findings. Jobs' own tier
+assignment is mechanical and never calls it. One model call answers the tier (1/2/3) and,
+only when quiet hours are active, whether this clears the emergency bar. No model, an
+unparseable reply, or an exception is NEVER treated as Tier 1 or an emergency: it falls back to
+Tier 3. Silence is the safe failure direction.
 
 ## `quiet_hours.py` / `presence.py` — the two gates on live speech
 
-`quiet_hours.py` only answers "is it quiet right now," from `prefs.quietHours`
-(`{enabled, start, end}` as 'HH:MM' strings, wraps midnight correctly). It gates LIVE
-SPEECH only, in `engine.py`'s own routing — the notification and outbox row a finding
-produces are unaffected either way, since they only take effect once the user is already
-engaging, at which point quiet hours has nothing left to protect.
-
-`presence.py` exports `isReachable()` (a tab is connected AND the user was recently
-active — the hard requirement for any live delivery attempt) and `isBusy()` (the
-secondary, skippable-for-emergencies dampener, via the same `control/control/desktop.py`
-window/process listing `jarvis/monitor/engine.py` already uses) as two SEPARATE
-functions, not one — an emergency verdict during quiet hours should still try to reach
-the user through a detected "busy" state (the same way it already breaks through quiet
-hours itself), while ordinary Tier 1 flow should respect both. `isAvailable()` combines
-them for the ordinary case; the emergency path in `engine.py`'s `routeFinding()` calls
-`isReachable()` alone.
+`quiet_hours.is_quiet_now()` reads `prefs.quietHours` (`{enabled, start, end}` as `HH:MM`,
+wrapping midnight). It gates LIVE SPEECH only — the notification and outbox row a finding
+produces are unaffected either way. `presence.py` exports `is_reachable()` (a tab is connected
+and the user was recently active — required for any live delivery) and `is_busy()` (a
+skippable-for-emergencies dampener based on running processes) as SEPARATE functions;
+`is_available()` combines them for the ordinary case. In quiet hours an emergency skips the
+quiet gate and the busy dampener but never reachability (`_may_speak_now()`).
 
 ## `speak.py` — the one genuinely new channel
 
-Real proactive speech: pushes a real assistant message onto the active session
-(`session.py`'s `getActiveSessionId()` — reused deliberately rather than reimplemented, to
-avoid drifting from the one authoritative place session resolution already lives) and
-broadcasts a `proactive_message` SSE event any open tab can actually play. This is what
-makes this file (and `engine.py`/`heartbeat/triggers.py`/`__init__.py` above it) NOT leaf-safe —
-accepted, since nothing under `jarvis/tools/` ever imports this file directly (only
-`outbox.py`, a true leaf, for `acknowledge_notice.py`'s own needs).
+`speak_now()` starts a turn nobody asked for: a real assistant message on the active session
+plus an event any open tab can play aloud, and the outbox row is marked delivered, since
+actually saying it IS the resolving action for this path. The next-turn fallback is different:
+being shown to the model is not the same as having been said, so that row is marked only when
+`tools/acknowledge_notice.py` (`acknowledge_notice`, for heartbeat-sourced notices) or a Jobs
+tool (`check_on_work`, `stop_working_on`) acts on it. `acknowledge_notice` refuses a
+job-sourced row, so it cannot bypass Jobs' own resolution tools.
 
-## `prompt.py` / `acknowledge_notice.py`
-
-`jobsSection()` (kept under its original name to avoid rippling a rename across every
-comment that references it, despite draining more than jobs now) generalizes its own
-drain to every `source`, wording a `source:'heartbeat'` row with a `notice_id` and a
-different resolving instruction. `acknowledge_notice` (`core:true, meta:true`, no confirm
-gate) is the one new tool this build needed — the resolving action a heartbeat-sourced
-row has no equivalent of otherwise (a job's own tier1/2 rows resolve via
-`check_on_work`/`stop_working_on` instead). Refuses outright for a `source:'job'` row,
-so a model can't accidentally bypass Jobs' own resolution tools through this one.
-
-## Verified live, not just by reading code
-
-A full migration run against a real copy of the user's actual `jarvis.db` (12 real
-`job_outbox` rows) confirmed every row survived the rebuild intact with
-`source:'job'`/`source_ref` correctly backfilled, and the old table was really dropped.
-A real scratch server (isolated data dir/port, the user's real `.env` for a working
-model) confirmed: the tick's per-cap sequential processing genuinely spreads a 25-item
-restart backlog across two ticks rather than one burst, with no item double-processed; a
-broken source's `listItems()`/`check()` throwing never stopped a healthy source in the
-same tick; and — the one real bug this pass actually found — the dedup gap described
-above, caught by watching real notifications accumulate every ~3 minutes for the same
-unresolved job before the fix, and confirmed gone after it.
+Because it touches the session and the bus, `speak.py`, `engine.py` and `triggers.py` are not
+leaf-safe; nothing under `jarvis/tools/` may import them (tools reach only `outbox.py`).

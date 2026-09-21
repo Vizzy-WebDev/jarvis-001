@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 class EventType(str, Enum):
-    """The vocabulary from §38, plus the few the audit showed are actually needed.
+    """The vocabulary from §38, plus the few that real subscribers turned out to need.
 
     Kept deliberately small. A new type is added when a real subscriber needs to
     distinguish it — not in anticipation.
@@ -78,7 +78,7 @@ class EventType(str, Enum):
     JOB_UPDATED = "job.updated"
     JOB_COMPLETED = "job.completed"
 
-    # Model gateway — what the cost and self-model observers subscribe to,
+    # Model calls — what the cost and self-model observers subscribe to,
     # instead of being imported by the turn loop.
     MODEL_CALL_STARTED = "model.call_started"
     MODEL_CALL_COMPLETED = "model.call_completed"

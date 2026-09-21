@@ -102,9 +102,9 @@ def status() -> dict[str, object]:
     weak fallback, how to get the real thing.
 
     `distro`/`detected_windows_sandbox` are honestly `None`/`False` here: this
-    port's own probe (`_wsl_available()`) only answers "wsl works" or not, not
-    which distro or whether Windows Sandbox is present — a real, disclosed gap
-    versus the Node build's own `detect.js`, not a value worth guessing at.
+    module's own probe (`_wsl_available()`) only answers "wsl works" or not, not
+    which distro or whether Windows Sandbox is present — a disclosed gap,
+    not a value worth guessing at.
     """
     using_wsl = backend() == "wsl"
     return {

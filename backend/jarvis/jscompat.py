@@ -1,13 +1,9 @@
-"""Small primitives that must behave exactly like their JavaScript originals.
+"""Small primitives that reproduce the stored formats exactly.
 
-These exist because the Python backend and the Node backend read and write the
-same database rows, the same JSON payload strings and the same id formats. A
-"close enough" equivalent here shows up much later as an id that sorts wrongly,
-a payload that diffs against itself, or a timestamp that compares incorrectly
-against rows the other implementation wrote.
-
-Each function names the JS expression it reproduces, so the correspondence can be
-checked rather than trusted.
+Database rows, JSON payload strings and ids written earlier are already on disk in these
+formats, so a "close enough" equivalent here shows up much later as an id that sorts wrongly,
+a payload that diffs against itself, or a timestamp that compares incorrectly against older
+rows. Each function documents the exact format it produces.
 """
 
 from __future__ import annotations
@@ -38,18 +34,18 @@ def now_ms() -> int:
 
 
 def now_iso() -> str:
-    """`new Date().toISOString()`.
+    """The stored timestamp format.
 
     Always UTC, always exactly three fractional digits, always a trailing 'Z'.
     Python's own isoformat() gives six fractional digits and '+00:00', which
-    would sort and compare differently against every row the Node app wrote.
+    would sort and compare differently against every row already stored.
     """
     now = datetime.now(timezone.utc)
     return f"{now.strftime('%Y-%m-%dT%H:%M:%S')}.{now.microsecond // 1000:03d}Z"
 
 
 def to_iso_z(moment: datetime) -> str:
-    """Any datetime as `Date.toISOString()` writes it: UTC, three fractional
+    """Any datetime in the stored timestamp format: UTC, three fractional
     digits, trailing Z. A naive datetime is taken as local time, which is what
     every scheduling calculation in this app produces."""
     if moment.tzinfo is None:
@@ -59,21 +55,18 @@ def to_iso_z(moment: datetime) -> str:
 
 
 def random_suffix(length: int = 6) -> str:
-    """`Math.random().toString(36).slice(2, 2 + length)`.
+    """A random base-36 id suffix.
 
-    Not the same random VALUES, which would be meaningless to reproduce — the
-    same alphabet and length, so ids from either implementation are
+    The same alphabet and length as the ids already stored, so old and new ids are
     indistinguishable in shape and collide no more often.
     """
     return "".join(random.choice(_BASE36) for _ in range(length))
 
 
 def compact_json(value: Any) -> str:
-    """`JSON.stringify(value)` with no spacing.
+    """JSON with no spacing.
 
-    Python's json.dumps defaults to ', ' and ': ' separators; JavaScript uses
-    none. These strings are stored in the database and read back by both
-    implementations, so a mismatch would make identical payloads compare as
-    different rows.
+    Python's json.dumps defaults to ', ' and ': ' separators; the stored payloads use
+    none, so a mismatch would make identical payloads compare as different rows.
     """
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False)

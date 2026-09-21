@@ -2,7 +2,7 @@
 
 A leaf: imports the database and the time helper, nothing else. That is what
 makes it safe for a tool to import directly (`jarvis/tools/` may not reach the
-loader, the executor or the gateway) and what keeps a recording failure
+loader or the executor) and what keeps a recording failure
 confined to recording.
 
 `session_id` is deliberately NOT a foreign key, the same discipline

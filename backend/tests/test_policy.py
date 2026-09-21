@@ -1,8 +1,7 @@
 """The permission decision (§7) and its floors (§8).
 
-Written as an exhaustive truth table, matching the pattern the audit verified as
-the strongest thing in the existing codebase: a pure decision function whose
-safety floors are asserted rather than described.
+Written as an exhaustive truth table: a pure decision function whose safety floors are
+asserted rather than described.
 """
 
 from __future__ import annotations
@@ -134,8 +133,8 @@ def test_an_exact_grant_can_cover_high_risk():
 # --- the allowlist ------------------------------------------------------------
 
 def test_the_allowlist_is_enforced_here_not_by_the_caller():
-    """In the Node version this check lives in the turn runner, so the scheduler,
-    briefings and the Live voice path get no enforcement at all. A restriction
+    """A check living only in the turn runner would give the scheduler,
+    briefings and the Live voice path no enforcement at all. A restriction
     only one caller applies is not a restriction."""
     result = decide(spec("get_time"), ctx(), allowed_names=frozenset({"read_file"}))
     assert result.outcome is Outcome.REFUSED

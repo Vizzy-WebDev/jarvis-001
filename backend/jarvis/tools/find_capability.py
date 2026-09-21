@@ -1,7 +1,7 @@
 """Find one of the less common abilities by what the user actually wants.
 
-Declaring every capability on every turn is not free: measured on the Node app,
-the full set was ~150,000 characters sent on "hello" as much as on anything else,
+Declaring every capability on every turn is not free: measured, the full
+set was ~150,000 characters sent on "hello" as much as on anything else,
 and it was the single largest cause of flat, instruction-ignoring replies. So a
 large registry declares its core set plus whatever this turn has unlocked, and
 this tool is how the rest becomes reachable.

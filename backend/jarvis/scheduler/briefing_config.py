@@ -1,10 +1,8 @@
 """The briefing's saved configuration — deliberately dependency-free.
 
 Split from the composer so a tool can read and write it without dragging in the
-model layer. In the Node original that separation prevented a real deadlock (a
-tool reaching back through the composer into the loader that was still importing
-it); here it is simply the right shape, and keeping it means the same mistake
-cannot be made later.
+model layer. A tool reaching back through the composer into the loader that was still
+importing it would deadlock, so keeping the split means that mistake cannot be made.
 
 Weather and headlines are fixed, always-available abilities, NOT a user-managed
 list of "sources" — that shape is what once let Jarvis's own built-in abilities

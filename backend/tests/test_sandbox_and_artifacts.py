@@ -249,9 +249,8 @@ def test_image_generation_is_refused_plainly(reg):
 
 
 def test_creating_an_artifact_is_reachable_from_a_background_job(reg):
-    """In the original this tool was meta, and a background job strips meta
-    tools before anything else applies — so a job asked to write a report
-    structurally could not."""
+    """A background job strips meta tools before anything else applies, so if
+    this tool were meta a job asked to write a report structurally could not."""
     assert not reg.get("create_artifact").has_tag("meta")
 
 

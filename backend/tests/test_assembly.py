@@ -1,4 +1,4 @@
-"""The composition root's background-work switch (S7).
+"""The composition root's background-work switch.
 
 `start_background_work()` is the ONE place "what starts itself" is answerable
 by reading a single function, and `main()` — the real launch path, never
@@ -68,7 +68,7 @@ def _teardown():
 
 
 def test_every_gated_subsystem_reports_started_when_every_interlock_is_set(scratch, monkeypatch):
-    """Regression test for the exact bug S7's audit found: every one of these
+    """Regression test for the exact bug found once: every one of these
     is real, tested, complete code — started from nowhere, because nothing
     set its interlock. Setting the same set `main()` sets and reading back
     `started` is what proves each subsystem is actually wired into

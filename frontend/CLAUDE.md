@@ -1,12 +1,3 @@
-<!-- Ported from the Node build during the S6 cutover. The architecture, the
-invariants and the live-caught bugs described here all carried over deliberately and
-still hold. File paths have been updated to their real Python counterparts and are
-verified to exist. Function names written in camelCase (`getToolDeclarations()`) are
-the NODE originals, kept because the surrounding reasoning is about them; the Python
-equivalent is the snake_case function doing that job in the same module. Where a Node
-module had no Python counterpart, the text says so rather than pointing at a file that
-does not exist. -->
-
 # Front end (`frontend/`)
 
 Next.js App Router + React + TypeScript + Tailwind, built to a **static export**
@@ -99,11 +90,10 @@ settings and doesn't otherwise care which one it's talking to. Events: `state`,
   assistant's own voice through; barge-in still works because interruption is
   detected from local mic energy, unaffected by whether frames are being sent.
 - **`RealtimeEngine`** (`realtime-engine.ts`) — Engine B, a provider's own
-  speech-to-speech session relayed by the server over `/api/live`. **Nothing
-  here names a provider** — the socket picks whichever connection declared a
-  realtime capability, the same rule the picker itself uses one layer up, so
-  the two can never disagree; Gemini Live is the one provider that qualifies
-  today, not a hardcoded target. Mic audio is NOT held back while it speaks,
+  speech-to-speech session relayed by the server over `/api/live`. The route
+  has no session implementation at the moment (it answers "No model with a
+  realtime voice is set up yet."), so the picker never offers this engine.
+  **Nothing here names a provider.** Mic audio is NOT held back while it speaks,
   unlike the other two — its interruption detection is server-side and
   depends on hearing the person while its own audio plays, so gating the
   upload would silently disable that entirely.
@@ -178,8 +168,7 @@ Chrome never confirms.
 Jarvis's face — a single 3D sphere, centered in the app screen, reacting to
 `idle`/`listening`/`thinking`/`speaking` (the same four states the voice
 engines emit; `Orb.tsx` consumes them via one call from `app/page.tsx`). Built on
-**three.js** — an ordinary npm dependency now, bundled by the build, where the Node
-build hand-vendored it. Still the project's one deliberate front-end 3D dependency,
+**three.js** — an ordinary npm dependency, bundled by the build. It is the project's one deliberate front-end 3D dependency,
 chosen over a dependency-free raw-WebGL2 shader after an explicit trade-off
 comparison. A custom `ShaderMaterial`'s **vertex** shader displaces an
 `IcosahedronGeometry`'s surface with domain-warped fBm noise plus an outward
@@ -190,16 +179,12 @@ parameter presets over ~600ms. Falls back to a CSS-gradient orb
 (`.orb-fallback`, same four state classes) if three.js/WebGL fails to
 initialize.
 
-**The hand-vendoring hazard is gone, and worth knowing why it existed.** The Node build
-served three.js as two raw files that had to ship together (`three.module.min.js` plus a
-sibling core, split upstream around r150); missing the sibling parsed and served fine —
-a syntax check, curl, even a same-tab `fetch()` all gave zero signal — and then failed at
-browser module-resolution time with a content-free `TypeError: Failed to fetch
-dynamically imported module`, taking the **entire app** down silently, since nothing in
-the shell runs until its static imports resolve. Only a real browser network tab showed
-the missing 503. Importing `three` as a package removes that whole class of failure: the
-bundler resolves it at build time, so a missing piece is a build error rather than a
-blank page. Keep it that way — do not reintroduce hand-copied vendor files.
+**Import `three` as a package; never hand-copy vendor files into `public/`.** The bundler resolves the
+import at build time, so a missing piece is a build error rather than a blank page. A hand-served vendor
+file that is missing its sibling parses and serves fine — a syntax check, `curl` and even a same-tab
+`fetch()` all give zero signal — then fails at browser module-resolution time with a content-free
+`TypeError: Failed to fetch dynamically imported module`, taking the entire app down silently, because
+nothing in the shell runs until its static imports resolve.
 
 - `IcosahedronGeometry`'s second argument is subdivision *detail*, not a
   segment/resolution count. Each `+1` roughly quadruples face count
@@ -258,8 +243,7 @@ reply text. `Message.tsx` then renders `turn.attachment?.kind === 'image'`/`'vid
 conditionally in JSX (a plain `<img>`/`<video controls>`), alongside `turn.text`.
 
 Because attachment and text both live as plain fields on one immutable `Turn` object
-rather than as mutated DOM nodes, the two classes of bug the vanilla-JS version of
-this had structurally cannot recur here: appending more reply text can never wipe an
+rather than as mutated DOM nodes, two classes of bug are structurally impossible here: appending more reply text can never wipe an
 already-set attachment (React reconciles from state, it doesn't mutate a text node in
 place), and there is no bespoke "is this bubble empty" check to keep in sync with what
 counts as content — a turn with an attachment and a turn with text are just two fields

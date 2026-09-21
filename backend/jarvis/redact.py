@@ -1,23 +1,21 @@
 """Taking secrets back out of text before it is stored, logged, or shown.
 
-A provider's raw error can echo the request that caused it — including the key
-that was sent. That text has three destinations here, and all three are places a
-key must never reach: `data/model-availability.json` (a file, kept until the
-model next succeeds), the application log (§25: never log secrets), and the
-model itself, when a connector's failure is handed back as a tool result and
-persisted in the conversation.
+A service's raw error can echo the request that caused it — including the key
+that was sent. That text has destinations where a key must never reach: the
+application log (§25: never log secrets), a stored record, and the model itself,
+when a connector's failure is handed back as a tool result and persisted in the
+conversation.
 
 Two lines of defence, because neither is sufficient alone:
 
 * **The values actually held.** `config.secret_values()` knows what was saved,
-  which is the only way to catch a self-hosted gateway's key — it has no fixed
+  which is the only way to catch a self-hosted service's key — it has no fixed
   shape at all.
 * **The well-known shapes.** `sk-…` (OpenAI/Anthropic) and `AIza…` (Google),
   which catch a key that was never saved here: typed into a form and submitted,
   or configured directly as an environment variable.
 
-Ported from the Node build's `server/models/redact.js`, including its rule that
-a stored value shorter than four characters is skipped — a trivially short
+A stored value shorter than four characters is skipped — a trivially short
 secret would otherwise blank out unrelated text wherever those characters
 happen to appear.
 

@@ -5,11 +5,10 @@ Adding an ability is one file here that exposes `SPEC` (a `CapabilitySpec`), or
 Nothing else in the app changes.
 
 **The import invariant this package must never break.** Nothing under
-`jarvis/tools/` may import the loader, the executor, the orchestrator or the
-gateway — directly or transitively. The loader imports every module here, so an
-import back is a cycle; in the Node original the equivalent produced a deadlock
-that looked like a hung server. A tool that needs something only the registry can
-answer receives it through `build(registry)`, which is called WITH the registry
+`jarvis/tools/` may import the loader, the executor or the orchestrator —
+directly or transitively. The loader imports every module here, so an import
+back is a cycle that deadlocks and looks like a hung server. A tool that needs
+something only the registry can answer receives it through `build(registry)`, which is called WITH the registry
 rather than reaching for it. `tests/test_architecture.py` asserts this rather
 than trusting it.
 

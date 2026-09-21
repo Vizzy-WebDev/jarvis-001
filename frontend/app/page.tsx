@@ -444,7 +444,7 @@ export default function Home() {
     // Deliberately not an error: the reply itself is fine, only its audio
     // failed, and clearing what is on screen would be wrong.
     started.on('tts_failure', () =>
-      setStatus('That voice could not produce audio — check its key on Model Settings.'));
+      setStatus('That voice could not produce audio — check its key in Settings.'));
     started.on('error', ({ message }) => {
       // A real, confirmed bug found while testing this change: this used to
       // just forget the engine (null the ref, flip `listening` off) without

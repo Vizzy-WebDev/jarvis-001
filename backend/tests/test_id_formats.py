@@ -1,4 +1,4 @@
-"""Generated ids must keep the shape the Node implementation produces.
+"""Generated ids must keep the shape already stored.
 
 The contract harness normalises id values away, because they differ every run.
 That is necessary and also dangerous: normalising a value hides its FORMAT too,
@@ -36,10 +36,10 @@ def test_message_id_shape(scratch):
     assert re.match(r"^m\d+$", message["id"]), message["id"]
 
 def test_timestamp_shape():
-    """`new Date().toISOString()` — exactly three fractional digits, trailing Z.
+    """The stored timestamp format — exactly three fractional digits, trailing Z.
 
     Python's own isoformat() gives six digits and '+00:00', which would sort and
-    compare differently against every row the Node app wrote.
+    compare differently against every stored row.
     """
     assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$", now_iso())
 

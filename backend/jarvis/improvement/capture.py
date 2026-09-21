@@ -101,13 +101,9 @@ def record_notable_tool_outcome(name: str, *, reason: str | None = None,
     """A single tool call worth Self-Improvement seeing on its own, separate
     from the rolling reliability tally `observers/recording.py` already keeps.
 
-    Ported from the Node build's `self-capture.js` — the half of it that did
-    NOT survive the S6 cutover (see `self/CLAUDE.md`'s "No separate
-    self-capture.py" entry). There, `recordToolOutcome()` bumped the tally for
-    every call but wrote one of these only for a NOTABLE outcome: a real
-    failure, a call refused because it wasn't in this turn's allowed tools, or
-    a confirmation that had to be parked rather than asked inline. All three
-    reach here today: a real failure via `TOOL_FAILED`, the other two via the
+    A NOTABLE outcome is a real failure, a call refused because it wasn't in this turn's
+    allowed tools, or a confirmation that had to be parked rather than asked inline. All three
+    reach here: a real failure via `TOOL_FAILED`, the other two via the
     dedicated `TOOL_REFUSED`/`TOOL_ESCALATED` events `capabilities/execute.py`
     now publishes (neither call ever reaches `_run()`, so neither could ever
     have raised `TOOL_COMPLETED`/`TOOL_FAILED` in the first place).

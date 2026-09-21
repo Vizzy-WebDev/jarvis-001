@@ -1,7 +1,6 @@
 """Chat History — browsing, opening, renaming, pinning, archiving, deleting.
 
-A port of server/server.js's /api/conversations routes. Status codes and error
-message TEXT are reproduced exactly: the front end shows these strings to the
+Status codes and error message TEXT are stable: the front end shows these strings to the
 user directly, so a reworded 404 is a user-visible change, not an internal one.
 
 "Deleting" moves a conversation to the recycle bin (`chat_store.py`'s
@@ -37,7 +36,7 @@ def list_conversations(
     include_archived = archived == "1"
     # get_active_session_id() must run BEFORE list_conversations(): on a fresh
     # install it lazily creates the very first conversation, and evaluating the
-    # list first would miss it — a real bug found live in the original, showing
+    # list first would miss it — a real bug found live, showing
     # an empty list alongside a real activeId.
     active_id = get_active_session_id()
     return {

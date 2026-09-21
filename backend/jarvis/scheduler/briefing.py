@@ -18,9 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from ..model_system.compat import Task as RoutingTask, ask
-from ..model_system.fallback import NoModelAvailable
-from ..model_system.request import Role
+from ..ai import NoModelAvailable, ask
 from ..memory import store as memory_store
 from .briefing_config import get_config
 from .recurrence import describe
@@ -182,11 +180,7 @@ def compose_briefing(now: datetime | None = None) -> Briefing:
 
     if not tools:
         try:
-            answer = ask(
-                prompt, system=NARRATOR,
-                # Nobody is waiting in real time, so cost matters more than latency.
-                task=RoutingTask(text="briefing", role=Role.BACKGROUND, needs_tools=False),
-            )
+            answer = ask(prompt, system=NARRATOR)
         except NoModelAvailable as err:
             return Briefing(ok=False, facts=facts, error=str(err))
         return Briefing(ok=True, text=answer.text.strip(), facts=facts,

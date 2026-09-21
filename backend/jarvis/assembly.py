@@ -4,7 +4,7 @@ Everything else in this package is constructed with its collaborators passed in,
 which is what makes each piece testable in isolation. Something still has to make
 the real object graph, and doing that inside a route handler is how a second,
 subtly different assembly gets built the next time a route needs one — the exact
-shape of the Node app's three disagreeing model-call paths.
+shape of several disagreeing model-call paths.
 
 So it happens here, once, lazily, and `reset_for_tests()` tears it down.
 """
@@ -17,7 +17,7 @@ import threading
 from .capabilities import CapabilityRegistry
 from .events import bus
 from .observers import start_observers
-from .model_system.gateway import Gateway
+from .orchestrator.model_port import NoModelClient
 from .orchestrator import Orchestrator
 from .tools import load_tools
 from .voice import ConversationMode, WakeDetector
@@ -79,12 +79,10 @@ def get_orchestrator() -> Orchestrator:
     global _orchestrator
     with _lock:
         if _orchestrator is None:
-            # No routing settings passed in. `balance` used to be read here and
-            # baked into the gateway for the life of the process, so changing
-            # the Fast/Balanced/Quality dial did nothing until a restart; the
-            # router reads it per turn now.
+            # No model system exists yet, so nothing can answer a turn: the
+            # placeholder client fails each one with a plain "no model" message.
             _orchestrator = Orchestrator(
-                Gateway(event_bus=bus),
+                NoModelClient(),
                 registry=get_registry(),
                 event_bus=bus,
             )
@@ -132,14 +130,6 @@ def start_background_work() -> dict[str, bool]:
               "scheduler": False, "monitor": False, "job_supervisor": False,
               "improvement_cadence": False, "notification_trash_purge": False,
               "connector_icons": False, "chat_trash_purge": False}
-
-    # Seeding is NOT behind the interlock. The interlock stops two builds acting
-    # on the user's behalf; recording that a local model costs nothing is a fact
-    # about this machine, needs no network, never overwrites an existing price,
-    # and is what keeps a free model from reading as "no price known".
-    seeded = prices.seed_known_free_prices()
-    if seeded:
-        logger.info("[assembly] seeded %d free/local model prices", seeded)
 
     started["prices"] = prices.start_price_maintenance()
     started["balances"] = balances.start()

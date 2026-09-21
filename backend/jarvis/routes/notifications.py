@@ -24,8 +24,8 @@ def listed(limit: int | None = None) -> dict[str, Any]:
 @router.post("/notifications")
 def create(body: dict[str, Any] = Body(default_factory=dict)):
     """Adding one by hand. The front end does not normally need this — every
-    real notice comes from a subsystem publishing on the bus — but the original
-    exposes it and a UI action may legitimately want to record something."""
+    real notice comes from a subsystem publishing on the bus — but it is exposed
+    and a UI action may legitimately want to record something."""
     try:
         return notifications.add(
             kind=str(body.get("kind") or "system"),

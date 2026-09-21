@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 
+import { ServiceKeys } from '@/components/shell/ServiceKeys';
 import { Row } from '@/components/ui/Card';
 import { Toggle } from '@/components/ui/Toggle';
 import { api } from '@/lib/api';
@@ -112,8 +113,12 @@ export function SettingsPanel({
 
       <div className="h-px bg-surface-border" />
 
+      <ServiceKeys />
+
+      <div className="h-px bg-surface-border" />
+
       <p className="py-3 text-[12px] leading-relaxed text-ink-muted">
-        Models and keys live on the{' '}
+        AI models are set up on the{' '}
         <button
           type="button"
           className="text-accent underline-offset-2 hover:underline"
@@ -121,7 +126,7 @@ export function SettingsPanel({
         >
           Model Settings
         </button>{' '}
-        screen.
+        screen, which is being rebuilt.
       </p>
     </div>
   );

@@ -9,14 +9,11 @@ import type {
   BriefingConfig,
   BriefingPreview,
   CatalogEntry,
-  CatalogProvider,
   Change,
-  ConnectionEntry,
   Connector,
   ConnectorConnectOutcome,
   ConnectorTool,
   Conversation,
-  DiscoveredModel,
   ExternalService,
   ConversationDetail,
   ConversationList,
@@ -39,11 +36,6 @@ import type {
   TraceRow,
   UndoResult,
   Prefs,
-  ModelEntry,
-  ModelHealth,
-  ProbeResult,
-  Provider,
-  RecheckPreview,
   SandboxStatus,
   VoiceOptions,
   Status,
@@ -164,69 +156,9 @@ export const api = {
     emptyTrash: () => request<{ ok: true; removed: number }>('/notifications/trash', { method: 'DELETE' }),
   },
 
-  /** Read only. Everything that WRITES — adding a connection, probing an
-   *  address, discovery, entering a key — lands with the models screen. */
-  models: {
-    list: () =>
-      request<{ connections: ConnectionEntry[]; models: ModelEntry[]; health: ModelHealth }>(
-        '/models',
-      ),
-    providers: () => request<{ providers: Provider[] }>('/models/providers'),
-    /** The roster as provider -> family -> version. Read-only and derived —
-     *  the same deployments `list()` returns, grouped by what they ARE. */
-    catalog: () => request<{ providers: CatalogProvider[] }>('/models/catalog'),
-    add: (connectionId: string, models: (string | Partial<DiscoveredModel>)[]) =>
-      request<{ ok: true; added: ModelEntry[]; failed: { model: string; error: string }[] }>(
-        '/models',
-        { method: 'POST', ...json({ connectionId, models }) },
-      ),
-    update: (id: string, patch: Record<string, unknown>) =>
-      request<{ ok: true; model: ModelEntry }>(`/models/${encodeURIComponent(id)}`, {
-        method: 'PATCH',
-        ...json(patch),
-      }),
-    remove: (id: string) =>
-      request<{ ok: true }>(`/models/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-    test: (id: string) =>
-      request<{ ok: boolean; error?: string }>(`/models/${encodeURIComponent(id)}/test`, {
-        method: 'POST',
-      }),
-    recheckPreview: () => request<RecheckPreview>('/models/recheck/preview'),
-    recheck: (scope: 'all' | 'not_working') =>
-      request<{ ok: true; models: ModelEntry[] }>('/models/recheck', {
-        method: 'POST',
-        ...json({ scope }),
-      }),
-  },
-
-  connections: {
-    /** A key goes in here and never comes back out on any route. */
-    add: (body: Record<string, unknown>) =>
-      request<{
-        ok: true; connection: ConnectionEntry; added: ModelEntry[];
-        failed: { model: string; error: string }[]; steps: string[] | null;
-      }>('/connections', { method: 'POST', ...json(body) }),
-    probe: (baseUrl: string, secret?: string) =>
-      request<ProbeResult>('/connections/probe', { method: 'POST', ...json({ baseUrl, secret }) }),
-    discover: (body: { provider?: string; adapter?: string; baseUrl?: string; secret?: string; connectionId?: string }) =>
-      request<{ models: DiscoveredModel[]; error: string | null }>('/connections/discover', {
-        method: 'POST',
-        ...json(body),
-      }),
-    update: (id: string, patch: { label?: string; baseUrl?: string; secret?: string }) =>
-      request<{ ok: true; connection: ConnectionEntry }>(`/connections/${encodeURIComponent(id)}`, {
-        method: 'PATCH',
-        ...json(patch),
-      }),
-    remove: (id: string) =>
-      request<{ ok: true; removedModels: number }>(`/connections/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-      }),
-  },
-
   /** What can actually listen and speak right now. Every entry is computed
-   *  from real state — a connected model's declared capabilities, a configured
-   *  key — never from a provider name. */
+   *  from real state — a configured key, a capability — never from a provider
+   *  name. */
   voice: {
     options: () => request<VoiceOptions>('/voice/options'),
   },

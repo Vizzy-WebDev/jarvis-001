@@ -16,11 +16,10 @@ literal `[[laugh]]` token into a `Reaction` event at the exact point the model's
 text becomes a `Chunk`; it observes nothing and writes nothing down, so it is
 transformation, not the recording the restraint above is about.
 
-That restraint is the whole point. The Node original grew into a 1,027-line file
-that is simultaneously the turn loop, the provider gateway and the observability
-hub for five subsystems, which is why a second agent loop had to be written from
-scratch to get a different perceive step, and why that copy silently lost health
-marking, cost capture and the capability seam.
+That restraint is the whole point. A turn loop that is simultaneously the loop, the model client
+and the observability hub for several subsystems forces a second agent loop to be
+written from scratch whenever a different perceive step is needed, and that copy silently
+loses health marking, cost capture and the capability seam.
 
 **Honesty about the fast path (§10, §45).** A deterministic route runs the
 capability with no model call, and if the capability's own result carries text
@@ -60,7 +59,7 @@ logger = logging.getLogger(__name__)
 MAX_STEPS = 8
 
 #: Above this many capabilities, a turn is declared its CORE set plus whatever
-#: it has unlocked, rather than everything. Measured on the Node app, declaring
+#: it has unlocked, rather than everything. Measured, declaring
 #: the full set cost ~150,000 characters on every turn — sent on "hello" as much
 #: as on anything else — and was the single largest cause of flat,
 #: instruction-ignoring replies. The rule is a size rule because the problem is
@@ -160,8 +159,7 @@ class Done:
     steps: int
     #: Which model actually answered. A scheduled task's run history reports it,
     #: and it is the honest way to tell a pin that was honoured from one that
-    #: silently fell back — the gateway treats a pin as an ordering, not a
-    #: requirement, so a deleted pinned model degrades instead of breaking.
+    #: silently fell back.
     model_id: str | None = None
     #: The reply's own real, persisted id — same reasoning as `Routed.
     #: user_message_id`. None for the CLARIFY fast-return, which never wrote
@@ -205,9 +203,8 @@ def _navigate_of(value: Any) -> dict[str, Any] | None:
     return {"section": str(section)} if section else None
 
 
-#: Which job the provider layer should rank this turn as, by where it came
-#: from. Plain strings because the port is deliberately neutral — the turn loop
-#: imports no part of the gateway (`model_port.py`).
+#: Which kind of job the model client should treat this turn as, by where it came
+#: from. Plain strings because the port is deliberately neutral (`model_port.py`).
 #:
 #: This mapping is the whole of what the switchover needed from the turn loop,
 #: and it closes a gap rather than adding a feature: before it, every turn
@@ -235,10 +232,8 @@ class TurnRequest:
     #: An allowlist for restricted work (a job kind, a scheduled task's
     #: connectors). Enforced in the policy layer, not here.
     allowed_names: frozenset[str] | None = None
-    #: A one-off model pin — a scheduled task naming the model it wants. The
-    #: gateway honours it by ORDER, not exclusion (`gateway/routing.py`), so a
-    #: task pinned to a model that has since been deleted quietly falls back to
-    #: the usual ranking instead of breaking.
+    #: A one-off model pin — a scheduled task naming the model it wants. Passed to the
+    #: model client as-is; nothing consumes it while there is no model system.
     model_id: str | None = None
     grants: list[Grant] | None = None
     #: Upload ids attached to this turn. Ids, never paths: what arrives from the
@@ -540,7 +535,7 @@ class Orchestrator:
             )
 
             if not completed.tool_calls:
-                # `completed.text` is the adapter's own final assembly, built
+                # `completed.text` is the model client's own final assembly, built
                 # independently of the streamed Chunks above — it can still
                 # carry a raw [[laugh]] token the scanner never saw, so it
                 # gets the same stripping before it ever reaches the

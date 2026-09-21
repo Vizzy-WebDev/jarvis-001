@@ -45,7 +45,7 @@ def _at_time(moment: datetime, value: str | None) -> datetime:
 
 
 def _weekday_number(moment: datetime) -> int:
-    """0 = Sunday, matching the stored spec (and JavaScript's getDay)."""
+    """0 = Sunday, matching the stored spec."""
     return (moment.weekday() + 1) % 7
 
 

@@ -13,7 +13,7 @@ from ..capabilities import CapabilitySpec, Risk
 
 
 def _run(question: str = "", search_terms: str | None = None) -> dict[str, Any]:
-    from ..research import research    # imported here: research pulls in the gateway
+    from ..research import research    # imported here, not at module level: keeps tool loading light
 
     if not (question or "").strip():
         return {"ok": False, "error": "There's nothing to look up."}

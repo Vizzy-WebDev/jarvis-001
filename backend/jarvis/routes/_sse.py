@@ -2,8 +2,8 @@
 
 **A progress heartbeat is a real typed event, not an SSE comment.** The browser
 cannot tell "still working" from "the server died", and two entirely legitimate
-phases produce no events for a long time: walking the model fallback chain, and a
-single slow tool call. In the Node app this was measured — 102 of 200 kept
+phases produce no events for a long time: waiting on a slow model, and a
+single slow tool call. Measured on a real install, 102 of 200 kept
 notifications were a false "Jarvis seems to have gotten stuck", almost all of
 them on a turn that was still legitimately running. A comment (`: ping`) does not
 fix that, because the client's own watchdog only re-arms on typed events.

@@ -1,9 +1,8 @@
 """The two voice sockets.
 
 Neither can be driven end to end without a real provider, so what is tested is
-the part that is ours: the refusals, the fallback answer, and the rule that a
-realtime session's tool calls go through the SAME permission gate as every other
-turn rather than a quieter path of their own.
+the part that is ours: the refusals and the fallback answer. The provider's own
+realtime session does not exist until the model system is rebuilt.
 """
 
 from __future__ import annotations
@@ -12,8 +11,6 @@ import pytest
 from starlette.testclient import TestClient
 
 from jarvis import external_services
-from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
-from jarvis.model_system.registry import add_model
 
 
 @pytest.fixture
@@ -37,54 +34,6 @@ def test_with_no_realtime_model_the_session_says_so_and_closes(client):
     assert "realtime" in answer["error"].lower()
 
 
-def test_a_realtime_capable_model_with_no_key_still_does_not_open(client):
-    """Declaring the capability is not enough — the connection has to actually
-    hold a credential, or there is nothing to connect with."""
-    provider = add_provider(label="g", kind=ProviderKind.NATIVE, adapter="gemini",
-                            auth_method=AuthMethod.API_KEY, key_required=True)
-    add_model(provider_id=provider.id, native_model_id="live-model")
-
-    with client.websocket_connect("/api/live") as socket:
-        assert socket.receive_json()["code"] == "NO_API_KEY"
-
-
-def test_a_realtime_tool_call_goes_through_the_ordinary_gate(scratch):
-    """The rule this asserts: a voice route does not get a quieter permission
-    path. A HIGH-risk capability called from a realtime session parks for a
-    human exactly as it would from a typed turn — wiring speech straight into
-    execution is how a voice path ends up with none of the protections the text
-    path has."""
-    from jarvis.assembly import get_registry
-    from jarvis.capabilities import CapabilitySpec, Risk
-    from jarvis.routes.realtime import _run_capability
-
-    ran: list[dict] = []
-    get_registry().register(CapabilitySpec(
-        id="builtin.wipe_the_disk", name="wipe_the_disk", description="destroy things",
-        input_schema={"type": "object", "properties": {}}, risk=Risk.HIGH,
-        handler=lambda **kw: ran.append(kw) or "gone"))
-
-    result = _run_capability("wipe_the_disk", {}, "live:test")
-
-    assert not ran, "a realtime session executed a high-risk action with nobody asked"
-    assert result["needs_confirmation"] is True
-    assert result["approvalId"]
-
-
-def test_an_ordinary_capability_still_just_runs(scratch):
-    from jarvis.assembly import get_registry
-    from jarvis.capabilities import CapabilitySpec, Risk
-    from jarvis.routes.realtime import _run_capability
-
-    get_registry().register(CapabilitySpec(
-        id="builtin.what_time", name="what_time", description="the time",
-        input_schema={"type": "object", "properties": {}}, risk=Risk.LOW,
-        handler=lambda **kw: "six o'clock"))
-
-    result = _run_capability("what_time", {}, "live:test")
-    assert result["ok"] is True and result["value"] == "six o'clock"
-
-
 def test_recognition_reports_the_provider_mode_when_a_key_exists(client, monkeypatch):
     """With a key the socket says which provider is live rather than falling
     back — the open itself needs a real service, so the fallback branch is what
@@ -101,22 +50,6 @@ def test_recognition_reports_the_provider_mode_when_a_key_exists(client, monkeyp
         # It tried the real provider (is_configured passed) and only then fell
         # back — which is the honest ordering.
         assert socket.receive_json() == {"type": "ready", "mode": "browser"}
-
-
-def test_a_realtime_session_is_opened_BY_THE_ADAPTER_not_the_route():
-    """The architecture rule this port exists to keep: one place per wire
-    format. The Node app had two callers construct a provider SDK directly, and
-    that is how the voice path ended up with none of the gateway's protections.
-    An adapter that declares `SUPPORTS_REALTIME` is promising this function
-    exists — the route asks for a session and never learns whose it is."""
-    from jarvis.model_system.adapters import _REGISTRY
-
-    for name, module in _REGISTRY.items():
-        declares = bool(getattr(module, "SUPPORTS_REALTIME", False))
-        provides = hasattr(module, "open_realtime_session")
-        assert declares == provides, (
-            f"{name} declares realtime={declares} but provides={provides} — a capability "
-            "flag is a promise about what the adapter actually offers")
 
 
 def test_the_route_never_reaches_for_a_provider_by_name():

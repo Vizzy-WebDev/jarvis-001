@@ -79,7 +79,7 @@ export function Transcript({
             href="#/models"
             className="mt-2 inline-block text-accent underline-offset-2 hover:underline"
           >
-            Add a model →
+            Model Settings →
           </a>
         </div>
       )}

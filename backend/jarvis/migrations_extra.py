@@ -1,13 +1,10 @@
-"""Schema this build adds beyond the 19 migrations inherited from the Node app.
+"""Schema added after the original 19 migrations.
 
-Kept separate from migrations.py on purpose. That file was extracted mechanically
-from server/db.js and carries a "do not hand-edit" rule so it stays a faithful
-copy; hand-adding a step there would quietly break that guarantee. These are ours.
+Kept separate from migrations.py on purpose. That file carries a "do not hand-edit" rule so
+every database built from it stays identical; hand-adding a step there would quietly break
+that guarantee.
 
 Numbering continues from 19, so `PRAGMA user_version` keeps rising monotonically.
-Before the Node app was retired, this was also what kept it safe to open the same
-database file: its own migrate() loop ran `for v = current; v < MIGRATIONS.length`
-with 19 entries, so a database already at version 20+ simply did no work there.
 """
 
 from __future__ import annotations
@@ -135,35 +132,9 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
         """
     ],
 
-    # 24: The AI Model System — providers, models, profiles, health, usage.
-    #
-    # A ground-up rebuild of the model infrastructure layer (jarvis/ai/),
-    # replacing the JSON-file-backed connections/deployments/availability/effort
-    # stores the earlier catalog/gateway build used. Five entities, each with a
-    # real reason to be its own table rather than folded into another:
-    #
-    # `ai_providers` is a saved address + credential reference + wire format.
-    # `ai_models` is one model made callable through one provider — the
-    # crossing-axis unit a router actually chooses between, so the same model
-    # reachable two ways is two independent rows with their own health and
-    # usage, never one row silently shared. `capabilities_discovered_json`
-    # (what the provider reported) and `capabilities_override_json` (what a
-    # person corrected) are kept as separate columns rather than one merged
-    # blob so provenance survives a restart; the third source — this build's
-    # own small seed of known model families — is a pattern table matched
-    # fresh on every read (`ai/registry.py`'s `SEED`), never stored, so a
-    # better seed shipped tomorrow applies to an existing row with no
-    # migration touching it. Same shape for `reasoning_*_json`.
-    #
-    # `ai_health` is its own table, not a column on `ai_models`, because it is
-    # written on nearly every call and read on nearly every routing decision —
-    # a write-heavy, small-payload access pattern that has no business sharing
-    # a row (and a lock) with a model's rarely-changed configuration.
-    #
-    # `ai_usage` is the per-request ledger (§17/§30): one row per attempted
-    # call, success or failure, carrying enough to reconstruct why a model was
-    # chosen and what happened when it answered — `fallback_chain_json` is the
-    # ordered list of every candidate tried before this row's outcome.
+    # 24: Tables for the previous AI model system (providers, models, profiles,
+    # health, usage). Left as written, because a migration that has already run
+    # is never edited; migration 26 drops them.
     24: [
         """
         CREATE TABLE IF NOT EXISTS ai_providers (
@@ -270,6 +241,19 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
         """
         ALTER TABLE conversations ADD COLUMN deleted_at TEXT;
         CREATE INDEX IF NOT EXISTS idx_conversations_deleted ON conversations(deleted_at);
+        """
+    ],
+
+    # 26: Drop the previous AI model system's tables (created by 24). Nothing
+    # outside that system read them. Provider and model rows are discarded;
+    # credentials live in `.env` and are not touched here.
+    26: [
+        """
+        DROP TABLE IF EXISTS ai_usage;
+        DROP TABLE IF EXISTS ai_health;
+        DROP TABLE IF EXISTS ai_profiles;
+        DROP TABLE IF EXISTS ai_models;
+        DROP TABLE IF EXISTS ai_providers;
         """
     ],
 }

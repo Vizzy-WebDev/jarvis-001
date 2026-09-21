@@ -282,8 +282,7 @@ def test_a_parked_confirmation_publishes_tool_escalated(reg):
 
 def test_an_ordinary_inline_confirmation_never_publishes_tool_escalated(reg):
     """Only a PARKED confirmation is notable — an ordinary live ask-and-answer
-    is ESCALATE's own reason for existing, ported from the same distinction the
-    Node original's `result.escalated` field drew."""
+    is ESCALATE's own reason for existing."""
     add(reg, "send_message", risk=Risk.MEDIUM)
     eb = EventBus()
     seen = []

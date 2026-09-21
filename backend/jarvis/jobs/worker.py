@@ -52,14 +52,11 @@ def session_for(job_id: str) -> str:
 
 
 def _installed_skill_names() -> list[str]:
-    """Every Skill currently installed. A real, disclosed gap until now (see
-    `jobs/CLAUDE.md`'s "A real, disclosed gap" entry, right under
-    `TOOLS_BY_KIND`): a `research`/`files`-kind job could not reach an
-    installed Skill at all, however well it matched the job's own goal,
-    because `TOOLS_BY_KIND`'s hardcoded lists never included one. The Node
-    original fixed exactly this — a Skill is the user's own packaged process,
-    not a raw capability the kind restriction exists to fence off — and that
-    fix never carried over into this port until now.
+    """Every Skill currently installed.
+
+    A `research`/`files`-kind job must still be able to reach an installed Skill however
+    narrow its kind's own tool list is: a Skill is the user's own packaged process, not a raw
+    capability the kind restriction exists to fence off.
 
     A lazy import, same reason `run_job()` below defers its own `assembly`
     import: the registry is built by `assembly.py`, which this module must

@@ -10,7 +10,7 @@ The last two steps read every decision noted along the way, not the plan
 document alone — which is what stops something settled in conversation from
 quietly vanishing by the time the handoff prompt is written.
 
-A leaf as far as the tool loader is concerned: it imports the gateway, research
+A leaf as far as the tool loader is concerned: it imports `ai`, research
 and conversation, never the loader, the executor or the orchestrator.
 """
 
@@ -216,13 +216,11 @@ def write_plan(project_id: str, *, event_bus: EventBus | None = None) -> dict[st
         raise KeyError("That project no longer exists.")
 
     def work() -> None:
-        from ..model_system.compat import Task, ask
-        from ..model_system.request import Role
+        from ..ai import ask
 
         _announce(project, event_bus=event_bus, status="working", step="plan")
         try:
-            written = ask(_plan_prompt(project), system=PLAN_SYSTEM,
-                          task=Task(text=project["idea"], needs_tools=False, role=Role.BACKGROUND))
+            written = ask(_plan_prompt(project), system=PLAN_SYSTEM)
         except Exception as err:  # noqa: BLE001 — no model available is the common case
             failed = store.update_project(project_id, {"error": f"I couldn't write the plan. {err}"})
             _push_step(failed, step="plan", ok=False, error=str(err))
@@ -279,14 +277,12 @@ def write_prompts(project_id: str, target: dict[str, Any] | None = None, *,
     updated = store.update_project(project_id, {"target": chosen}) or project
 
     def work() -> None:
-        from ..model_system.compat import Task, ask
-        from ..model_system.request import Role
+        from ..ai import ask
 
         _announce(updated, event_bus=event_bus, status="working", step="prompts")
         try:
             written = ask(_prompts_prompt(updated, chosen), system=PROMPTS_SYSTEM,
-                          want_json=True,
-                          task=Task(text=updated["idea"], needs_tools=False, role=Role.BACKGROUND))
+                          want_json=True)
         except Exception as err:  # noqa: BLE001
             failed = store.update_project(project_id,
                                           {"error": f"I couldn't write the build prompt. {err}"})

@@ -1,59 +1,49 @@
-<!-- Ported from the Node build during the S6 cutover. The architecture, the
-invariants and the live-caught bugs described here all carried over deliberately and
-still hold. File paths have been updated to their real Python counterparts and are
-verified to exist. Function names written in camelCase (`getToolDeclarations()`) are
-the NODE originals, kept because the surrounding reasoning is about them; the Python
-equivalent is the snake_case function doing that job in the same module. Where a Node
-module had no Python counterpart, the text says so rather than pointing at a file that
-does not exist. -->
+# Scheduler + briefing (`jarvis/scheduler/`)
 
-# Scheduler + briefing (`jarvis/scheduler/*.py`)
-
-- `recurrence.py` — pure `nextRunAt(spec, from)`/`describe(spec)` over `{type: 'once'|
-  'daily'|'weekdays'|'weekly'|'interval', ...}`. No state, no I/O — test it directly.
-- `task_store.py` — plain CRUD over `data/tasks.json`/`task-runs.json`. Deliberately a
-  leaf module (see circular-import gotcha in the root `CLAUDE.md`).
-- `scheduler/engine.py` — the 30s tick + `runAction()`. A task's action is `message` (fixed
-  text, no model involved), `skill` (calls the chosen capability directly — a built-in
-  tool or a folder Skill, not via a model's own judgment, since the user already picked
-  it — then has a model narrate the result), `prompt` (free-text through the model), or
-  `briefing`. Catches up a missed run once (never once-per-missed-day) and flags it
-  `late`. Every unattended run records which model handled it and any fallback, via
-  `runner.py`'s `model_switch` events. A `prompt` action's `connectors` field (an array
-  of connector ids, from the task-creation UI's real picker — see
-  `frontend/components/screens/TasksScreen.tsx`) is resolved to real tool names fresh at RUN time (a
-  connector's own tool list can change between creation and run) via
-  `connectors/capabilities.py`'s `toolNamesForConnector()`, and ADDS those names to the task's
-  normal core built-in set rather than restricting the task down to only them — empty
-  (the default) means fully unrestricted, unchanged from before this picker existed.
-  **Verification (root CLAUDE.md's Operational Awareness item 4)** — for a `prompt`
-  action's result reporting `ok:true`, `runTaskNow()` runs `ops/verify.py`'s
-  `verifySemanticMatch({request: task.action.text, resultSummary: result.summary})`
-  before `recordRun()`. Only `prompt` actions get this — `message`/`briefing`/`skill`
-  results are mechanical or already structured, nothing free-form to mismatch. A
-  `matches:false` verdict flips `result.ok` to `false` and folds the reason into
-  `result.error`, letting the EXISTING `notify`/`recordRun` machinery treat it exactly
-  like any other failure — **no new recovery mechanism**, since a task's own next
-  scheduled occurrence already is its natural retry cadence (unlike Jobs, there's no
-  existing retry loop here to reuse or collide with). `checked:false` (no model
-  available) never flips a real success to a failure. Verified via a real stub model
-  through the real `runTaskNow()` path: a reply that doesn't answer the actual prompt
-  is correctly flagged `ok:false` with the real reason in `error` (the original reply
-  text stays in `summary`, never lost); a genuinely matching reply is untouched.
-- `briefing_config.py` / `briefing.py` — split for the same circular-import reason as
-  task_store.py. Sections (greeting, date/time, upcoming tasks, goals, focus, custom)
-  are fixed; weather/headlines are fixed, always-available native abilities, not a
-  user-managed list (an earlier open `sources[]` shape was reverted — it let Jarvis's
-  own built-ins be offered through the same "add a source" UI as a Skill, a real
-  instance of the native-ability-as-Skill bug). Connectors are the one real, user-picked
-  addition (`config.connectors`, an array of connector ids, empty by default — see the
-  Briefing screen's own picker): `composeBriefing()` still gathers everything else in
-  code first and narrates only what it found (never lets the model invent data), but
-  when at least one connector is selected the turn ALSO gets real tool access to
-  exactly those connectors' tools, on top of the code-gathered facts, so the model can
-  genuinely check them rather than only narrate pre-fetched data. Every enabled folder
-  Skill is added to that same tool list unconditionally too (`listUserSkills()`), even
-  with no connectors selected at all — deliberately narrower than `scheduler/engine.py`'s own
-  prompt-action pattern (which widens to the full core built-in set): a briefing stays a
-  narrate-code-gathered-facts turn, only gaining a Skill and whichever connectors were
-  explicitly picked, never the rest of Jarvis's abilities.
+- `recurrence.py` — pure `next_run_at(spec, start)` / `describe(spec)` over
+  `{type: 'once'|'daily'|'weekdays'|'weekly'|'interval', ...}`. No state, no I/O — test it
+  directly.
+- `task_store.py` — plain CRUD over `data/tasks.json` / `data/task-runs.json`. Deliberately
+  a leaf module, so the engine and the briefing composer can both read tasks without
+  importing each other. Keeps the last `MAX_RUNS_KEPT` runs.
+- `engine.py` — the 30s tick (`tick()`) and `run_task_now()`. Gated by `JARVIS_SCHEDULER`:
+  a second process reading the same `tasks.json` would fire every task twice, so the
+  interlock is a real safety property, not just a test guard.
+  - **Action types:** `message` (fixed text, no model), `prompt` (free text run as a real
+    turn), `briefing` (`compose_briefing()`). Anything else fails with "Unknown task action".
+  - **The schedule advances BEFORE the run**, so a task that throws, or a restart
+    mid-run, can never re-fire the same due timestamp forever. A run missed for days
+    catches up exactly once and is flagged `late` (more than `LATE_THRESHOLD` past due).
+  - **A `prompt` task runs as its own ephemeral session** (`task:<id>:<suffix>`), never
+    bound to chat history, with `Autonomy.PRE_CONSENTED` on `Surface.SCHEDULED`. Pre-consent
+    covers ordinary work only — a HIGH-risk call inside it still parks for a human
+    (`policy/decide.py` enforces that, not this module). A parked approval is recorded as
+    `awaitingApproval`, neither a success nor a failure. `action.modelId` is a pin passed to the
+    model client; nothing honours it while there is no model system.
+  - **Connectors on a prompt task** (`action.connectors`, connector ids from the task
+    UI's picker) are resolved to tool names at RUN time via
+    `connectors/capabilities.py`'s `tool_names_for()`, because a connector's tool list
+    changes when it reconnects. Picking connectors ADDS them to the non-connector
+    capabilities; unpicked connectors are excluded. No connectors means no restriction.
+    `action.tools` (explicit names) overrides both.
+  - **Verification.** For a `prompt` run that reports ok, `_verify_run()` calls
+    `ops/verify.py`'s `verify_semantic_match()`. A `matches: false` verdict flips the run
+    to not-ok with the reason folded into `error` — no new recovery mechanism, since the
+    task's next occurrence is its natural retry. Only `prompt` runs get this; `message` and
+    `briefing` results are mechanical. `checked: false` (no model available) never turns a
+    real success into a failure.
+  - **After a run:** the outcome is recorded via `observers/improvement.py`; a
+    `JOB_COMPLETED` event always fires so open screens see it; a notification fires only if
+    the task's own `notify` setting says so; and a successful `prompt` result is
+    checkpointed to memory in the background.
+- `briefing_config.py` / `briefing.py` — the config is split from the composer so a tool
+  can read and write it without importing the model layer. Sections (greeting, date/time,
+  tasks, goals, focus, custom) are fixed. Weather and headlines are fixed native
+  abilities, not a user-managed "sources" list — a list would offer Jarvis's own built-ins
+  through the same "add a source" UI as a Skill. Connectors (`config.connectors`, ids,
+  empty by default) are the one real user-picked addition.
+  - **The model narrates, it never supplies.** `compose_briefing()` gathers every fact in
+    code first (`gather_facts()`) and the prompt says anything not listed is unknown. With
+    no connector picked the narration turn has no tools at all. With connectors picked it
+    also gets real access to exactly those connectors' tools (`connector_tool_names()`,
+    resolved at compose time), and nothing else.

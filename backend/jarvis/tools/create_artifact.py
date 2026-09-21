@@ -1,9 +1,8 @@
 """Producing a real file the user can open.
 
-Deliberately NOT marked meta: in the original this tool was, and a background job
-strips meta tools before anything else applies — so a job asked to produce a
-report structurally could not produce one. That is the kind of gap nobody finds
-by reading the code.
+Deliberately NOT marked meta: a background job strips meta tools before anything else
+applies, so a job asked to produce a report structurally could not produce one. That is
+the kind of gap nobody finds by reading the code.
 
 One capability ceiling, stated in the description because a model cannot infer
 it: there is no image generation here. No adapter does it and no image library

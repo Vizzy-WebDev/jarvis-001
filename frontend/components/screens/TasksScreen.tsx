@@ -12,7 +12,7 @@ import { Toggle } from '@/components/ui/Toggle';
 import { api, ApiRequestError } from '@/lib/api';
 import { isPickable } from '@/lib/connectors';
 import type {
-  ConnectionEntry, Connector, ModelEntry, Monitor, Recurrence, Task, TaskRun,
+  Connector, Monitor, Recurrence, Task, TaskRun,
 } from '@/lib/api-types';
 
 /**
@@ -67,8 +67,6 @@ export function TasksScreen({ onNavigate }: { onNavigate?: (id: string) => void 
   const [runs, setRuns] = useState<TaskRun[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [models, setModels] = useState<ModelEntry[]>([]);
-  const [connections, setConnections] = useState<ConnectionEntry[]>([]);
   const [connectors, setConnectors] = useState<Connector[]>([]);
   const [monitors, setMonitors] = useState<Monitor[]>([]);
 
@@ -100,18 +98,11 @@ export function TasksScreen({ onNavigate }: { onNavigate?: (id: string) => void 
     void loadMonitors();
   }, [load, loadMonitors]);
 
-  // What the two pickers offer. Read once: neither list changes while someone
-  // is filling in a task, and a failure here must not stop the screen working —
-  // a task without a pinned model or a chosen connector is the normal case.
+  // What the connector picker offers. Read once: the list does not change while
+  // someone is filling in a task, and a failure here must not stop the screen
+  // working — a task without a chosen connector is the normal case.
   useEffect(() => {
     void (async () => {
-      try {
-        const answer = await api.models.list();
-        setModels(answer.models);
-        setConnections(answer.connections);
-      } catch {
-        /* Auto is still the default, and it needs no list */
-      }
       try {
         setConnectors((await api.connectors.list()).connectors.filter(isPickable));
       } catch {
@@ -408,31 +399,6 @@ export function TasksScreen({ onNavigate }: { onNavigate?: (id: string) => void 
               />
             </Field>
 
-            <Field
-              label="Model"
-              hint="Auto picks the best fit each run. A pinned model that is later removed quietly falls back to Auto rather than breaking the task."
-            >
-              <select
-                className={inputClass}
-                data-testid="task-model"
-                value={String(draft.action.modelId ?? '')}
-                onChange={(event) => patch({
-                  action: { ...draft.action, modelId: event.target.value || undefined },
-                })}
-              >
-                <option value="">Default (Auto — best fit)</option>
-                {groupModels(models, connections).map(([group, entries]) => (
-                  <optgroup key={group} label={group}>
-                    {entries.map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.label}{model.ready ? '' : ' — not ready'}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-            </Field>
-
             <Field label="Tell me about it">
               <select
                 className={inputClass}
@@ -468,13 +434,6 @@ export function TasksScreen({ onNavigate }: { onNavigate?: (id: string) => void 
                         </span>
                         <span className="min-w-0 flex-1 text-ink-muted">
                           {run.summary || run.error || (run.ok ? 'Ran.' : 'Failed.')}
-                          {/* Which model ANSWERED, not which was asked for: a
-                              pin is an ordering, so these can differ. */}
-                          {run.modelId ? (
-                            <span className="text-ink-faint">
-                              {' '}· {modelLabel(models, run.modelId)}
-                            </span>
-                          ) : null}
                         </span>
                         {run.ranAt && (
                           <span className="shrink-0 text-ink-faint">
@@ -492,26 +451,6 @@ export function TasksScreen({ onNavigate }: { onNavigate?: (id: string) => void 
       </Modal>
     </>
   );
-}
-
-/** Models under the connection they belong to, so two models with the same
- *  name from different providers are tellable apart. */
-function groupModels(
-  models: ModelEntry[],
-  connections: ConnectionEntry[],
-): [string, ModelEntry[]][] {
-  const labels = new Map(connections.map((c) => [c.id, c.label]));
-  const groups = new Map<string, ModelEntry[]>();
-  for (const model of models) {
-    if (!model.enabled) continue;
-    const group = labels.get(model.connectionId) ?? 'Other';
-    groups.set(group, [...(groups.get(group) ?? []), model]);
-  }
-  return [...groups.entries()];
-}
-
-function modelLabel(models: ModelEntry[], id: string): string {
-  return models.find((model) => model.id === id)?.label ?? id;
 }
 
 /** Switching repeat type replaces the whole shape: `days` left behind on a

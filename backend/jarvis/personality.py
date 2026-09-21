@@ -1,7 +1,6 @@
 """Adaptive communication register: HOW Jarvis says something, never WHAT it
 concludes. See the root `CLAUDE.md`'s "Adaptive Communication Register"
-section for the full rationale — this module was never ported at the S6
-cutover, and this is that port, closing a gap S7's audit found.
+section for the full rationale.
 
 **Dependency-free leaf module by design** — no import here may ever reach
 `capabilities/`, `tools/`, `orchestrator/pipeline.py`, `scheduler/`, or

@@ -1,7 +1,7 @@
 """The capability contract (§5) and registry.
 
-Tests concentrate on the six fields the current implementation lacks, and on the
-failure modes the audit found in the existing seam.
+Tests concentrate on the contract's six required fields and on the failure modes of the
+registry seam.
 """
 
 from __future__ import annotations
@@ -55,8 +55,8 @@ def test_risk_is_required_and_must_be_a_real_risk():
 
 
 def test_a_capability_always_has_a_timeout():
-    """The only tool timeout in the Node system lives in the turn runner, so the
-    scheduler, briefings and the Live voice path invoke tools unbounded."""
+    """A timeout enforced only in the turn runner would leave the scheduler,
+    briefings and the Live voice path invoking tools unbounded."""
     assert make().timeout_s > 0
     with pytest.raises(ValueError):
         make(timeout_s=0)
@@ -91,9 +91,8 @@ def test_a_missing_capability_raises_rather_than_returning_none(reg):
 
 
 def test_a_name_collision_raises_instead_of_silently_shadowing(reg):
-    """The Node version lets a built-in shadow a folder Skill of the same name,
-    with the only guard consulted at Skill-creation time — so a collision
-    introduced any other way vanishes without a word."""
+    """A built-in must never silently shadow a folder Skill of the same name; a
+    collision introduced any way must be loud."""
     reg.register(make("research", id="builtin.research"))
     with pytest.raises(DuplicateCapability):
         reg.register(make("research", id="skill.research", kind=CapabilityKind.SKILL))

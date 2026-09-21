@@ -33,30 +33,21 @@ cd backend
 python -m jarvis.main
 ```
 
-The server listens on `127.0.0.1:3000`. The first run asks for a free Google Gemini
-API key (get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey))
-— that's the only hard requirement; Anthropic, OpenAI, a local model server, or any
-OpenAI-compatible gateway can all be added afterward from Model Settings.
+The server listens on `127.0.0.1:3000`. Jarvis has **no AI model connected right now**:
+the model system is being rebuilt, so it can't answer questions yet. Everything that
+doesn't need a model to answer — history, memory, scheduled tasks' bookkeeping, the
+screens — still works.
 
 ## What it can actually do
 
 - **Real-time conversation, by voice or text.** Three voice engines behind one
   interface, picked by what's actually configured: a browser-speech-to-text →
-  any-model → TTS pipeline (works with anything); a keeps-listening-while-it-talks
-  engine over a server-relayed recognition socket; and a provider's own realtime
-  speech-to-speech session (near-instant, mid-word interruptible) when one is
-  configured — nothing in the engine picker is hardcoded to a specific provider.
+  model → TTS pipeline; a keeps-listening-while-it-talks engine over a
+  server-relayed recognition socket; and a provider's own realtime speech-to-speech
+  session (mid-word interruptible). All three need a model, so none is offered
+  until the model system is rebuilt.
   Adaptive turn-taking tells "still thinking" pauses apart from "actually done
   talking."
-- **Any model, real fallback.** Connect Gemini, Claude, OpenAI, a local server
-  (Ollama/LM Studio), or any other OpenAI/Anthropic/Gemini-shaped gateway (OpenRouter,
-  Groq, Together, an in-house endpoint) via a generic Custom connection that probes
-  the address to work out what's actually on the other end. The same model reached two
-  ways stays one model with two routes, each with its own key, price and rate limit.
-  Routing picks per task from measured cost and measured latency, never a guess from
-  the model's name, and you can pin a model to a particular job (spoken replies,
-  overnight tasks) without that pin becoming a single point of failure — a broken model
-  degrades gracefully with the conversation's context intact.
 - **A real, adaptive delivery register, separate from what it concludes.** Warmth,
   directness and playfulness shift with the moment — softer when you sound genuinely
   distressed, more measured on an inherently serious topic, and it can genuinely
@@ -107,8 +98,10 @@ OpenAI-compatible gateway can all be added afterward from Model Settings.
 
 ## Honest limits
 
+- **No AI model right now.** The model system was removed and is being rebuilt, so Jarvis
+  can't answer any AI request until it lands.
 - No wake word — you start it with a click or the Space bar.
-- No photographic/raster image generation — no adapter in use does this.
+- No photographic/raster image generation.
 - **No PowerPoint generation.** Jarvis can read a `.pptx` you hand it, but asking it
   to create one gets a plain refusal naming exactly what it can produce instead
   (`.docx`, `.xlsx`, plain text formats) — not a lesser-effort attempt.
@@ -117,15 +110,14 @@ OpenAI-compatible gateway can all be added afterward from Model Settings.
   you open it.
 - Semantic answer-verification is wired at three completion surfaces (artifacts, Job
   completion, scheduled-task outcomes) but deliberately **not** into every live chat
-  answer — the costliest, most frequent surface on a routinely rate-limited model
-  roster, a disclosed cost/scope decision rather than an oversight.
+  answer — the costliest, most frequent surface, a disclosed cost/scope decision rather
+  than an oversight.
 
 ## Configuration and data
 
 - **`.env`** (git-ignored) holds every API key/secret. It's written by
   `backend/jarvis/config.py` — never hand-edit its format.
-- **`data/`** (git-ignored) holds JSON state (deployments, connections, role slots,
-  prefs, tasks) plus
+- **`data/`** (git-ignored) holds JSON state (prefs, tasks, connectors, projects) plus
   `jarvis.db`, a SQLite database (Chat History, Memory, Jobs, Self-Improvement,
   Self-Model).
 - For an isolated test run, three env vars redirect everything: `JARVIS_DATA_DIR`,
@@ -142,9 +134,6 @@ backend/jarvis/
   capabilities/    The capability contract, the registry, and the one dispatcher
   orchestrator/    pipeline.py — the turn loop
   personality.py   The adaptive delivery register — tone floors, sticky style, real vocal laughter
-  catalog/         What a model IS — family, version, capabilities, reasoning scheme
-  gateway/         Deployments, connections, role slots, routing, effort, availability, latency, probing
-  adapters/        One module per wire format: Anthropic, Gemini, OpenAI-compatible
   policy/          The permission layer — decided independently of model behaviour
   events/          Typed event bus; observers/ subscribe (cost, security, verification, improvement)
   conversation.py  Neutral, model-agnostic transcript format
@@ -194,9 +183,8 @@ re-run on its own.
 Three layers, each catching what the others cannot:
 
 - **Unit and integration tests** over the real modules.
-- **The contract harness** replays 45 real HTTP exchanges recorded from the Node
-  implementation this replaced — the durable record of the behaviour promised before
-  the rewrite, which outlived the implementation it was recorded from.
+- **The contract harness** replays 45 recorded HTTP exchanges — the durable record of
+  the behaviour the API promises.
 - **Playwright** drives the built front end in a real browser against a real backend
   on a scratch port, which is what catches a screen that renders but never calls its
   route.
@@ -219,4 +207,3 @@ optional query flag.
 
 - **[`How to Use Jarvis.md`](How%20to%20Use%20Jarvis.md)** — for using it, no technical background needed.
 - **[`CLAUDE.md`](CLAUDE.md)** — the full architecture and design-decision record.
-- **[`handoff-archive.md`](handoff-archive.md)** — session-by-session build history.

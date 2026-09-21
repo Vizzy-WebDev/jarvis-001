@@ -1,12 +1,10 @@
-"""The SQL each schema migration runs, extracted verbatim from server/db.js.
+"""The SQL for the original 19 schema migrations.
 
-DO NOT HAND-EDIT THE SQL BELOW. It was extracted mechanically by running the
-real Node migration functions against a recording stub, so that the Python port
-runs character-for-character the same DDL the Node app has been running against
-the owner's live database. Re-extract rather than retype if server/db.js ever
-changes (tools/record/extract-migrations.mjs).
+DO NOT HAND-EDIT THE SQL BELOW. Databases already on disk were built by exactly these
+statements, so changing one would make a fresh install differ from an existing one. Later
+schema changes go in migrations_extra.py.
 
-Keyed by target user_version (1-based), matching db.js's own ordering. Three
+Keyed by target user_version (1-based). Three
 migrations carry real logic beyond DDL and are implemented in db.py itself:
   2  — seed memory categories + one-time data/profile.json import
   6  — one-off repair of orphaned assistant tool-call rows
@@ -244,8 +242,8 @@ MIGRATION_SQL: dict[int, list[str]] = {
       CREATE INDEX idx_improvement_proposals_batch ON improvement_proposals(batch_id);
 
       -- The LIVE directives injected into the system prompt
-      -- (improvement-store.js's activeRulesText(), prompt.js's
-      -- improvementSection()). active lets the user mute a rule without
+      -- (`improvement/store.py`'s `active_rules_text()`, injected by `prompt.py`).
+      -- active lets the user mute a rule without
       -- unwinding its change history via undo. last_supported_at is
       -- touched whenever a later reflection cycle finds fresh evidence for
       -- the same rule, so a genuinely stale rule can eventually be told

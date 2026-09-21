@@ -1,6 +1,6 @@
 """Launch a program the user already has installed.
 
-**The safety property, unchanged from the original and worth stating plainly:
+**The safety property, worth stating plainly:
 the model only ever supplies a NAME, never a command.** What actually runs is
 something this file resolved itself — an entry in its own fixed map, or a real
 shortcut file already sitting in the user's Start Menu. Model-authored text never

@@ -65,8 +65,7 @@ def _system(quiet: bool) -> str:
 
 
 def decide_attention(finding: dict[str, Any], *, now: datetime | None = None) -> Verdict:
-    from ..model_system.compat import Task, ask
-    from ..model_system.request import Role
+    from ..ai import ask
     from ..memory.store import approved_memories_text
     from .quiet_hours import is_quiet_now
 
@@ -84,9 +83,7 @@ def decide_attention(finding: dict[str, Any], *, now: datetime | None = None) ->
     ])
 
     try:
-        answer = ask(prompt, system=_system(quiet), want_json=True,
-                     task=Task(text=str(finding.get("summary") or ""), role=Role.UTILITY,
-                               needs_tools=False))
+        answer = ask(prompt, system=_system(quiet), want_json=True)
     except Exception as err:  # noqa: BLE001 — no model available is the common case
         logger.info("no model could judge a finding: %s", err)
         return _held("No model was available to judge this, so it was only recorded.")

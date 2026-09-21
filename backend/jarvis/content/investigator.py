@@ -32,7 +32,7 @@ from ..media import file_kind, mime_type_for, read_as_text
 from ..research import research, to_search_query
 from . import store
 from .intake import (
-    CannotPrepare, describe, fetch_youtube_text, identify, intake_description, prepare_for,
+    describe, fetch_youtube_text, identify, intake_description,
 )
 
 logger = logging.getLogger(__name__)
@@ -179,74 +179,20 @@ def _context_line(record: dict[str, Any]) -> str:
 
 
 def _examine_media(record: dict[str, Any], request: str) -> dict[str, Any]:
-    """Really watch, see or listen — walking the candidates, because preparation
-    can fail for the top-ranked model specifically while the next is fine."""
-    from ..model_system.compat import Task, ask
-    from ..model_system.request import Preferences, Requirements, Role
-    from ..model_system.router import rank
-
+    """Really watch, see or listen. Not possible until a model system exists."""
     source = record["source"]
-    if source.get("kind") == "youtube":
-        need = {"video": True}
-    else:
-        kind = file_kind(source["filePath"])
-        is_pdf = mime_type_for(source["filePath"]) == "application/pdf"
-        need = ({"video": True} if is_pdf or kind == "video"
-                else {"audio": True} if kind == "audio" else {"vision": True})
-
-    task = Task(text=request, needs_tools=False, role=Role.UTILITY, need=need)
-    candidates = rank(Requirements(capabilities=need), Preferences(role=Role.UTILITY))
-    if not candidates:
-        return {"ok": False,
-                "error": "None of your models can take that kind of file right now."}
-
-    last_error: str | None = None
-    for entry in candidates:
-        try:
-            prepared = prepare_for(entry, source)
-        except CannotPrepare as err:
-            last_error = str(err)
-            continue
-        except Exception as err:  # noqa: BLE001 — an upload failing is not fatal here
-            last_error = str(err)
-            continue
-
-        try:
-            answer = ask(f"{_context_line(record)}\n\nQuestion: \"{request}\"",
-                         system=MEDIA_SYSTEM, want_json=True, task=task,
-                         media=prepared["media"], model_id=entry.id,
-                         # The media is pinned to THIS model's key; falling back
-                         # would hand the next provider a URI it cannot read.
-                         only=True)
-        except Exception as err:  # noqa: BLE001
-            last_error = str(err)
-            continue
-        finally:
-            if callable(prepared.get("cleanup")):
-                prepared["cleanup"]()
-
-        data = answer.data if isinstance(answer.data, dict) else None
-        if data and data.get("answer"):
-            intake = ("video" if source.get("kind") == "youtube"
-                      else "document" if mime_type_for(source["filePath"]) == "application/pdf"
-                      else file_kind(source["filePath"]))
-            if data.get("observations"):
-                store.cache_material(record["id"], {"observations": data["observations"],
-                                                    "intake": intake})
-            return {"ok": True, "answer": data["answer"], "intake": intake, "sources": []}
-        last_error = last_error or "that model didn't answer in a usable form"
-
+    # Nothing can watch, see or listen while no model system exists.
+    last_error = "None of your models can take that kind of file right now."
     if source.get("kind") == "youtube":
         return _youtube_fallback(record, request, last_error)
-    return {"ok": False, "error": last_error or "None of your models could take that file."}
+    return {"ok": False, "error": last_error}
 
 
 def _youtube_fallback(record: dict[str, Any], request: str,
                       last_error: str | None) -> dict[str, Any]:
     """Nothing could watch it. Read what is publishable instead, and be explicit
     about which of the two actually happened."""
-    from ..model_system.compat import Task, ask
-    from ..model_system.request import Role
+    from ..ai import ask
 
     fallback = fetch_youtube_text(record["source"]["url"])
     if not fallback.get("ok"):
@@ -277,15 +223,13 @@ def _youtube_fallback(record: dict[str, Any], request: str,
               "\n\nNote: this is only the title and description — you neither watched nor "
               "heard it. Be explicit in the answer about how little you actually have.")
     answered = ask(f"{_context_line(record)}\n\nContent:\n{text}\n\nQuestion: \"{request}\"",
-                   system=TEXT_SYSTEM + caveat,
-                   task=Task(text=request, needs_tools=False, role=Role.UTILITY))
+                   system=TEXT_SYSTEM + caveat)
     return {"ok": True, "answer": answered.text, "intake": intake, "sources": [],
             "downgradedReason": last_error}
 
 
 def _run_examine(record: dict[str, Any], request: str) -> dict[str, Any]:
-    from ..model_system.compat import Task, ask
-    from ..model_system.request import Role
+    from ..ai import ask
 
     if _is_text_shaped(record["source"]):
         text = _text_for(record)
@@ -293,15 +237,14 @@ def _run_examine(record: dict[str, Any], request: str) -> dict[str, Any]:
             return text
         answered = ask(
             f"{_context_line(record)}\n\nContent:\n{text['text']}\n\nQuestion: \"{request}\"",
-            system=TEXT_SYSTEM, task=Task(text=request, needs_tools=False, role=Role.UTILITY))
+            system=TEXT_SYSTEM)
         return {"ok": True, "answer": answered.text, "intake": text["intake"], "sources": []}
 
     observations = (record.get("material") or {}).get("observations")
     if observations:
         quick = ask(f"{_context_line(record)}\n\nWorking notes from when I looked at this:\n"
                     f"{observations}\n\nNew question: \"{request}\"",
-                    system=CACHED_FOLLOWUP_SYSTEM, want_json=True,
-                    task=Task(text=request, needs_tools=False, role=Role.UTILITY))
+                    system=CACHED_FOLLOWUP_SYSTEM, want_json=True)
         data = quick.data if isinstance(quick.data, dict) else None
         if data and not data.get("needsAnotherLook") and data.get("answer"):
             return {"ok": True, "answer": data["answer"],
@@ -420,8 +363,7 @@ def judge_claim(claim: str, *, context: str | None = None,
                 realism: bool = False) -> dict[str, Any]:
     """Research first, then judge. The research call is unconditional, at the
     top, with no path around it — that is the entire point of this function."""
-    from ..model_system.compat import Task, ask
-    from ..model_system.request import Role
+    from ..ai import ask
 
     question = (claim or "").strip()
     if not question:
@@ -456,8 +398,7 @@ def judge_claim(claim: str, *, context: str | None = None,
         '  "reasoning": "a few sentences in plain language",\n'
         '  "whatsLeftOut": "what is being left out, or null",\n'
         '  "breakdown": "markdown, step by step" or null\n}',
-        system=JUDGE_SYSTEM, want_json=True,
-        task=Task(text=question, needs_tools=False, role=Role.UTILITY))
+        system=JUDGE_SYSTEM, want_json=True)
 
     data = judged.data if isinstance(judged.data, dict) else {}
     verdict = str(data.get("verdict", "")).lower()

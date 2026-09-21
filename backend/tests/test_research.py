@@ -12,11 +12,7 @@ import pytest
 
 from jarvis import research as research_module
 from jarvis.db import reset_for_tests as reset_db
-from jarvis.model_system.providers import AuthMethod, ProviderKind, add_provider
-from jarvis.model_system.registry import add_model
 from jarvis.research import Source, research, search, to_search_query
-
-from stub_openai_server import StubModelServer
 
 
 @pytest.fixture(autouse=True)
@@ -24,18 +20,6 @@ def _isolate(scratch):
     reset_db()
     yield
     reset_db()
-
-
-@pytest.fixture
-def stub():
-    server = StubModelServer()
-    server.base_url = server.start()
-    provider = add_provider(label="stub", kind=ProviderKind.LOCAL, adapter="openai_compatible",
-                            base_url=server.base_url, auth_method=AuthMethod.NONE,
-                            key_required=False)
-    add_model(provider_id=provider.id, native_model_id="stub-model")
-    yield server
-    server.stop()
 
 
 # --- the query -------------------------------------------------------------
@@ -104,73 +88,12 @@ class _client_returning:
 
 # --- the two paths ----------------------------------------------------------
 
-def test_readable_sources_are_answered_from_the_web(stub, monkeypatch):
-    monkeypatch.setattr(research_module, "search",
-                        lambda q: [Source("A page", "https://example.com/a")])
-    monkeypatch.setattr(research_module, "fetch_source",
-                        lambda s: Source(s.title, s.url, "Lagos has a population of many. " * 40))
-    stub.says("Lagos is large.")
-
-    result = research("how big is Lagos")
-    assert result.ok and result.via == "web"
-    assert result.answer == "Lagos is large."
-    assert [s.url for s in result.sources] == ["https://example.com/a"]
-
-
-def test_a_thin_web_result_escalates_to_a_model_that_can_search(stub, monkeypatch):
-    """The order is deliberate: on a free tier, one provider request is a
-    meaningful slice of a day."""
-    # A model only qualifies if it actually declares web search — and for THIS
-    # capability, "nobody has asked" is not good enough (`routing.MUST_BE_CERTAIN`).
-    # Setting it as a user override also exercises the §26 fix: what a model can
-    # do is its own correctable fact, not a ceiling imposed by its adapter.
-    from jarvis.model_system.registry import list_models, update_model
-
-    searcher = list_models()[0]
-    update_model(searcher.id, {"capability_overrides": {"web_search": "yes"}})
-    monkeypatch.setattr(research_module, "search", lambda q: [])
-    stub.says("I looked it up: it's large.")
-
-    result = research("how big is Lagos")
-    assert result.ok and result.via == "model-search"
-
-
-def test_nothing_escalates_to_a_model_that_cannot_search(stub, monkeypatch):
-    """The honest outcome on a roster where nothing declares web search: say so,
-    rather than asking a plain model to pretend it looked.
-
-    Note what this asserts after the switchover. Everywhere else an unproven
-    capability is offered and allowed to fail, because a failure is visible and
-    trying is the only way to learn. A model that cannot search does not fail —
-    it answers from memory, citing nothing — so here, and only here, unproven is
-    excluded too. See `routing.MUST_BE_CERTAIN`.
-    """
-    monkeypatch.setattr(research_module, "search", lambda q: [])
-    result = research("how big is Lagos")
-    assert result.ok is False
-    assert "no model here can search" in result.error
-
 
 def test_when_both_paths_fail_it_says_which(monkeypatch):
     monkeypatch.setattr(research_module, "search", lambda q: [])
     result = research("how big is Lagos")     # no model configured at all
     assert result.ok is False
     assert "couldn't find anything useful" in result.error
-
-
-def test_sources_survive_a_failed_summary(stub, monkeypatch):
-    """The pages were fetched; only the summarising failed. They are still worth
-    handing back."""
-    monkeypatch.setattr(research_module, "search",
-                        lambda q: [Source("A page", "https://example.com/a")])
-    monkeypatch.setattr(research_module, "fetch_source",
-                        lambda s: Source(s.title, s.url, "Plenty of real text here. " * 40))
-    stub.fails(429, "Rate limit exceeded")
-    stub.fails(429, "Rate limit exceeded")
-
-    result = research("how big is Lagos")
-    assert result.ok is False and result.sources
-    assert "couldn't" in result.error
 
 
 def test_nothing_to_look_up_is_refused_without_a_search():

@@ -1,12 +1,10 @@
-"""Reading and writing API keys and the active provider, to a local .env file.
+"""Reading and writing secrets (API keys and the like) to a local .env file.
 
-A faithful port of server/config.js. Kept dependency-free on purpose (no
-python-dotenv) — it's a tiny format, no need to add a dependency just to parse
-"KEY=value" lines, and the original made the same call for the same reason.
+Kept dependency-free on purpose (no python-dotenv) — it's a tiny format, no need to
+add a dependency just to parse "KEY=value" lines.
 
-The write format must stay byte-compatible with the Node implementation for the
-duration of the migration: `KEY=value` lines joined by "\\n" with a single
-trailing newline, and falsy (empty) values dropped entirely.
+The write format must stay stable so an existing `.env` keeps loading: `KEY=value` lines
+joined by "\n" with a single trailing newline, and falsy (empty) values dropped entirely.
 """
 
 from __future__ import annotations
@@ -18,14 +16,11 @@ from pathlib import Path
 
 _DEFAULT_ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
 
-ENV_KEYS = {
-    "gemini": "GEMINI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-    "openai": "OPENAI_API_KEY",
-}
-ACTIVE_PROVIDER_VAR = "JARVIS_ACTIVE_PROVIDER"
-DEFAULT_PROVIDER = "gemini"
 SECRET_PREFIX = "JARVIS_SECRET_"
+
+#: Variables a person may already have set under their conventional names. Nothing
+#: here reads them, but they are secrets all the same, so they are redacted.
+_WELL_KNOWN_KEY_VARS = ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY")
 
 
 def env_file_path() -> Path:
@@ -88,65 +83,9 @@ def _write_env_file(values: dict[str, str]) -> None:
     }
 
 
-def get_provider_key(provider: str) -> str | None:
-    """The saved API key for a provider ('gemini'|'anthropic'|'openai'), or None."""
-    env_var = ENV_KEYS.get(provider)
-    if not env_var:
-        return None
-    # Allow an environment variable to override the file, for advanced users.
-    if os.environ.get(env_var):
-        return os.environ[env_var]
-    return _read_env_file().get(env_var) or None
-
-
-def save_provider_key(provider: str, key: str) -> None:
-    """Saves a provider's API key to the local .env file (creates it if needed)."""
-    env_var = ENV_KEYS.get(provider)
-    if not env_var:
-        raise ValueError(f"Unknown provider: {provider}")
-    trimmed = str(key or "").strip()
-    values = _read_env_file()
-    values[env_var] = trimmed
-    _write_env_file(values)
-    os.environ[env_var] = trimmed
-
-
-def get_configured_providers() -> list[str]:
-    """Which providers currently have a saved, non-empty key."""
-    return [p for p in ENV_KEYS if get_provider_key(p)]
-
-
-def get_active_provider() -> str:
-    """Which provider is currently selected to drive the conversation."""
-    return _read_env_file().get(ACTIVE_PROVIDER_VAR) or DEFAULT_PROVIDER
-
-
-def set_active_provider(provider: str) -> None:
-    if provider not in ENV_KEYS:
-        raise ValueError(f"Unknown provider: {provider}")
-    values = _read_env_file()
-    values[ACTIVE_PROVIDER_VAR] = provider
-    _write_env_file(values)
-
-
-# --- Backward-compatible Gemini-specific helpers ---
-# Gemini is also used directly for turn-check regardless of which provider is
-# driving the conversation, so these convenience wrappers stay.
-
-def get_api_key() -> str | None:
-    return get_provider_key("gemini")
-
-
-def save_api_key(key: str) -> None:
-    save_provider_key("gemini", key)
-
-
-# --- Generic secrets, for the model registry ---
-# Any model entry can point at a `secretRef` the registry makes up when the
-# model is added — stored as JARVIS_SECRET_<REF>. Exception: the three original
-# built-in providers keep using their original ENV_KEYS entry, so migrating an
-# existing .env doesn't duplicate a key into a second variable —
-# get_secret('gemini') and get_provider_key('gemini') read the same value.
+# --- Generic secrets ---
+# Any service that needs a key stores it under a `ref` of its own choosing, as
+# JARVIS_SECRET_<REF>.
 
 def _secret_env_var(ref: str) -> str:
     return f"{SECRET_PREFIX}{str(ref or '').upper()}"
@@ -156,8 +95,6 @@ def get_secret(ref: str) -> str | None:
     """The saved secret for a given ref, or None."""
     if not ref:
         return None
-    if ref in ENV_KEYS:
-        return get_provider_key(ref)
     env_var = _secret_env_var(ref)
     if os.environ.get(env_var):
         return os.environ[env_var]
@@ -168,9 +105,6 @@ def save_secret(ref: str, value: str) -> None:
     """Saves a secret under a ref (creates the .env entry if needed)."""
     if not ref:
         raise ValueError("save_secret needs a ref.")
-    if ref in ENV_KEYS:
-        save_provider_key(ref, value)
-        return
     env_var = _secret_env_var(ref)
     trimmed = str(value or "").strip()
     values = _read_env_file()
@@ -194,7 +128,7 @@ def secret_values() -> list[str]:
     found: list[str] = []
     from_file = _read_env_file()
     for name, value in list(from_file.items()) + list(os.environ.items()):
-        if name in ENV_KEYS.values() or name.startswith(SECRET_PREFIX):
+        if name in _WELL_KNOWN_KEY_VARS or name.startswith(SECRET_PREFIX):
             if value and value not in found:
                 found.append(value)
     return found
@@ -204,7 +138,7 @@ def delete_secret(ref: str) -> None:
     """Removes a saved secret. Empty values are dropped by _write_env_file."""
     if not ref:
         return
-    env_var = ENV_KEYS.get(ref) or _secret_env_var(ref)
+    env_var = _secret_env_var(ref)
     values = _read_env_file()
     values.pop(env_var, None)
     _write_env_file(values)

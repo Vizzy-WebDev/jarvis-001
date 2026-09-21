@@ -4,8 +4,7 @@ A leaf: plain CRUD over `data/tasks.json` and `data/task-runs.json`, split from
 the engine so the briefing composer and the tick loop can both read tasks without
 importing each other.
 
-Byte-compatible with the Node implementation — the same keys in the same order,
-so both can read the same file during the port.
+Stable on disk: the same keys in the same order, so existing files keep loading.
 """
 
 from __future__ import annotations
@@ -27,10 +26,8 @@ _lock = threading.RLock()
 
 
 def _iso(moment: datetime | None) -> str | None:
-    """UTC with a trailing Z, exactly as `Date.toISOString()` writes it — the
-    same file is read by both implementations during the port, and a local
-    naive timestamp would compare and sort differently against every row the
-    Node app wrote."""
+    """UTC with a trailing Z, three fractional digits — the stored timestamp format. A
+    local naive timestamp would compare and sort differently against every stored row."""
     return to_iso_z(moment) if moment else None
 
 

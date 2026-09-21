@@ -1,6 +1,6 @@
 """Neutral, model-agnostic conversation store.
 
-A port of server/conversation.js. One canonical transcript per session; the
+One canonical transcript per session; the
 adapters translate it to and from each model's own wire format. This is what
 lets a mid-conversation model switch preserve context, instead of each provider
 hoarding its own private history format and switching meaning starting over.
@@ -34,8 +34,7 @@ MAX_HISTORY_ENTRIES = 60
 _sessions: dict[str, list[dict[str, Any]]] = {}
 _bound_sessions: set[str] = set()
 _next_id = 1
-# The Node original is single-threaded by virtue of the event loop. Uvicorn runs
-# sync endpoint functions in a thread pool, so the shared id counter and the
+# Uvicorn runs sync endpoint functions in a thread pool, so the shared id counter and the
 # session dict need real mutual exclusion here or two concurrent turns can hand
 # out the same message id.
 _lock = threading.RLock()

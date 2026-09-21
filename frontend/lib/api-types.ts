@@ -84,7 +84,6 @@ export interface QuietHours {
  * was the opposite problem — served by the API and missing from this type.
  */
 export interface Prefs {
-  balance: 'fast' | 'balanced' | 'quality';
   clarifySensitivity: 'more' | 'balanced' | 'less';
   ttsProvider: string | null;
   verifyChatAnswers: boolean;
@@ -216,135 +215,7 @@ export interface Approval {
   requestedAt: string;
 }
 
-// --- models, connections, connectors -------------------------------------------
-
-/**
- * One model under one connection, exactly as `/api/models` serves it.
- *
- * These two interfaces used to end in `[key: string]: unknown`, which meant the
- * compiler accepted any shape the server sent: a renamed field, a dropped
- * field, a field that changed type — all of it typechecked, built, and then
- * rendered wrong in the browser. The server side was spreading its internal
- * record onto the wire at the same time, so neither end could catch a change
- * the other made.
- *
- * The index signature is gone on purpose. The fields below are the whole
- * contract, and `backend/tests/test_models_contract.py` pins the same set from
- * the other side, so the two can only disagree loudly.
- */
-export interface ModelEntry {
-  id: string;
-  connectionId: string;
-  label: string;
-  model: string;
-  enabled: boolean;
-  /** Computed at read time: enabled, and its connection has what it needs. */
-  ready: boolean;
-  hasSecret: boolean;
-  /** Hydrated in from the owning connection, so present but possibly null. */
-  adapter: string | null;
-  baseUrl: string | null;
-  keyRequired: boolean | null;
-  kind: string | null;
-  /** The CONNECTION's provider — whose address this is reached at. Who MAKES
-   *  the model is `version.provider`, and they are routinely different: a
-   *  gateway reselling somebody else's model is still serving that maker's
-   *  model. The two used to share one field, which is how the distinction was
-   *  lost. */
-  connectionProvider: string | null;
-  connectionLabel: string | null;
-  notes?: string;
-  /** What the catalog says this model IS, resolved at read time — so a fact
-   *  learned tomorrow appears without anything being migrated. Null only if a
-   *  record is too damaged to resolve at all. */
-  version: ModelVersion | null;
-}
-
-/** Three states, never two. `unknown` is the honest answer for most models on
- *  most capabilities, and rendering it as "no" is how a capable model gets
- *  hidden with no visible reason. */
-export type Support = 'yes' | 'no' | 'unknown';
-
-export type EffortLevel = 'OFF' | 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH' | 'MAX';
-
-export interface ModelVersion {
-  /** Who makes it. `"unknown"` when no catalog pattern recognised the id. */
-  provider: string;
-  /** The id the provider's API expects — what actually goes on the wire. */
-  model: string;
-  label: string;
-  family: string | null;
-  /** Whether `model` names one frozen snapshot rather than a floating alias
-   *  that silently repoints when the vendor ships a successor. */
-  pinned: Support;
-  contextTokens: number | null;
-  capabilities: Record<string, Support>;
-  effort: {
-    /** `tiers` | `budget` | `variant` | `none` | `unknown`. `none` and
-     *  `unknown` are different answers: no reasoning control, versus nobody
-     *  has established whether there is any. */
-    kind: string;
-    default: EffortLevel | null;
-    /** Level -> what this provider wants on the wire for it. */
-    native: Record<string, unknown>;
-  };
-  quality: number | null;
-  lifecycle: 'unknown' | 'current' | 'deprecated' | 'retired';
-  /** field -> `default` | `catalog` | `discovered` | `user`. Per field, because
-   *  a version is almost always a mixture and a single flag cannot say which
-   *  parts to trust. */
-  provenance: Record<string, string>;
-}
-
-export interface ConnectionEntry {
-  id: string;
-  label: string;
-  adapter: string;
-  baseUrl: string | null;
-  provider?: string | null;
-  kind?: string | null;
-  keyRequired?: boolean | null;
-  createdAt?: string;
-  hasSecret: boolean;
-  modelCount: number;
-}
-
-/** The roster as provider -> family -> version. Built from the deployments this
- *  install actually has, never from a shipped model list. */
-export interface CatalogProvider {
-  id: string;
-  label: string;
-  families: CatalogFamily[];
-}
-
-export interface CatalogFamily {
-  id: string;
-  label: string;
-  versions: CatalogVersion[];
-}
-
-export interface CatalogVersion {
-  model: string;
-  label: string;
-  version: ModelVersion;
-  /** How this one version is actually reachable. Two entries means two routes
-   *  to the same model — separate keys, separate prices, separate rate limits —
-   *  which the flat list could not express at all. */
-  deployments: CatalogRoute[];
-}
-
-export interface CatalogRoute {
-  id: string;
-  label: string;
-  connectionId: string | null;
-  connectionLabel: string | null;
-  enabled: boolean;
-  ready: boolean;
-}
-
-/** Why a model is being skipped right now, keyed by model id. A model nobody
- *  has had trouble with is simply absent. */
-export type ModelHealth = Record<string, { reason: string | null; kind: string | null; retryInMs: number }>;
+// --- connectors -----------------------------------------------------------------
 
 export interface Connector {
   id: string;
@@ -419,63 +290,12 @@ export interface SandboxStatus {
   setupSteps: string[];
 }
 
-export interface Provider {
-  id: string;
-  label: string;
-  icon: string;
-  iconBg: string;
-  baseUrl: string | null;
-  urlEditable: boolean;
-  keyRequired: boolean;
-  kind: string;
-  suggestions?: string[];
-  keyHint?: string;
-}
-
-/** One model a server says it has, before anything is added. */
-export interface DiscoveredModel {
-  model: string;
-  label: string;
-  contextTokens: number | null;
-  /** Always null now. The old build filled this in from a name regex and the
-   *  picker showed a "free" badge from it — on a paid-tier key, for any id
-   *  containing "flash". Kept on the wire as an explicit "we do not know"
-   *  rather than removed, since a listing genuinely does not answer it. */
-  billing: string | null;
-  /** What the catalog makes of the id: the lineage it belongs to, and who
-   *  makes it. Null when no pattern matched — a real group the picker shows
-   *  rather than hides, since an unrecognised local model has to be pickable. */
-  family: string | null;
-  provider: string | null;
-}
-
-/** What a probe tried, and what it found. `steps` is the point: a failure that
- *  cannot be explained is the exact problem this flow was built to fix. */
-export interface ProbeResult {
-  ok: boolean;
-  steps: string[];
-  adapter: string | null;
-  baseUrl: string | null;
-  kind: string | null;
-  keyRequired: boolean | null;
-  models: DiscoveredModel[];
-  error: string | null;
-  needsKey: boolean;
-}
-
 export interface ExternalService {
   ref: string;
   label: string;
   configured: boolean;
   extraFieldLabel: string | null;
   extraFieldConfigured: boolean;
-}
-
-export interface RecheckPreview {
-  total: number;
-  notWorking: number;
-  byConnection: { id: string; label: string; count: number;
-                  isFreeTier: boolean | null; remaining: number | null }[];
 }
 
 export interface VoiceEngineOption {

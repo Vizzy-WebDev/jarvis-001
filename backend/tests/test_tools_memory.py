@@ -1,7 +1,6 @@
 """The memory tools, and the read-back the user actually answers.
 
-The property that matters most here is the one the original enforced with a
-per-tool `confirm: 'always'` flag and this build enforces through risk: a write
+The property that matters most here is the one enforced through declared risk: a write
 to memory is never silent. Testing it through the real executor rather than by
 calling the handler is what proves the mechanism, not the intention.
 """

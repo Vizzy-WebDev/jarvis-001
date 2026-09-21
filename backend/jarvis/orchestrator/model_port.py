@@ -1,32 +1,83 @@
-"""What the orchestrator needs from the AI Model System, and nothing more.
+"""What the orchestrator needs from whatever answers a turn, and nothing more.
 
 The turn loop must not know which provider answered, how streaming works on
-that provider's wire, or how a tool call is spelled in its JSON — a narrow
-port is what lets `jarvis/model_system/` be replaced, stubbed, or extended
-without the orchestrator noticing, and it is what let the desktop control
-loop (`control/session.py`) reuse the exact same seam for a different
-perceive step instead of reimplementing model-calling from scratch.
+that provider's wire, or how a tool call is spelled in its JSON. This port is
+the whole of what it asks for: a `ModelClient` that streams `TextChunk`s (and
+possibly a `ModelSwitched`), then exactly one `StepComplete`. The desktop
+control loop (`control/session.py`) reuses the same port for its perceive step.
 
-This is now a thin seam directly onto `jarvis/model_system`'s own normalized
-vocabulary — `TextDelta`/`Completed`/`ModelSwitched`/`ToolCall` ARE the port,
-re-exported here rather than wrapped in a second, orchestrator-owned copy of
-the same shapes. `ModelUnavailable` is `ai/fallback.py`'s own
-`NoModelAvailable`, for the same reason: a caller catching it needs the real
-`.detail` the routing trace was built from, not a summary of it.
+The event shapes below are the orchestrator's own vocabulary. There is no AI
+model system behind this port at the moment: `NoModelClient` is what runs until
+one is built, and every turn it serves ends in `ModelUnavailable`.
 """
 
 from __future__ import annotations
 
-from typing import Any, Iterator, Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import Any, Iterator, Mapping, Protocol, runtime_checkable
 
-from ..model_system.fallback import NoModelAvailable as ModelUnavailable
-from ..model_system.request import (
-    Completed as StepComplete,
-    ErrorEvent,
-    ModelSwitched,
-    TextDelta as TextChunk,
-    ToolCall,
-)
+from ..ai import NO_MODEL_MESSAGE
+from ..ai import NoModelAvailable as ModelUnavailable
+
+
+@dataclass(frozen=True)
+class ToolCall:
+    """One tool a model asked to run. `id` is the model's own correlation id —
+    handed back unchanged when the caller supplies the result."""
+
+    id: str
+    name: str
+    args: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Usage:
+    """What a provider itself reported this call consumed. A field left `None`
+    means the provider did not report it — never a zero standing in for "not
+    measured"."""
+
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    tokens_reasoning: int | None = None
+    cached_in: int | None = None
+
+
+@dataclass(frozen=True)
+class TextChunk:
+    text: str
+
+
+@dataclass(frozen=True)
+class StepComplete:
+    """Exactly one of these ends a stream. `finish_reason` is one of
+    'stop' | 'tool_calls' | 'length' | 'content_filter'."""
+
+    text: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+    finish_reason: str = "stop"
+    usage: Usage | None = None
+    structured_data: Any = None
+    model_id: str | None = None
+    provider_id: str | None = None
+    raw: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ModelSwitched:
+    """One candidate failed and the next is taking over — never silent."""
+
+    to_model_id: str
+    reason: str
+    from_model_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ErrorEvent:
+    """A terminal failure, in words the person can read."""
+
+    kind: str
+    message: str
+
 
 #: What a model client yields, in order: any number of chunks (possibly
 #: interrupted by a switch), then exactly one completed step.
@@ -49,21 +100,22 @@ class ModelClient(Protocol):
         need: dict[str, bool] | None = None,
     ) -> Iterator[ModelEvent]:
         """`need` is what this turn REQUIRES — vision, video, audio, web
-        search. Part of the port because it is the orchestrator's own
-        knowledge: it is the side that knows an image was attached. A model
-        that cannot see one must be excluded BEFORE it is called, not
-        discovered to be blind by being handed bytes it cannot read.
+        search. It is the orchestrator's own knowledge: it is the side that
+        knows an image was attached.
 
-        `role` is the same kind of knowledge: the orchestrator knows whether
-        this turn was spoken, scheduled or typed, and the model system is the
-        side that knows a spoken turn should be ranked for latency and a
-        scheduled one for price. A plain string, not `model_system.request`'s
-        own `Role` enum — the orchestrator may hold no opinion about the
-        model system's internal vocabulary beyond this port, only about the
-        shared strings the two sides have agreed mean the same thing.
-
-        An unrecognised role is not an error: `model_system.request.role_from()`
-        treats it as an ordinary conversation, so a caller that has not
-        classified its turn gets sensible routing rather than a failure.
+        `role` is a plain string ('conversation', 'voice', 'control',
+        'background', 'utility') describing what kind of turn this is, since
+        the orchestrator is the side that knows whether it was spoken,
+        scheduled or typed.
         """
         ...
+
+
+class NoModelClient:
+    """The `ModelClient` used while no model system exists: every call fails
+    with `ModelUnavailable`, which the turn loop already turns into a plain
+    "no model" failure rather than a crash."""
+
+    def stream(self, **_: Any) -> Iterator[ModelEvent]:
+        raise ModelUnavailable(NO_MODEL_MESSAGE)
+        yield  # pragma: no cover — makes this a generator, like a real client

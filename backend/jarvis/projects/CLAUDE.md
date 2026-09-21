@@ -1,65 +1,34 @@
-<!-- Ported from the Node build during the S6 cutover. The architecture, the
-invariants and the live-caught bugs described here all carried over deliberately and
-still hold. File paths have been updated to their real Python counterparts and are
-verified to exist. Function names written in camelCase (`getToolDeclarations()`) are
-the NODE originals, kept because the surrounding reasoning is about them; the Python
-equivalent is the snake_case function doing that job in the same module. Where a Node
-module had no Python counterpart, the text says so rather than pointing at a file that
-does not exist. -->
-
 # Planning Partner (`jarvis/projects/`)
 
-`projects/store.py` (leaf CRUD, `data/projects.json`) · `assistants.py`
-(assistant profiles as data, formerly `heartbeat/triggers.py`) · `projects/engine.py`
-(the engine).
+`store.py` (leaf CRUD over `data/projects.json`) · `assistants.py` (receiving-AI profiles as
+plain data) · `engine.py` (the engine). The model-facing tools are in `tools/project_tools.py`.
 
-**Rebuilt from scratch** (not the same code as before) to remove a specific
-defect: the previous build generated a fixed `questions[]`/`answers{}` queue
-the instant an idea was mentioned, and everything the user said afterward —
-including a challenge to the idea or a change of mind — got filed as "the
-answer to question N." **There is no queue any more.** Talking through a
-project is just conversation; `prompt.py` tells the model to ask whatever's
-genuinely unclear, in its own words, one thing at a time, and to respond in
-place to a challenge or tangent rather than advancing a stage. What a project
-record keeps instead is `decisions[]` — one entry per thing actually settled,
-added by the model calling `noteDecision()` as the discussion produces one,
-not gathered as a batch.
+**There is no question queue.** Talking through a project is ordinary conversation:
+`prompt.py` tells the model to ask whatever is genuinely unclear, one thing at a time, and
+to respond in place to a challenge or a change of mind rather than advancing a stage. What
+a project record keeps is `decisions[]` — one entry per thing actually settled, added as
+the discussion produces one via `note_decision()`, never gathered as a batch.
 
-Five functions, **each triggered only by an explicit tool call, and none of
-them chains into another**:
-`startProject` (creates the record — no model call, no background work),
-`noteDecision` (appends to `decisions[]` — no model call),
-`researchProject`, `writePlan`, `writePrompts`. The last three run in the
-background and push `project_progress` over SSE, same reasoning as before
-(a plan takes a minute or two, no HTTP request or spoken turn can be held
-open that long) — but nothing advances on its own. Research finishing does
-not trigger the plan; the plan finishing does not trigger the prompt.
+**Five functions, each triggered only by an explicit tool call, and none chains into
+another:** `start_project` (creates the record — no model call, no background work),
+`note_decision` (appends to `decisions[]` — no model call), `research_project`,
+`write_plan` and `write_prompts`. The last three run in the background and push
+`project_progress` over SSE, since a plan takes a minute or two and no HTTP request or
+spoken turn can be held open that long. Research finishing does not start the plan; the
+plan finishing does not start the prompt.
 
-`writePlan`/`writePrompts` both read `conversation.getMessages(sessionId)`
-(`conversationContext()`) **and** `decisions[]` **and** the research —
-`writePrompts` specifically fixes a bug in the old build, which read only the
-finished plan document, so anything decided in conversation that hadn't made
-it into the plan text was gone by the time the prompt was written.
-`writePrompts` can produce **one prompt or several in sequence** (`prompts:
-[{n, title, text}]`, `promptOrder` explaining the recommended order) — the
-model decides based on the size of the project; the old build only ever
-produced one, regardless.
-
-**Every background step (research/plan/prompts) actually lands in the
-conversation now, success or failure** (`pushStepToConversation()`) — a
-confirmed, live gap: each tool's own doc comment already promised this ("the
-plan arrives as a document card in the conversation," `write_project_
-projects/engine.py`), but the engine only ever `announce()`d over SSE (a UI-only
-broadcast) and updated the project record, with nothing ever reaching the
-model's own transcript either way. A failed step used to be silently
-undiscoverable from conversation entirely — asking "so what did the research
-find?" got no honest answer, since the model had no record anything was even
-attempted. Matches `content/investigator.py`'s
-`pushFindingToConversation()` shape: the full document goes into history (a
-later "what did that say again?" works, and the model can read it back); the
-model's own SPOKEN reply stays governed separately by each tool's own
-`spoken_hint` — landing in history is not the same as reciting it out loud.
-
-`assistants.py` is plain data so adding a receiving AI is one entry; the
-`custom` entry carries a user-supplied tool name, since the requirement was
-explicitly that this not be a fixed list.
+- `write_plan` and `write_prompts` both read the session transcript
+  (`_conversation_context()`), **and** `decisions[]`, **and** the research. Reading only the
+  finished plan document would lose anything decided in conversation that never made it
+  into the plan text.
+- `write_prompts` can produce one prompt or several in sequence (`prompts: [{n, title,
+  text}]`, with `promptOrder` explaining the order). The model decides from the size of
+  the project.
+- **Every background step lands in the conversation, success or failure**
+  (`_push_step()`). The full document goes into history so a later "what did that say
+  again?" works, and a failed step is recorded too, so the model can honestly say it
+  failed. What the model says aloud is governed separately by each tool's
+  `spoken_hint` — landing in history is not the same as reciting it aloud.
+  `content/investigator.py` follows the same shape.
+- `assistants.py` is plain data, so adding a receiving AI is one entry. The `custom` entry
+  carries a user-supplied tool name, because the list is deliberately not fixed.

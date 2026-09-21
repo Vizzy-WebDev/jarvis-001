@@ -41,7 +41,7 @@ def _public(connector: dict) -> dict:
     if permissions:
         # Omitted rather than sent as `{}` when there is nothing to report —
         # keeps a connector with no permission ever set byte-identical to the
-        # recorded Node contract fixture, which predates this field entirely.
+        # recorded contract fixture, which predates this field entirely.
         # Real permissions were ALWAYS missing from this summary before this
         # line existed — a genuinely live bug, not a hypothetical: the detail
         # page could never show what a tool was actually set to, because
@@ -63,7 +63,7 @@ def _public(connector: dict) -> dict:
     # the background sweep in `connectors/icons.py`. Omitted rather than sent
     # as `null` when nothing has resolved — same reasoning as `toolPermissions`
     # above: keeps a connector with no real logo yet byte-identical to the
-    # recorded Node contract fixture, which predates this field entirely.
+    # recorded contract fixture, which predates this field entirely.
     icon_data_uri = icons.icon_for(host_key, refresh=False) if host_key else None
     if icon_data_uri:
         public["iconDataUri"] = icon_data_uri
@@ -108,9 +108,9 @@ async def catalog_listed():
             "connectorId": existing["id"] if existing else None,
             "status": (existing.get("status") or {}).get("state") if existing else None,
             # Cache-only read (refresh=False): resolving a logo makes a real
-            # network call, which a listing response must never block on —
-            # matches Node's own design, where GET .../catalog reads a cache
-            # populated at startup rather than fetching per request. Present
+            # network call, which a listing response must never block on:
+            # GET .../catalog reads a cache populated at startup rather than fetching
+            # per request. Present
             # whether or not this entry has ever been connected; null only
             # until the first resolve succeeds (icons.py's own auto-refresh
             # then keeps it current with no release needed).

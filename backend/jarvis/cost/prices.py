@@ -50,55 +50,6 @@ def is_refresh_enabled() -> bool:
     return os.environ.get(ENABLE_ENV) == "1"
 
 
-#: A provider's own suffix for a free variant. Its own label, not our reading of
-#: its name — see this module's docstring on why that distinction decides what
-#: may be seeded.
-FREE_MODEL_SUFFIX = ":free"
-
-
-def is_known_free(model: Any) -> bool:
-    """Whether this model is free as a FACT rather than as an inference.
-
-    True for a model on a LOCAL provider (nothing is paid to run it here) and
-    for one whose id carries the provider's own `:free` suffix. There used to be
-    a third case, `billing == "free"`, and it was already refused here: that
-    field came from a name regex, and a paid-tier key matches the same names. It
-    no longer exists at all — the guess it came from is gone — which leaves this
-    function saying exactly what it always claimed to.
-    """
-    from ..model_system.providers import ProviderKind
-
-    if model.provider.kind is ProviderKind.LOCAL:
-        return True
-    return str(model.native_model_id or "").lower().endswith(FREE_MODEL_SUFFIX)
-
-
-def seed_known_free_prices() -> int:
-    """A $0 price for every model known to be free — see `is_known_free`.
-
-    Never overwrites an existing row: a user's own price, or a provider-reported
-    one, must not be downgraded back to a built-in, even to the same number.
-    Needs no network and writes a fact, so it is safe to run on every start.
-    """
-    from ..model_system.registry import list_models
-
-    seeded = 0
-    for model in list_models():
-        if not is_known_free(model):
-            continue
-        # The same key the model system publishes on a completed call, and
-        # therefore the key every recorded price is already filed under.
-        # Deriving it a second way here would write rows nothing ever reads.
-        provider = model.maker
-        model_id = model.native_model_id
-        if not model_id or store.get_price(provider, model_id, "tokens"):
-            continue
-        store.set_price(provider=provider, model_id=model_id, unit_kind="tokens",
-                        price_in=0.0, price_out=0.0, source="built_in")
-        seeded += 1
-    return seeded
-
-
 def set_user_price(*, provider: str, model_id: str, unit_kind: str = "tokens",
                    price_in: float | None, price_out: float | None,
                    currency: str = "USD") -> None:

@@ -5,8 +5,7 @@ about what a task is — recurrence, next-run computation, run history and its
 cap. Nothing here decides anything; a route that started computing a next run
 would be a second answer to a question the store already answers.
 
-**The one piece of judgment that does live here** is the same one the Node
-routes carry, and for the same reason: a `skill` action naming something that
+**The one piece of judgment that does live here** is that a `skill` action naming something that
 does not exist is refused at the door. `task_store.py` is a leaf and must never
 import the capability registry (the circular-import rule in the root CLAUDE.md),
 so the check belongs at the edge, where importing it is safe.

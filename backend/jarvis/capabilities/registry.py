@@ -1,14 +1,10 @@
 """The capability registry — resolution and declaration, and nothing else.
 
-Deliberately split from authorization. In the Node implementation one file owns
-the three-source merge (good), a model-facing declaration shaper with a
-visibility policy baked in, JSON-Schema mutation, a hand-rolled search engine
-with its own stemmer, three separate enumerations for three consumers, AND a
-stateful confirm-token service with its own TTL map. Composition and
-authorization are different concerns that happened to share a file; §7's
-requirement that permissions be "enforced independently of model behavior" is
-much easier to hold when the thing enforcing them is not also the thing
-deciding what the model gets to see.
+Deliberately split from authorization. Composition (the three-source merge and the
+model-facing declaration shaper) and authorization (permissions, confirmation) are
+different concerns that must not share a file; §7's requirement that permissions be
+"enforced independently of model behavior" is much easier to hold when the thing
+enforcing them is not also the thing deciding what the model gets to see.
 
 So this file answers exactly two questions: what capabilities exist, and what
 does the model get told about them. Whether a given call may proceed is the
@@ -26,10 +22,9 @@ from .spec import CapabilityKind, CapabilitySpec, Risk
 class DuplicateCapability(RuntimeError):
     """Two capabilities claiming the same name.
 
-    Raised rather than resolved by precedence. The Node version silently lets a
-    built-in shadow a folder Skill of the same name, with a reserved-name check
-    consulted only at Skill-creation time — so a name collision introduced any
-    other way disappears without a word.
+    Raised rather than resolved by precedence: a name collision must never be settled
+    silently, since a built-in shadowing a folder Skill of the same name would
+    disappear without a word.
     """
 
 
@@ -75,12 +70,8 @@ class CapabilityRegistry:
     ) -> list[CapabilitySpec]:
         """One filtered enumeration, replacing three fixed-shape ones.
 
-        The Node version has `listCapabilities`, `listStepCandidates` and
-        `hasCapability`, each projecting a different subset of fields — and
-        neither of the first two carries `confirm`, which is why deciding whether
-        a Skill's pipeline step needs confirmation had to be stitched together
-        inside the HTTP route file. A single filter that returns whole specs
-        cannot develop that problem.
+        One filter that returns whole specs, so every consumer sees every field
+        (including risk) and none has to stitch a subset back together in a route.
         """
         order = {Risk.LOW: 0, Risk.MEDIUM: 1, Risk.HIGH: 2}
         want = set(with_tags or ())

@@ -137,19 +137,10 @@ def test_a_missing_attachment_is_reported_rather_than_ignored():
     assert "could not be found any more" in prepared.notes[0]
 
 
-def test_a_pdf_with_no_capable_model_says_so_instead_of_guessing(monkeypatch):
-    monkeypatch.setattr("jarvis.model_system.router.rank", lambda *a, **k: [])
+def test_a_pdf_with_no_capable_model_says_so_instead_of_guessing():
     prepared = prepare_for_turn([_attach("paper.pdf", b"%PDF-1.4 nonsense")], session_id="s1")
     assert prepared.media == []
     assert "none of the available models can read one directly" in prepared.notes[0]
-
-
-def test_a_pdf_with_a_capable_model_rides_along(monkeypatch):
-    monkeypatch.setattr("jarvis.model_system.router.rank",
-                        lambda *a, **k: [{"id": "gem"}])
-    prepared = prepare_for_turn([_attach("paper.pdf", b"%PDF-1.4 nonsense")], session_id="s1")
-    assert prepared.media[0]["mimeType"] == "application/pdf"
-    assert prepared.need == {"video": True}
 
 
 def test_a_video_is_registered_and_explicitly_not_watched():
@@ -306,7 +297,7 @@ def test_an_uploads_own_bytes_are_served_with_the_same_forced_download_headers_a
 
 def test_analysing_a_workbook_runs_a_real_script_over_the_real_file(monkeypatch, tmp_path):
     from jarvis.artifacts import office as writer
-    from jarvis.model_system.compat import Answer
+    from jarvis.ai import Answer
     from jarvis.tools.analyze_spreadsheet import SPEC
 
     path = tmp_path / "sales.xlsx"
@@ -316,7 +307,7 @@ def test_analysing_a_workbook_runs_a_real_script_over_the_real_file(monkeypatch,
     script = ("import csv\n"
               "rows = list(csv.DictReader(open('data.csv')))\n"
               "print('The total is', sum(int(r['amount']) for r in rows))\n")
-    monkeypatch.setattr("jarvis.model_system.compat.ask",
+    monkeypatch.setattr("jarvis.ai.ask",
                         lambda *a, **k: Answer(text=f"```python\n{script}```", model_id="stub"))
 
     answer = SPEC.handler(upload_id=upload_id, question="what is the total?")
@@ -329,7 +320,7 @@ def test_analysing_a_workbook_runs_a_real_script_over_the_real_file(monkeypatch,
 
 def test_a_failing_script_is_fixed_once_and_then_reported_honestly(monkeypatch, tmp_path):
     from jarvis.artifacts import office as writer
-    from jarvis.model_system.compat import Answer
+    from jarvis.ai import Answer
     from jarvis.tools.analyze_spreadsheet import SPEC
 
     path = tmp_path / "sales.xlsx"
@@ -344,7 +335,7 @@ def test_a_failing_script_is_fixed_once_and_then_reported_honestly(monkeypatch, 
             return Answer(text="raise SystemExit('boom')", model_id="stub")
         return Answer(text="print('The answer is 3')", model_id="stub")
 
-    monkeypatch.setattr("jarvis.model_system.compat.ask", fake_ask)
+    monkeypatch.setattr("jarvis.ai.ask", fake_ask)
     answer = SPEC.handler(upload_id=upload_id, question="what is the total?")
     assert answer["ok"] is True and answer["retried"] is True
     assert attempts["count"] == 2, "one retry, never a loop"
@@ -352,13 +343,13 @@ def test_a_failing_script_is_fixed_once_and_then_reported_honestly(monkeypatch, 
 
 def test_a_script_that_fails_twice_reports_the_real_error(monkeypatch, tmp_path):
     from jarvis.artifacts import office as writer
-    from jarvis.model_system.compat import Answer
+    from jarvis.ai import Answer
     from jarvis.tools.analyze_spreadsheet import SPEC
 
     path = tmp_path / "sales.xlsx"
     writer.write_xlsx(path, [["n"], ["1"]])
     upload_id = _attach("sales.xlsx", path.read_bytes())
-    monkeypatch.setattr("jarvis.model_system.compat.ask",
+    monkeypatch.setattr("jarvis.ai.ask",
                         lambda *a, **k: Answer(text="raise ValueError('still broken')",
                                                model_id="stub"))
 

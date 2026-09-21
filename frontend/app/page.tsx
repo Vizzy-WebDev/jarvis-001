@@ -32,6 +32,7 @@ import type { VoiceEngine } from '@/lib/voice/engine';
 import { PipelineEngine } from '@/lib/voice/pipeline-engine';
 import { RealtimeEngine } from '@/lib/voice/realtime-engine';
 import { useHashRoute } from '@/lib/useHashRoute';
+import { MODELS_CHANGED } from '@/lib/useModels';
 import type { OrbState } from '@/lib/orb';
 
 /**
@@ -101,6 +102,26 @@ export default function Home() {
    * without touching `Transcript`'s own (already correct) scroll logic.
    */
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+
+  // Choosing, connecting or removing a model happens on another screen, or in the
+  // composer's own picker. Whether Jarvis can answer is asked of the backend again
+  // when that changes, rather than being carried here as a copy that could go stale.
+  useEffect(() => {
+    const recheck = async () => {
+      try {
+        const now = await api.status();
+        setConfigured(now.configured);
+        setStatus((text) =>
+          now.configured
+            ? (text === 'No model is set up yet' ? 'Type below to talk to Jarvis' : text)
+            : (text === 'Type below to talk to Jarvis' ? 'No model is set up yet' : text));
+      } catch {
+        /* what was last known stays */
+      }
+    };
+    window.addEventListener(MODELS_CHANGED, recheck);
+    return () => window.removeEventListener(MODELS_CHANGED, recheck);
+  }, []);
 
   // --- what is already true when the page opens ------------------------------
 

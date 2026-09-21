@@ -22,6 +22,18 @@ DEFAULTS: dict[str, Any] = {
     # choice. None rather than a provider name: no provider is guaranteed
     # configured, and the TTS seam handles None cleanly.
     "ttsProvider": None,
+    # The person's own choice of model — the connection, the provider's own model
+    # id, and (only where that model reports levels) a reasoning effort. None until
+    # they choose. Nothing but them ever changes these: a selection that stops
+    # being runnable is reported as such, never swapped for another.
+    "selectedProviderId": None,
+    "selectedModelId": None,
+    "selectedEffort": None,
+    # How much work Jarvis does AROUND a model on a turn, not which model: 'fast'
+    # caps the tool-use rounds and skips the optional extra checks, 'quality'
+    # forces the answer check on. Applies to every model alike — including ones
+    # with no effort control at all, which is why it is not the same thing.
+    "balance": "balanced",  # 'fast' | 'balanced' | 'quality'
     # How much Memory saves without asking. 'ask' is approval-first, and is the default so nothing changes
     # for anyone who has not turned the dial up themselves. A candidate that
     # conflicts with an existing memory always requires approval regardless —

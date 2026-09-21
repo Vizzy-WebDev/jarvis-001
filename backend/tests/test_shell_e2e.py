@@ -23,30 +23,70 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
 
 
+import httpx
+
 from stub_oauth_server import StubOAuthServer
+from stub_provider_server import StubProvider
 
 pytest.importorskip("playwright.sync_api", reason="playwright is not installed")
 
 from playwright.sync_api import Page, sync_playwright  # noqa: E402
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 EXPORT = REPO_ROOT / "frontend" / "out" / "index.html"
 
-#: The browser this environment ships, pinned by path. The Python package's own
-#: expected build number and the installed one differ, and downloading a second
-#: copy of Chromium to satisfy a version string is not worth it.
-CHROME = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/opt/pw-browsers")) \
-    / "chromium-1194" / "chrome-linux" / "chrome"
+def _find_chromium() -> Path | None:
+    """The Chromium this machine already has, found by path on any OS.
+
+    Found rather than asked of Playwright: the Python package's own expected
+    build number and the installed one routinely differ, and downloading a second
+    copy of Chromium to satisfy a version string is not worth it. Newest install
+    wins. `None` means there really is none, and the suite skips honestly.
+    """
+    roots = []
+    if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+        roots.append(Path(os.environ["PLAYWRIGHT_BROWSERS_PATH"]))
+    if os.name == "nt":
+        roots.append(Path(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright")
+    elif sys.platform == "darwin":
+        roots.append(Path.home() / "Library" / "Caches" / "ms-playwright")
+    else:
+        roots.append(Path.home() / ".cache" / "ms-playwright")
+    roots.append(Path("/opt/pw-browsers"))
+
+    # Where each OS's Chromium build puts its executable, inside `chromium-<build>/`.
+    executables = ("chrome-linux/chrome", "chrome-win64/chrome.exe", "chrome-win/chrome.exe",
+                   "chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium",
+                   "chrome-mac/Chromium.app/Contents/MacOS/Chromium")
+
+    def build_number(folder: Path) -> int:
+        tail = folder.name.rsplit("-", 1)[-1]
+        return int(tail) if tail.isdigit() else 0
+
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for folder in sorted(root.glob("chromium-*"), key=build_number, reverse=True):
+            for relative in executables:
+                candidate = folder / relative
+                if candidate.is_file():
+                    return candidate
+    return None
+
+
+CHROME = _find_chromium()
 
 pytestmark = [
     pytest.mark.skipif(not EXPORT.is_file(),
                        reason="the front end has not been built (cd frontend && npm run build)"),
-    pytest.mark.skipif(not CHROME.is_file(), reason="no Chromium in this environment"),
+    pytest.mark.skipif(CHROME is None, reason="no Chromium in this environment"),
 ]
 
 
@@ -56,10 +96,79 @@ def page(live_server):
         browser = play.chromium.launch(executable_path=str(CHROME), args=["--no-sandbox"])
         context = browser.new_context(viewport={"width": 1440, "height": 900})
         page = context.new_page()
-        page.goto(live_server, wait_until="networkidle")
+        visit(page, live_server)
         yield page
         context.close()
         browser.close()
+
+
+@pytest.fixture
+def serve_provider():
+    """Real model providers on real sockets, stopped when the test is over."""
+    started: list[StubProvider] = []
+
+    def make(format: str, **kwargs) -> StubProvider:
+        stub = StubProvider(format, **kwargs)
+        stub.start()
+        started.append(stub)
+        return stub
+
+    yield make
+    for stub in started:
+        stub.stop()
+
+
+def connect(base: str, stub: StubProvider, **extra) -> dict:
+    """Connect `stub` through the app's own API. Returns the connection."""
+    reply = httpx.post(f"{base}/api/models", timeout=30,
+                       json={"kind": "custom", "format": stub.format, "address": stub.base_url, **extra})
+    reply.raise_for_status()
+    return reply.json()["connection"]
+
+
+def choose(base: str, connection: dict, model_id: str, effort: str | None = None) -> None:
+    httpx.post(f"{base}/api/models/select", timeout=30, json={
+        "providerId": connection["id"], "modelId": model_id, "effort": effort}).raise_for_status()
+
+
+def connect_and_select(base: str, stub: StubProvider, model_id: str | None = None, **extra) -> dict:
+    connection = connect(base, stub, **extra)
+    choose(base, connection, model_id or connection["models"][0]["id"])
+    return connection
+
+
+def backend_models(base: str) -> dict:
+    return httpx.get(f"{base}/api/models", timeout=30).json()
+
+
+def open_models_screen(page: Page) -> None:
+    page.evaluate("location.hash = '#/models'")
+    page.wait_for_selector("[data-testid=models-screen]")
+
+
+def settle(page: Page, budget_ms: int = 6_000) -> None:
+    """Give the network a moment to go quiet — without failing if it doesn't.
+
+    These pages used to be waited on with a strict `networkidle`, and that wait
+    alone timed out at thirty seconds in over a third of the suite's tests while
+    the same page, loaded on its own, went quiet in under two seconds. Whether a
+    page happens to keep a request open is not what any of these tests are about,
+    so it is no longer allowed to fail them: the wait is kept, and is a courtesy.
+    """
+    try:
+        page.wait_for_load_state("networkidle", timeout=budget_ms)
+    except PlaywrightTimeoutError:
+        pass
+
+
+def visit(page: Page, url: str) -> None:
+    page.goto(url, wait_until="load")
+    settle(page)
+
+
+def refresh(page: Page) -> None:
+    page.reload(wait_until="load")
+    settle(page)
 
 
 def box(page: Page, selector: str) -> dict:
@@ -113,7 +222,7 @@ def test_the_bell_reads_what_the_backend_stored(page):
     from jarvis import notifications
 
     notifications.add(kind="system", title="Something happened while you were out.")
-    page.reload(wait_until="networkidle")
+    refresh(page)
     assert page.locator("[data-testid=bell] + span, [data-testid=bell] ~ span").first.inner_text() == "1"
 
 
@@ -191,7 +300,7 @@ def test_a_notification_opens_and_reading_it_marks_it_read(page):
 
     notifications.add(kind="task_run", level="warning", title="The briefing didn't run.",
                       body="No model was available at 07:00.")
-    page.goto(page.url.split("#")[0] + "#/notifications", wait_until="networkidle")
+    visit(page, page.url.split("#")[0] + "#/notifications")
 
     page.wait_for_selector("[data-testid=notification-row]")
     page.click("[data-testid=notification-row]")
@@ -208,7 +317,7 @@ def test_a_notification_can_be_deleted_from_its_own_detail(page):
     from jarvis import notifications
 
     notifications.add(kind="system", title="Something happened.")
-    page.goto(page.url.split("#")[0] + "#/notifications", wait_until="networkidle")
+    visit(page, page.url.split("#")[0] + "#/notifications")
     page.click("[data-testid=notification-row]")
     page.click("[data-testid=modal] >> text=Delete")
     page.wait_for_selector("[data-testid=notification-row]", state="detached")
@@ -222,7 +331,7 @@ def test_the_unread_filter_actually_filters(page):
     notifications.add(kind="system", title="Still unread")
     notifications.mark_read(a["id"])
 
-    page.goto(page.url.split("#")[0] + "#/notifications", wait_until="networkidle")
+    visit(page, page.url.split("#")[0] + "#/notifications")
     assert page.locator("[data-testid=notification-row]").count() == 2
 
     page.click("[data-testid=notification-filter-unread]")
@@ -240,7 +349,7 @@ def test_clearing_sends_notifications_to_a_real_recycle_bin_and_back(page):
     from jarvis import notifications
 
     notifications.add(kind="system", title="Something happened.")
-    page.goto(page.url.split("#")[0] + "#/notifications", wait_until="networkidle")
+    visit(page, page.url.split("#")[0] + "#/notifications")
 
     page.click("[data-testid=clear-all]")
     page.wait_for_selector("[data-testid=notification-row]", state="detached")
@@ -262,7 +371,7 @@ def test_emptying_the_recycle_bin_permanently_deletes(page):
     notifications.add(kind="system", title="Something happened.")
     notifications.clear_all()
 
-    page.goto(page.url.split("#")[0] + "#/notifications", wait_until="networkidle")
+    visit(page, page.url.split("#")[0] + "#/notifications")
     page.click("[data-testid=open-recycle-bin]")
     page.wait_for_selector("[data-testid=recycle-bin-row]")
 
@@ -274,7 +383,7 @@ def test_emptying_the_recycle_bin_permanently_deletes(page):
 def test_a_task_can_be_created_edited_paused_and_deleted_from_the_screen(page):
     from jarvis.scheduler import task_store
 
-    page.goto(page.url.split("#")[0] + "#/tasks", wait_until="networkidle")
+    visit(page, page.url.split("#")[0] + "#/tasks")
     page.click("[data-testid=new-task]")
     page.fill("[data-testid=task-title]", "Morning summary")
     page.select_option("[data-testid=task-repeat]", "weekdays")
@@ -323,7 +432,7 @@ def test_the_connector_picker_is_a_picker_not_a_list_of_names(page):
     _connect("Notion")
     _connect("Gmail")
 
-    page.goto(page.url.split("#")[0] + "#/tasks", wait_until="networkidle")
+    visit(page, page.url.split("#")[0] + "#/tasks")
     page.click("[data-testid=new-task]")
     page.wait_for_selector("[data-testid=add-connector]")
 
@@ -347,7 +456,7 @@ def test_a_long_connector_list_is_capped_and_see_more_opens_the_rest(page):
     for name in ("Notion", "Gmail", "Slack", "GitHub", "Google Drive", "Linear", "Jira"):
         _connect(name)
 
-    page.goto(page.url.split("#")[0] + "#/tasks", wait_until="networkidle")
+    visit(page, page.url.split("#")[0] + "#/tasks")
     page.click("[data-testid=new-task]")
     page.click("[data-testid=add-connector]")
     page.wait_for_selector("[data-testid=popover]")
@@ -369,7 +478,7 @@ def test_escape_closes_only_the_list_and_leaves_the_editor_open(page):
     for name in ("Notion", "Gmail", "Slack", "GitHub", "Google Drive", "Linear"):
         _connect(name)
 
-    page.goto(page.url.split("#")[0] + "#/tasks", wait_until="networkidle")
+    visit(page, page.url.split("#")[0] + "#/tasks")
     page.click("[data-testid=new-task]")
     page.fill("[data-testid=task-title]", "Half written")
     page.click("[data-testid=add-connector]")
@@ -387,7 +496,7 @@ def test_a_connector_chosen_here_is_what_the_task_saves(page):
 
     connector_id = _connect("Notion")
 
-    page.goto(page.url.split("#")[0] + "#/tasks", wait_until="networkidle")
+    visit(page, page.url.split("#")[0] + "#/tasks")
     page.click("[data-testid=new-task]")
     page.fill("[data-testid=task-prompt]", "tidy my notes")
     page.click("[data-testid=add-connector]")
@@ -418,6 +527,248 @@ def test_a_service_key_is_saved_and_never_shown_again(page):
     assert "dg-secret-value-999" not in page.content()
 
 
+# --- model settings and the model picker -----------------------------------------
+#
+# These drive the real interface against real providers on real sockets, and check
+# what the browser showed AND what the backend stored AND what the provider
+# actually received. A screen that renders but never reaches the provider — or
+# shows a model that was not the one used — is exactly what these are for.
+
+OPUS_LIKE = {"id": "opus-x", "display_name": "Opus X", "max_tokens": 128000, "capabilities": {
+    "effort": {"supported": True, "low": {"supported": True}, "medium": {"supported": True},
+               "high": {"supported": True}, "max": {"supported": True}, "xhigh": None},
+    "thinking": {"supported": True}}}
+PLAIN_ONE = {"id": "plain-x", "max_tokens": 8192,
+             "capabilities": {"effort": {"supported": False}, "thinking": {"supported": False}}}
+
+
+def connect_through_the_form(page: Page, stub: StubProvider, *, key: str | None = None) -> None:
+    open_models_screen(page)
+    page.click("[data-testid=add-provider]")
+    page.click("[data-testid=add-kind-custom]")
+    page.fill("[data-testid=connect-address]", stub.base_url)
+    page.select_option("[data-testid=connect-format]", stub.format)
+    if key:
+        page.fill("[data-testid=connect-key]", key)
+    page.click("[data-testid=connect-submit]")
+    page.wait_for_selector("[data-testid=connection-card]")
+
+
+def assert_really_visible(page: Page, selector: str) -> None:
+    """On screen — not merely in the page.
+
+    "Present and not hidden" is what a locator wait proves, and it is not enough: a
+    popover rendered 700px past the right edge of the screen, and clipped besides,
+    passed every wait and every click (a test can scroll a hidden container into
+    view; a person cannot), while being unusable. So this asks the questions a
+    person's eyes and hand would: is it inside the viewport, and is it what actually
+    sits at its own centre."""
+    seen = page.evaluate("""(selector) => {
+        const el = document.querySelector(selector);
+        const box = el.getBoundingClientRect();
+        const atCentre = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+        return {x: box.x, y: box.y, w: box.width, h: box.height,
+                vw: innerWidth, vh: innerHeight, hit: el.contains(atCentre)};
+    }""", selector)
+    assert seen["w"] > 0 and seen["h"] > 0, f"{selector} has no size: {seen}"
+    assert 0 <= seen["x"] and seen["x"] + seen["w"] <= seen["vw"] + 1, f"{selector} is off the side of the screen: {seen}"
+    assert 0 <= seen["y"] and seen["y"] + seen["h"] <= seen["vh"] + 1, f"{selector} is off the top or bottom: {seen}"
+    assert seen["hit"], f"{selector} is covered or clipped where a person would click it: {seen}"
+
+
+def assert_jarvis_cannot_answer_yet(page: Page) -> None:
+    """With no usable model selected the person can still type, but Send is off and
+    the conversation says why — it does not pretend, and it does not fail silently."""
+    page.wait_for_selector("[data-testid=composer-input]")
+    # The page assumes it can answer until its status call comes back, so wait for it to
+    # SAY it cannot before asserting anything about the send button.
+    page.wait_for_function(
+        "() => (document.querySelector('[data-testid=conversation]')?.innerText || '')"
+        ".includes(\"isn't connected to a model yet\")", timeout=15_000)
+    page.fill("[data-testid=composer-input]", "hello")
+    assert page.is_disabled("[data-testid=send]")
+    page.fill("[data-testid=composer-input]", "")
+
+
+def say(page: Page, text: str) -> None:
+    page.evaluate("location.hash = '#/'")
+    page.wait_for_selector("[data-testid=composer-input]")
+    page.fill("[data-testid=composer-input]", text)
+    page.press("[data-testid=composer-input]", "Enter")
+
+
+def test_model_settings_starts_empty_and_offers_every_kind_of_provider(page):
+    open_models_screen(page)
+    assert page.locator("[data-testid=connection-card]").count() == 0
+    assert "No provider is connected" in page.inner_text("[data-testid=models-screen]")
+    page.click("[data-testid=add-provider]")
+    page.wait_for_selector("[data-testid=add-provider-menu]")
+    kinds = page.eval_on_selector_all(
+        "[data-testid^=add-kind-]", "els => els.map(e => e.dataset.testid.replace('add-kind-', ''))")
+    assert kinds == ["openai", "anthropic", "gemini", "ollama", "lmstudio", "custom"]
+    # Nothing from the deleted design came back with it.
+    text = page.inner_text("[data-testid=models-screen]").lower()
+    for gone in ("version facts", "not recognised", "which model does which job", "test it"):
+        assert gone not in text
+
+
+def test_connecting_a_provider_and_using_a_model_reaches_that_model_at_the_provider(
+        page, live_server, serve_provider):
+    stub = serve_provider("openai-chat", reply="Hello from the stub.")
+    connect_through_the_form(page, stub)
+
+    assert page.locator("[data-testid=model-row]").count() == 2
+    assert page.get_attribute("[data-testid=connection-status]", "data-state") == "ok"
+    # Connected is not chosen: nothing is selected, and Jarvis still cannot answer.
+    assert backend_models(live_server)["selection"]["modelId"] is None
+    assert httpx.get(f"{live_server}/api/status").json() == {"configured": False}
+
+    page.locator("[data-testid=model-row][data-model-id=stub-model-b] [data-testid=use-model]").click()
+    page.wait_for_selector("[data-testid=model-row][data-model-id=stub-model-b] [data-testid=in-use]")
+    assert backend_models(live_server)["selection"]["modelId"] == "stub-model-b"
+    assert httpx.get(f"{live_server}/api/status").json() == {"configured": True}
+
+    say(page, "hello there")
+    page.wait_for_function("() => document.body.innerText.includes('Hello from the stub.')", timeout=90_000)
+    assert stub.posts()[-1]["body"]["model"] == "stub-model-b"  # the model that was chosen — on the wire
+    assert page.inner_text("[data-testid=model-picker-label]") == "stub-model-b"
+
+
+def test_a_key_typed_into_the_form_is_used_and_never_shown_back(page, live_server, serve_provider):
+    secret = "typed-key-9f8e7d6c5b4a3210"
+    stub = serve_provider("openai-chat", key=secret)
+    connect_through_the_form(page, stub, key=secret)
+
+    assert page.get_attribute("[data-testid=connection-status]", "data-state") == "ok"
+    assert secret not in page.content() and secret not in json_text(backend_models(live_server))
+    assert "Key saved" in page.inner_text("[data-testid=connection-card]")
+    page.click("[data-testid=edit-connection]")
+    assert page.input_value("[data-testid=edit-key]") == ""  # the saved key is never put back in a field
+
+
+def json_text(value) -> str:
+    return json.dumps(value)
+
+
+def test_a_provider_with_no_model_list_still_takes_a_model_by_its_id(page, live_server, serve_provider):
+    stub = serve_provider("openai-chat", list_status=404, reply="Answered without a list.")
+    connect_through_the_form(page, stub)
+
+    page.wait_for_selector("[data-testid=no-models]")
+    assert "doesn't offer a list" in page.inner_text("[data-testid=models-notice]")
+    assert page.is_enabled("[data-testid=add-model-input]")  # present with no list, not gated on one
+
+    page.fill("[data-testid=add-model-input]", "my-private-model")
+    page.click("[data-testid=add-model-submit]")
+    page.wait_for_selector("[data-testid=model-row][data-model-id=my-private-model]")
+    assert "added by hand" in page.inner_text("[data-testid=model-row]")
+    page.click("[data-testid=use-model]")
+    page.wait_for_selector("[data-testid=in-use]")
+
+    say(page, "hi")
+    page.wait_for_function("() => document.body.innerText.includes('Answered without a list.')", timeout=90_000)
+    assert stub.posts()[-1]["body"]["model"] == "my-private-model"
+
+
+def test_a_server_that_is_not_there_is_kept_and_says_what_is_wrong(page, serve_provider):
+    open_models_screen(page)
+    page.click("[data-testid=add-provider]")
+    page.click("[data-testid=add-kind-custom]")
+    page.fill("[data-testid=connect-address]", "http://127.0.0.1:9/v1")
+    page.click("[data-testid=connect-submit]")
+    page.wait_for_selector("[data-testid=connection-card]")
+    assert page.get_attribute("[data-testid=connection-status]", "data-state") == "error"
+    assert "Needs attention" in page.inner_text("[data-testid=connection-status]")
+    assert "Couldn't reach" in page.inner_text("[data-testid=connection-detail]")
+    assert "working yet" in page.inner_text("[data-testid=models-notice]")
+    assert page.is_enabled("[data-testid=add-model-input]")  # still usable by ID, once it is running
+
+
+def test_the_composer_picker_offers_effort_only_for_a_model_whose_provider_reported_levels(
+        page, live_server, serve_provider):
+    stub = serve_provider("anthropic-messages", models=[OPUS_LIKE, PLAIN_ONE], reply="Thought about it.")
+    connect(live_server, stub)
+    page.reload(wait_until="load")
+    page.wait_for_selector("[data-testid=model-picker]")
+    assert_jarvis_cannot_answer_yet(page)  # connected, but nothing chosen yet
+
+    page.click("[data-testid=model-picker]")
+    page.click("[data-testid=pick-model][data-model-id=opus-x]")
+    page.wait_for_selector("[data-testid=effort-section]")
+    # Where a person can actually see and reach it — see `assert_really_visible`.
+    assert_really_visible(page, "[data-testid=popover]")
+    assert_really_visible(page, "[data-testid=effort-low]")
+    levels = page.eval_on_selector_all(
+        "[data-testid^=effort-]:not([data-testid=effort-section])",
+        "els => els.map(e => e.dataset.testid.replace('effort-', ''))")
+    assert levels == ["low", "medium", "high", "max"]  # exactly what the provider reported — no xhigh
+    assert "Default" in page.inner_text("[data-testid=effort-high]")
+    page.click("[data-testid=effort-low]")
+    page.wait_for_function(
+        "() => document.querySelector('[data-testid=effort-low]').getAttribute('aria-pressed') === 'true'")
+    assert backend_models(live_server)["selection"] == {
+        "providerId": backend_models(live_server)["connections"][0]["id"], "modelId": "opus-x", "effort": "low"}
+
+    page.keyboard.press("Escape")
+    say(page, "think about this")
+    page.wait_for_function("() => document.body.innerText.includes('Thought about it.')", timeout=90_000)
+    assert stub.last_body()["output_config"] == {"effort": "low"}  # it really reached the provider
+
+    # A model with no reported levels: no effort section at all, and nothing sent.
+    page.click("[data-testid=model-picker]")
+    page.click("[data-testid=pick-model][data-model-id=plain-x]")
+    # Choosing a model with no effort to set closes the picker once the choice has
+    # been saved. Wait for that before opening it again — clicking straight away
+    # would just close it, which is the picker doing exactly what it should.
+    page.wait_for_selector("[data-testid=popover]", state="detached")
+    page.click("[data-testid=model-picker]")
+    page.wait_for_selector("[data-testid=picker-models]")
+    assert page.locator("[data-testid=effort-section]").count() == 0
+    assert backend_models(live_server)["selection"]["effort"] is None
+    page.keyboard.press("Escape")
+    say(page, "and now?")
+    page.wait_for_function(
+        "() => (document.body.innerText.match(/Thought about it\\./g) || []).length >= 2", timeout=90_000)
+    assert "output_config" not in stub.last_body()
+
+
+def test_deleting_the_selected_connection_warns_and_never_switches_to_another(
+        page, live_server, serve_provider):
+    alpha = serve_provider("openai-chat", reply="alpha speaking")
+    beta = serve_provider("openai-chat", reply="beta speaking")
+    first = connect(live_server, alpha, label="Alpha")
+    connect(live_server, beta, label="Beta")
+    choose(live_server, first, "stub-model-a")
+    page.reload(wait_until="load")
+
+    open_models_screen(page)
+    page.locator("[data-testid=connection-card][data-connection-label=Alpha] [data-testid=delete-connection]").click()
+    page.click("[data-testid=confirm-delete]")
+    page.wait_for_selector("[data-testid=selection-warning]")
+    assert "removed" in page.inner_text("[data-testid=selection-warning]")
+    # Beta is connected and perfectly good — and is not quietly put in Alpha's place.
+    assert page.locator("[data-testid=connection-card][data-connection-label=Beta]").count() == 1
+    assert backend_models(live_server)["selection"]["modelId"] == "stub-model-a"
+    assert httpx.get(f"{live_server}/api/status").json() == {"configured": False}
+
+    page.evaluate("location.hash = '#/'")
+    assert_jarvis_cannot_answer_yet(page)
+    assert beta.posts() == [] and alpha.posts() == []
+
+
+def test_how_jarvis_spends_a_turn_is_saved_and_is_apart_from_the_model_and_effort(page, live_server):
+    open_models_screen(page)
+    assert page.get_attribute("[data-testid=balance-balanced]", "aria-checked") == "true"
+    page.click("[data-testid=balance-fast]")
+    page.wait_for_function(
+        "() => document.querySelector('[data-testid=balance-fast]').getAttribute('aria-checked') === 'true'")
+    saved = httpx.get(f"{live_server}/api/prefs").json()
+    assert saved["balance"] == "fast" and saved["selectedEffort"] is None
+    page.reload(wait_until="load")
+    open_models_screen(page)
+    assert page.get_attribute("[data-testid=balance-fast]", "aria-checked") == "true"
+
+
 # --- the voice pickers ---------------------------------------------------------
 
 
@@ -425,7 +776,7 @@ def test_a_configured_voice_provider_appears_beside_the_browsers_own(page):
     from jarvis import external_services
 
     external_services.add_or_update(label="ElevenLabs", key="k")
-    page.reload(wait_until="networkidle")
+    refresh(page)
     page.click("[data-testid=settings]")
     page.wait_for_selector("[data-testid=voice-options]")
 
@@ -472,7 +823,20 @@ def test_mute_is_a_real_separate_control_disabled_with_no_session(page):
 # --- the engines that need a microphone ----------------------------------------
 
 @pytest.fixture
-def voice_page(live_server):
+def connected_model(live_server, serve_provider):
+    """A model Jarvis can genuinely answer with: a real provider on a real socket,
+    connected and selected through the app's own API — the way a person would.
+
+    The voice engines are offered only when a model is selected, so every test that
+    needs one to be available starts from this rather than from a seeded row.
+    """
+    stub = serve_provider("openai-chat", reply="Hello from the stub.")
+    connect_and_select(live_server, stub)
+    return stub
+
+
+@pytest.fixture
+def voice_page(live_server, connected_model):
     """A browser with a FAKE microphone, so an engine can genuinely start.
 
     Chromium's fake device is a real capture device as far as the page is
@@ -492,7 +856,7 @@ def voice_page(live_server):
         context = browser.new_context(viewport={"width": 1440, "height": 900},
                                       permissions=["microphone"])
         page = context.new_page()
-        page.goto(live_server, wait_until="networkidle")
+        visit(page, live_server)
         yield page
         context.close()
         browser.close()
@@ -580,7 +944,7 @@ def test_pipeline_engine_stops_for_real_rather_than_being_silently_abandoned(voi
         "  return origStop.call(this);"
         "};"
     )
-    voice_page.reload(wait_until="networkidle")  # the init script only applies from here
+    refresh(voice_page)  # the init script only applies from here
 
     start_engine(voice_page, "pipeline")
     voice_page.wait_for_selector("[data-testid=mic][aria-pressed=false]", timeout=10_000)
@@ -594,37 +958,21 @@ def test_pipeline_engine_stops_for_real_rather_than_being_silently_abandoned(voi
     voice_page.wait_for_selector("[data-testid=mic][aria-pressed=true]", timeout=5_000)
 
 
-def test_the_realtime_engine_is_offered_from_a_capability_and_fails_honestly(voice_page):
-    """Two things at once, and both are the point.
+def test_the_realtime_engine_is_not_offered_because_nothing_implements_it(voice_page):
+    """A provider's own speech-to-speech session is a separate, bidirectional-audio
+    protocol, and this model system does not implement one. So the engine stays
+    unavailable — with a reason — even with a working model connected, rather than
+    being offered and failing the moment someone tries it.
 
-    It is offered because a connected model's adapter DECLARES a realtime API —
-    no provider is named anywhere in the picker, the socket, or the engine — and
-    when the session cannot actually open, the start FAILS rather than leaving
-    the microphone running under a screen claiming to listen. The original
-    resolved on the socket merely opening, so a session that could never start
-    took the microphone first and mentioned the problem afterwards.
+    The other two engines ARE available here (a model is selected), which is what
+    keeps this from being a test that passes only because everything is off.
     """
-    provider = add_provider(label="realtime", kind=ProviderKind.NATIVE, adapter="gemini",
-                            auth_method=AuthMethod.API_KEY, secret="not-a-real-key",
-                            key_required=True)
-    add_model(provider_id=provider.id, native_model_id="a-realtime-model")
-
-    voice_page.reload(wait_until="networkidle")
     voice_page.click("[data-testid=settings]")
-    voice_page.wait_for_selector("[data-testid=engine-realtime]:not([disabled])")
-
-    opened: list[str] = []
-    voice_page.on("websocket", lambda socket: opened.append(socket.url))
-    voice_page.click("[data-testid=engine-realtime]")
-    voice_page.click("[data-testid=settings]")
-    voice_page.click("[data-testid=mic]")
-
-    # The key is fake, so the session cannot open. What must happen is that it
-    # says so and stops — never a silent microphone left running.
-    voice_page.wait_for_selector("[data-testid=mic][aria-pressed=false]", timeout=25_000)
-    assert any(url.endswith("/api/live") for url in opened), \
-        f"the realtime socket was never opened: {opened}"
-    assert voice_page.inner_text("[data-testid=status]").strip(), "it failed silently"
+    voice_page.wait_for_selector("[data-testid=engine-options]")
+    assert voice_page.is_enabled("[data-testid=engine-pipeline]")
+    assert voice_page.is_enabled("[data-testid=engine-duplex]")
+    assert voice_page.is_disabled("[data-testid=engine-realtime]")
+    assert "realtime voice session" in voice_page.inner_text("[data-testid=engine-realtime]").lower()
 
 
 def test_the_composers_own_mic_is_live_and_stands_the_engine_down(voice_page):
@@ -1022,11 +1370,11 @@ def test_a_watch_shows_in_the_shell_and_stopping_it_reaches_every_tab(page):
                                  check={"type": "file_exists", "path": "C:/x.pdf"},
                                  on_trigger={"type": "notify", "text": "it landed"})
 
-    page.reload(wait_until="networkidle")
+    refresh(page)
     page.wait_for_selector("[data-testid=watching-bar]")
 
     second = page.context.new_page()
-    second.goto(page.url, wait_until="networkidle")
+    visit(second, page.url)
     second.wait_for_selector("[data-testid=watching-bar]")
 
     # Stopped from the Scheduled Tasks screen, in the first tab.
@@ -1343,7 +1691,7 @@ def test_a_long_conversation_is_actually_scrollable(page):
         chat_store.append_message(convo["id"], {"role": "user", "text": f"message number {i}"})
     session.activate_conversation(convo["id"])
 
-    page.goto(page.url, wait_until="networkidle")
+    visit(page, page.url)
     page.wait_for_selector("text=message number 39", timeout=10_000)
 
     scroll = page.locator("[data-testid=transcript]").evaluate(
@@ -1577,7 +1925,7 @@ def test_an_unconnected_mcp_connector_shows_connect_not_a_toggle(page):
                      if c["label"] == "Never Connected")
     connector_store.update_connector(connector["id"], {
         "status": {"state": "working", "checkedAt": None, "detail": None}})
-    page.reload(wait_until="networkidle")
+    refresh(page)
     page.click("[data-testid=tab-mcp]")
     row = page.locator("[data-testid=connector-row]", has_text="Never Connected")
     row.wait_for()
@@ -1661,7 +2009,7 @@ def test_unconnected_apps_do_not_appear_in_the_connector_picker(page):
     connector_store.add_connector(type="mcp", label="Never Connected App", enabled=True,
                                   config={"connectFlow": {"url": "https://mcp2.example.invalid/mcp"}})
 
-    page.goto(page.url.split("#")[0] + "#/tasks", wait_until="networkidle")
+    visit(page, page.url.split("#")[0] + "#/tasks")
     page.click("[data-testid=new-task]")
     page.click("[data-testid=add-connector]")
     page.wait_for_selector("[data-testid=popover]")

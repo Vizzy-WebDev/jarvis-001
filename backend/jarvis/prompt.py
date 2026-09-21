@@ -3,8 +3,9 @@
 **Why the split.** Anthropic's prompt caching keys on an exact prefix, so anything
 that changes per turn (the wall-clock time, this turn's memories, a low-confidence
 note) must come AFTER the cache breakpoint or the cached prefix misses on every
-single turn. `adapters/anthropic_adapter.py` splits on CACHE_BREAK for exactly
-this; the other adapters simply concatenate, so the split costs them nothing.
+single turn. `models/providers/anthropic_messages.py` splits on CACHE_BREAK for
+exactly this; every other provider flattens it to a blank line (`_wire.flatten_system`),
+so the split costs them nothing.
 
 **What is in here is only what is actually true of this build.** The original's
 instruction describes projects, connectors, computer control, self-improvement and

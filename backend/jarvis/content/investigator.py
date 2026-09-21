@@ -179,9 +179,10 @@ def _context_line(record: dict[str, Any]) -> str:
 
 
 def _examine_media(record: dict[str, Any], request: str) -> dict[str, Any]:
-    """Really watch, see or listen. Not possible until a model system exists."""
+    """Really watch, see or listen. Not implemented: it needs a model to be sent the
+    video, audio or file itself, which takes each provider's own file-upload route,
+    and the model system does not do that. Said plainly rather than pretended."""
     source = record["source"]
-    # Nothing can watch, see or listen while no model system exists.
     last_error = "None of your models can take that kind of file right now."
     if source.get("kind") == "youtube":
         return _youtube_fallback(record, request, last_error)

@@ -37,7 +37,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+# `playwright` drives the browser suite (`tests/test_shell_e2e.py`), which uses a Chromium
+# already on the machine — it finds one per OS and skips, saying so, if there is none.
+dev = ["pytest>=8", "playwright>=1.40"]
 
 # `main()` already exists as a real function, so this costs nothing and gives
 # the launcher one command to run instead of a module path plus a working

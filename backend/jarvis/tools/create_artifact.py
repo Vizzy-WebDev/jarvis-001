@@ -107,9 +107,17 @@ SPEC = CapabilitySpec(
                     "description": "The text. For .xlsx, CSV rows if `rows` is not given. "
                                    "For .pptx, blank-line-separated slides (first line of "
                                    "each is the title) if `slides` is not given."},
-        "rows": {"type": "array", "description": "For .xlsx: a list of rows, each a list."},
-        "paragraphs": {"type": "array", "description": "For .docx: one string per paragraph."},
+        # Every array says what it holds: some providers refuse one that doesn't
+        # (Gemini: "items: missing field"), which fails every turn that declares it.
+        # A row's cells are left untyped on purpose — text and numbers both belong there.
+        "rows": {"type": "array", "items": {"type": "array"},
+                 "description": "For .xlsx: a list of rows, each a list."},
+        "paragraphs": {"type": "array", "items": {"type": "string"},
+                       "description": "For .docx: one string per paragraph."},
         "slides": {"type": "array",
+                   "items": {"type": "object", "properties": {
+                       "title": {"type": "string"},
+                       "bullets": {"type": "array", "items": {"type": "string"}}}},
                    "description": "For .pptx: a list of slides, each "
                                   "{title: string, bullets: list of strings}."}},
         "required": ["filename"]},

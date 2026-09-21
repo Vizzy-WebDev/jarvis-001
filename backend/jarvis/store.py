@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -79,11 +80,22 @@ def write_json(name: str, value: Any) -> None:
     _ensure_data_dir()
     target = _file_path(name)
     contents = serialize(value)
-    tmp = target.with_name(f"{target.name}.{os.getpid()}.{int(time.time() * 1000)}.tmp")
+    # The thread id keeps two writers in the same millisecond off each other's file.
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.{int(time.time() * 1000)}.tmp")
     tmp.write_text(contents, encoding="utf-8")
     # os.replace is atomic on both POSIX and Windows, unlike os.rename which
     # raises on Windows if the destination already exists.
-    os.replace(tmp, target)
+    for attempt in range(10):
+        try:
+            os.replace(tmp, target)
+            break
+        except PermissionError:
+            # Windows refuses to replace a file another thread is reading at that
+            # instant. It is over in moments, so wait and try again rather than
+            # fail a save (a model being selected, a setting changed) over it.
+            if attempt == 9:
+                raise
+            time.sleep(0.02)
     _last_writes[name] = {
         "ts": int(time.time() * 1000),
         "hash": hashlib.sha256(contents.encode("utf-8")).hexdigest(),

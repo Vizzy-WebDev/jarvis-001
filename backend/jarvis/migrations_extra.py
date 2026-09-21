@@ -256,4 +256,41 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
         DROP TABLE IF EXISTS ai_providers;
         """
     ],
+
+    # 27: The provider and model system that replaces the one dropped by 26 — two
+    # tables and nothing else. A connection is access to one provider (keys live
+    # in `.env`, named here by `secret_ref`, never stored). The models under it are
+    # rows in a list: the provider's own identifier verbatim, and only what the
+    # provider itself reported that a request needs (`facts_json`: an output
+    # ceiling and the effort levels it accepts). No families, versions, capability
+    # matrix or per-model settings. `state` is set only by a connection test;
+    # `discovered_at` is when a discovery last succeeded, which is what "the
+    # provider has stopped listing this" is judged against.
+    27: [
+        """
+        CREATE TABLE IF NOT EXISTS model_providers (
+          id            TEXT PRIMARY KEY,
+          kind          TEXT NOT NULL,
+          format        TEXT NOT NULL,
+          label         TEXT NOT NULL,
+          base_url      TEXT,
+          secret_ref    TEXT,
+          created_at    TEXT NOT NULL,
+          checked_at    TEXT,
+          discovered_at TEXT,
+          state         TEXT NOT NULL DEFAULT 'untested',
+          detail        TEXT
+        );
+        CREATE TABLE IF NOT EXISTS provider_models (
+          provider_id  TEXT NOT NULL REFERENCES model_providers(id) ON DELETE CASCADE,
+          model_id     TEXT NOT NULL,
+          label        TEXT,
+          source       TEXT NOT NULL,
+          facts_json   TEXT,
+          added_at     TEXT NOT NULL,
+          last_seen_at TEXT,
+          PRIMARY KEY (provider_id, model_id)
+        );
+        """
+    ],
 }

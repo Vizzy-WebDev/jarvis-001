@@ -33,10 +33,12 @@ cd backend
 python -m jarvis.main
 ```
 
-The server listens on `127.0.0.1:3000`. Jarvis has **no AI model connected right now**:
-the model system is being rebuilt, so it can't answer questions yet. Everything that
-doesn't need a model to answer — history, memory, scheduled tasks' bookkeeping, the
-screens — still works.
+The server listens on `127.0.0.1:3000`. Jarvis doesn't come with an AI model — you connect
+one. Open **Model Settings**, choose **Add a provider** (OpenAI, Anthropic, Google Gemini, a
+model running on your own computer through Ollama or LM Studio, or any other provider),
+enter what it asks for, and choose a model. Until you do, Jarvis says it isn't connected to
+a model yet; everything that doesn't need one to answer — history, memory, the screens —
+works either way.
 
 ## What it can actually do
 
@@ -98,8 +100,12 @@ screens — still works.
 
 ## Honest limits
 
-- **No AI model right now.** The model system was removed and is being rebuilt, so Jarvis
-  can't answer any AI request until it lands.
+- **You bring your own model.** Jarvis works with the provider you connect and the key you
+  give it; it never picks a different model for you, and if the one you chose stops working
+  it tells you rather than quietly using another.
+- **Not available through a model yet:** a provider's own speech-to-speech "realtime voice",
+  searching the web *by asking the model to*, and having a model watch a video, listen to
+  audio or read a PDF directly. Each says so plainly when asked.
 - No wake word — you start it with a click or the Space bar.
 - No photographic/raster image generation.
 - **No PowerPoint generation.** Jarvis can read a `.pptx` you hand it, but asking it

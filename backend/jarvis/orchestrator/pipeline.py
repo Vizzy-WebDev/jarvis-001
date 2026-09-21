@@ -58,6 +58,20 @@ logger = logging.getLogger(__name__)
 #: silently runs forever is worse than one that admits it is stuck (§47).
 MAX_STEPS = 8
 
+#: What 'fast' (how Jarvis spends a turn) lowers that to: fewer rounds of
+#: calling a tool and looking at the result before it must answer. A limit on
+#: Jarvis's own work, not a statement about any model.
+FAST_MAX_STEPS = 4
+
+
+def step_ceiling() -> int:
+    """How many model steps THIS turn may take. Read fresh each turn, so changing
+    the setting takes effect on the next message rather than after a restart."""
+    from ..prefs import get_prefs
+
+    return FAST_MAX_STEPS if get_prefs().get("balance") == "fast" else MAX_STEPS
+
+
 #: Above this many capabilities, a turn is declared its CORE set plus whatever
 #: it has unlocked, rather than everything. Measured, declaring
 #: the full set cost ~150,000 characters on every turn — sent on "hello" as much
@@ -233,7 +247,8 @@ class TurnRequest:
     #: connectors). Enforced in the policy layer, not here.
     allowed_names: frozenset[str] | None = None
     #: A one-off model pin — a scheduled task naming the model it wants. Passed to the
-    #: model client as-is; nothing consumes it while there is no model system.
+    #: model client as-is, which resolves it against the connected models
+    #: (`models/selection.py`): found or refused, never approximated.
     model_id: str | None = None
     grants: list[Grant] | None = None
     #: Upload ids attached to this turn. Ids, never paths: what arrives from the
@@ -451,8 +466,9 @@ class Orchestrator:
         # What this turn actually DID, for the observers downstream of it. The
         # loop keeps the list; it does not know or care who reads it.
         tools_used: list[str] = []
+        ceiling = step_ceiling()
 
-        for step in range(1, MAX_STEPS + 1):
+        for step in range(1, ceiling + 1):
             if cancel.is_set():
                 yield self._interrupt(request, state, "".join(spoken_so_far))
                 return
@@ -590,7 +606,7 @@ class Orchestrator:
         # Out of steps. Say so rather than looping or pretending to have finished.
         state.fail("the turn ran out of steps")
         yield Failed(
-            f"I went round {MAX_STEPS} times without finishing that, so I stopped. "
+            f"I went round {ceiling} times without finishing that, so I stopped. "
             "Tell me what to try differently."
         )
 

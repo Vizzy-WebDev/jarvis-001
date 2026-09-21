@@ -126,7 +126,7 @@ export function SettingsPanel({
         >
           Model Settings
         </button>{' '}
-        screen, which is being rebuilt.
+        screen.
       </p>
     </div>
   );

@@ -16,7 +16,7 @@ main chat:
 
 - **Notifications** — everything Jarvis has flagged for you, in one place
 - **Chat History** — every past conversation, searchable
-- **Model Settings** — where AI models will be set up; being rebuilt
+- **Model Settings** — connect an AI provider and choose the model Jarvis uses
 - **Skills** — the abilities Jarvis has, and ones you can add
 - **Connector** — apps and services Jarvis is connected to (MCP/API/CLI), and its
   built-in computer control
@@ -35,16 +35,45 @@ also works, since each screen has its own address.
 
 ---
 
-## 1. Models — being rebuilt
+## 1. Models — connecting an AI
 
-Jarvis has **no AI model connected right now**. The old model system was removed and a
-new one is being built, so Jarvis can't answer questions, speak replies or do
-anything that needs a model until it arrives. The **Model Settings** screen says so,
-and there is nothing to set up there yet. Keys for speech services (Deepgram, ElevenLabs
-and similar) are in the **Settings** panel instead — the gear icon on the main screen.
+Jarvis needs an AI model to think with, and you choose where it comes from. Open the menu
+→ **Model Settings**.
 
-Everything that doesn't need a model to answer — Chat History, Memory, Notifications,
-your scheduled tasks' settings, Skills and Connectors — still works.
+**Connect a provider.** Click **Add a provider** and pick one:
+
+- **OpenAI**, **Anthropic** or **Google Gemini** — paste the API key from your account there.
+- **Ollama** or **LM Studio** — a model running on this computer. No key needed; Jarvis fills
+  in the usual address.
+- **Custom** — any other provider. Give its address, say which type of API it speaks, and add
+  a key if it needs one.
+
+Jarvis checks the connection straight away and, where the provider allows it, lists the models
+it offers. A connection shows **Connected** or **Needs attention** (with the reason in plain
+words). **Test** re-checks it, **Edit** changes its name, address or key, and **Delete**
+removes it along with its saved key. Your key is saved on this computer and is never shown
+again.
+
+**Choose a model.** Click **Use** beside a model — or use the model button beside the message
+box, which lets you switch while you talk. Some providers also say how hard a model can work;
+when one does, the message box's model button shows an **Effort** choice for that model. If a
+model has no such choice, that's because its provider doesn't report one, not because it's
+hidden.
+
+**If the list is empty or won't load,** you can still use a model: type its ID into **Add a
+model by its ID**, exactly as the provider names it. Jarvis doesn't need a list to use a model.
+
+**How Jarvis spends a turn** (further down the same screen) is separate from all of that. It
+only changes how much work *Jarvis* does around whichever model you chose — *Answer quickly*
+does fewer rounds of using tools and skips the extra check of its answer; *Answer well* checks
+its important answers after giving them, at the cost of an extra call.
+
+**If the model you chose stops being usable** — you deleted its connection, removed its key,
+or took it off the list — Jarvis says so by name and stops there. It never quietly switches to
+a different model.
+
+Keys for speech services (Deepgram, ElevenLabs and similar) are in the **Settings** panel
+instead — the gear icon on the main screen.
 
 ---
 

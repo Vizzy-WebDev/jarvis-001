@@ -5,11 +5,18 @@
 // backend is running. So nothing here needs a base URL, and there is no CORS.
 
 import type {
+  AddConnectionResult,
   Approval,
   BriefingConfig,
   BriefingPreview,
   CatalogEntry,
   Change,
+  ModelAvailability,
+  ModelSelection,
+  ModelsOverview,
+  ProviderConnection,
+  ProviderFormat,
+  ProviderKind,
   Connector,
   ConnectorConnectOutcome,
   ConnectorTool,
@@ -161,6 +168,44 @@ export const api = {
    *  name. */
   voice: {
     options: () => request<VoiceOptions>('/voice/options'),
+  },
+
+  /**
+   * Provider connections and the models available through them. Testing,
+   * discovering and running are three separate questions: `test` is the only
+   * call that changes a connection's status. A discovery that fails throws with
+   * status 501 when the provider simply does not offer a list, and 502 when it
+   * could not be asked — and neither stops `addModel` from working.
+   */
+  models: {
+    kinds: () => request<{ kinds: ProviderKind[]; formats: ProviderFormat[] }>('/models/kinds'),
+    overview: () => request<ModelsOverview>('/models'),
+    add: (body: { kind: string; label?: string; address?: string; format?: string; apiKey?: string }) =>
+      request<AddConnectionResult>('/models', { method: 'POST', ...json(body) }),
+    edit: (id: string, body: { label?: string; address?: string; apiKey?: string }) =>
+      request<{ ok: true; connection: ProviderConnection }>(
+        `/models/${encodeURIComponent(id)}`, { method: 'PATCH', ...json(body) }),
+    test: (id: string) =>
+      request<{ ok: boolean; message: string; connection: ProviderConnection }>(
+        `/models/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+    discover: (id: string) =>
+      request<{ ok: true; added: number; updated: number; connection: ProviderConnection }>(
+        `/models/${encodeURIComponent(id)}/discover`, { method: 'POST' }),
+    addModel: (id: string, modelId: string) =>
+      request<{ ok: true; connection: ProviderConnection }>(
+        `/models/${encodeURIComponent(id)}/models`, { method: 'POST', ...json({ modelId }) }),
+    // A model id can hold slashes and colons ("meta-llama/Llama-3:latest"): each
+    // segment is encoded, and the slashes between them are kept as the path.
+    removeModel: (id: string, modelId: string) =>
+      request<{ ok: true; connection: ProviderConnection }>(
+        `/models/${encodeURIComponent(id)}/models/${modelId.split('/').map(encodeURIComponent).join('/')}`,
+        { method: 'DELETE' }),
+    remove: (id: string) =>
+      request<{ ok: true; availability: ModelAvailability }>(
+        `/models/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    select: (choice: { providerId: string; modelId: string; effort?: string | null }) =>
+      request<{ ok: true; selection: ModelSelection; availability: ModelAvailability }>(
+        '/models/select', { method: 'POST', ...json(choice) }),
   },
 
   externalServices: {

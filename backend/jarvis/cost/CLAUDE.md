@@ -51,7 +51,12 @@ finding is worth interrupting for, and a silent maintenance refresh has no findi
 
 `advisor.py`'s `observed_cost_tier()` buckets a recorded price into a 0-4 scale and says
 "no opinion" when none exists, so an unpriced model is neither rewarded nor punished. Nothing
-ranks models on it at the moment; there is no model system to do so.
+ranks models on it: there is one selected model and no router, so nothing chooses between
+models by price. The recorder is fed by `models/runtime.py`'s `publish_completed`, which
+publishes `provider` (the connection's kind) and the usage the provider itself reported —
+tokens in (all input, cached being a subset of it), out, and cached — and nothing when the
+provider reported nothing. No balance reader is registered: no provider exposes a reliable
+one, so `provider_balances` stays empty rather than showing a guess.
 
 ## `report.py` + `tools/check_spending.py`
 

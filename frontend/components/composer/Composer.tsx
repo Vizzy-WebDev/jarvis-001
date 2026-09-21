@@ -7,6 +7,8 @@ import { IconButton } from '@/components/ui/IconButton';
 import { api, ApiRequestError } from '@/lib/api';
 import { Dictation } from '@/lib/voice/dictation';
 
+import { ModelPicker } from './ModelPicker';
+
 export interface Attachment {
   id: string;
   name: string;
@@ -312,6 +314,10 @@ export function Composer({
             <AttachIcon />
           </IconButton>
           <input ref={fileRef} type="file" multiple hidden onChange={addFiles} />
+          {/* Which model answers, and how hard it works where its provider says
+              it can. Sits with the other per-message controls, not in settings:
+              it is a choice made while talking. */}
+          <ModelPicker />
 
           <div className="ml-auto flex items-center gap-1">
             <IconButton

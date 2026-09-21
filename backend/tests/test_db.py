@@ -93,3 +93,53 @@ def test_a_reset_racing_a_working_thread_never_takes_the_process_down():
             thread.join(timeout=5)
 
     assert failures == []
+
+
+def test_the_same_query_from_many_threads_at_once_does_not_trip_over_itself():
+    """The other half of the hazard: not the connection being closed under a thread,
+    but readers and writers running the SAME SQL on it at the same moment.
+
+    The driver keeps prepared statements per connection, keyed by their text, so
+    two threads reach for one statement object. The result is not only an error
+    ("another row available", "bad parameter or other API misuse") but rows handed
+    to the WRONG caller — which is silent. The connection is opened without that
+    cache for exactly this reason. Measured on this workload: hundreds of errors and
+    dozens of wrong rows per run with the cache on, none with it off."""
+    connection = db_module.get_db()
+    connection.execute("CREATE TABLE IF NOT EXISTS probe_things (id TEXT PRIMARY KEY, v TEXT)")
+    connection.execute("CREATE TABLE IF NOT EXISTS probe_links (pid TEXT, mid TEXT, PRIMARY KEY (pid, mid))")
+    failures: list[str] = []
+    wrong: list[tuple] = []
+
+    def reader() -> None:
+        for _ in range(60):
+            try:
+                for row in connection.execute("SELECT * FROM probe_things ORDER BY id").fetchall():
+                    connection.execute("SELECT * FROM probe_links WHERE pid = ?", (row["id"],)).fetchall()
+                    again = connection.execute("SELECT * FROM probe_things WHERE id = ?", (row["id"],)).fetchone()
+                    if again is not None and again["id"] != row["id"]:
+                        wrong.append((row["id"], again["id"]))
+            except BaseException as err:  # noqa: BLE001 — any failure at all is the point
+                failures.append(f"{type(err).__name__}: {err}")
+
+    def writer(n: int) -> None:
+        for i in range(60):
+            try:
+                key = f"p{n}-{i % 5}"
+                connection.execute("INSERT INTO probe_things (id, v) VALUES (?, ?) "
+                                   "ON CONFLICT(id) DO UPDATE SET v = excluded.v", (key, str(i)))
+                connection.execute("INSERT OR REPLACE INTO probe_links (pid, mid) VALUES (?, ?)", (key, str(i)))
+                connection.execute("DELETE FROM probe_links WHERE pid = ? AND mid = ?", (key, str(i - 1)))
+                if i % 3 == 0:
+                    connection.execute("DELETE FROM probe_things WHERE id = ?", (key,))
+            except BaseException as err:  # noqa: BLE001
+                failures.append(f"{type(err).__name__}: {err}")
+
+    threads = [threading.Thread(target=reader) for _ in range(5)]
+    threads += [threading.Thread(target=writer, args=(n,)) for n in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(120)
+
+    assert failures == [] and wrong == []

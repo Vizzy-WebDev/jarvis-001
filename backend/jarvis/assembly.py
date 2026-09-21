@@ -16,8 +16,8 @@ import threading
 
 from .capabilities import CapabilityRegistry
 from .events import bus
+from .models.client import JarvisModelClient
 from .observers import start_observers
-from .orchestrator.model_port import NoModelClient
 from .orchestrator import Orchestrator
 from .tools import load_tools
 from .voice import ConversationMode, WakeDetector
@@ -79,10 +79,12 @@ def get_orchestrator() -> Orchestrator:
     global _orchestrator
     with _lock:
         if _orchestrator is None:
-            # No model system exists yet, so nothing can answer a turn: the
-            # placeholder client fails each one with a plain "no model" message.
+            # The client answers on whichever model the person has selected, and
+            # reads that selection on every call — so choosing another model takes
+            # effect on the next message, with nothing here to rebuild. When there
+            # is nothing runnable it fails the turn with the reason, never a guess.
             _orchestrator = Orchestrator(
-                NoModelClient(),
+                JarvisModelClient(),
                 registry=get_registry(),
                 event_bus=bus,
             )

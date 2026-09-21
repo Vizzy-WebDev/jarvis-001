@@ -32,7 +32,8 @@ numbering can never be perturbed by another's writes. API: `append()`, `read()`,
   own median over the last hour, and a hard sustained duration (`SUSTAINED`, 5 minutes)
   before anything fires. Pure: it returns a finding or `None`.
 - `reachability.py` — a single read across subsystems that already track their own answer
-  (connectors' stored status, voice services; models report nothing while there is no model system). It never probes
+  (connectors' stored status, voice services; models report whether the selected model resolves to a
+  connection that has what it needs, read from the selection and never by calling a provider). It never probes
   anything itself, since a second differently-timed opinion would disagree exactly when it
   mattered.
 - `source.py` — the heartbeat source for load. Keeps its own `checkState` dedup: a finding

@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .routes import (
     approvals, artifacts, automation, connectors, control, conversations, core, events,
-    external_services, improvement, jobs, memory, notifications, realtime,
+    external_services, improvement, jobs, memory, models, notifications, realtime,
     sandbox, skills, speech, tasks, turn, uploads, voice,
 )
 
@@ -56,6 +56,7 @@ def create_app() -> FastAPI:
     app.include_router(connectors.router)
     app.include_router(control.router)
     app.include_router(external_services.router)
+    app.include_router(models.router)
     app.include_router(speech.router)
     app.include_router(realtime.router)
     app.include_router(notifications.router)

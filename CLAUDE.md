@@ -65,10 +65,31 @@ starts itself" is answerable by reading a single function.
 The project has a real automated suite. Use it.
 
 ```
-cd backend && python -m pytest tests -q          # ~1200 tests
-cd backend && python -m pytest tests/test_shell_e2e.py -q   # 73 Playwright tests, real browser
+cd backend && python -m pytest tests -q          # ~1300 tests
+cd backend && python -m pytest tests/test_shell_e2e.py -q   # ~80 Playwright tests, real browser
 cd frontend && npm run typecheck && npm run build
 ```
+
+**On Windows, before you run them:**
+
+- `test_shell_e2e.py` finds a Chromium already on the machine, per OS (`_find_chromium()`),
+  and skips saying so if there is none. It used to look at one hard-coded Linux path, so the
+  whole browser suite silently skipped on Windows. Its page-ready waits are tolerant
+  (`visit()`/`refresh()`): a strict `networkidle` timed out at 30s in over a third of the
+  tests while the same page loaded alone went quiet in under two seconds.
+- `backend/.venv` may lack `pytest` and `playwright`. Do not `pip install` into it — the user's
+  running app uses it. Put a `sitecustomize.py` that *appends* the global site-packages in a
+  scratch directory and point `PYTHONPATH` at it; the venv's own packages still win.
+- Seven tests assume "not Windows / no desktop" and fail there regardless of your change
+  (`test_control_*`, `test_monitor`, and `test_tools::test_open_app_refuses_honestly_off_windows`).
+  **That last one really launches Notepad** — `--deselect` it and close any stray one.
+- **Any script that boots the app or reaches `get_db()` needs a scratch `JARVIS_DATA_DIR`
+  exported first**, even a "quick import check" — it runs migrations on the real database.
+- The provider layer is tested against `tests/stub_provider_server.py`: a real HTTP server
+  speaking all four wire formats with real SSE streams. It cannot tell you what a *real*
+  provider rejects — Gemini refusing an array with no `items` was found only by asking the
+  real API, and fixed and guarded in `test_models.py`. Keep any live call to a few tiny
+  requests (free tiers), with the real `.env` for READING and a scratch data dir.
 
 Run the first two as two SEPARATE invocations, not combined into one `pytest tests -q`
 call — putting ~1270 tests through one process has produced spurious browser-test
@@ -177,27 +198,47 @@ explicit direct/playful/devil's-advocate requests) shape delivery only; they're 
 from a turn with nobody listening (`background=True` — a scheduled task's or a job
 worker's own turn), matching `prompt.py`'s `has_audience` gate on `stable_instruction()`.
 
-## There is no AI model system right now
+## The provider and model system — `jarvis/models/`
 
-The old one (`jarvis/model_system/` — providers, registry, router, fallback, adapters, the model
-screens and their routes) was deleted in full, and its `ai_*` tables dropped by migration 26. A
-replacement is being built separately; until it exists Jarvis **cannot answer any AI request**, and
-that is the intended state, not a bug to work around. Do not recreate pieces of the old design.
+The old one (`jarvis/model_system/` — a catalog, a router, fallback chains, per-task assignments,
+the model detail screens) was deleted in full and its `ai_*` tables dropped by migration 26. **Do not
+recreate any of it under another name.** What replaced it is deliberately small: a **provider
+connection**, the **models listed under it**, and **one selected model**. That is the whole idea.
 
-What stands in for it, deliberately minimal:
+- **Connections and models** are two tables (migration 27: `model_providers`, `provider_models`).
+  Keys live in `.env` via `save_secret`, named by `secret_ref` — never in a row, never in a response
+  (`hasKey: bool` only). A model row is the provider's own id verbatim plus only what the provider
+  reported that a request needs (`facts_json`: an output ceiling; the effort levels it accepts).
+- **Six kinds, four wire formats** (`models/kinds.py`): OpenAI (`openai-responses`), Anthropic
+  (`anthropic-messages`), Gemini (`gemini-generatecontent`), Ollama and LM Studio (both
+  `openai-chat`), and Custom (the person picks the format). One module per format in
+  `models/providers/`, each with the same three functions — `check`, `discover`, `stream` — and
+  **nothing else in common**: no base class, no registry. OpenAI is NOT a gateway others go through.
+  Raw `httpx` throughout; the provider SDKs in the venv are undeclared leftovers and are not used.
+- **Testing, discovering and running are three separate questions.** Only a connection *test* sets
+  its status. A failed *discovery* changes nothing and never blocks adding a model by hand.
+- **Selected / available / executed are kept apart** (`models/selection.py`). The selection is the
+  person's and only they change it. An unavailable one (connection deleted, key gone, model removed)
+  is *reported*, by name, and stays selected. **Nothing here ever falls back to another model** — the
+  client never emits `ModelSwitched` as a fallback (only when a provider itself reports a different
+  model answered), and `StepComplete.model_id` is what the provider *said* answered.
+- **Effort is not a model and not a model property we know.** It is offered only for a model whose
+  own provider reported levels (today, Anthropic's list API) and is sent only if that model was
+  reported to accept it. `prefs.balance` (fast/balanced/quality) is a different thing — how much
+  work *Jarvis* does around any model (tool-round ceiling, the answer check) — stored apart.
+- **Wiring**: `assembly.get_orchestrator()` builds `models/client.py`'s `JarvisModelClient` (the
+  orchestrator's port). `ai.ask()` runs on `models/oneshot.py`. **Only `client.py` imports the
+  orchestrator** — `tests/test_architecture.py` enforces it, so a tool asking a question is never led
+  into the turn loop. The cost ledger is fed by `runtime.publish_completed` (provider + usage, as
+  reported).
+- **Not implemented, and never claimed**: a provider's own speech-to-speech session (`/api/live` and
+  `voice/options.realtime_models()` stay empty), web search through a model (refused, not answered
+  from memory), and video/audio/PDF examination through a model.
 
-- `orchestrator/model_port.py` — the `ModelClient` protocol the turn loop streams from, the event
-  shapes it consumes (`TextChunk`, `StepComplete`, `ModelSwitched`, ...), and `NoModelClient`, which
-  fails every turn with `ModelUnavailable` (surfaced as a `no_model` failure).
-- `ai.py` — `ask()`/`ask_model()` for everything outside the turn loop (research, memory review,
-  improvement, heartbeat, projects, scheduled briefings). Both report "no model" until replaced;
-  each caller already has a plain "no model" branch.
-- `GET /api/status` reports `configured: false`; `/api/voice/options` offers no model-backed engine;
-  `/api/live` answers "No model with a realtime voice is set up yet."
-- The Model Settings screen (AI provider models only) shows a "being rebuilt" note. Speech-service keys
-  (`external-services`) live in the Settings panel (`components/shell/ServiceKeys.tsx`), not there.
-- The cost ledger (`cost/`, `observers/cost.py`) is kept and idle: it records from
-  `MODEL_CALL_*` events that nothing publishes at the moment.
+The Model Settings screen (`components/screens/ModelsScreen.tsx`) and the composer's model picker
+(`components/composer/ModelPicker.tsx`) share one hook (`lib/useModels.ts`); a change anywhere fires
+`jarvis:models-changed` and every reader refetches. Speech-service keys (`external-services`) are a
+separate system in the Settings panel and must not be disturbed.
 
 Nothing under `jarvis/tools/` may import the orchestrator; `ai.py` is the seam a tool may use.
 
@@ -247,3 +288,18 @@ plays when it fires.
   either subsystem directly. When changing how a capability's outcome gets recorded,
   grep the subsystem's own doc for the old call site before trusting it's still
   accurate.
+- **The database is ONE connection shared by every server thread, and it must stay opened
+  with `cached_statements=0`** (`db.py`). The driver caches prepared statements per
+  connection by SQL text, so two threads running the same query at once share one
+  statement object: errors ("another row available", "bad parameter or other API misuse")
+  and — worse, because silent — rows handed to the WRONG caller. Measured: hundreds of
+  errors and dozens of wrong rows per run with the cache on, none with it off. A store over
+  that connection also takes a module `RLock` (`models/store.py`, `scheduler/task_store.py`).
+  `tests/test_db.py::test_the_same_query_from_many_threads...` fails every run if the
+  setting is removed. `store.write_json` retries `os.replace` briefly on Windows
+  `PermissionError` (another thread reading the file at that instant).
+- **A JSON tool schema is not "valid" just because JSON Schema says so.** Google refuses an
+  `array` with no `items` — and refuses the whole request, so every turn that declares the
+  tool, which for a core tool is every turn. Declare what an array holds
+  (`test_every_tool_the_app_really_declares_is_acceptable_to_gemini` walks the real
+  registry); `gemini_generate._schema` also narrows whatever a connector declares.

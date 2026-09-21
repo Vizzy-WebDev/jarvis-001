@@ -4,7 +4,8 @@
 a capability check says it is available, never because this code knows a
 provider's name.** Nowhere below is a brand compared against a string. A
 realtime engine appears when some model DECLARES `realtime` and is ready to use.
-There is no AI model system at the moment, so no model-backed engine is offered.
+The pipeline and duplex engines are offered when the selected model can be run;
+the realtime engine is never offered, because nothing implements it.
 
 Three separate choices, deliberately not collapsed into one:
 
@@ -24,13 +25,22 @@ from .. import stt, tts
 
 
 def _ready_models() -> list[Any]:
-    """Models ready to answer. None, while there is no model system."""
-    return []
+    """The model that would answer — the selected one, when it can be run — as a
+    list of one, or an empty list. Voice uses whichever model text uses, so this
+    is the same question `/api/status` asks."""
+    from ..models import selection, store
+
+    if selection.availability().state != "ok":
+        return []
+    provider_id, model_id, _ = selection.chosen()
+    model = store.get_model(provider_id, model_id) if provider_id and model_id else None
+    return [model] if model else []
 
 
 def realtime_models() -> list[Any]:
-    """Models that offer a realtime voice session of their own. None, while
-    there is no model system."""
+    """Models that offer a realtime voice session of their own. None: a provider's
+    own speech-to-speech session is a separate, bidirectional-audio protocol that
+    this system does not implement, so no model is ever offered as one."""
     return []
 
 

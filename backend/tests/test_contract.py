@@ -77,8 +77,10 @@ SEEDS = {("GET", "/api/notifications"): _seed_notifications}
 
 ADDED_KEYS: dict[tuple[str, str], set[str]] = {
     # Semantic verification of consequential chat answers: this build's own
-    # feature, off by default. See jarvis/ops/consequence.py.
-    ("GET", "/api/prefs"): {"verifyChatAnswers"},
+    # feature, off by default. See jarvis/ops/consequence.py. And the person's own
+    # choice of model (the connection, the provider's model id, and an effort where
+    # the provider reports levels) — None until they choose. See jarvis/models/.
+    ("GET", "/api/prefs"): {"verifyChatAnswers", "selectedProviderId", "selectedModelId", "selectedEffort"},
     # What the screen-watching badge is lit FOR. The original could only say
     # that something was watching; several things can be (a glance, a monitor,
     # sharing left on), and which one it is decides whether "stop" means
@@ -107,11 +109,13 @@ ADDED_KEYS: dict[tuple[str, str], set[str]] = {
 #: in the recording is still compared byte for byte, which is what keeps this
 #: from becoming a way to wave away a response that quietly stopped answering.
 #:
-#: Removing anything at all needs a better reason than tidiness. These four qualify:
-#: `autoSelect`, `manualModelId`, `voiceModelId` and `balance` were preferences of the
-#: AI model system, which has been deleted in full — nothing reads them any more.
+#: Removing anything at all needs a better reason than tidiness. These three qualify:
+#: `autoSelect`, `manualModelId` and `voiceModelId` were preferences of the old model
+#: system's automatic selection, which has been deleted in full — nothing reads them
+#: any more. (`balance` is back, with a new meaning: how Jarvis spends a turn, not which
+#: model is picked for it — so the response matches the recording on it again.)
 REMOVED_KEYS: dict[tuple[str, str], set[str]] = {
-    ("GET", "/api/prefs"): {"autoSelect", "manualModelId", "voiceModelId", "balance"},
+    ("GET", "/api/prefs"): {"autoSelect", "manualModelId", "voiceModelId"},
 }
 
 

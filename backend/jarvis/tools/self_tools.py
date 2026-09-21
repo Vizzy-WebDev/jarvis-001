@@ -60,10 +60,12 @@ SPECS = [
                      "one of those from impression; if it comes back with no track record, "
                      "say that plainly instead of estimating."),
         input_schema={"type": "object", "properties": {
-            "dimensions": {"type": "array",
+            # An array says what it holds. Some providers refuse one that doesn't
+            # (Gemini: "items: missing field"), which fails every turn that declares it.
+            "dimensions": {"type": "array", "items": {"type": "string"},
                            "description": 'Any of "can_do", "failure_modes", '
                                           '"how_it_behaves", "doing_now", "whats_its_call".'},
-            "about": {"type": "array",
+            "about": {"type": "array", "items": {"type": "string"},
                       "description": "Capability names to check reliability for."}},
             "required": []},
         risk=Risk.LOW, handler=_check, timeout_s=15.0, tags=frozenset({"core", "meta"}),

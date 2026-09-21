@@ -1,8 +1,9 @@
-"""A real turn, top to bottom, with no AI model system behind the orchestrator.
+"""A real turn, top to bottom, with nothing behind the orchestrator's model port.
 
-While no model system exists every turn must end the same way: a plain, honest
-"no model" failure — not a crash, not a hang, and nothing written into the
-conversation as though Jarvis had answered.
+With no model to run, every turn must end the same way: a plain, honest "no model"
+failure — not a crash, not a hang, and nothing written into the conversation as
+though Jarvis had answered. (`test_models.py` covers the same for a real client
+with nothing selected, and for a provider that refuses.)
 """
 
 from __future__ import annotations

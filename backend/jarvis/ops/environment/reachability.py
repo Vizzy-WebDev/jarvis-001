@@ -11,9 +11,23 @@ from typing import Any
 
 
 def models() -> dict[str, Any]:
-    """Which AI models could answer right now. None, while there is no model
-    system."""
-    return {"usable": [], "blocked": [], "soonestRetryMs": None}
+    """Whether the selected model could answer right now, and if not, why.
+
+    Read from the selection and what is stored about it — no provider is called.
+    A model that is merely selected is not reported usable: 'usable' means the
+    selection resolves to a connection with what it needs."""
+    from ...models import selection, store
+
+    state = selection.availability()
+    provider_id, model_id, _ = selection.chosen()
+    if state.state == "ok" and provider_id and model_id:
+        connection = store.get_connection(provider_id)
+        return {"usable": [{"modelId": model_id, "connection": connection.label if connection else None}],
+                "blocked": [], "soonestRetryMs": None}
+    if state.state == "none":
+        return {"usable": [], "blocked": [], "soonestRetryMs": None}
+    return {"usable": [], "blocked": [{"modelId": model_id, "reason": state.message}],
+            "soonestRetryMs": None}
 
 
 def voice() -> dict[str, Any]:

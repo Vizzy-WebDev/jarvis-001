@@ -102,7 +102,19 @@ def try_consume_budget() -> bool:
 
 
 def is_enabled() -> bool:
-    """The preference. Default off — see this module's docstring."""
+    """Whether a chat answer gets the semantic check.
+
+    The standing preference decides — default off, see this module's docstring —
+    unless the person has set how Jarvis spends a turn: 'quality' forces the check
+    on, 'fast' forces it off (it is a model call after the reply, which is exactly
+    the cost 'fast' is asking not to pay). 'balanced' leaves the preference alone.
+    """
     from ..prefs import get_prefs
 
-    return bool(get_prefs().get("verifyChatAnswers"))
+    prefs = get_prefs()
+    balance = prefs.get("balance")
+    if balance == "fast":
+        return False
+    if balance == "quality":
+        return True
+    return bool(prefs.get("verifyChatAnswers"))

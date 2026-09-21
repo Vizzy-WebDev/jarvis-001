@@ -223,7 +223,16 @@ def get_db() -> sqlite3.Connection:
         # isolation_level=None puts the driver in autocommit mode so the explicit
         # BEGIN/COMMIT above is the only transaction control in play — Python's
         # own implicit transaction handling would otherwise fight it.
-        conn = sqlite3.connect(str(file), isolation_level=None, check_same_thread=False)
+        #
+        # `cached_statements=0` because this one connection is shared by every thread
+        # the server runs requests on. The driver keeps prepared statements per
+        # connection, keyed by their SQL, so two threads running the same query at
+        # once trip over one statement object — "bad parameter or other API misuse",
+        # or the wrong rows handed to the wrong caller. Measured: the same threaded
+        # load failed 3 runs in 3 with the cache and passed 3 in 3 without it. What
+        # it costs is preparing each statement every time, which is microseconds.
+        conn = sqlite3.connect(str(file), isolation_level=None, check_same_thread=False,
+                               cached_statements=0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
         conn.execute("PRAGMA foreign_keys = ON")

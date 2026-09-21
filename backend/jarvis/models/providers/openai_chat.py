@@ -1,0 +1,207 @@
+"""OpenAI-compatible Chat Completions — what Ollama, LM Studio and most
+self-hosted servers speak, and what a `custom` connection uses when its provider
+says it is OpenAI-compatible.
+
+This is NOT OpenAI's own integration (`openai_responses.py`). It exists for the
+servers that copied the older, simpler chat format, and it stays honest about
+what that means: no reasoning controls, and no model-capability data — a server
+of this kind lists its models by name and says nothing more about them.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Iterator
+
+from ..errors import ProviderError, Unsupported
+from ..types import CheckResult, Discovered, Finished, TextDelta, ToolUse, Usage, Target
+from . import _wire as wire
+
+FORMAT = "openai-chat"
+
+_FINISH = {"stop": "stop", "tool_calls": "tool_calls", "function_call": "tool_calls",
+           "length": "length", "content_filter": "content_filter"}
+
+
+def _auth(target: Target) -> dict[str, str]:
+    return {"Authorization": f"Bearer {target.api_key}"} if target.api_key else {}
+
+
+def _listing(target: Target) -> list[dict[str, Any]]:
+    body = wire.get_json(wire.join_url(target.base_url, "models"), headers=_auth(target), missing="address")
+    rows = body.get("data") if isinstance(body, dict) else body
+    if not isinstance(rows, list):
+        raise ProviderError(f"{wire.host_of(target.base_url)} answered, but not with a list of models.",
+                            kind="request")
+    return [r for r in rows if isinstance(r, dict) and r.get("id")]
+
+
+def check(target: Target) -> CheckResult:
+    """Validate as far as this kind of server allows: the model list when it has
+    one, and otherwise the chat endpoint itself."""
+    try:
+        count = len(_listing(target))
+    except ProviderError as err:
+        if err.status != 404:
+            raise
+        # No model list here. Is this still a chat server, or a wrong address?
+        status, words = wire.probe_post(wire.join_url(target.base_url, "chat/completions"),
+                                        headers=_auth(target), body={})
+        if status in (401, 403, 404) or status >= 500:
+            raise wire.error_for(status, words, target.base_url, missing="address")
+        return CheckResult(True, "Reached the server. It doesn't offer a list of its models, so the "
+                                 "key and the model can't be checked until you use it — add a model ID by hand.")
+    return CheckResult(True, f"Connected. {count} model{'s' if count != 1 else ''} available.")
+
+
+def discover(target: Target) -> list[Discovered]:
+    try:
+        rows = _listing(target)
+    except ProviderError as err:
+        if err.status == 404:
+            raise Unsupported("This server doesn't offer a list of its models — add the model ID by hand.") from err
+        raise
+    return [Discovered(model_id=str(r["id"])) for r in rows]
+
+
+# --- the conversation, in this format ------------------------------------------------
+
+def _user(message: dict[str, Any]) -> dict[str, Any] | None:
+    text = message.get("text") or ""
+    media = wire.media_of(message)
+    if not media:
+        return {"role": "user", "content": text} if text else None
+    parts: list[dict[str, Any]] = [{"type": "text", "text": text}] if text else []
+    for kind, mime, data in media:
+        if kind != "image":
+            raise ProviderError(f"This kind of connection can take images, but not {kind} attachments.",
+                                kind="request")
+        parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
+    return {"role": "user", "content": parts}
+
+
+def _assistant(message: dict[str, Any]) -> dict[str, Any] | None:
+    text = wire.assistant_text(message)
+    calls = message.get("toolCalls") or []
+    if not text and not calls:
+        return None
+    entry: dict[str, Any] = {"role": "assistant", "content": text or None}
+    if calls:
+        entry["tool_calls"] = [
+            {"id": c["id"], "type": "function",
+             "function": {"name": c["name"], "arguments": wire.dumps(c.get("args") or {})}}
+            for c in calls
+        ]
+    return entry
+
+
+def _messages(system: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    flat = wire.flatten_system(system)
+    if flat:
+        out.append({"role": "system", "content": flat})
+    for message in messages:
+        role = message.get("role")
+        if role == "user":
+            entry = _user(message)
+        elif role == "assistant":
+            entry = _assistant(message)
+        elif role == "tool":
+            out.extend({"role": "tool", "tool_call_id": r["id"], "content": wire.dumps(r.get("result"))}
+                       for r in message.get("toolResults") or [])
+            continue
+        else:
+            continue
+        if entry:
+            out.append(entry)
+    return out
+
+
+def _count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _usage(raw: dict[str, Any]) -> Usage:
+    return Usage(
+        tokens_in=_count(raw.get("prompt_tokens")),
+        tokens_out=_count(raw.get("completion_tokens")),
+        tokens_reasoning=_count((raw.get("completion_tokens_details") or {}).get("reasoning_tokens")),
+        cached_in=_count((raw.get("prompt_tokens_details") or {}).get("cached_tokens")),
+    )
+
+
+def stream(target: Target, *, model_id: str, messages: list[dict[str, Any]], system: str,
+           tools: list[dict[str, Any]], effort: str | None = None,
+           facts: dict[str, Any] | None = None) -> Iterator[Any]:
+    """Nothing is done with `effort`: this format has no reasoning control, so a
+    server of this kind is never sent one."""
+    host = wire.host_of(target.base_url)
+    body: dict[str, Any] = {
+        "model": model_id,
+        "messages": _messages(system, messages),
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    if tools:
+        body["tools"] = [{"type": "function",
+                          "function": {"name": t["name"], "description": t.get("description", ""),
+                                       "parameters": t.get("parameters") or {"type": "object", "properties": {}}}}
+                         for t in tools]
+
+    text: list[str] = []
+    calls: dict[int, dict[str, str | None]] = {}
+    finish: str | None = None
+    finished_cleanly = False
+    usage: Usage | None = None
+    reported: str | None = None
+
+    with wire.post_stream(wire.join_url(target.base_url, "chat/completions"),
+                          headers=_auth(target), body=body) as response:
+        for _, data in wire.iter_sse(response):
+            if data.strip() == "[DONE]":
+                finished_cleanly = True
+                break
+            chunk = wire.loads_event(data, host)
+            if not isinstance(chunk, dict):
+                continue
+            if chunk.get("error"):
+                err = chunk["error"]
+                raise ProviderError(f"{host} stopped the reply: "
+                                    f"{err.get('message') if isinstance(err, dict) else err}", kind="server")
+            reported = chunk.get("model") or reported
+            if isinstance(chunk.get("usage"), dict):
+                usage = _usage(chunk["usage"])
+            for choice in chunk.get("choices") or []:
+                delta = choice.get("delta") or {}
+                piece = delta.get("content")
+                if piece:
+                    text.append(piece)
+                    yield TextDelta(piece)
+                for part in delta.get("tool_calls") or []:
+                    slot = calls.setdefault(part.get("index", 0), {"id": None, "name": None, "args": ""})
+                    if part.get("id"):
+                        slot["id"] = part["id"]
+                    fn = part.get("function") or {}
+                    # A name arrives whole, and some servers repeat it on every chunk.
+                    if fn.get("name") and not slot["name"]:
+                        slot["name"] = fn["name"]
+                    slot["args"] = (slot["args"] or "") + (fn.get("arguments") or "")
+                if choice.get("finish_reason"):
+                    finish = choice["finish_reason"]
+
+    if finish is None and not finished_cleanly:
+        # A reply that just stops is not a finished reply. Saying so is the
+        # difference between "it broke" and a confident half-answer.
+        raise ProviderError(f"The reply from {host} stopped part-way.", kind="reply")
+
+    tool_calls = []
+    for index in sorted(calls):
+        slot = calls[index]
+        if not slot["name"]:
+            raise ProviderError("The model asked to use a tool without naming it, so nothing was run.",
+                                kind="reply")
+        tool_calls.append(ToolUse(id=slot["id"] or f"call_{index}", name=slot["name"],
+                                  args=wire.parse_arguments(slot["args"], slot["name"])))
+
+    reason = "tool_calls" if tool_calls else _FINISH.get(finish or "stop", "stop")
+    yield Finished(text="".join(text), tool_calls=tuple(tool_calls), finish_reason=reason,
+                   usage=usage, model_id=reported)

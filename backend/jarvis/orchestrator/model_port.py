@@ -6,9 +6,13 @@ the whole of what it asks for: a `ModelClient` that streams `TextChunk`s (and
 possibly a `ModelSwitched`), then exactly one `StepComplete`. The desktop
 control loop (`control/session.py`) reuses the same port for its perceive step.
 
-The event shapes below are the orchestrator's own vocabulary. There is no AI
-model system behind this port at the moment: `NoModelClient` is what runs until
-one is built, and every turn it serves ends in `ModelUnavailable`.
+The event shapes below are the orchestrator's own vocabulary. The real client is
+`models/client.py`'s `JarvisModelClient`, built by `assembly`. `NoModelClient` is
+kept as the client for a turn with nothing behind it: every turn it serves ends
+in `ModelUnavailable`, which the loop already turns into a plain `no_model` failure.
+A client should RAISE on failure and not yield `ErrorEvent`: the loop matches only
+`TextChunk`, `ModelSwitched` and `StepComplete`, so a yielded `ErrorEvent` would be
+dropped and the step would end as "the client never completed".
 """
 
 from __future__ import annotations
@@ -112,9 +116,9 @@ class ModelClient(Protocol):
 
 
 class NoModelClient:
-    """The `ModelClient` used while no model system exists: every call fails
-    with `ModelUnavailable`, which the turn loop already turns into a plain
-    "no model" failure rather than a crash."""
+    """A `ModelClient` with nothing behind it: every call fails with
+    `ModelUnavailable`, which the turn loop already turns into a plain "no model"
+    failure rather than a crash."""
 
     def stream(self, **_: Any) -> Iterator[ModelEvent]:
         raise ModelUnavailable(NO_MODEL_MESSAGE)

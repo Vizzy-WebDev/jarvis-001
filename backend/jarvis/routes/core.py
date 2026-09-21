@@ -19,12 +19,16 @@ router = APIRouter(prefix="/api")
 
 @router.get("/status")
 def status() -> dict[str, Any]:
-    """Whether any model is actually usable — what the first-run flow checks.
-    Nothing is, while there is no AI model system."""
-    usable = False
+    """Whether the model the person selected can actually be run — what the
+    first-run flow checks. Not "is anything connected": a selection whose
+    connection was removed, or whose key is gone, is not usable, and this says so."""
+    from ..models import selection
+
+    usable = selection.availability().state == "ok"
     # Exactly the recorded shape, deliberately: the contract harness only catches
     # unintended divergence if the intended response stays byte-identical too.
-    # Counts belong here when a screen actually needs them, not before.
+    # The reason a selection isn't usable belongs on `/api/models`, which the
+    # screen that can fix it reads.
     return {"configured": usable}
 
 

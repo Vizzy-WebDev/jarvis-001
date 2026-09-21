@@ -78,14 +78,19 @@ export interface QuietHours {
 }
 
 /**
- * Three fields are absent on purpose: `autoSelect`, `manualModelId` and
- * `voiceModelId`. All three were served and read by nothing, so setting one
- * silently did nothing; the two pins are now role slots. `verifyChatAnswers`
- * was the opposite problem — served by the API and missing from this type.
+ * The `selected*` fields are the person's own choice of model. They are written
+ * through `api.models.select`, which checks them, not by patching prefs directly:
+ * a selection that names something that does not exist is refused there.
+ * `balance` is how Jarvis spends a turn — a different thing from which model, and
+ * from effort — and applies to every model alike.
  */
 export interface Prefs {
   clarifySensitivity: 'more' | 'balanced' | 'less';
   ttsProvider: string | null;
+  selectedProviderId: string | null;
+  selectedModelId: string | null;
+  selectedEffort: string | null;
+  balance: 'fast' | 'balanced' | 'quality';
   verifyChatAnswers: boolean;
   memoryTrust: 'ask' | 'balanced' | 'auto';
   maxBackgroundJobs: number;
@@ -97,6 +102,97 @@ export interface Prefs {
 
 export interface Status {
   configured: boolean;
+}
+
+// --- providers and the models available through them -------------------------
+
+/** What a kind of provider needs from the person — the picker's contents. */
+export interface ProviderKind {
+  id: 'openai' | 'anthropic' | 'gemini' | 'ollama' | 'lmstudio' | 'custom' | string;
+  label: string;
+  blurb: string;
+  /** 'fixed' is never asked for; 'editable' has a default they may change. */
+  address: 'fixed' | 'editable' | 'required';
+  defaultAddress: string | null;
+  key: 'required' | 'optional' | 'none';
+  /** Only Custom: the person says which type of API it speaks. */
+  chooseFormat: boolean;
+}
+
+export interface ProviderFormat {
+  id: string;
+  label: string;
+}
+
+/**
+ * Reasoning effort as the PROVIDER reported it for one model. Absent means the
+ * provider said nothing, and no control is offered — levels are never assumed.
+ */
+export interface ModelEffort {
+  levels: string[];
+  default: string | null;
+}
+
+export interface ProviderModel {
+  id: string;
+  label: string;
+  source: 'discovered' | 'manual';
+  /** False once a later discovery no longer names it. A note, not a verdict: it still runs. */
+  stillListed: boolean;
+  effort: ModelEffort | null;
+}
+
+export interface ProviderConnection {
+  id: string;
+  kind: string;
+  kindLabel: string;
+  format: string;
+  label: string;
+  address: string;
+  addressEditable: boolean;
+  keyNeeded: 'required' | 'optional' | 'none';
+  /** Whether a key is saved. The key itself is never sent to the browser. */
+  hasKey: boolean;
+  /** Set only by a connection test — never by a discovery or a turn. */
+  state: 'untested' | 'ok' | 'error';
+  detail: string | null;
+  checkedAt: string | null;
+  discoveredAt: string | null;
+  models: ProviderModel[];
+}
+
+export interface ModelSelection {
+  providerId: string | null;
+  modelId: string | null;
+  effort: string | null;
+}
+
+/** Whether the selection can be run right now — worked out on request, never stored. */
+export interface ModelAvailability {
+  state: 'ok' | 'none' | 'missing_connection' | 'missing_model' | 'no_key';
+  message: string | null;
+}
+
+export interface ModelsOverview {
+  connections: ProviderConnection[];
+  selection: ModelSelection;
+  availability: ModelAvailability;
+}
+
+/** What asking a provider for its models came back with. Never a connection status. */
+export interface DiscoveryOutcome {
+  ok: boolean;
+  unsupported?: boolean;
+  message?: string;
+  added?: number;
+  updated?: number;
+}
+
+export interface AddConnectionResult {
+  ok: true;
+  tested: { ok: boolean; message: string };
+  discovery: DiscoveryOutcome | null;
+  connection: ProviderConnection;
 }
 
 /** Every error response in this API is `{error: string}`, shown to the user verbatim. */

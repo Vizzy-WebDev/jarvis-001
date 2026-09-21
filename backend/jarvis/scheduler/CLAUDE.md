@@ -19,7 +19,8 @@
     covers ordinary work only — a HIGH-risk call inside it still parks for a human
     (`policy/decide.py` enforces that, not this module). A parked approval is recorded as
     `awaitingApproval`, neither a success nor a failure. `action.modelId` is a pin passed to the
-    model client; nothing honours it while there is no model system.
+    model client, which finds it among the connected models or REFUSES the run — it never
+    substitutes another model (`models/selection.py`). Nothing in the interface sets one today.
   - **Connectors on a prompt task** (`action.connectors`, connector ids from the task
     UI's picker) are resolved to tool names at RUN time via
     `connectors/capabilities.py`'s `tool_names_for()`, because a connector's tool list

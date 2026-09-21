@@ -1,7 +1,9 @@
 """A scripted stand-in for whatever answers a turn, plugged in at the model port.
 
-There is no AI model system, so a test that needs "a model that says X" or "a model
-that asks for tool Y" drives the real orchestrator with this client instead. It
+A test that needs "a model that says X" or "a model that asks for tool Y" — exactly,
+and with no provider in the way — drives the real orchestrator with this client
+instead of a stub provider (`stub_provider_server.py` is for testing the provider
+layer itself, over real HTTP). It
 speaks the port's own vocabulary (`orchestrator/model_port.py`), so everything
 downstream of the port — the permission gate, the executor, the transcript, the
 recorders — is the real thing.

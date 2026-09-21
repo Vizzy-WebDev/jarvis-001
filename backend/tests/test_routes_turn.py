@@ -60,7 +60,11 @@ def test_no_usable_model_is_reported_as_a_state_not_a_crash(client):
     events = events_from(client.get("/api/chat/stream", params={"message": "hello there"}))
     error = [e for e in events if e["type"] == "error"]
     assert error and error[0]["code"] == "no_model"
-    assert "no ai model" in error[0]["error"].lower()
+    # In plain words, and saying what to do about it — not a stack trace, and not a
+    # sentence the person has to decode. (It used to say "no AI model"; with a real
+    # model system it can say what is actually missing.)
+    message = error[0]["error"].lower()
+    assert "no model" in message and "model settings" in message
 
 
 # --- the gate over HTTP ------------------------------------------------------

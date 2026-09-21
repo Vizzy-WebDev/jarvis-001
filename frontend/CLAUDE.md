@@ -47,7 +47,18 @@ with the close callback read from a ref: including `onClose` in its dependencies
 re-run on every render (callers pass inline arrows), which silently re-promotes the
 overlay to the top of the stack and reintroduces the bug. `Popover` positions itself
 `fixed` from the trigger's measured rect rather than absolutely, because a modal body
-scrolls and would otherwise clip it.
+scrolls and would otherwise clip it. **It is rendered into `document.body` through a
+portal, and that is not optional**: `position: fixed` means "relative to the viewport" only
+when no ancestor has a `transform`, `filter` or `backdrop-filter`, and the conversation
+panel has the last (its rail the first). Declared inside it, the composer's model picker was
+placed relative to the panel — 1075px became 2116px on a 1440px screen — and clipped by its
+overflow: open, but where nobody could see it. Tests passed anyway, because Playwright will
+scroll a hidden container into view and click; `assert_really_visible()` in
+`test_shell_e2e.py` asks what a person's eyes would (inside the viewport, and what sits at
+its own centre). It also watches its own size with a `ResizeObserver`, because it is placed
+from its height and a picker's height changes while open (a section appears when a model is
+chosen); worked out only once, it ran off the bottom of the screen until something else
+moved it.
 
 **`Field` is deliberately a `div`, not a `label`.** A label forwards a click anywhere
 inside it to the first labelable control — found the hard way when a field containing an

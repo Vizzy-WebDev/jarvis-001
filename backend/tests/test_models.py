@@ -1648,3 +1648,218 @@ def test_a_gateways_own_prefix_on_a_model_id_is_not_a_different_model():
     assert not runtime.same_model("auto/best-chat", "claude-haiku-4-5-20251001")
     assert not runtime.same_model("gpt-4", "claude-x")
     assert runtime.same_model("stub-model-a", None)
+
+
+# ================================================================================
+# A connection's own router models (OmniRoute-style gateways)
+#
+# A gateway such as OmniRoute reports `owned_by: "combo"` on the models that are its own
+# router — they already pick a provider and fall back across it on their own, so Auto
+# treats them as the only candidates on that connection rather than also walking the
+# individually-pinned models the same gateway lists. See CLAUDE.md's plan file for the
+# investigation and architecture this implements.
+# ================================================================================
+
+def test_a_gateways_router_models_are_flagged_and_its_pinned_ones_are_not(client, serve):
+    stub = serve("openai-chat", models=[
+        {"id": "auto/best-coding", "owned_by": "combo"},
+        {"id": "claude/claude-opus-5", "owned_by": "claude"},
+        {"id": "aug/gpt5", "owned_by": "auggie"},
+    ])
+    cid = add(client, stub)["connection"]["id"]
+    assert store.get_model(cid, "auto/best-coding").facts == {"router": True}
+    assert store.get_model(cid, "claude/claude-opus-5").facts is None
+    assert store.get_model(cid, "aug/gpt5").facts is None
+
+
+def test_a_gateway_that_marks_its_routers_by_unpriceable_cost_is_also_flagged(client, serve):
+    """OpenRouter's own router products (Auto Router, Pareto Router, Fusion, Body Builder) use a
+    different signal than OmniRoute's `owned_by` — a listing price of -1, because what they cost
+    depends on which underlying model actually answers. A plain rolling alias to one current model
+    still prices normally and must NOT be caught; a genuinely free-priced router (0, not -1) is a
+    disclosed, accepted gap of this narrow rule — it is left as an ordinary candidate."""
+    stub = serve("openai-chat", models=[
+        {"id": "openrouter/auto", "pricing": {"prompt": "-1", "completion": "-1"}},
+        {"id": "openrouter/free", "pricing": {"prompt": "0", "completion": "0"}},
+        {"id": "~anthropic/claude-sonnet-latest", "pricing": {"prompt": "0.000003", "completion": "0.000015"}},
+        {"id": "anthropic/claude-opus-4.5", "pricing": {"prompt": "0.000005", "completion": "0.000025"}},
+    ])
+    cid = add(client, stub)["connection"]["id"]
+    # -1 also fails the existing "free" check (it isn't 0), so a router is correctly recorded as
+    # not-guaranteed-free too — the safer default when its real price isn't known in advance.
+    assert store.get_model(cid, "openrouter/auto").facts == {"router": True, "free": False}
+    assert store.get_model(cid, "openrouter/free").facts == {"free": True}  # not flagged — the disclosed gap
+    assert store.get_model(cid, "~anthropic/claude-sonnet-latest").facts == {"free": False}
+    assert store.get_model(cid, "anthropic/claude-opus-4.5").facts == {"free": False}
+
+
+def test_auto_only_considers_a_connections_router_models_when_it_has_any(client, serve):
+    from jarvis.models import auto
+
+    stub = serve("openai-chat", models=[
+        {"id": "aug/gpt5", "owned_by": "auggie"},  # sorts before "auto/" alphabetically
+        {"id": "auto/best-coding", "owned_by": "combo"},
+        {"id": "auto/best-chat", "owned_by": "combo"},
+    ])
+    add(client, stub)
+    choose_auto(client)
+    assert sorted(c.model.model_id for c in auto.candidates()) == ["auto/best-chat", "auto/best-coding"]
+
+
+def test_auto_is_unaffected_on_a_connection_with_no_router_models(client, serve):
+    """The regression guard: an ordinary connection — nothing reports `owned_by: "combo"` —
+    ranks exactly as it did before router-awareness existed."""
+    from jarvis.models import auto
+
+    two_connections(client, serve)
+    choose_auto(client)
+    order = [(c.connection.label, c.model.model_id) for c in auto.candidates()]
+    assert order == [("One", "one-a"), ("One", "one-b"), ("Two", "two-a")]
+
+
+def test_a_routers_internal_hops_are_never_counted_as_separate_successes(client, serve, monkeypatch):
+    """OmniRoute may try several upstreams of its own (A -> B -> C) inside ONE request before
+    it answers. Jarvis only ever sees that one request — proven here by making the stream carry
+    several empty-delta filler frames first (the shape a gateway's own internal 'still working'
+    keepalive uses) before the real content, and counting exactly how many times Jarvis records
+    an outcome for it."""
+    stub = serve("openai-chat", models=[{"id": "auto/best-coding", "owned_by": "combo"}],
+                 preamble_frames=6)
+    add(client, stub)
+    choose_auto(client)
+    calls: list = []
+    real = store.record_success
+    monkeypatch.setattr(store, "record_success", lambda *a, **k: calls.append(a) or real(*a, **k))
+    events, error = run_step()
+    assert error is None and len(calls) == 1  # one success recorded, not one per filler frame
+
+
+def test_a_router_that_finally_fails_after_its_filler_frames_is_still_one_strike(client, serve, monkeypatch):
+    """The same proof for the failure side: a router that streams several internal-looking
+    filler frames and then genuinely fails still records exactly one failed attempt."""
+    stub = serve("openai-chat", models=[{"id": "auto/best-coding", "owned_by": "combo"}],
+                 preamble_frames=6, stream_error={"message": "upstream unavailable"})
+    add(client, stub)
+    choose_auto(client)
+    calls: list = []
+    real = store.record_failure
+    monkeypatch.setattr(store, "record_failure", lambda *a, **k: calls.append(a) or real(*a, **k))
+    events, error = run_step()
+    assert error is not None and len(calls) == 1  # one failure recorded, not one per filler frame
+
+
+def test_auto_exhausts_a_gateways_routers_without_ever_trying_its_pinned_models(client, serve):
+    """Isolated, matching the existing two-strikes-per-connection shape exactly (same 400, for
+    the same reason the precedent test uses it: a 4xx is never "busy", so the count proves the
+    strike rule alone with no same-candidate retry mixed in). With nothing else to go to, Auto
+    tries both routers and only the routers before giving up on this connection — the pinned
+    model that would have answered is never touched."""
+    gateway = serve("openai-chat", chat_status=400, models=[
+        {"id": "auto/best-coding", "owned_by": "combo"},
+        {"id": "auto/best-chat", "owned_by": "combo"},
+        {"id": "claude/claude-opus-5", "owned_by": "claude"},  # would answer too, if ever tried
+    ])
+    add(client, gateway, label="Gateway")
+    choose_auto(client)
+    events, error = run_step()
+    assert error is not None and "Auto tried 2 models and none could answer" in str(error)
+    assert len(gateway.posts()) == 2  # both strikes used, then the connection is left alone
+    assert set(posted_models(gateway)) == {"auto/best-coding", "auto/best-chat"}
+
+
+def test_auto_reaches_a_working_connection_after_a_gateways_router_fails_without_touching_its_pinned_models(
+        client, serve):
+    """With somewhere else to go, Auto tries that before a second router on the one that just
+    failed (`_next()`'s own documented rule) — so this proves the same thing end to end, without
+    pinning down exactly how many router attempts happen first: the gateway's pinned model is
+    never reached, and the turn is answered by the other connection."""
+    gateway = serve("openai-chat", chat_status=502, models=[
+        {"id": "auto/best-coding", "owned_by": "combo"},
+        {"id": "auto/best-chat", "owned_by": "combo"},
+        {"id": "claude/claude-opus-5", "owned_by": "claude"},  # would answer too, if ever tried
+    ])
+    fallback = serve("openai-chat", models=[{"id": "fine"}])
+    add(client, gateway, label="Gateway")
+    add(client, fallback, label="Fallback")
+    choose_auto(client)
+    events, error = run_step()
+    assert error is None and posted_models(fallback) == ["fine"]
+    assert "claude/claude-opus-5" not in posted_models(gateway)
+    assert set(posted_models(gateway)) <= {"auto/best-coding", "auto/best-chat"}
+
+
+def test_an_explicit_pinned_model_on_a_gateway_connection_sends_that_exact_id(client, serve):
+    stub = serve("openai-chat", models=[
+        {"id": "auto/best-coding", "owned_by": "combo"},
+        {"id": "claude/claude-opus-5", "owned_by": "claude"},
+    ])
+    cid = add(client, stub)["connection"]["id"]
+    assert select(client, cid, "claude/claude-opus-5").status_code == 200
+    events, error = run_step()
+    assert error is None and posted_models(stub) == ["claude/claude-opus-5"]
+
+
+def test_an_explicit_router_selection_sends_that_exact_id(client, serve):
+    stub = serve("openai-chat", models=[
+        {"id": "auto/best-coding", "owned_by": "combo"},
+        {"id": "claude/claude-opus-5", "owned_by": "claude"},
+    ])
+    cid = add(client, stub)["connection"]["id"]
+    assert select(client, cid, "auto/best-coding").status_code == 200
+    events, error = run_step()
+    assert error is None and posted_models(stub) == ["auto/best-coding"]
+
+
+def test_a_named_routers_failure_is_reported_honestly_and_never_substituted(client, serve):
+    stub = serve("openai-chat", chat_status=502, models=[
+        {"id": "auto/best-coding", "owned_by": "combo"},
+        {"id": "claude/claude-opus-5", "owned_by": "claude"},
+    ])
+    cid = add(client, stub)["connection"]["id"]
+    assert select(client, cid, "auto/best-coding").status_code == 200
+    events, error = run_step()
+    assert events == [] and error is not None
+    assert "problem on its end" in str(error)  # the provider's own words
+    assert "Jarvis stays on the model you picked" in str(error) and "Auto" in str(error)
+    assert len(stub.posts()) == 3  # busy is retried on the same model — never substituted for another
+    assert set(posted_models(stub)) == {"auto/best-coding"}
+
+
+def test_discovery_notes_when_a_connection_stops_reporting_router_models(client, serve):
+    from jarvis.models import auto
+
+    stub = serve("openai-chat", models=[
+        {"id": "auto/best-coding", "owned_by": "combo"},
+        {"id": "claude/claude-opus-5", "owned_by": "claude"},
+    ])
+    cid = add(client, stub)["connection"]["id"]
+    assert store.get_model(cid, "auto/best-coding").facts == {"router": True}
+
+    # Still listed, but no longer marked as a router — the signal this depends on is gone,
+    # not the model itself.
+    stub.models = [{"id": "auto/best-coding", "owned_by": "aug"},
+                   {"id": "claude/claude-opus-5", "owned_by": "claude"}]
+    reply = client.post(f"/api/models/{cid}/discover")
+    assert reply.status_code == 200
+    assert "no longer sees any" in reply.json().get("note", "")
+    assert store.get_model(cid, "auto/best-coding").facts is None  # the stale flag was cleared, not kept
+
+    choose_auto(client)
+    assert sorted(c.model.model_id for c in auto.candidates()) == ["auto/best-coding", "claude/claude-opus-5"]
+
+
+def test_a_nonfatal_looking_error_frame_is_still_treated_as_fatal_today(client, serve):
+    """Documents current, disclosed-as-unverified behaviour: if a gateway ever sent a
+    non-terminal in-band error notice while it kept working internally, Jarvis's current
+    code could not tell that apart from a final failure and would stop there. Not a claim
+    that OmniRoute actually does this — only what Jarvis does today if a gateway ever did."""
+    from jarvis.orchestrator.model_port import TextChunk
+
+    stub = serve("openai-chat", models=[{"id": "auto/best-coding", "owned_by": "combo"}],
+                 stream_error={"message": "provider A failed, trying provider B"},
+                 stream_error_then_continues=True)
+    add(client, stub)
+    choose_auto(client)
+    events, error = run_step()
+    assert error is not None and "provider A failed, trying provider B" in str(error)
+    assert not any(isinstance(e, TextChunk) for e in events)  # the content that followed was never read

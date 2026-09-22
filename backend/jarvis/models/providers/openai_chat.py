@@ -78,6 +78,12 @@ def _facts(row: dict[str, Any]) -> dict[str, Any] | None:
     reported. A key that is absent means the provider did not say.
     """
     facts: dict[str, Any] = {}
+    # OmniRoute marks its own routing/combo entries this way — confirmed live, not
+    # documented. It is the only signal this kind of gateway reports anywhere Jarvis can
+    # reach that tells a router apart from a model pinned to one upstream provider. Read
+    # as reported, same as everything here — never guessed from the model id itself.
+    if row.get("owned_by") == "combo":
+        facts["router"] = True
     arch = row.get("architecture") if isinstance(row.get("architecture"), dict) else {}
     outputs = row.get("output_modalities") or arch.get("output_modalities")
     inputs = row.get("input_modalities") or arch.get("input_modalities")
@@ -96,6 +102,14 @@ def _facts(row: dict[str, Any]) -> dict[str, Any] | None:
     # A price, where the gateway states one. Kept because "needs credit" is a fact about
     # paid models only; a model it lists as free keeps working on an account with none.
     pricing = row.get("pricing") if isinstance(row.get("pricing"), dict) else {}
+    # OpenRouter's own router products (Auto Router, Pareto Router, Fusion, Body Builder) mark
+    # themselves this way — confirmed live, not documented either. What they cost depends on
+    # which underlying model answers, so the listing can't quote one; a plain rolling alias to
+    # one current model (e.g. "~anthropic/claude-sonnet-latest") still prices normally and is
+    # correctly left alone. `openrouter/free` prices at a real 0, not -1, so it isn't caught
+    # here — disclosed, not missed: it behaves as an ordinary model when tried.
+    if pricing.get("prompt") == "-1":
+        facts["router"] = True
     try:
         prices = [float(pricing[k]) for k in ("prompt", "completion") if k in pricing]
     except (TypeError, ValueError):

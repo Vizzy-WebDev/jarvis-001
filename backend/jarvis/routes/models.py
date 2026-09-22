@@ -94,7 +94,18 @@ def _run_discovery(connection: store.Connection) -> dict[str, Any]:
         return {"ok": False, "unsupported": True, "message": str(err)}
     except ProviderError as err:
         return {"ok": False, "unsupported": False, "message": str(err)}
-    return {"ok": True, **store.record_discovery(connection.id, found)}
+    # Whether this connection used to look like a gateway (some of its models marked as
+    # their own router) is worth knowing if a fresh discovery no longer sees that — a
+    # note in THIS response, never in the connection's status: discovery doesn't own that
+    # (see the module docstring). Auto itself degrades safely either way; this is only so
+    # the person isn't left assuming routing is still happening when it silently stopped.
+    had_routers = any((m.facts or {}).get("router") for m in store.list_models(connection.id))
+    result = store.record_discovery(connection.id, found)
+    has_routers = any((item.facts or {}).get("router") for item in found)
+    note = ("This connection used to report models that route and fall back on their own; the "
+            "latest check no longer sees any, so Jarvis will try its models individually again."
+            ) if had_routers and not has_routers else None
+    return {"ok": True, **result, **({"note": note} if note else {})}
 
 
 def _learn_what_providers_say() -> None:
@@ -229,8 +240,11 @@ def discover(connection_id: str):
         # Not-offered and failed are different answers, and neither blocks adding a model by hand.
         return _fail(result["message"], 501 if result["unsupported"] else 502,
                      unsupported=result["unsupported"], connection=_view(connection))
-    return {"ok": True, "added": result["added"], "updated": result["updated"],
-            "connection": _view(store.get_connection(connection_id))}
+    response: dict[str, Any] = {"ok": True, "added": result["added"], "updated": result["updated"],
+                                "connection": _view(store.get_connection(connection_id))}
+    if result.get("note"):
+        response["note"] = result["note"]
+    return response
 
 
 @router.post("/{connection_id}/models")

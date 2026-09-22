@@ -11,7 +11,13 @@ by rules that are written down here and never involve chance:
    a Jarvis turn — a video model, one that doesn't produce text, one that says tool
    calling doesn't work — and, when the turn carries a picture, one that said it
    doesn't accept images. Nothing is excluded on a guess from its name: a provider
-   that reports nothing about a model leaves it in.
+   that reports nothing about a model leaves it in. When a connection's models
+   include ones the provider itself marked as its own router (`facts["router"]` —
+   reported, e.g. OmniRoute's `owned_by: "combo"`, never guessed from an id), only
+   those are candidates on that connection: a router already picks and falls back
+   across the rest of that connection's models on its own, so Auto does not also
+   walk them individually — that would be trying to do the router's job worse, with
+   less information than the router itself has.
 2. **Who is preferred.** Models that have answered here before come first — from the
    outcomes recorded, or from the replies already saved in the conversation. Among
    them, quicker ones first (in coarse classes, so Auto stays steady rather than
@@ -164,7 +170,9 @@ def candidates(*, needs_images: bool = False, now: datetime | None = None) -> li
     for connection in store.list_connections():
         if lacks_key(connection):
             continue
-        for model in by_connection.get(connection.id, []):
+        connection_models = by_connection.get(connection.id, [])
+        routers = [m for m in connection_models if (m.facts or {}).get("router")]
+        for model in (routers or connection_models):
             if not fits(model, needs_images=needs_images):
                 continue
             outcome = outcomes.get((connection.id, model.model_id))

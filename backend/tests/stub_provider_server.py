@@ -41,7 +41,8 @@ class StubProvider:
                  reply: str = "Hello from the stub.", tool: tuple[str, dict[str, Any]] | None = None,
                  answers_as: str | None = None, unknown_model: str | None = None,
                  truncate: bool = False, chat_status: int | None = None,
-                 first_token_delay: float = 0.0, stream_error: dict[str, Any] | None = None) -> None:
+                 first_token_delay: float = 0.0, stream_error: dict[str, Any] | None = None,
+                 stream_error_then_continues: bool = False, preamble_frames: int = 0) -> None:
         assert format in FORMATS
         self.format = format
         self.key = key
@@ -58,6 +59,13 @@ class StubProvider:
         #: otherwise-200 stream (the shape both Gemini and an OpenAI-chat gateway use),
         #: rather than a plain HTTP-status failure. None means no such frame is sent.
         self.stream_error = stream_error
+        #: When `stream_error` is set: send it and then keep streaming real content instead
+        #: of stopping there. For characterising how an in-band error frame that ISN'T the
+        #: final word is handled today — not a claim that any real gateway does this.
+        self.stream_error_then_continues = stream_error_then_continues
+        #: openai-chat only: this many empty-delta filler chunks before any real content —
+        #: the shape a gateway's own "still routing/falling back internally" keepalive uses.
+        self.preamble_frames = preamble_frames
         #: Every request received: {method, path, query, headers, body}.
         self.requests: list[dict[str, Any]] = []
         self.base_url = ""
@@ -189,9 +197,11 @@ class StubProvider:
                                 "supportedGenerationMethods": m.get("methods", ["generateContent"])}
                                for m in self.models]}
         #: What a gateway such as OmniRoute or OpenRouter adds beyond the id, passed through
-        #: as given so a test can say what the provider "reported".
+        #: as given so a test can say what the provider "reported". `owned_by` overrides the
+        #: default "stub" below when a model dict supplies it — real OmniRoute uses "combo"
+        #: on its own routing entries and the real upstream name on everything else.
         extra = ("type", "capabilities", "architecture", "input_modalities", "output_modalities",
-                 "supported_parameters", "pricing")
+                 "supported_parameters", "pricing", "owned_by")
         return {"object": "list", "data": [{"id": m["id"], "object": "model", "created": m.get("created", 1),
                                             "owned_by": "stub", **{k: m[k] for k in extra if k in m}}
                                            for m in self.models]}
@@ -247,7 +257,12 @@ class StubProvider:
     def _chat(self, body: dict[str, Any], model: str) -> list[str]:
         out: list[str] = []
         if self.stream_error is not None:
-            return [self._sse({"error": self.stream_error})]
+            out.append(self._sse({"error": self.stream_error}))
+            if not self.stream_error_then_continues:
+                return out
+        for _ in range(self.preamble_frames):
+            out.append(self._sse({"id": "stub-keepalive", "object": "chat.completion.chunk", "created": 0,
+                                  "model": model, "choices": [{"index": 0, "delta": {}, "finish_reason": None}]}))
         if self._wants_tool(body):
             name, args = self.tool  # type: ignore[misc]
             raw = json.dumps(args)

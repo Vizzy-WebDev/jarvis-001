@@ -596,11 +596,42 @@ def test_a_reply_that_just_stops_is_an_error_and_not_a_finished_answer(client, s
 
 
 @pytest.mark.parametrize("format", FORMATS)
+def test_a_reply_that_finishes_having_said_nothing_is_an_error_not_an_empty_answer(client, serve, format):
+    connect_and_select(client, serve, format, reply="")
+    events, error = run_step()
+    assert error is not None and "nothing said" in str(error)
+    from jarvis.orchestrator.model_port import StepComplete
+
+    assert not any(isinstance(e, StepComplete) for e in events)
+
+
+@pytest.mark.parametrize("format", FORMATS)
 def test_a_server_error_is_reported_and_never_a_success(client, serve, format):
     stub, *_ = connect_and_select(client, serve, format)
     stub.chat_status = 503
     events, error = run_step()
     assert error is not None and "problem on its end" in str(error)
+
+
+def test_a_google_error_inside_the_stream_keeps_its_real_status(client, serve):
+    """Google reports a mid-stream failure inside an otherwise-200 response, unlike a
+    plain HTTP-status failure — this is what `gemini_generate.py`'s own error check
+    (not the shared attempt.py loop) exists for, so it is tested against a real
+    socket rather than only the scratch synthetic harness used to find the gap."""
+    stub, *_ = connect_and_select(client, serve, "gemini-generatecontent",
+                                  stream_error={"code": 429, "message": "quota exceeded"})
+    events, error = run_step()
+    assert error is not None and "quota exceeded" in str(error)
+    assert error.detail["kind"] == "rate" and error.detail["status"] == 429
+
+
+def test_an_openai_chat_error_inside_the_stream_is_still_reported(client, serve):
+    """The same shape of in-stream failure on the format that already had this check,
+    kept here as a parity guard: adding Gemini's own check must not disturb it."""
+    stub, *_ = connect_and_select(client, serve, "openai-chat",
+                                  stream_error={"message": "the model is overloaded"})
+    events, error = run_step()
+    assert error is not None and "the model is overloaded" in str(error)
 
 
 def test_a_different_model_answering_is_surfaced_and_the_reported_one_is_recorded(client, serve):
@@ -1066,6 +1097,24 @@ def test_auto_moves_on_when_the_first_model_fails_before_saying_anything_and_say
     assert posted_models(one) == ["one-a"] and posted_models(two) == ["two-a"]
 
 
+def test_auto_moves_on_when_the_first_model_answers_with_nothing(client, serve):
+    """The empty-reply check lives in `attempt.py`, not any provider module, so this
+    proves the same shared code path Auto's other failovers go through also covers a
+    model that answers with well-formed nothing — the actual hole this closed."""
+    from jarvis.orchestrator.model_port import ModelSwitched, StepComplete
+
+    one, two, *_ = two_connections(client, serve, first={"reply": ""})
+    choose_auto(client)
+    events, error = run_step()
+    assert error is None
+    switched = [e for e in events if isinstance(e, ModelSwitched)]
+    assert len(switched) == 1 and switched[0].from_model_id == "one-a" and switched[0].to_model_id == "two-a"
+    assert "nothing said" in switched[0].reason
+    assert events[-1].model_id == "two-a" and isinstance(events[-1], StepComplete)
+    assert events[-1].text == "Hello from the stub."  # the real reply, not the empty one
+    assert posted_models(one) == ["one-a"] and posted_models(two) == ["two-a"]
+
+
 def test_after_a_failure_auto_goes_straight_to_what_worked(client, serve):
     from jarvis.orchestrator.model_port import ModelSwitched
 
@@ -1087,6 +1136,17 @@ def test_a_named_model_that_fails_is_never_replaced_and_the_error_says_how_to_ch
     assert "Jarvis stays on the model you picked" in str(error) and "Auto" in str(error)
     assert posted_models(one) == ["one-a"] and two.posts() == []
     assert error.detail["reason"] == "provider_error"
+
+
+def test_a_named_model_that_answers_with_nothing_fails_cleanly_and_is_never_replaced(client, serve):
+    one, two, first_id, _ = two_connections(client, serve, first={"reply": ""})
+    assert select(client, first_id, "one-a").status_code == 200
+    events, error = run_step()
+    assert events == [] and error is not None
+    assert "nothing said" in str(error)
+    assert "Jarvis stays on the model you picked" in str(error) and "Auto" in str(error)
+    assert posted_models(one) == ["one-a"] and two.posts() == []  # the second connection was never touched
+    assert error.detail["reason"] == "provider_error" and error.detail["kind"] == "reply"
 
 
 def test_auto_does_not_take_over_a_reply_that_has_already_started(client, serve):

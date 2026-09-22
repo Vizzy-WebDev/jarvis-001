@@ -53,7 +53,9 @@ export function streamTurn({
     settle = resolve;
   });
 
+  let ended = false;
   const finish = () => {
+    ended = true;
     events.close();
     settle();
   };
@@ -70,11 +72,13 @@ export function streamTurn({
   };
 
   events.onerror = () => {
-    // EventSource reconnects by default; a turn is not a subscription, so a
-    // dropped connection ends it rather than silently starting it again.
-    if (events.readyState === EventSource.CLOSED) {
-      onEvent({ type: 'error', error: 'The connection to Jarvis dropped.' });
-    }
+    // EventSource reconnects by default; a turn is not a subscription, so ANY
+    // error ends it here. The readyState === CLOSED check this replaces almost
+    // never passed: the browser is normally still CONNECTING (0) at the moment
+    // onerror fires, because it is already queuing its own retry — so a refused
+    // or dropped turn resolved silently and the user was shown nothing at all.
+    if (ended) return; // a turn already settled by done/error/cancel is not a failure
+    onEvent({ type: 'error', error: 'The connection to Jarvis dropped.' });
     finish();
   };
 

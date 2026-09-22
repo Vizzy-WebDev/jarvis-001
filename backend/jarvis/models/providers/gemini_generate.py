@@ -198,6 +198,19 @@ def stream(target: Target, *, model_id: str, messages: list[dict[str, Any]], sys
             chunk = wire.loads_event(data, "Google")
             if not isinstance(chunk, dict):
                 continue
+            if isinstance(chunk.get("error"), dict):
+                # Google reports a mid-stream failure inside an otherwise-200 stream.
+                # Without this it fell through to "stopped part-way" (kind="reply"),
+                # losing the real status that Auto's cooldown and connection-wide holds
+                # are keyed off. `error_for` is the same classifier every other module
+                # here already uses.
+                failed = chunk["error"]
+                status = failed.get("code")
+                words = wire.redact_text(" ".join(str(failed.get("message") or "").split())[:400]) or ""
+                if isinstance(status, int) and not isinstance(status, bool):
+                    raise wire.error_for(status, words, target.base_url)
+                raise ProviderError(f"Google stopped the reply: {words or 'it reported an error.'}",
+                                    kind="server")
             seen_any = True
             reported = chunk.get("modelVersion") or reported
             usage.update(chunk.get("usageMetadata") or {})

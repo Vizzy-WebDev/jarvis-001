@@ -41,7 +41,7 @@ class StubProvider:
                  reply: str = "Hello from the stub.", tool: tuple[str, dict[str, Any]] | None = None,
                  answers_as: str | None = None, unknown_model: str | None = None,
                  truncate: bool = False, chat_status: int | None = None,
-                 first_token_delay: float = 0.0) -> None:
+                 first_token_delay: float = 0.0, stream_error: dict[str, Any] | None = None) -> None:
         assert format in FORMATS
         self.format = format
         self.key = key
@@ -54,6 +54,10 @@ class StubProvider:
         self.truncate = truncate
         self.first_token_delay = first_token_delay
         self.chat_status = chat_status
+        #: {"code": int, "message": str} — a mid-stream failure reported INSIDE an
+        #: otherwise-200 stream (the shape both Gemini and an OpenAI-chat gateway use),
+        #: rather than a plain HTTP-status failure. None means no such frame is sent.
+        self.stream_error = stream_error
         #: Every request received: {method, path, query, headers, body}.
         self.requests: list[dict[str, Any]] = []
         self.base_url = ""
@@ -242,6 +246,8 @@ class StubProvider:
 
     def _chat(self, body: dict[str, Any], model: str) -> list[str]:
         out: list[str] = []
+        if self.stream_error is not None:
+            return [self._sse({"error": self.stream_error})]
         if self._wants_tool(body):
             name, args = self.tool  # type: ignore[misc]
             raw = json.dumps(args)
@@ -302,6 +308,8 @@ class StubProvider:
 
     def _gemini(self, body: dict[str, Any], model: str) -> list[str]:
         out: list[str] = []
+        if self.stream_error is not None:
+            return [self._sse({"error": self.stream_error})]
         if self._wants_tool(body):
             name, args = self.tool  # type: ignore[misc]
             out.append(self._sse({"candidates": [{"content": {"role": "model", "parts": [

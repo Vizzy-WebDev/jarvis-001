@@ -149,7 +149,7 @@ export class DuplexEngine extends VoiceEngine {
   async start(): Promise<void> {
     if (this.active) return;
     if (typeof WebSocket === 'undefined') {
-      this.emit('error', { message: 'Speaking to Jarvis needs a browser with WebSocket support.' });
+      this.emit('error', { message: 'Speaking to Jarvis needs a browser with WebSocket support.', fatal: true });
       return;
     }
 
@@ -159,6 +159,7 @@ export class DuplexEngine extends VoiceEngine {
     } catch {
       this.emit('error', {
         message: 'The microphone was blocked. Allow it in your browser and try again.',
+        fatal: true,
       });
       this.mic = null;
       return;
@@ -452,6 +453,7 @@ export class DuplexEngine extends VoiceEngine {
     if (!Recognition) {
       this.emit('error', {
         message: 'No speech recognition key is set up, and this browser has none of its own.',
+        fatal: true,
       });
       return false;
     }
@@ -481,7 +483,7 @@ export class DuplexEngine extends VoiceEngine {
     recognition.onerror = (event) => {
       if (event.error === 'no-speech' || event.error === 'aborted') return;
       if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-        this.emit('error', { message: 'The microphone was blocked. Allow it and try again.' });
+        this.emit('error', { message: 'The microphone was blocked. Allow it and try again.', fatal: true });
         this.stop();
       } else if (event.error === 'network') {
         this.emit('error', { message: 'The browser’s own recognition needs an internet connection.' });
@@ -670,7 +672,7 @@ export class DuplexEngine extends VoiceEngine {
           break;
         case 'error':
           finish();
-          this.emit('error', { message: data.error!, code: data.code });
+          this.emit('error', { message: data.error!, code: data.code, turn: true });
           if (!this.speaking) this.backToListening();
           break;
         default:
@@ -681,7 +683,7 @@ export class DuplexEngine extends VoiceEngine {
     source.onerror = () => {
       if (this.turnStream !== source) return;
       finish();
-      this.emit('error', { message: 'Could not reach Jarvis.' });
+      this.emit('error', { message: 'Could not reach Jarvis.', turn: true });
       if (!this.speaking) this.backToListening();
     };
   }
@@ -762,7 +764,7 @@ export class DuplexEngine extends VoiceEngine {
 
   private recoverFromStuck(): void {
     console.warn('[voice] nothing happened for a long time — ending this turn.');
-    this.emit('error', { message: 'That took too long, so I stopped waiting.' });
+    this.emit('error', { message: 'That took too long, so I stopped waiting.', turn: true });
     this.interrupt();
   }
 

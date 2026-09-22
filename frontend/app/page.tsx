@@ -466,7 +466,7 @@ export default function Home() {
     // failed, and clearing what is on screen would be wrong.
     started.on('tts_failure', () =>
       setStatus('That voice could not produce audio — check its key in Settings.'));
-    started.on('error', ({ message }) => {
+    started.on('error', ({ message, turn, fatal }) => {
       // A real, confirmed bug found while testing this change: this used to
       // just forget the engine (null the ref, flip `listening` off) without
       // ever telling it to actually stop — so on a recoverable recognition
@@ -477,7 +477,14 @@ export default function Home() {
       // in, and its own 'state' → idle transition (handled above) already
       // does the ref/flag reset — this just makes sure that transition
       // genuinely happens instead of being merely claimed.
-      engine.current?.stop();
+      //
+      // What it must NOT do is stop for a `turn` failure — the model failing to
+      // answer says nothing about the microphone, and stopping there is what made
+      // a failed spoken turn end as a silent return to Idle with no trace of it.
+      // Those show in the transcript instead, where they last, and the engine goes
+      // back to listening by itself. Anything untagged still stops, exactly as before.
+      if (turn) setTurns((current) => markReplyFailed(current, message));
+      if (fatal ?? !turn) engine.current?.stop();
       setStatus(message);
     });
 
@@ -747,6 +754,21 @@ function clearReply(turns: Turn[]): Turn[] {
   const last = turns[turns.length - 1];
   if (last && last.role === 'assistant' && last.streaming) return turns.slice(0, -1);
   return turns;
+}
+
+/**
+ * A spoken turn that failed, written into the transcript rather than only into
+ * a status line that the engine's own next state change overwrites moments
+ * later. Converts the reply already in flight when there is one; otherwise
+ * appends a new failed turn, which is the common case — a model that fails
+ * before its first chunk never created a bubble to convert.
+ */
+function markReplyFailed(turns: Turn[], errorText: string): Turn[] {
+  const last = turns[turns.length - 1];
+  if (last && last.role === 'assistant' && last.streaming) {
+    return [...turns.slice(0, -1), { ...last, text: errorText, streaming: false, failed: true }];
+  }
+  return [...turns, { id: newId(), role: 'assistant', text: errorText, failed: true }];
 }
 
 /** The screen for a section, or nothing if it is still being ported. One place

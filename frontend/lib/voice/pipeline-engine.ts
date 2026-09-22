@@ -105,7 +105,7 @@ export class PipelineEngine extends VoiceEngine {
     if (this.active) return;
     const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
     if (!Recognition) {
-      this.emit('error', { message: 'Speaking to Jarvis needs Chrome or Edge.' });
+      this.emit('error', { message: 'Speaking to Jarvis needs Chrome or Edge.', fatal: true });
       return;
     }
     try {
@@ -115,6 +115,7 @@ export class PipelineEngine extends VoiceEngine {
     } catch {
       this.emit('error', {
         message: 'The microphone was blocked. Allow it in your browser and try again.',
+        fatal: true,
       });
       return;
     }
@@ -256,7 +257,7 @@ export class PipelineEngine extends VoiceEngine {
       // it the last write and the one actually seen, rather than being
       // overwritten in the same tick before anything paints.
       this.stop();
-      this.emit('error', { message: 'The microphone was blocked. Allow it and try again.' });
+      this.emit('error', { message: 'The microphone was blocked. Allow it and try again.', fatal: true });
     } else if (event.error === 'network') {
       this.emit('error', { message: 'Speech recognition needs an internet connection.' });
     } else {
@@ -496,7 +497,7 @@ export class PipelineEngine extends VoiceEngine {
         case 'error':
           finish();
           if (!this.speaking) this.resumeRecognition();
-          this.emit('error', { message: data.error!, code: data.code });
+          this.emit('error', { message: data.error!, code: data.code, turn: true });
           this.backToListening();
           break;
         default:
@@ -508,7 +509,7 @@ export class PipelineEngine extends VoiceEngine {
       if (this.stream_ !== source) return;
       finish();
       if (!this.speaking) this.resumeRecognition();
-      this.emit('error', { message: 'Could not reach Jarvis.' });
+      this.emit('error', { message: 'Could not reach Jarvis.', turn: true });
       this.backToListening();
     };
   }
@@ -567,7 +568,7 @@ export class PipelineEngine extends VoiceEngine {
 
   private recoverFromStuck(): void {
     console.warn('[voice] nothing happened for a long time — ending this turn.');
-    this.emit('error', { message: 'That took too long, so I stopped waiting.' });
+    this.emit('error', { message: 'That took too long, so I stopped waiting.', turn: true });
     this.interrupt();
   }
 

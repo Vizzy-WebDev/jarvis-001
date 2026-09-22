@@ -10,11 +10,12 @@ through `run`, so the rules are in one place:
   reason to use a different one.
 * **Auto walks its list**, best first, and moves on ONLY when a model has actually
   failed: the provider refused or errored, the connection couldn't be reached or
-  died, or the reply ended before a word was said. It never moves on because a model
-  is slow. A request the provider has accepted is left to finish however long it
-  thinks (the wire layer has only a huge inactivity ceiling and TCP keep-alive for a
-  connection that has truly died), and once a word has gone out no other model can
-  take over the sentence, so a failure after that is reported as it is.
+  died, or the reply ended before a word was said — including one that finished
+  cleanly having said nothing at all. It never moves on because a model is slow. A
+  request the provider has accepted is left to finish however long it thinks (the
+  wire layer has only a huge inactivity ceiling and TCP keep-alive for a connection
+  that has truly died), and once a word has gone out no other model can take over
+  the sentence, so a failure after that is reported as it is.
 * **Nothing is silent.** A move is announced (`Moved`), naming what failed and why,
   and if every model fails they are all named.
 * **The number of attempts is bounded by evidence, not by a count.** Two failed models
@@ -175,6 +176,14 @@ def run(plan: Plan, *, messages: list[dict[str, Any]], system: str, tools: list[
                             finished = event
                     if finished is None:
                         raise ProviderError("The reply stopped part-way.", kind="reply")
+                    if not finished.tool_calls and not (finished.text or "").strip():
+                        # A reply that finished cleanly and said nothing is a failure, not an
+                        # answer: it is what made a turn end in an empty bubble, and what stopped
+                        # Auto moving on. Here rather than in any provider module because it is
+                        # true of every format — and being a ProviderError is what puts it through
+                        # the same reporting, pruning and failover as a refusal or a 500.
+                        raise ProviderError(
+                            "The reply finished with nothing said and no tool used.", kind="reply")
                     # How long it took to START answering (or, for a reply that was only a
                     # tool call, to finish) — what Auto's speed preference is built from.
                     answered_ms = int(((said_at if said_at is not None else _clock()) - began) * 1000)

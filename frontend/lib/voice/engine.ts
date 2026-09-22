@@ -14,6 +14,19 @@
  * error would clear the reply the user is reading. And `reaction` is handled by
  * the engines themselves rather than passed up, since what it needs is a sound
  * queued at the right place in the speech.
+ *
+ * `error` carries which KIND of failure it is, because the two need opposite
+ * handling and conflating them is what made a failed spoken turn vanish:
+ *   - `turn`  — the model or its connection failed to answer THIS turn. The
+ *               engine is fine and says so itself by going back to listening, so
+ *               the interface must show the failure in the transcript and leave
+ *               the microphone alone. Tearing the session down here is the bug.
+ *   - `fatal` — the device, the permission or the browser's support itself
+ *               failed: there is nothing left to listen with, so the engine must
+ *               be stopped for real rather than merely believed to be stopped.
+ *   - neither — a recoverable recognition problem the browser retries on its
+ *               own. Untagged on purpose: the interface's default is to stop,
+ *               which is exactly today's behaviour for these, unchanged.
  */
 export type EngineState =
   | 'idle' | 'listening' | 'thinking' | 'speaking'
@@ -41,7 +54,7 @@ export interface EngineEvents {
    *  itself is fine: this is deliberately not an error. */
   tts_failure: { provider?: string };
   done: { text: string };
-  error: { message: string; code?: string };
+  error: { message: string; code?: string; turn?: boolean; fatal?: boolean };
 }
 
 type Handler<K extends keyof EngineEvents> = (payload: EngineEvents[K]) => void;

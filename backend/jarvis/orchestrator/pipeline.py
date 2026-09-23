@@ -72,6 +72,12 @@ def step_ceiling() -> int:
     return FAST_MAX_STEPS if get_prefs().get("balance") == "fast" else MAX_STEPS
 
 
+#: Added on the last step a turn may take (see `_run_model_loop`).
+FINAL_STEP_NOTE = ("This is your last step for this request: there is nothing more to call. "
+                   "Answer now from what you have already found, and say plainly what you "
+                   "did not get to.")
+
+
 #: Above this many capabilities, a turn is declared its CORE set plus whatever
 #: it has unlocked, rather than everything. Measured, declaring
 #: the full set cost ~150,000 characters on every turn — sent on "hello" as much
@@ -508,6 +514,15 @@ class Orchestrator:
 
             assembled = self._assemble(request)
             tools = self._declarations(request, unlocked)
+            system = assembled.system
+            if step == ceiling and ceiling > 1:
+                # The last step this turn gets. Found live: a specialist made 22
+                # successful lookups across its steps, never wrote its answer, and
+                # everything it had found was thrown away with "I went round 8
+                # times". On the last step it is asked to answer, with nothing to
+                # call — the work it already did is still in front of it.
+                tools = []
+                system = f"{system}\n\n{FINAL_STEP_NOTE}"
 
             self._bus.publish(
                 EventType.MODEL_CALL_STARTED,
@@ -525,7 +540,7 @@ class Orchestrator:
             reactions = create_reaction_scanner()
             try:
                 for event in self._model.stream(
-                    messages=assembled.messages, system=assembled.system,
+                    messages=assembled.messages, system=system,
                     tools=tools, session_id=request.session_id,
                     model_id=request.model_id,
                     role=ROLE_FOR_SURFACE.get(request.surface, "conversation"),

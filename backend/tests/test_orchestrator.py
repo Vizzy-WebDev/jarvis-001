@@ -195,6 +195,33 @@ def test_a_turn_that_gets_nowhere_stops_and_says_so(reg):
     assert str(MAX_STEPS) in events[-1].error
 
 
+def test_on_its_last_step_a_turn_answers_with_what_it_has_instead_of_losing_it(reg):
+    """Found live: a specialist ran 22 lookups across its steps, never wrote the answer,
+    and all of it was thrown away. On the last step there is nothing to call and it is
+    told to answer — a model that does so ends with a real reply, not a failure."""
+    from jarvis.orchestrator.model_port import StepComplete, TextChunk, ToolCall
+    from jarvis.orchestrator.pipeline import FINAL_STEP_NOTE
+
+    add(reg, "poke")
+    seen = []
+
+    class Diligent:
+        def stream(self, *, tools, system, **_):
+            seen.append((len(tools), system))
+            if tools:
+                yield StepComplete(tool_calls=(ToolCall(id=f"c{len(seen)}", name="poke", args={}),),
+                                   finish_reason="tool_calls", model_id="m")
+                return
+            yield TextChunk("Here is what I found so far.")
+            yield StepComplete(text="Here is what I found so far.", model_id="m")
+
+    events = run(Orchestrator(Diligent(), registry=reg, event_bus=EventBus()), "dig into that")
+    assert isinstance(events[-1], Done) and events[-1].text == "Here is what I found so far."
+    assert len(seen) == MAX_STEPS
+    assert all(count > 0 and FINAL_STEP_NOTE not in system for count, system in seen[:-1])
+    assert seen[-1][0] == 0 and FINAL_STEP_NOTE in seen[-1][1]
+
+
 def test_a_provider_failure_ends_the_turn_honestly(reg):
     class Broken:
         def stream(self, **_):

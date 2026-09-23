@@ -279,3 +279,27 @@ def test_no_provider_name_is_compared_in_the_shared_layers():
         source = path.read_text(encoding="utf-8")
         for brand in ('"openai"', '"anthropic"', '"gemini"', "'openai'", "'anthropic'", "'gemini'"):
             assert brand not in source, f"{path.name} compares a provider name ({brand})"
+
+
+# --- specialist agents ----------------------------------------------------------
+
+def test_the_turn_loop_never_imports_the_agents_package():
+    """An agent's turn is an ordinary turn given a brief (`AgentBrief`, plain data
+    defined in `orchestrator/`). The loop takes it as data and never reaches into
+    `jarvis.agents` — so there is no second loop for specialists to grow into."""
+    assert offending(files_under("orchestrator"), ("jarvis.agents",)) == []
+
+
+def test_no_tool_reaches_the_agent_runner():
+    """Delegation is registered from `assembly.py`, after the loader, like Skills and
+    connectors. A module under `tools/` importing the runner would pull the turn
+    loop in behind it: the loader invariant's cycle, one hop further out."""
+    assert offending(files_under("tools"), (
+        "jarvis.agents.runner", "jarvis.agents.capabilities",
+    )) == []
+
+
+def test_the_agent_store_stays_a_leaf_over_the_database():
+    assert imports_of(PACKAGE / "agents" / "store.py") <= {"jarvis.db", "jarvis.db.get_db",
+                                                             "jarvis.jscompat",
+                                                             "jarvis.jscompat.now_iso"}

@@ -39,6 +39,8 @@ def _row(row: Any) -> dict[str, Any] | None:
         "heartbeatAt": row["heartbeat_at"], "finishedAt": row["finished_at"],
         "priority": row["priority"], "progress": row["progress"],
         "currentStep": row["current_step"],
+        # Which specialist does this job's work, when it is one (`jarvis/agents/`).
+        "agentId": row["agent_id"],
     }
     return job
 
@@ -46,14 +48,15 @@ def _row(row: Any) -> dict[str, Any] | None:
 def create_job(*, title: str, goal: str, kind: str = "generic",
                conversation_id: str | None = None, parent_id: str | None = None,
                plan: dict[str, Any] | None = None, resource: str | None = None,
-               priority: int = 2, status: str = "queued") -> dict[str, Any]:
+               priority: int = 2, status: str = "queued",
+               agent_id: str | None = None) -> dict[str, Any]:
     job_id = f"job_{uuid.uuid4().hex[:12]}"
     get_db().execute(
         "INSERT INTO jobs (id, parent_id, conversation_id, title, goal, kind, status, plan, "
-        "resource, retries, created_at, priority) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+        "resource, retries, created_at, priority, agent_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
         (job_id, parent_id, conversation_id, title, goal, kind, status,
-         json.dumps(plan) if plan else None, resource, now_iso(), priority))
+         json.dumps(plan) if plan else None, resource, now_iso(), priority, agent_id))
     return get_job(job_id)  # type: ignore[return-value]
 
 

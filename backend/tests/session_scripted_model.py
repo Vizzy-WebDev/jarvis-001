@@ -18,6 +18,7 @@ exact system prompt, tools and model pin each speaker was given.
 
 from __future__ import annotations
 
+import re
 import threading
 from typing import Any, Iterator
 
@@ -29,6 +30,14 @@ from jarvis.orchestrator.model_port import StepComplete, TextChunk, ToolCall
 class _Script:
     def __init__(self) -> None:
         self.steps: list[tuple[str, Any]] = []
+        #: Instead of a fixed order: a function of the messages this speaker was
+        #: sent, returning ("say", text) or ("call", ToolCall). For concurrent turns,
+        #: where a shared ordered script would hand one turn another's step.
+        self.responder: Any = None
+
+    def responds(self, fn: Any) -> "_Script":
+        self.responder = fn
+        return self
 
     def says(self, text: str) -> "_Script":
         self.steps.append(("say", text))
@@ -41,7 +50,19 @@ class _Script:
         return self
 
 
-def speaker_of(session_id: str) -> str:
+_SPECIALIST_LINE = re.compile(r"^You are (.+?), one of Jarvis's specialist agents\.")
+
+
+def speaker_of(session_id: str, system: str = "") -> str:
+    """Who is speaking: the agent a specialist prompt names (whatever session it
+    runs on — a background job's, a direct chat's), otherwise Jarvis."""
+    found = _SPECIALIST_LINE.match(system or "")
+    if found:
+        from jarvis.agents import store
+
+        agent = store.find_agent(found.group(1))
+        if agent is not None:
+            return agent["id"]
     if session_id.startswith("agent:"):
         return session_id.split(":")[1]
     return "jarvis"
@@ -66,13 +87,16 @@ class SessionScriptedModel:
     def stream(self, *, messages: list[dict[str, Any]], system: str, tools: list[dict[str, Any]],
                session_id: str, model_id: str | None = None, role: str | None = None,
                need: dict[str, bool] | None = None) -> Iterator[Any]:
-        speaker = self.speaker_for_session.get(session_id) or speaker_of(session_id)
+        speaker = self.speaker_for_session.get(session_id) or speaker_of(session_id, system)
         with self._lock:
             self.requests.append({"speaker": speaker, "messages": list(messages), "system": system,
                                   "tools": [t["name"] for t in tools], "sessionId": session_id,
                                   "modelId": model_id, "role": role})
             script = self._scripts.setdefault(speaker, _Script())
-            kind, value = script.steps.pop(0) if script.steps else ("say", "OK.")
+            if script.responder is not None:
+                kind, value = script.responder(messages)
+            else:
+                kind, value = script.steps.pop(0) if script.steps else ("say", "OK.")
         if kind == "call":
             yield StepComplete(tool_calls=(value,), finish_reason="tool_calls", model_id="scripted")
             return

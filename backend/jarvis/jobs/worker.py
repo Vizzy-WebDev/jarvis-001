@@ -97,8 +97,25 @@ def run_job(job_id: str, *, event_bus: EventBus | None = None,
         allowed_names=frozenset(allowed) if allowed else None,
     )
 
+    events = None
+    if job.get("agentId"):
+        # A specialist's job: the same turn, run AS that agent through the one
+        # agent path, so its doctrine, access and model apply and the run is
+        # recorded like any other. Supervision below is unchanged.
+        from ..agents import runner
+
+        try:
+            agent = runner.usable_agent(job["agentId"])
+        except runner.AgentUnavailable as err:
+            return _stall(job_id, str(err), ebus, cause="specialist unavailable")
+        run = runner.start_run(agent, job["goal"], session_id=request.session_id,
+                               requested_by="job", conversation_id=job.get("conversationId"),
+                               job_id=job_id, event_bus=ebus)
+        events = runner.stream_run(agent, run, job["goal"], autonomy=Autonomy.ESCALATE,
+                                   surface=Surface.SCHEDULED, event_bus=ebus)
+
     answer, parked, failure, steps = "", None, None, 0
-    for event in get_orchestrator().run_turn(request):
+    for event in events if events is not None else get_orchestrator().run_turn(request):
         if isinstance(event, Chunk):
             continue
         if isinstance(event, ToolRan):

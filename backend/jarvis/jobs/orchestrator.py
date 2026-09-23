@@ -82,6 +82,7 @@ class AtCapacity(RuntimeError):
 
 def admit(*, title: str, goal: str, kind: str = "generic", priority: int = 2,
           conversation_id: str | None = None, parent_id: str | None = None,
+          agent_id: str | None = None,
           event_bus: EventBus | None = None) -> dict[str, Any]:
     """Create a job if there is room for it, and start it unless it must not start."""
     ebus = event_bus or default_bus
@@ -101,7 +102,7 @@ def admit(*, title: str, goal: str, kind: str = "generic", priority: int = 2,
     job = job_store.create_job(
         title=title, goal=goal, kind=kind, priority=priority,
         conversation_id=conversation_id, parent_id=parent_id, resource=resource,
-        status="awaiting_decision" if starts_parked else "queued")
+        status="awaiting_decision" if starts_parked else "queued", agent_id=agent_id)
 
     if starts_parked:
         job_store.add_outbox(tier=1, job_id=job["id"], reason="permission",

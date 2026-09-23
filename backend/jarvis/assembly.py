@@ -64,6 +64,17 @@ def get_registry() -> CapabilityRegistry:
             connected = sync_connectors(registry)
             if connected:
                 logger.info("[assembly] %d connector tool(s) available", len(connected))
+            # Specialist agents after everything they might use: `ask_specialist`
+            # names the current roster, so it is re-synced whenever an agent
+            # changes (`routes/agents.py`), the same way Skills are. A run still
+            # marked running from before this process started has nothing
+            # running it any more.
+            from .agents.capabilities import close_orphaned_runs, sync as sync_agents
+
+            closed = close_orphaned_runs()
+            if closed:
+                logger.info("[assembly] %d unfinished agent run(s) closed off", closed)
+            sync_agents(registry)
             # Subscribed here rather than called from the turn loop: what a
             # capability did is already published, and a recorder that has to be
             # invoked is a dependency the loop should not carry.

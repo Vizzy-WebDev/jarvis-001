@@ -601,15 +601,18 @@ class Orchestrator:
                     "result": result.value if result.ok else {"error": result.error},
                 })
                 unlocked |= _unlocked_by(result.value)
-                if result.outcome is ExecOutcome.NEEDS_APPROVAL and parked is None:
-                    parked = (result, call)
+                if parked is None:
+                    if result.outcome is ExecOutcome.NEEDS_APPROVAL:
+                        parked = ApprovalRequired(result.approval_id or "", call.name,
+                                                  result.error or "")
+                    else:
+                        parked = _approval_of(result.value)
 
             conversation.push_tool_results(request.session_id, results)
 
             if parked is not None:
-                result, call = parked
-                state.to(State.WAITING_FOR_APPROVAL, f"{call.name} needs approval")
-                yield ApprovalRequired(result.approval_id or "", call.name, result.error or "")
+                state.to(State.WAITING_FOR_APPROVAL, f"{parked.capability} needs approval")
+                yield parked
                 return
 
         # Out of steps. Say so rather than looping or pretending to have finished.
@@ -714,6 +717,27 @@ class Orchestrator:
             state.to(target, "reply ready")
         except Exception:  # noqa: BLE001
             logger.warning("could not leave %s at end of turn", state.state.value)
+
+
+def _approval_of(value: Any) -> ApprovalRequired | None:
+    """A question a DELEGATED turn stopped on, handed up in a tool result.
+
+    A specialist's run cannot ask the person itself — it stops at the question,
+    exactly as a turn does, and `ask_specialist` returns it as plain data. This
+    turn then puts it in front of the person as a real approval, so it is answered
+    by them, later, through the same gate as every other one. Same one-reader
+    shape as `_attachment_of`: the tool knows nothing about the turn stream.
+    """
+    if not isinstance(value, dict):
+        return None
+    approval = value.get("approval")
+    if not isinstance(approval, dict) or not approval.get("id"):
+        return None
+    agent = value.get("agent")
+    reason = str(approval.get("reason") or "")
+    if agent:
+        reason = f"{agent} needs your go-ahead: {reason}" if reason else f"{agent} needs your go-ahead."
+    return ApprovalRequired(str(approval["id"]), str(approval.get("capability") or ""), reason)
 
 
 def _unlocked_by(value: Any) -> set[str]:

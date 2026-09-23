@@ -269,6 +269,18 @@ separate system in the Settings panel and must not be disturbed.
 
 Nothing under `jarvis/tools/` may import the orchestrator; `ai.py` is the seam a tool may use.
 
+## Specialist agents — `jarvis/agents/` (see its own `CLAUDE.md`)
+
+Jarvis orchestrates; specialist agents (13 built-in, plus any the person creates on the
+Specialists screen) are domain experts it hands work to with the one `ask_specialist`
+capability, and they can ask each other. **Built-in and custom agents are the same kind of
+row and run through the same path** — an ordinary turn given an `AgentBrief`, the agent's
+access as `allowed_names` and its model as the existing pin. Do not build a second loop,
+model system, tool system or memory for them. Tools/connectors are capabilities any agent may
+be given; agents are split by responsibility, never by tool. Approval floors are unchanged
+inside a specialist, and a slow specialist is detached, never cut off, with its result
+delivered when it lands.
+
 ## The Adaptive Communication Register — `jarvis/personality.py`
 
 The tone/delivery layer. Regex-based

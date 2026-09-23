@@ -252,6 +252,37 @@ def pending(session_id: str | None = None) -> list[Approval]:
     return [_row_to_approval(r) for r in rows]
 
 
+def answered_since(session_id: str, since_iso: str) -> list[tuple[Approval, dict[str, Any] | None]]:
+    """Questions asked in this session after `since_iso` that the person has since
+    answered, each with what the approved action returned (None when it was not
+    allowed, or ran and recorded nothing).
+
+    Answering happens in its own HTTP request, so the turn that asked never learns
+    the answer: found live, a specialist told "I've approved it, carry on" asked to
+    run the same code again. Read into the NEXT turn's prompt instead
+    (`orchestrator/context.py`) — never pushed into the transcript, where a
+    hand-built tool call would break a provider's own round-trip rules.
+    """
+    db = get_db()
+    rows = db.execute(
+        "SELECT * FROM approvals WHERE session_id = ? AND status != 'pending' "
+        "AND requested_at > ? ORDER BY requested_at",
+        (session_id, since_iso or ""),
+    ).fetchall()
+    out: list[tuple[Approval, dict[str, Any] | None]] = []
+    for row in rows:
+        approval = _row_to_approval(row)
+        result = None
+        if approval.status is Resolution.ALLOW:
+            op = db.execute("SELECT ok, result, error FROM operations WHERE operation_id = ?",
+                            (approval.operation_id,)).fetchone()
+            if op is not None:
+                result = {"ok": bool(op["ok"]), "error": op["error"],
+                          "value": json.loads(op["result"]) if op["result"] else None}
+        out.append((approval, result))
+    return out
+
+
 def expire_older_than(cutoff_iso: str, event_bus: EventBus | None = None) -> int:
     """Mark stale pending approvals as TIMEOUT (§8's fourth outcome).
 

@@ -126,6 +126,33 @@ def rules_section(rules_text: str) -> str:
             f"unprompted:\n{rules_text}")
 
 
+def answered_approvals_section(answered: list[Any]) -> str:
+    """The person's answers to what this conversation asked to do, since the last
+    reply — each approved action with what it actually returned. Without it, a turn
+    told "I approved it, carry on" cannot see that it ran, and asks again."""
+    if not answered:
+        return ""
+    import json
+
+    lines = []
+    for approval, result in answered:
+        status = getattr(approval.status, "value", approval.status)
+        if status != "allow":
+            lines.append(f"- {approval.capability}: they said no. Do not do it; carry on without it.")
+        elif result is None:
+            lines.append(f"- {approval.capability}: they approved it, but no result was recorded.")
+        elif result.get("ok"):
+            value = json.dumps(result.get("value"), default=str)
+            if len(value) > 4000:
+                value = value[:4000] + " …(cut short)"
+            lines.append(f"- {approval.capability}: they approved it, and it has ALREADY RUN — "
+                         f"do not run it again. What it returned: {value}")
+        else:
+            lines.append(f"- {approval.capability}: they approved it, but it failed: "
+                         f"{result.get('error') or 'no reason given'}")
+    return "Since your last reply, the person answered what you asked to do:\n" + "\n".join(lines)
+
+
 def notices_section(entries: list[dict[str, Any]] | None) -> str:
     """Things waiting for the user, delivered into a turn they already started.
 

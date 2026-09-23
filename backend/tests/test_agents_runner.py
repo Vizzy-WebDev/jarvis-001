@@ -169,3 +169,51 @@ def test_a_specialist_always_sees_what_the_operator_is_working_towards(model):
     system = model.requests_of("scout")[0]["system"]
     assert "run the cart full time by 2027" in system   # a goal, though no word matches
     assert "oat milk" not in system                     # an unrelated preference, not forced in
+
+
+def test_after_the_person_approves_the_next_turn_sees_what_ran_and_does_not_ask_again(model):
+    """Found live: Analytics asked to run code, the person approved it and it ran, and
+    told "carry on", Analytics asked to run the same code again — the answer happens in
+    its own request, so the asking turn never learned it."""
+    from jarvis.capabilities.execute import execute_approved
+    from jarvis.policy import CallContext, Surface
+    from jarvis.policy import approvals as approvals_store
+
+    model.on("content").calls_tool("create_artifact", {"filename": "notes.txt",
+                                                       "content": "Cup counts"})
+    first = runner.run_agent("content", "Save the notes as a file", conversation_id="c1",
+                             autonomy=Autonomy.INTERACTIVE)
+    session = first.run["sessionId"]
+    # Exactly as routes/approvals.py builds it: the approved action runs under the
+    # approval's own operation id, which is how its result is found again.
+    pending = approvals_store.get(first.approval["id"])
+    ctx = CallContext(session_id=session, turn_id="the-person-answering",
+                      surface=Surface.TEXT, autonomy=Autonomy.INTERACTIVE,
+                      operation_id=pending.operation_id)
+    ran = execute_approved(first.approval["id"], "the-person-answering", ctx,
+                           registry=assembly.get_registry())
+    assert ran.ok
+
+    model.on("content").says("Done - notes.txt is saved.")
+    runner.run_agent("content", "I approved it, carry on.", conversation_id="c1")
+    system = model.requests_of("content")[-1]["system"]
+    assert "the person answered what you asked to do" in system
+    assert "create_artifact: they approved it, and it has ALREADY RUN" in system
+    assert "notes.txt" in system                    # what it actually returned
+
+    # Once it has replied, that answer is history, not news.
+    model.on("content").says("Anything else?")
+    runner.run_agent("content", "thanks", conversation_id="c1")
+    assert "ALREADY RUN" not in model.requests_of("content")[-1]["system"]
+
+
+def test_a_declined_action_is_reported_as_declined(model):
+    from jarvis.policy import approvals as approvals_store
+
+    model.on("content").calls_tool("create_artifact", {"filename": "x.txt", "content": "x"})
+    first = runner.run_agent("content", "Save it", conversation_id="c2",
+                             autonomy=Autonomy.INTERACTIVE)
+    approvals_store.resolve(first.approval["id"], approvals_store.Resolution.DENY, "later")
+    model.on("content").says("Understood, not saved.")
+    runner.run_agent("content", "go on", conversation_id="c2")
+    assert "create_artifact: they said no" in model.requests_of("content")[-1]["system"]

@@ -220,6 +220,28 @@ def _waiting_notices() -> list[dict[str, Any]]:
         return []
 
 
+def _answered_approvals(session_id: str) -> str:
+    """What the person answered, since the last real reply, about actions this
+    session asked to take — and what each approved one returned.
+
+    The answer arrives in its own request, after the asking turn has ended, so
+    without this the next turn cannot know it happened (found live: a specialist
+    told "approved, carry on" asked to run the same code again). A READ, and a
+    failure here returns nothing: a turn must never fail because of it.
+    """
+    from ..policy import approvals
+
+    try:
+        messages = conversation.get_messages(session_id)
+        replies = [m for m in messages if m.get("role") == "assistant" and m.get("text")
+                   and not m.get("toolCalls")]
+        since = str(replies[-1].get("createdAt") or "") if replies else ""
+        return prompt.answered_approvals_section(approvals.answered_since(session_id, since))
+    except Exception:  # noqa: BLE001
+        logger.exception("could not read answered approvals")
+        return ""
+
+
 class RelevanceContext:
     """The real assembler: a budget, memory chosen for this turn, and the tail of
     the conversation that fits in what is left."""
@@ -273,9 +295,10 @@ class RelevanceContext:
             floors, sticky = read_style(session_id, text)
             floors_text = floors_section(floors, sticky)
 
+        answered = _answered_approvals(session_id)
         system = prompt.system_instruction(
             memories=memories_text, low_confidence=low_confidence,
-            extra=[p for p in (rules, notices, floors_text) if p],
+            extra=[p for p in (rules, answered, notices, floors_text) if p],
             has_audience=has_audience)
         remaining = max(0, self.budget_tokens - estimate_tokens(system))
         messages = trim_messages(conversation.get_messages(session_id), remaining)
@@ -315,9 +338,10 @@ class RelevanceContext:
         from ..improvement.store import active_rules_text
 
         rules = prompt.rules_section(active_rules_text())
+        answered = _answered_approvals(session_id)
         system = prompt.specialist_instruction(
             agent, memories=memories_text, low_confidence=low_confidence,
-            extra=[rules] if rules else None)
+            extra=[p for p in (rules, answered) if p] or None)
         remaining = max(0, self.budget_tokens - estimate_tokens(system))
         messages = trim_messages(conversation.get_messages(session_id), remaining)
         included = ("specialist_instruction",)

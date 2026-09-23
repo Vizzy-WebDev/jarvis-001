@@ -634,6 +634,29 @@ def test_an_openai_chat_error_inside_the_stream_is_still_reported(client, serve)
     assert error is not None and "the model is overloaded" in str(error)
 
 
+def test_a_gateway_error_sent_as_the_reply_text_is_a_failure_not_an_answer(client, serve):
+    """Found live on a real local router gateway: it answered 200 and streamed its
+    own error — `{"error":{"message":"[400]: Invalid model..."}}` — as the reply's
+    TEXT. Shown as Jarvis's answer, and recorded as a success, so Auto kept picking
+    that route. It is a failure, and nothing of it may reach the person as words."""
+    from jarvis.orchestrator.model_port import TextChunk
+
+    connect_and_select(client, serve, "openai-chat", reply='{"error":{"message":"[400]: Invalid '
+                       'model. Please select a different model to continue.","type":"invalid_request_error"}}')
+    events, error = run_step()
+    assert error is not None and "Invalid model" in str(error)
+    assert not any(isinstance(e, TextChunk) for e in events)
+
+
+def test_a_reply_that_merely_starts_like_json_is_still_an_answer(client, serve):
+    from jarvis.orchestrator.model_port import StepComplete
+
+    connect_and_select(client, serve, "openai-chat", reply='{"error": "none", "total": 3}')
+    events, error = run_step()
+    assert error is None and events[-1].text == '{"error": "none", "total": 3}'
+    assert isinstance(events[-1], StepComplete)
+
+
 def test_a_different_model_answering_is_surfaced_and_the_reported_one_is_recorded(client, serve):
     from jarvis.orchestrator.model_port import ModelSwitched, StepComplete
 

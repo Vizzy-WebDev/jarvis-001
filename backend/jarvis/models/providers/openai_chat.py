@@ -11,6 +11,8 @@ plain server of this kind lists its models by name and says nothing more about t
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, Iterator
 
 from ..errors import ProviderError, Unsupported
@@ -185,6 +187,39 @@ def _usage(raw: dict[str, Any]) -> Usage:
     )
 
 
+#: The start of an error envelope. Some gateways (a local router, found live) answer
+#: 200 and stream their own failure — `{"error":{"message":...}}` — as the reply's
+#: TEXT. A reply that begins like this is held back rather than spoken, and judged
+#: once it is complete (`_error_in_text`).
+_ERROR_START = re.compile(r'^\s*\{\s*"error"\s*:')
+_ERROR_PREFIX = '{"error":'
+
+
+def _could_be_error_envelope(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text)
+    return bool(_ERROR_START.match(text)) or _ERROR_PREFIX.startswith(compact)
+
+
+def _error_in_text(text: str, host: str) -> ProviderError | None:
+    """The failure a whole reply's text actually is, or None when it is a real answer.
+
+    Narrow on purpose: only a reply that is, in its entirety, one JSON object whose
+    `error` carries a message. Anything else — JSON that merely has an "error" field,
+    prose that mentions an error — is an answer, and is shown as one.
+    """
+    try:
+        body = json.loads(text)
+    except ValueError:
+        return None
+    err = body.get("error") if isinstance(body, dict) else None
+    message = err.get("message") if isinstance(err, dict) else None
+    if not isinstance(message, str) or not message.strip():
+        return None
+    kind = "rate" if "rate" in str(err.get("type") or err.get("code") or "") else "server"
+    return ProviderError(f"{host} sent back an error instead of a reply: {message.strip()}",
+                         kind=kind)
+
+
 def stream(target: Target, *, model_id: str, messages: list[dict[str, Any]], system: str,
            tools: list[dict[str, Any]], effort: str | None = None,
            facts: dict[str, Any] | None = None) -> Iterator[Any]:
@@ -209,6 +244,9 @@ def stream(target: Target, *, model_id: str, messages: list[dict[str, Any]], sys
     finished_cleanly = False
     usage: Usage | None = None
     reported: str | None = None
+    # Text held back while it could still be a gateway's error envelope (see above).
+    held: list[str] = []
+    holding = True
 
     with wire.post_stream(wire.join_url(target.base_url, "chat/completions"),
                           headers=_auth(target), body=body) as response:
@@ -231,6 +269,12 @@ def stream(target: Target, *, model_id: str, messages: list[dict[str, Any]], sys
                 piece = delta.get("content")
                 if piece:
                     text.append(piece)
+                    if holding:
+                        held.append(piece)
+                        if _could_be_error_envelope("".join(held)):
+                            continue
+                        holding = False
+                        piece = "".join(held)
                     yield TextDelta(piece)
                 for part in delta.get("tool_calls") or []:
                     slot = calls.setdefault(part.get("index", 0), {"id": None, "name": None, "args": ""})
@@ -243,6 +287,12 @@ def stream(target: Target, *, model_id: str, messages: list[dict[str, Any]], sys
                     slot["args"] = (slot["args"] or "") + (fn.get("arguments") or "")
                 if choice.get("finish_reason"):
                     finish = choice["finish_reason"]
+
+    if holding and held:
+        failure = _error_in_text("".join(held), host)
+        if failure is not None:
+            raise failure
+        yield TextDelta("".join(held))
 
     if finish is None and not finished_cleanly:
         # A reply that just stops is not a finished reply. Saying so is the

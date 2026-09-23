@@ -251,7 +251,32 @@ def test_a_last_step_that_asks_for_an_unoffered_tool_is_answered_not_run(reg):
     assert len([e for e in events if isinstance(e, ToolRan)]) == MAX_STEPS - 1
 
 
-def test_words_written_beside_an_unoffered_last_step_call_are_the_answer(reg):
+def test_a_lead_in_beside_a_last_step_call_is_not_taken_as_the_answer(reg):
+    """Found live: a specialist's last step said "Let me also try the markets page…"
+    beside a tool call, and that one line was delivered as its whole result. A lead-in
+    earns the firmer attempt; the real answer it then gives is the reply."""
+    from jarvis.orchestrator.model_port import StepComplete, TextChunk, ToolCall
+
+    add(reg, "poke")
+    calls = []
+
+    class LeadIn:
+        def stream(self, *, tools, system, **_):
+            calls.append(len(tools))
+            if len(calls) <= MAX_STEPS:
+                yield StepComplete(text="" if tools else "Let me also try the markets page.",
+                                   tool_calls=(ToolCall(id=f"c{len(calls)}", name="poke", args={}),),
+                                   finish_reason="tool_calls", model_id="m")
+                return
+            yield TextChunk("The best pitches are A and B.")
+            yield StepComplete(text="The best pitches are A and B.", model_id="m")
+
+    events = run(Orchestrator(LeadIn(), registry=reg, event_bus=EventBus()), "dig in")
+    assert isinstance(events[-1], Done) and events[-1].text == "The best pitches are A and B."
+    assert len(calls) == MAX_STEPS + 1
+
+
+def test_words_beside_a_call_are_the_answer_only_when_insisting_gets_nothing_better(reg):
     from jarvis.orchestrator.model_port import StepComplete, ToolCall
 
     add(reg, "poke")
@@ -266,7 +291,7 @@ def test_words_written_beside_an_unoffered_last_step_call_are_the_answer(reg):
 
     events = run(Orchestrator(Both(), registry=reg, event_bus=EventBus()), "dig in")
     assert isinstance(events[-1], Done) and events[-1].text == "Summary so far."
-    assert len(calls) == MAX_STEPS
+    assert len(calls) == MAX_STEPS + 1
 
 
 def test_a_provider_failure_ends_the_turn_honestly(reg):

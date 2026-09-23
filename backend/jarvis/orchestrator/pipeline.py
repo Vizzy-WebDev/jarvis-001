@@ -613,14 +613,17 @@ class Orchestrator:
             if final and completed.tool_calls:
                 # Offered nothing to call, it asked to call something anyway — found
                 # live: some models copy the tool-calling pattern from earlier in the
-                # conversation. Nothing is run. Words it wrote alongside are the
-                # answer; with none, it gets ONE more, firmer, attempt, and then the
-                # honest "went round" failure below.
-                if strip_reaction_markers(completed.text).strip():
-                    completed = replace(completed, tool_calls=())
-                elif step == ceiling:
+                # conversation. Nothing is run, and it gets ONE more, firmer, attempt.
+                # Words written beside a call are usually just its lead-in ("Let me
+                # also try the markets page…" — found live, delivered as a whole
+                # specialist's result), so they count as the answer only when the
+                # firmer attempt still produces nothing better; with no words at all,
+                # the honest "went round" failure below.
+                if step == ceiling:
                     insist = True
                     continue
+                if strip_reaction_markers(completed.text).strip():
+                    completed = replace(completed, tool_calls=())
                 else:
                     break
 

@@ -240,6 +240,8 @@ def _run_prompt(task: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
     text = (action.get("text") or "").strip()
     if not text:
         return {"ok": False, "summary": "", "error": "This task has nothing to ask."}
+    if action.get("agentId"):
+        return _run_as_specialist(task, action, text)
 
     # Its own ephemeral session: never bound to chat history, so a task's
     # working turns cannot appear in the user's conversation list, and never
@@ -277,6 +279,33 @@ def _run_prompt(task: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
     if failure is not None:
         return {"ok": False, "summary": answer, "error": failure.error}
     return {"ok": True, "summary": answer, "modelId": model_id}
+
+
+def _run_as_specialist(task: dict[str, Any], action: dict[str, Any], text: str) -> dict[str, Any]:
+    """A prompt task done by a specialist (`action.agentId`), through the one agent
+    path — its doctrine, access and model, not the task's connector picks.
+
+    Every run of the same task shares one agent session (`task:<id>`), so a standing
+    job — a weekly opportunity hunt — carries on from its last run rather than
+    starting cold, on top of the agent's own notes.
+    """
+    from ..agents import runner
+
+    try:
+        outcome = runner.run_agent(action["agentId"], text, requested_by="schedule",
+                                   conversation_id=f"task:{task['id']}",
+                                   autonomy=Autonomy.PRE_CONSENTED, surface=Surface.SCHEDULED)
+    except runner.AgentUnavailable as err:
+        return {"ok": False, "summary": "", "error": str(err)}
+    if outcome.status == "awaiting_approval":
+        return {"ok": False, "summary": outcome.result,
+                "awaitingApproval": (outcome.approval or {}).get("id"),
+                "error": f"{(outcome.approval or {}).get('capability') or 'Something'} needs "
+                         "your go-ahead before this can finish."}
+    if outcome.status != "done":
+        return {"ok": False, "summary": outcome.result, "error": outcome.error or "It failed."}
+    return {"ok": True, "summary": outcome.result, "modelId": outcome.model_id,
+            "agentRunId": outcome.run["id"]}
 
 
 # --- the loop ----------------------------------------------------------------

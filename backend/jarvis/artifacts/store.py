@@ -78,6 +78,9 @@ MIME_TYPES = {
     ".txt": "text/plain", ".md": "text/markdown", ".csv": "text/csv",
     ".json": "application/json", ".html": "text/html", ".svg": "image/svg+xml",
     ".png": "image/png", ".pdf": "application/pdf",
+    # Voice-overs from `tools/narrate_to_file.py`.
+    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg", ".opus": "audio/opus",
+    ".aac": "audio/aac", ".flac": "audio/flac",
 }
 
 

@@ -158,3 +158,14 @@ def test_an_agent_picks_up_its_own_earlier_work_after_a_restart(model):
     runner.run_agent("teacher", "My answer: it repeats code for each item", conversation_id="c1")
     texts = [m.get("text") for m in model.requests_of("teacher")[1]["messages"]]
     assert "Quiz 1: what does a for loop do?" in texts
+
+
+def test_a_specialist_always_sees_what_the_operator_is_working_towards(model):
+    memory_store.create_memory(category="Long-term Goals",
+                               text="Wants to quit the day job and run the cart full time by 2027")
+    memory_store.create_memory(category="Preferences", text="Likes oat milk")
+    model.on("scout").says("hunted")
+    runner.run_agent("scout", "Find me something worth my time", conversation_id="c1")
+    system = model.requests_of("scout")[0]["system"]
+    assert "run the cart full time by 2027" in system   # a goal, though no word matches
+    assert "oat milk" not in system                     # an unrelated preference, not forced in

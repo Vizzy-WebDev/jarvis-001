@@ -143,13 +143,21 @@ def score_memory(memory: dict[str, Any], terms: set[str], position: int) -> floa
     return overlap * 3 + importance * 0.5 - position * 0.01
 
 
+#: What a specialist agent always sees of the user's Memory, whatever its task says:
+#: what they are working towards. An opportunity hunt or a strategy has to start
+#: from their goals even when the task's own words share nothing with them.
+SPECIALIST_FLOOR_CATEGORIES = ("Long-term Goals", "Projects")
+
+
 def select_memories(text: str, memories: list[dict[str, Any]], budget_tokens: int,
+                    *, floor_categories: tuple[str, ...] = (),
                     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """The memories worth this turn's budget, and an account of the choice."""
     terms = _terms(text)
     scored = [(score_memory(m, terms, i), i, m) for i, m in enumerate(memories)]
 
-    floor = [m for m in memories if (m.get("importance") or 0) >= ALWAYS_INCLUDE_IMPORTANCE]
+    floor = [m for m in memories if (m.get("importance") or 0) >= ALWAYS_INCLUDE_IMPORTANCE
+             or m.get("category") in floor_categories]
     floor_ids = {m["id"] for m in floor}
     relevant = [m for score, _, m in sorted(scored, key=lambda row: (-row[0], row[1]))
                 if m["id"] not in floor_ids and score > 0]
@@ -230,7 +238,9 @@ class RelevanceContext:
         if agent is not None and not agent.memory:
             # The person decided this agent does not see what Jarvis knows about them.
             available = []
-        chosen, selection = select_memories(text, available, memory_budget)
+        chosen, selection = select_memories(
+            text, available, memory_budget,
+            floor_categories=SPECIALIST_FLOOR_CATEGORIES if agent is not None else ())
         memories_text = memory_store.approved_memories_text(chosen)
 
         if agent is not None:

@@ -22,8 +22,8 @@ call. The nested turn runs on its own named thread (`agent-run-…`), and
 waiting delegation never holds a worker the work it is waiting for would need.
 
 Lazy imports of `assembly` inside functions, same reason as `jobs/worker.py`:
-`tools/agent_tools.py` imports this module, and everything under `tools/` is
-loaded by the registry's loader.
+the jobs worker and `agents/capabilities.py` import this module, and `assembly`
+imports them — a top-level import back would be a cycle.
 """
 
 from __future__ import annotations
@@ -132,6 +132,9 @@ class RunOutcome:
     approval: dict[str, Any] | None = None
     model_id: str | None = None
     tools_used: list[str] = field(default_factory=list)
+    #: Files the run produced (its tools' attachments, a helper's included) —
+    #: handed up so they reach the person, not just the model.
+    files: list[dict[str, Any]] = field(default_factory=list)
 
     def as_result(self) -> dict[str, Any]:
         """What a delegating turn is told — plain data a model can reason over."""
@@ -150,6 +153,12 @@ class RunOutcome:
             out["askedForHelp"] = [
                 {"agent": (store.get_agent(r["agentId"]) or {}).get("name", r["agentId"]),
                  "status": r["status"]} for r in reversed(delegated)]
+        if self.files:
+            out["files"] = [{"name": f.get("name") or f["url"], "url": f["url"],
+                             "kind": f.get("kind")} for f in self.files]
+            # Read by the turn loop (`_attachments_of`): the files appear in the
+            # conversation for the person to open.
+            out["ui_action"] = {"type": "attachments", "items": self.files}
         if self.approval:
             # Read by the turn loop (`_approval_of`), which puts the question in
             # front of the person as a real approval — the agent cannot answer it.
@@ -289,14 +298,18 @@ def run_agent(which: str, task: str, *, requested_by: str = "jarvis",
                     event_bus=event_bus)
     message = _message_for(task, context, requested_by)
     holder: dict[str, Any] = {}
+    files: list[dict[str, Any]] = []
 
     def go() -> None:
+        from ..orchestrator import ToolRan
+
         try:
             with _lock_for(session):
                 _reseed(session)
-                for _ in stream_run(agent, run, message, autonomy=autonomy,
-                                    surface=_surface_for(surface), event_bus=event_bus):
-                    pass
+                for event in stream_run(agent, run, message, autonomy=autonomy,
+                                        surface=_surface_for(surface), event_bus=event_bus):
+                    if isinstance(event, ToolRan) and event.ok:
+                        files.extend(a for a in event.attachments if a not in files)
         except Exception as err:  # noqa: BLE001 — reported through the run record
             holder["error"] = str(err)
 
@@ -314,7 +327,8 @@ def run_agent(which: str, task: str, *, requested_by: str = "jarvis",
                     "reason": pending.reason if pending else ""}
     return RunOutcome(run=final, status=final["status"], result=final.get("result") or "",
                       error=final.get("error") or holder.get("error"), approval=approval,
-                      model_id=final.get("modelId"), tools_used=final.get("toolsUsed") or [])
+                      model_id=final.get("modelId"), tools_used=final.get("toolsUsed") or [],
+                      files=files)
 
 
 # --- delegation ---------------------------------------------------------------

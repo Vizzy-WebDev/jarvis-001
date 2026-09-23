@@ -295,3 +295,69 @@ def test_many_delegation_chains_at_once_all_finish(model):
     assert not any(t.is_alive() for t in threads), "a delegation chain locked up"
     runs = store.list_runs(limit=100)
     assert len(runs) == chains * 2 and all(r["status"] == "done" for r in runs)
+
+
+# --- what specialists make reaches the person ---------------------------------
+
+def test_files_a_specialist_makes_reach_the_person_even_from_a_helper(model):
+    """Pre-consented work (a scheduled task) so the MEDIUM file writes run without a
+    person present. Video Production asks Content for captions; both make files."""
+    model.on("jarvis").calls_tool("ask_specialist", {"agent": "video-production",
+                                                     "task": "Produce the promo package"})
+    model.on("video-production").calls_tool("ask_specialist", {"agent": "content",
+                                                               "task": "Write the captions file"})
+    model.on("content").calls_tool("create_artifact", {"filename": "captions.srt.txt",
+                                                       "content": "1\n00:00:00,000 --> ..."})
+    model.on("content").says("Captions saved.")
+    model.on("video-production").calls_tool("create_artifact", {"filename": "shot-list.md",
+                                                                "content": "# Shots"})
+    model.on("video-production").says("Package ready: shot list and captions.")
+    model.on("jarvis").says("Your promo package is ready.")
+
+    events = list(assembly.get_orchestrator().run_turn(TurnRequest(
+        text="make the promo", session_id="conv1", surface=Surface.SCHEDULED,
+        autonomy=Autonomy.PRE_CONSENTED)))
+    [delegated] = [e for e in events if isinstance(e, ToolRan) and e.capability == "ask_specialist"]
+    names = [a["name"] for a in delegated.attachments]
+    assert names == ["captions.srt.txt", "shot-list.md"]
+    assert all(a["url"].startswith("/api/artifacts/") for a in delegated.attachments)
+    [to_jarvis] = tool_results(model, "jarvis")
+    assert [f["name"] for f in to_jarvis["result"]["files"]] == names
+
+
+# --- scheduled work done by a specialist --------------------------------------
+
+def test_a_scheduled_hunt_is_done_by_scout_and_carries_on_between_runs(model):
+    from jarvis.scheduler import engine, task_store
+    from jarvis.tools import scheduler_tools
+
+    made = scheduler_tools._schedule(title="Weekly opportunity hunt", when="weekly", time="08:00",
+                                     days=[1], action="prompt", agent="Scout",
+                                     text="Hunt for anything new worth my attention.")
+    assert made["ok"], made
+    task = task_store.get_task(made["id"])
+    assert task["action"] == {"type": "prompt", "text": "Hunt for anything new worth my attention.",
+                              "agentId": "scout"}
+    assert "done by Scout" in scheduler_tools._schedule_summary(
+        {"when": "daily", "time": "08:00", "title": "Hunt", "agent": "scout"})
+
+    model.on("scout").says("Week 1: one grant worth a look.")
+    model.on("scout").says("Week 2: nothing new beyond last week's grant.")
+    first = engine.run_task_now(made["id"])
+    second = engine.run_task_now(made["id"])
+    assert first["ok"] and first["summary"] == "Week 1: one grant worth a look."
+    assert second["ok"]
+    runs = store.list_runs(agent_id="scout")
+    assert len(runs) == 2 and all(r["requestedBy"] == "schedule" for r in runs)
+    assert {r["conversationId"] for r in runs} == {f"task:{made['id']}"}
+    # The second run saw the first one's result: the hunt carries on.
+    texts = [m.get("text") for m in model.requests_of("scout")[1]["messages"]]
+    assert "Week 1: one grant worth a look." in texts
+
+
+def test_scheduling_for_an_unknown_specialist_is_refused():
+    from jarvis.tools import scheduler_tools
+
+    result = scheduler_tools._schedule(when="daily", time="08:00", action="prompt",
+                                       agent="Nobody", text="x")
+    assert result["ok"] is False and "no specialist called" in result["error"]

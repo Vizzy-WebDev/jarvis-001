@@ -65,7 +65,12 @@ def _run(filename: str = "", content: str = "", rows: list[Any] | None = None,
         artifact = keep(staging, name=name)
     except ValueError as err:
         return {"ok": False, "error": str(err)}
-    return {"ok": True, **artifact.as_result(),
+    result = artifact.as_result()
+    # Shown in the conversation as a file to open or download — "it's here in the
+    # conversation" has to be true on the screen, not only in the model's words.
+    return {"ok": True, **result,
+            "ui_action": {"type": "attachment", "kind": "file", "url": result["url"],
+                          "mimeType": artifact.mime_type, "name": artifact.name},
             "speak": f"{artifact.name} is ready — it's here in the conversation."}
 
 

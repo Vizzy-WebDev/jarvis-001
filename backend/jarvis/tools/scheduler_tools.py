@@ -77,16 +77,39 @@ def _action_from(kind: str, text: str) -> dict[str, Any]:
     return {"type": "prompt", "text": text}
 
 
+def _specialist(agent: str | None) -> dict[str, Any] | str | None:
+    """The specialist a `prompt` task should run as, or why not. None for Jarvis."""
+    if not (agent or "").strip():
+        return None
+    from ..agents import ensure_builtins, store as agent_store
+
+    ensure_builtins()
+    found = agent_store.find_agent(agent or "")
+    if found is None:
+        return f'There is no specialist called "{agent}".'
+    return found
+
+
 def _schedule(title: str = "", when: str = "", time: str | None = None,
               action: str = "reminder", text: str = "", days: list[int] | None = None,
-              every_minutes: int | None = None) -> dict[str, Any]:
+              every_minutes: int | None = None, agent: str | None = None) -> dict[str, Any]:
     recurrence = _recurrence_from(when, time, days, every_minutes)
     if isinstance(recurrence, str):
         return {"ok": False, "error": recurrence}
+    task_action = _action_from(action, text or title)
+    specialist = _specialist(agent)
+    if isinstance(specialist, str):
+        return {"ok": False, "error": specialist}
+    if specialist is not None:
+        if task_action["type"] != "prompt":
+            return {"ok": False, "error": "Only a task that works something out can be handed "
+                                          "to a specialist."}
+        # Run AS that specialist, through the one agent path (`agents/runner.py`).
+        task_action["agentId"] = specialist["id"]
     task = task_store.create_task(
         title=title or text or describe(recurrence),
         recurrence=recurrence,
-        action=_action_from(action, text or title))
+        action=task_action)
     return {"ok": True, "id": task["id"], "title": task["title"],
             "schedule": describe(recurrence), "nextRunAt": task["nextRunAt"],
             "speak": f"Set: {task['title']}, {describe(recurrence)}."}
@@ -98,6 +121,11 @@ def _schedule_summary(args: dict[str, Any]) -> str:
     if isinstance(recurrence, str):
         return recurrence
     what = args.get("title") or args.get("text") or "this"
+    specialist = _specialist(args.get("agent"))
+    if isinstance(specialist, str):
+        return specialist
+    if specialist is not None:
+        what = f"{what}, done by {specialist['name']},"
     upcoming = next_run_at(recurrence, datetime.now())
     first = ""
     if upcoming:
@@ -188,7 +216,10 @@ SPECS = [
             "action": {"type": "string",
                        "description": '"reminder" (say this text), "prompt" (work this out '
                                       'at the time), or "briefing".'},
-            "text": {"type": "string", "description": "The reminder text, or what to work out."}},
+            "text": {"type": "string", "description": "The reminder text, or what to work out."},
+            "agent": {"type": "string",
+                      "description": "Optional, for a prompt: which specialist agent should do "
+                                     "it each time (e.g. scout for a regular opportunity hunt)."}},
             "required": ["when"]},
         # It commits the assistant to acting when nobody is watching.
         risk=Risk.MEDIUM, handler=_schedule, summarize=_schedule_summary,

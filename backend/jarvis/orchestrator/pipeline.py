@@ -133,6 +133,9 @@ class ToolRan:
     #: attachment: navigating is something the browser does, not something the
     #: model reasons over. Shape: {section}.
     navigate: dict[str, Any] | None = None
+    #: Every attachment, when a tool produced more than one; `attachment` is the
+    #: first of them, kept for any reader that only ever shows one.
+    attachments: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -185,21 +188,41 @@ TurnEvent = (Routed | Chunk | Reaction | ToolRan | ApprovalRequired | Switched |
             | Failed | Done)
 
 
-def _attachment_of(value: Any) -> dict[str, Any] | None:
-    """A `ui_action` attachment on a tool result, if it named one.
+def _one_attachment(action: Any) -> dict[str, Any] | None:
+    if not isinstance(action, dict) or not action.get("url"):
+        return None
+    out = {"type": "attachment", "kind": action.get("kind") or "file",
+           "url": str(action["url"]), "mimeType": action.get("mimeType") or ""}
+    if action.get("name"):
+        # What a file to download is called — an image needs no caption, a file does.
+        out["name"] = str(action["name"])
+    return out
+
+
+def _attachments_of(value: Any) -> list[dict[str, Any]]:
+    """The `ui_action` attachments on a tool result, if it named any.
 
     One reader, so a tool announces something to show by returning it — never by
-    knowing anything about the turn stream.
+    knowing anything about the turn stream. Either one (`type: attachment`) or
+    several at once (`type: attachments`, `items: [...]`) — a specialist asked to
+    make a worksheet and its answer key hands both back from one delegation.
     """
     if not isinstance(value, dict):
-        return None
+        return []
     action = value.get("ui_action")
-    if not isinstance(action, dict) or action.get("type") != "attachment":
-        return None
-    if not action.get("url"):
-        return None
-    return {"type": "attachment", "kind": action.get("kind") or "file",
-            "url": str(action["url"]), "mimeType": action.get("mimeType") or ""}
+    if not isinstance(action, dict):
+        return []
+    if action.get("type") == "attachment":
+        one = _one_attachment(action)
+        return [one] if one else []
+    if action.get("type") == "attachments" and isinstance(action.get("items"), list):
+        return [a for a in (_one_attachment(item) for item in action["items"]) if a]
+    return []
+
+
+def _attachment_of(value: Any) -> dict[str, Any] | None:
+    found = _attachments_of(value)
+    return found[0] if found else None
 
 
 def _navigate_of(value: Any) -> dict[str, Any] | None:
@@ -429,7 +452,8 @@ class Orchestrator:
             allowed_names=request.allowed_names, event_bus=self._bus,
         )
         events.append(ToolRan(spec.name, result.ok, result.outcome, result.error,
-                              _attachment_of(result.value), _navigate_of(result.value)))
+                              _attachment_of(result.value), _navigate_of(result.value),
+                              tuple(_attachments_of(result.value))))
 
         if result.outcome is ExecOutcome.NEEDS_APPROVAL:
             state.to(State.WAITING_FOR_APPROVAL, f"{spec.name} needs approval")
@@ -595,7 +619,8 @@ class Orchestrator:
                 result = self._execute_call(request, call)
                 tools_used.append(call.name)
                 yield ToolRan(call.name, result.ok, result.outcome, result.error,
-                              _attachment_of(result.value), _navigate_of(result.value))
+                              _attachment_of(result.value), _navigate_of(result.value),
+                              tuple(_attachments_of(result.value)))
                 results.append({
                     "id": call.id, "name": call.name,
                     "result": result.value if result.ok else {"error": result.error},

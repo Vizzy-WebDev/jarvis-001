@@ -68,6 +68,8 @@ export function TasksScreen({ onNavigate }: { onNavigate?: (id: string) => void 
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [connectors, setConnectors] = useState<Connector[]>([]);
+  /** Specialists a task can be handed to (`action.agentId`). */
+  const [agents, setAgents] = useState<{ id: string; name: string }[]>([]);
   const [monitors, setMonitors] = useState<Monitor[]>([]);
 
   const load = useCallback(async () => {
@@ -109,6 +111,10 @@ export function TasksScreen({ onNavigate }: { onNavigate?: (id: string) => void 
         /* the task keeps its built-in abilities either way */
       }
     })();
+    api.agents.list()
+      .then((found) => setAgents(found.agents.filter((a) => a.enabled)
+        .map((a) => ({ id: a.id, name: a.name }))))
+      .catch(() => undefined); // Jarvis does it itself, as before
   }, []);
 
   async function edit(task: Task) {
@@ -385,6 +391,28 @@ export function TasksScreen({ onNavigate }: { onNavigate?: (id: string) => void 
                 onChange={(event) =>
                   patch({ action: { ...draft.action, type: 'prompt', text: event.target.value } })}
               />
+            </Field>
+
+            <Field
+              label="Done by"
+              hint="Jarvis, or one of your specialists — say, Scout for a regular opportunity hunt. A specialist uses its own abilities."
+            >
+              <select
+                className={inputClass}
+                data-testid="task-agent"
+                value={String(draft.action.agentId ?? '')}
+                onChange={(event) => {
+                  const { agentId: _dropped, ...rest } = draft.action;
+                  patch({ action: event.target.value
+                    ? { ...rest, type: 'prompt', agentId: event.target.value }
+                    : { ...rest, type: 'prompt' } });
+                }}
+              >
+                <option value="">Jarvis</option>
+                {agents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>{agent.name}</option>
+                ))}
+              </select>
             </Field>
 
             <Field

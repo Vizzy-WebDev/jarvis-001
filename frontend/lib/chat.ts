@@ -23,6 +23,8 @@ export interface TurnOptions {
    *  this call's own `message`/`attachments` replay as if just sent — the
    *  original text for Retry, the revised text for Edit. */
   editOf?: string;
+  /** Talking to a specialist directly: its id. Absent means Jarvis. */
+  agent?: string;
   onEvent: (event: TurnEvent) => void;
 }
 
@@ -39,6 +41,7 @@ export function streamTurn({
   source = 'text',
   confidence,
   editOf,
+  agent,
   onEvent,
 }: TurnOptions): RunningTurn {
   const params = new URLSearchParams({ message });
@@ -46,6 +49,7 @@ export function streamTurn({
   if (source !== 'text') params.set('source', source);
   if (typeof confidence === 'number') params.set('confidence', String(confidence));
   if (editOf) params.set('edit_of', editOf);
+  if (agent) params.set('agent', agent);
 
   const events = new EventSource(`/api/chat/stream?${params}`);
   let settle: () => void = () => {};

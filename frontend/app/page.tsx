@@ -4,7 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { ChatHistoryDrawer } from '@/components/conversation/ChatHistoryDrawer';
 import { ConversationPanel } from '@/components/conversation/ConversationPanel';
-import { attachmentOf, type Turn } from '@/components/conversation/Message';
+import { attachmentOf, attachmentsOf, type Turn } from '@/components/conversation/Message';
+import { AgentsScreen } from '@/components/screens/AgentsScreen';
 import { AppControlScreen } from '@/components/screens/AppControlScreen';
 import { BriefingScreen } from '@/components/screens/BriefingScreen';
 import { ChatHistoryScreen } from '@/components/screens/ChatHistoryScreen';
@@ -69,6 +70,17 @@ export default function Home() {
   const [orbState, setOrbState] = useState<OrbState>('idle');
   const [status, setStatus] = useState('Type below to talk to Jarvis');
   const [busy, setBusy] = useState(false);
+  /** A specialist the person is talking to directly; null is Jarvis. Mirrored
+   *  in a ref because `send` is a stable callback that must read the current one. */
+  const [talkingTo, setTalkingToState] = useState<{ id: string; name: string } | null>(null);
+  const talkingToRef = useRef<{ id: string; name: string } | null>(null);
+  const setTalkingTo = useCallback((next: { id: string; name: string } | null) => {
+    talkingToRef.current = next;
+    setTalkingToState(next);
+  }, []);
+  /** Whether a turn this tab started is running — read by the event stream, so a
+   *  specialist working in the background for a job never shows up as a note here. */
+  const busyRef = useRef(false);
   const [listening, setListening] = useState(false);
   /** Whether the microphone is muted, independent of everything else the
    *  engine is doing — see `toggleMute` for why this is kept as its own
@@ -163,6 +175,24 @@ export default function Home() {
       try {
         const event = JSON.parse(raw.data) as { type?: string; payload?: Record<string, unknown> };
         if (event.type === 'notification.stored') setUnread((count) => count + 1);
+        // A specialist working on this tab's own request, shown as it happens:
+        // a delegated task can take a minute, and silence reads as stuck.
+        if ((event.type === 'agent.run_started' || event.type === 'agent.run_finished')
+            && busyRef.current) {
+          const run = event as unknown as { runId: string; agentName: string; status?: string;
+                                            requestedBy?: string };
+          if (run.requestedBy === 'operator') return; // the person's own direct chat
+          const noteId = `agent-${run.runId}`;
+          if (event.type === 'agent.run_started') {
+            setTurns((current) => current.some((turn) => turn.id === noteId) ? current : [
+              ...current, { id: noteId, role: 'note', text: `${run.agentName} is working on it…` }]);
+          } else {
+            const outcome = run.status === 'done' ? 'finished'
+              : run.status === 'awaiting_approval' ? 'needs your go-ahead' : 'couldn’t finish';
+            setTurns((current) => current.map((turn) => turn.id === noteId
+              ? { ...turn, text: `${run.agentName} ${outcome}.` } : turn));
+          }
+        }
         if (event.type === 'screen.watch') {
           setSharing(Boolean((event.payload as { sharing?: boolean })?.sharing));
         }
@@ -232,10 +262,12 @@ export default function Home() {
       return [
         ...base,
         { id: userTurnId, role: 'user', text: asked, attachments: sentAttachments },
-        { id: replyId, role: 'assistant', text: '', streaming: true },
+        { id: replyId, role: 'assistant', text: '', streaming: true,
+          speaker: talkingToRef.current?.name },
       ];
     });
     setBusy(true);
+    busyRef.current = true;
     setOrbState('thinking');
     setStatus('Thinking…');
 
@@ -246,6 +278,7 @@ export default function Home() {
       message: text,
       attachments: attachments.map((a) => a.id),
       editOf,
+      agent: talkingToRef.current?.id,
       onEvent: (event) => {
         switch (event.type) {
           case 'routed':
@@ -264,7 +297,15 @@ export default function Home() {
           case 'tool_result': {
             setOrbState('tool_running');
             const attachment = attachmentOf(event);
-            if (attachment) patch((turn) => ({ ...turn, attachment }));
+            const produced = attachmentsOf(event);
+            if (attachment) {
+              patch((turn) => ({
+                ...turn,
+                attachment: turn.attachment ?? attachment,
+                files: [...(turn.files ?? []),
+                  ...produced.filter((file) => !(turn.files ?? []).some((f) => f.url === file.url))],
+              }));
+            }
             // Asked out loud to open a section. The hash router is the same one
             // the drawer drives, so a spoken "open my memory" and a click land
             // in exactly the same place.
@@ -301,6 +342,7 @@ export default function Home() {
             patch((turn) => ({
               ...turn, text: event.text || turn.text, streaming: false,
               id: event.messageId ?? turn.id,
+              speaker: event.agent?.name ?? turn.speaker,
             }));
             break;
           default:
@@ -313,6 +355,7 @@ export default function Home() {
     turn.done.then(() => {
       patch((turn) => ({ ...turn, streaming: false }));
       running.current = null;
+      busyRef.current = false;
       setBusy(false);
       setOrbState('idle');
       setStatus('Type below to talk to Jarvis');
@@ -689,6 +732,8 @@ export default function Home() {
             onDraftConsumed={() => setComposerDraft(null)}
             historyOpen={historyOpen}
             onToggleHistory={() => setHistoryOpen((was) => !was)}
+            talkingTo={talkingTo}
+            onTalkTo={setTalkingTo}
             // Only one recognition session runs reliably at a time, so the
             // voice engine stands down when the composer's own mic starts.
             onDictationStart={() => {
@@ -788,6 +833,7 @@ function screenFor(
   if (id === 'jobs') return <JobsScreen />;
   if (id === 'briefing') return <BriefingScreen onNavigate={go} />;
   if (id === 'skills') return <SkillsScreen onCreateWithJarvis={startChatWith} />;
+  if (id === 'agents') return <AgentsScreen />;
   if (id === 'chat-history') {
     return <ChatHistoryScreen onNavigate={go} onResumeConversation={resumeConversation} />;
   }

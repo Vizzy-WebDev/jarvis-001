@@ -204,7 +204,8 @@ def _message_for(task: str, context: str | None, requested_by: str) -> str:
 
 def stream_run(agent: dict[str, Any], run: dict[str, Any], message: str, *,
                autonomy: Autonomy, surface: Surface, direct: bool = False,
-               attachments: tuple[str, ...] = (), event_bus: Any = None) -> Iterator[Any]:
+               attachments: tuple[str, ...] = (), event_bus: Any = None,
+               cancel: threading.Event | None = None) -> Iterator[Any]:
     """Run an already-recorded agent run's turn, yielding its events as they happen
     and recording how it ended. The chat's "talk directly" path streams this to the
     browser; `run_agent` consumes it."""
@@ -221,7 +222,7 @@ def stream_run(agent: dict[str, Any], run: dict[str, Any], message: str, *,
     status, result, error, approval, model_id = "failed", "", None, None, None
     tools: list[str] = []
     try:
-        for event in get_orchestrator().run_turn(request):
+        for event in get_orchestrator().run_turn(request, cancel):
             if isinstance(event, ToolRan):
                 tools.append(event.capability)
             elif isinstance(event, Done):

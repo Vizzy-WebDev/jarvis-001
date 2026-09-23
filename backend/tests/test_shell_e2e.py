@@ -196,7 +196,7 @@ def test_every_section_is_reachable_from_the_hamburger(page):
     page.click("[data-testid=menu]")
     page.wait_for_selector("[data-testid=drawer][data-open=true]")
     entries = page.locator("[data-testid=drawer] button[data-testid^=nav-]")
-    assert entries.count() == 12
+    assert entries.count() == 13  # Specialists joined the Abilities group
 
     page.click("[data-testid=nav-models]")
     page.wait_for_url("**#/models")
@@ -2104,3 +2104,93 @@ def test_the_catalogue_lists_official_connectors_with_a_real_resolved_icon(page,
     notion_row = page.locator("[data-testid=catalog-row]", has_text="Notion")
     assert notion_row.locator("img").get_attribute("src") == seeded
 
+
+
+# --- specialist agents ------------------------------------------------------------
+
+def test_a_specialist_made_on_the_screen_is_offered_to_jarvis_at_once(page):
+    """Created through the real editor, it is the same kind of row as a built-in and
+    is in `ask_specialist`'s roster before any restart; switched off, it leaves it."""
+    from jarvis import assembly
+    from jarvis.agents import store
+
+    def roster() -> list[str]:
+        spec = assembly.get_registry().get("ask_specialist")
+        return spec.input_schema["properties"]["agent"]["enum"] if spec else []
+
+    go_to(page, "agents")
+    page.wait_for_selector("[data-testid=agent-list-builtin]")
+    assert page.locator("[data-testid=agent-list-builtin] [data-testid=agent-row]").count() == 13
+
+    page.click("[data-testid=agent-create]")
+    page.fill("[data-testid=agent-name]", "Podcast Producer")
+    page.fill("[data-testid=agent-description]", "Plans, scripts and writes show notes for podcasts")
+    page.fill("[data-testid=agent-doctrine]", "Outline first, then the script, then show notes.")
+    page.click("[data-testid=agent-memory]")          # no access to the person's memory
+    page.click("[data-testid=agent-save]")
+    page.wait_for_selector("[data-testid=agent-access]")
+
+    made = store.get_agent("podcast-producer")
+    assert made is not None and made["builtin"] is False and made["memoryAccess"] == "none"
+    assert made["doctrine"] == "Outline first, then the script, then show notes."
+    assert "podcast-producer" in roster()
+
+    page.keyboard.press("Escape")
+    page.click("[data-agent=podcast-producer] [data-testid=agent-enabled]")
+    page.wait_for_function("() => document.querySelector("
+                           "'[data-agent=podcast-producer] [data-testid=agent-enabled]')"
+                           ".getAttribute('aria-checked') === 'false'")
+    # The switch flips at once; the save lands a moment later.
+    for _ in range(50):
+        if store.get_agent("podcast-producer")["enabled"] is False:
+            break
+        page.wait_for_timeout(100)
+    assert store.get_agent("podcast-producer")["enabled"] is False
+    assert "podcast-producer" not in roster()
+
+
+def test_a_run_opens_to_show_everyone_who_worked_on_the_request(page):
+    from jarvis.agents import ensure_builtins, store
+
+    ensure_builtins()
+    root = store.create_run(agent_id="advertising", task="Plan the spring campaign",
+                            session_id="agent:advertising:c1", requested_by="jarvis")
+    helper = store.create_run(agent_id="research", task="Who buys in spring?",
+                              session_id="agent:research:c1", requested_by="advertising",
+                              parent_run_id=root["id"], root_run_id=root["id"], depth=2)
+    store.finish_run(helper["id"], status="done", result="Commuters, mostly.", tools_used=["look_it_up"])
+    store.finish_run(root["id"], status="done", result="The plan.")
+
+    go_to(page, "agents")
+    page.click("[data-agent=advertising]")
+    page.click("[data-testid=agent-run]")
+    page.wait_for_selector("[data-testid=run-tree]")
+    items = page.locator("[data-testid=run-tree-item]").all_inner_texts()
+    assert items[0].startswith("Advertising") and "Research & Intelligence" in items[1]
+    page.locator("[data-testid=run-tree-item]").nth(1).click()
+    page.wait_for_function("() => document.querySelector('[data-testid=run-result]')"
+                           "?.innerText === 'Commuters, mostly.'")
+
+
+def test_talking_directly_to_a_specialist_is_a_real_turn_as_it(page, live_server, serve_provider):
+    stub = serve_provider("openai-chat", reply="Let's start: how do you say 'a coffee, please'?")
+    connect_and_select(live_server, stub)
+    refresh(page)
+
+    page.click("[data-testid=talk-to]")
+    page.click("[data-testid=talk-to-teacher]")
+    page.wait_for_function("() => document.querySelector('[data-testid=talk-to]')"
+                           ".innerText.toLowerCase().includes('teacher')")
+    say(page, "Teach me enough Spanish to order food")
+    page.wait_for_function("() => document.body.innerText.includes(\"how do you say 'a coffee\")",
+                           timeout=90_000)
+    assert "teacher" in page.inner_text("[data-testid=turn-speaker]").lower()
+    # What went on the wire was the Teacher's own prompt, not Jarvis's.
+    sent = json.dumps(stub.posts()[-1]["body"])
+    assert "You are Teacher" in sent and "You are Jarvis" not in sent
+
+    # And back to Jarvis is one click.
+    page.click("[data-testid=talk-to]")
+    page.click("[data-testid=talk-to-jarvis]")
+    page.wait_for_function("() => document.querySelector('[data-testid=talk-to]')"
+                           ".innerText.toLowerCase() === 'conversation'")

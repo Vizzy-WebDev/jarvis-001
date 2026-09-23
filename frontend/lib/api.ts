@@ -6,6 +6,12 @@
 
 import type {
   AddConnectionResult,
+  Agent,
+  AgentAbilities,
+  AgentDraft,
+  AgentNote,
+  AgentRun,
+  AgentRunSummary,
   Approval,
   BriefingConfig,
   BriefingPreview,
@@ -490,6 +496,35 @@ export const api = {
         `/jobs/${encodeURIComponent(id)}/restart`, { method: 'POST', ...json({ force }) }),
     discard: (id: string) =>
       request<{ ok: true; job: Job }>(`/jobs/${encodeURIComponent(id)}/discard`, { method: 'POST' }),
+  },
+
+  agents: {
+    list: () => request<{ agents: Agent[] }>('/agents'),
+    open: (id: string) =>
+      request<{ agent: Agent; runs: AgentRunSummary[]; notes: AgentNote[]; hasDefault: boolean }>(
+        `/agents/${encodeURIComponent(id)}`),
+    create: (draft: AgentDraft) =>
+      request<{ ok: true; agent: Agent }>('/agents', { method: 'POST', ...json(draft) }),
+    update: (id: string, patch: Partial<AgentDraft>) =>
+      request<{ ok: true; agent: Agent }>(`/agents/${encodeURIComponent(id)}`,
+        { method: 'PATCH', ...json(patch) }),
+    remove: (id: string) =>
+      request<{ ok: true }>(`/agents/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    reset: (id: string) =>
+      request<{ ok: true; agent: Agent }>(`/agents/${encodeURIComponent(id)}/reset`,
+        { method: 'POST' }),
+    abilities: () => request<AgentAbilities>('/agents/abilities'),
+    /** One run with the whole delegation tree it belongs to. */
+    run: (runId: string) =>
+      request<{ run: AgentRun; tree: AgentRun[] }>(`/agent-runs/${encodeURIComponent(runId)}`),
+    updateNote: (agentId: string, noteId: string, patch: { topic?: string; text?: string }) =>
+      request<{ ok: true; note: AgentNote }>(
+        `/agents/${encodeURIComponent(agentId)}/notes/${encodeURIComponent(noteId)}`,
+        { method: 'PATCH', ...json(patch) }),
+    removeNote: (agentId: string, noteId: string) =>
+      request<{ ok: true }>(
+        `/agents/${encodeURIComponent(agentId)}/notes/${encodeURIComponent(noteId)}`,
+        { method: 'DELETE' }),
   },
 
   briefing: {

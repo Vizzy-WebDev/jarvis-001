@@ -224,6 +224,16 @@ export interface Notification {
 
 /** One event from `GET /api/chat/stream`. The wire vocabulary is deliberately
  *  small and stable — see backend/jarvis/routes/turn.py's `to_wire`. */
+/** Something a tool produced for the person to see or open. */
+export interface TurnAttachment {
+  type: 'attachment';
+  kind: string;
+  url: string;
+  mimeType: string;
+  /** A file's own name — shown on a download, where a picture needs none. */
+  name?: string;
+}
+
 export type TurnEvent =
   | { type: 'routed'; intent: string; fast: boolean; confidence: number; reason: string;
       /** The user message's real, persisted id — present so Edit/Retry can act
@@ -231,7 +241,10 @@ export type TurnEvent =
       userMessageId?: string }
   | { type: 'chunk'; text: string }
   | { type: 'tool_result'; capability: string; ok: boolean; outcome: string; error: string | null;
-      attachment?: { type: 'attachment'; kind: string; url: string; mimeType: string };
+      attachment?: TurnAttachment;
+      /** Every file, when one tool produced several — a specialist handing back
+       *  a worksheet and its answer key. `attachment` is the first of them. */
+      attachments?: TurnAttachment[];
       /** A tool asked the interface to open a section. Navigating is something
        *  the browser does, so it arrives beside the result rather than inside
        *  it, exactly like an attachment. */
@@ -243,7 +256,9 @@ export type TurnEvent =
   | { type: 'error'; error: string; code?: string; detail?: unknown }
   | { type: 'done'; text: string; steps: number;
       /** The reply's real, persisted id — see `userMessageId` above. */
-      messageId?: string }
+      messageId?: string;
+      /** Set when the person was talking to a specialist directly: who answered. */
+      agent?: { id: string; name: string } }
   | { type: 'unknown' };
 
 // --- scheduled tasks ----------------------------------------------------------
@@ -578,6 +593,8 @@ export interface Job {
   createdAt: string;
   startedAt: string | null;
   heartbeatAt: string | null;
+  /** The specialist doing this job's work, when a specialist is. */
+  agentId?: string | null;
   finishedAt: string | null;
 }
 
@@ -674,4 +691,79 @@ export interface SkillDetail extends Skill {
   supportingFiles: { name: string; size: number }[];
   pipeline: { description?: string; inputs?: unknown; steps?: unknown[] } | null;
   pipelineErrors: string[];
+}
+
+// --- specialist agents ---------------------------------------------------------
+
+export interface AgentAccess {
+  /** `all`: anything Jarvis has, every call still gated by its own risk. */
+  mode: 'all' | 'selected';
+  names: string[];
+  /** Connector ids, or every connector set up. */
+  connectors: 'all' | string[];
+}
+
+/** One specialist. A built-in one and a custom one are the same shape; `builtin`
+ *  only decides whether it can be reset (built-in) or deleted (custom). */
+export interface Agent {
+  id: string;
+  name: string;
+  description: string;
+  mission: string;
+  doctrine: string;
+  guardrails: string;
+  /** A model id to always use, or null for whatever Jarvis is set to. */
+  modelPin: string | null;
+  capabilityAccess: AgentAccess;
+  memoryAccess: 'none' | 'read';
+  /** Who it may ask for help: `any`, or agent ids. */
+  collaborators: 'any' | string[];
+  enabled: boolean;
+  builtin: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastRun?: AgentRunSummary | null;
+}
+
+export type AgentDraft = Pick<Agent, 'name' | 'description' | 'mission' | 'doctrine' | 'guardrails'
+  | 'modelPin' | 'capabilityAccess' | 'memoryAccess' | 'collaborators' | 'enabled'>;
+
+export interface AgentRunSummary {
+  id: string;
+  agentId: string;
+  status: 'running' | 'done' | 'failed' | 'awaiting_approval';
+  task: string;
+  /** `jarvis`, `operator` (a direct chat), `job`, `schedule`, or another agent's id. */
+  requestedBy: string;
+  startedAt: string;
+  finishedAt: string | null;
+  depth: number;
+  parentRunId: string | null;
+  rootRunId: string;
+  error: string | null;
+}
+
+export interface AgentRun extends AgentRunSummary {
+  agentName: string;
+  result: string | null;
+  modelId: string | null;
+  toolsUsed: string[];
+  conversationId: string | null;
+  jobId: string | null;
+}
+
+export interface AgentNote {
+  id: string;
+  agentId: string;
+  topic: string;
+  text: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** What an agent's access can be made of — three separately-sourced groups. */
+export interface AgentAbilities {
+  builtIn: { name: string; description: string; risk: string }[];
+  skills: { name: string; description: string }[];
+  connectors: { id: string; label: string; type: string | null }[];
 }

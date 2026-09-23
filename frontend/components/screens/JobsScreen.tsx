@@ -123,7 +123,7 @@ export function JobsScreen() {
                 <div className="min-w-0">
                   <p className="truncate text-[14px] text-ink">{job.title}</p>
                   <p className="mt-1 text-[12px] text-ink-faint">
-                    {job.kind}
+                    {job.agentId ? `done by ${job.agentId}` : job.kind}
                     {job.currentStep && ` · ${job.currentStep}`}
                   </p>
                 </div>

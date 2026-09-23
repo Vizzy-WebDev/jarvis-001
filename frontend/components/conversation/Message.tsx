@@ -11,7 +11,7 @@ import type { TurnEvent } from '@/lib/api-types';
 // `mimeType` is optional: a tool-result attachment always carries one, but a
 // USER-sent attachment's Turn is built from the composer's own upload
 // response, which has no reason to know it — nothing here actually reads it.
-type Attachment = { kind: string; url: string; mimeType?: string };
+type Attachment = { kind: string; url: string; mimeType?: string; name?: string };
 
 export type Turn = {
   id: string;
@@ -24,9 +24,15 @@ export type Turn = {
   decided?: 'allow' | 'deny';
   /** Set while a reply is still streaming. */
   streaming?: boolean;
-  /** A picture or a video a tool produced, shown in place. Assistant turns
-   *  only ever carry one — a tool result is never more than one file. */
+  /** A picture or a video a tool produced, shown in place. */
   attachment?: Attachment | null;
+  /** Everything the tools in this reply produced — pictures, but also files to
+   *  open and voice-overs to play, several at once when a specialist hands back
+   *  a whole package. Shown after `attachment`, never instead of it. */
+  files?: Attachment[];
+  /** Who is speaking, when it is a specialist the person is talking to directly
+   *  rather than Jarvis. */
+  speaker?: string;
   /** What the USER attached and sent — genuinely plural, since the composer
    *  allows attaching more than one file to a single message. Kept as a
    *  separate field from `attachment` above rather than unifying them: the
@@ -41,8 +47,32 @@ export type Turn = {
 
 export function attachmentOf(event: TurnEvent): Turn['attachment'] {
   if (event.type !== 'tool_result' || !event.attachment) return null;
-  const { kind, url, mimeType } = event.attachment;
-  return { kind, url, mimeType };
+  const { kind, url, mimeType, name } = event.attachment;
+  return { kind, url, mimeType, name };
+}
+
+/** Every attachment a tool result carried, one or several. */
+export function attachmentsOf(event: TurnEvent): Attachment[] {
+  if (event.type !== 'tool_result') return [];
+  const all = event.attachments ?? (event.attachment ? [event.attachment] : []);
+  return all.map(({ kind, url, mimeType, name }) => ({ kind, url, mimeType, name }));
+}
+
+/** A voice-over to play, or a file to open — the things a picture tile is not. */
+function FileTile({ attachment }: { attachment: Attachment }) {
+  const name = attachment.name || 'file';
+  return (
+    <div className="mb-2 rounded border border-surface-border bg-surface-base/40 px-2.5 py-2"
+         data-testid={attachment.kind === 'audio' ? 'audio-tile' : 'file-tile'}>
+      {attachment.kind === 'audio' && (
+        <audio controls preload="none" src={attachment.url} className="mb-1.5 h-8 w-full" />
+      )}
+      <a href={attachment.url} download={name}
+         className="block truncate text-[12px] text-accent hover:underline">
+        {name}
+      </a>
+    </div>
+  );
 }
 
 /**
@@ -265,7 +295,10 @@ export function Message({
   // on which field it came from — `attachments` (the user's, genuinely
   // plural) when set, else `attachment` (a tool's, at most one) as a single-
   // item list, else none.
-  const shown = turn.attachments ?? (turn.attachment ? [turn.attachment] : []);
+  const shown = [
+    ...(turn.attachments ?? (turn.attachment ? [turn.attachment] : [])),
+    ...(turn.files ?? []).filter((file) => file.url !== turn.attachment?.url),
+  ];
   return (
     <div className={`animate-fade-up flex flex-col ${mine ? 'items-end' : 'items-start'}`}>
       <div
@@ -278,8 +311,16 @@ export function Message({
             : mine ? 'bg-bubble-user text-ink' : 'bg-bubble-assistant text-ink',
         ].join(' ')}
       >
+        {!mine && turn.speaker && (
+          <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-accent"
+             data-testid="turn-speaker">
+            {turn.speaker}
+          </p>
+        )}
         {shown.map((attachment, index) => (
-          <AttachmentTile key={`${attachment.url}-${index}`} attachment={attachment} />
+          attachment.kind === 'image' || attachment.kind === 'video'
+            ? <AttachmentTile key={`${attachment.url}-${index}`} attachment={attachment} />
+            : <FileTile key={`${attachment.url}-${index}`} attachment={attachment} />
         ))}
         {editing ? (
           <div className="min-w-[220px]">

@@ -13,6 +13,7 @@ export type SectionId =
   | 'chat-history'
   | 'models'
   | 'skills'
+  | 'agents'
   | 'app-control'
   | 'tasks'
   | 'jobs'
@@ -42,6 +43,8 @@ export const SECTIONS: Section[] = [
     blurb: 'The providers Jarvis connects to, and the models it can think with.' },
   { id: 'skills', label: 'Skills', group: 'Abilities', ready: true,
     blurb: 'Folders of instructions Jarvis can follow.' },
+  { id: 'agents', label: 'Specialists', group: 'Abilities', ready: true,
+    blurb: 'Expert agents Jarvis hands work to — and ones you create yourself.' },
   { id: 'app-control', label: 'Connector', group: 'Abilities', ready: true,
     blurb: 'The apps and services Jarvis is connected to.' },
   { id: 'tasks', label: 'Scheduled Tasks', group: 'Automation', ready: true,

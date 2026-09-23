@@ -20,6 +20,7 @@ SECTIONS = {
     "chat-history": "Chat History",
     "models": "Model Settings",
     "skills": "Skills",
+    "agents": "Specialists",
     "app-control": "Connector",
     "tasks": "Scheduled Tasks",
     "jobs": "Background Jobs",

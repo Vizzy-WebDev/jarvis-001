@@ -98,7 +98,7 @@ def _phase_of(event: dict[str, Any]) -> str:
 @router.get("/chat/stream")
 async def chat_stream(request: Request, message: str = "", source: str = "text",
                       confidence: float | None = None, attachments: str = "",
-                      edit_of: str = ""):
+                      edit_of: str = "", agent: str = ""):
     text = (message or "").strip()
     # Attachment ids ride in the query string because EventSource can only make a
     # GET with no body. Ids, never paths — see routes/uploads.py.
@@ -131,11 +131,35 @@ async def chat_stream(request: Request, message: str = "", source: str = "text",
 
     phase = {"value": "thinking"}
 
-    def produce(cancel: threading.Event) -> Iterator[dict[str, Any]]:
-        for event in get_orchestrator().run_turn(turn, cancel):
-            wire = to_wire(event)
-            phase["value"] = _phase_of(wire)
-            yield wire
+    if agent.strip():
+        # "Talk directly": the person has switched the chat over to a specialist.
+        # The same turn on the same conversation (so it stays in their history),
+        # run AS that agent through the one agent path — its doctrine, access and
+        # model, recorded as a run like any other.
+        from ..agents import runner
+
+        try:
+            specialist = runner.usable_agent(agent.strip())
+        except runner.AgentUnavailable as err:
+            return JSONResponse({"error": str(err)}, status_code=400)
+        run = runner.start_run(specialist, text or "(attachment)", session_id=turn.session_id,
+                               requested_by="operator", conversation_id=turn.session_id)
+
+        def produce(cancel: threading.Event) -> Iterator[dict[str, Any]]:
+            for event in runner.stream_run(specialist, run, text, autonomy=Autonomy.INTERACTIVE,
+                                           surface=surface, direct=True, attachments=attached,
+                                           cancel=cancel):
+                wire = to_wire(event)
+                if wire["type"] == "done":
+                    wire["agent"] = {"id": specialist["id"], "name": specialist["name"]}
+                phase["value"] = _phase_of(wire)
+                yield wire
+    else:
+        def produce(cancel: threading.Event) -> Iterator[dict[str, Any]]:
+            for event in get_orchestrator().run_turn(turn, cancel):
+                wire = to_wire(event)
+                phase["value"] = _phase_of(wire)
+                yield wire
 
     return StreamingResponse(
         stream_sync_source(request, produce,

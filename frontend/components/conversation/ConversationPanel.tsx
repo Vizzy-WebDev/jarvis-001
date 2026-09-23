@@ -1,6 +1,7 @@
 'use client';
 
 import { Composer } from '@/components/composer/Composer';
+import { TalkToPicker } from '@/components/conversation/TalkToPicker';
 import { Transcript } from '@/components/conversation/Transcript';
 import type { Turn } from '@/components/conversation/Message';
 import { MenuIcon, NewChatIcon } from '@/components/ui/Icons';
@@ -35,6 +36,8 @@ export function ConversationPanel({
   onDraftConsumed,
   historyOpen,
   onToggleHistory,
+  talkingTo = null,
+  onTalkTo,
 }: {
   turns: Turn[];
   notConfigured: boolean;
@@ -63,6 +66,9 @@ export function ConversationPanel({
    *  button that opened it). */
   historyOpen?: boolean;
   onToggleHistory?: () => void;
+  /** A specialist the person is talking to directly, or null for Jarvis. */
+  talkingTo?: { id: string; name: string } | null;
+  onTalkTo?: (next: { id: string; name: string } | null) => void;
 }) {
   return (
     <div
@@ -83,8 +89,14 @@ export function ConversationPanel({
         >
           <MenuIcon className="h-[18px] w-[18px]" />
         </IconButton>
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.18em] text-ink-faint">
-          Conversation
+        <h2 className="min-w-0">
+          {onTalkTo ? (
+            <TalkToPicker talkingTo={talkingTo} onChange={onTalkTo} />
+          ) : (
+            <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-ink-faint">
+              Conversation
+            </span>
+          )}
         </h2>
         {/* Starting a new one acts on this panel, so it lives on this panel. */}
         <IconButton

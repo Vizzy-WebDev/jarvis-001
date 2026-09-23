@@ -22,7 +22,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .routes import (
-    approvals, artifacts, automation, connectors, control, conversations, core, events,
+    agents, approvals, artifacts, automation, connectors, control, conversations, core, events,
     external_services, improvement, jobs, memory, models, notifications, realtime,
     sandbox, skills, speech, tasks, turn, uploads, voice,
 )
@@ -64,6 +64,7 @@ def create_app() -> FastAPI:
     app.include_router(memory.router)
     app.include_router(improvement.router)
     app.include_router(jobs.router)
+    app.include_router(agents.router)
     app.include_router(automation.router)
     app.include_router(sandbox.router)
 

@@ -50,7 +50,7 @@ def test_an_agent_turn_is_run_as_that_agent_not_as_jarvis(model):
     [request] = model.requests_of("research")
     system = request["system"]
     assert system.startswith("You are Research & Intelligence")
-    assert "Cross-check important claims" in system          # its doctrine
+    assert "Cross-check the claims that matter most" in system   # its doctrine
     assert "Nothing that spends money" in system              # the shared guardrails
     assert "You are Jarvis" not in system and "boss" not in system
     assert request["sessionId"] == "agent:research:c1"

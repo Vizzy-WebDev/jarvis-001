@@ -114,6 +114,9 @@ export default function Home() {
    * without touching `Transcript`'s own (already correct) scroll logic.
    */
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  /** Read by the event stream, whose effect is set up once. */
+  const activeConversationRef = useRef<string | null>(null);
+  activeConversationRef.current = activeConversationId;
 
   // Choosing, connecting or removing a model happens on another screen, or in the
   // composer's own picker. Whether Jarvis can answer is asked of the backend again
@@ -175,6 +178,23 @@ export default function Home() {
       try {
         const event = JSON.parse(raw.data) as { type?: string; payload?: Record<string, unknown> };
         if (event.type === 'notification.stored') setUnread((count) => count + 1);
+        // A specialist Jarvis stopped waiting for has finished: its work is shown
+        // here as its own reply, in the conversation it was asked from. It also
+        // reaches the bell, and Jarvis is told on the next message.
+        if (event.type === 'agent.run_finished') {
+          const late = event as unknown as { late?: boolean; result?: string; runId: string;
+                                             agentName: string; conversationId?: string;
+                                             status?: string; error?: string };
+          if (late.late && late.conversationId && late.conversationId === activeConversationRef.current) {
+            const text = late.status === 'done'
+              ? (late.result || `${late.agentName} finished.`)
+              : `${late.agentName} couldn’t finish: ${late.error || 'no reason was given.'}`;
+            setTurns((current) => [...current, {
+              id: `late-${late.runId}`, role: 'assistant', text, speaker: late.agentName,
+              failed: late.status !== 'done' && late.status !== 'awaiting_approval' }]);
+            return;
+          }
+        }
         // A specialist working on this tab's own request, shown as it happens:
         // a delegated task can take a minute, and silence reads as stuck.
         if ((event.type === 'agent.run_started' || event.type === 'agent.run_finished')

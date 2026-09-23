@@ -361,3 +361,58 @@ def test_scheduling_for_an_unknown_specialist_is_refused():
     result = scheduler_tools._schedule(when="daily", time="08:00", action="prompt",
                                        agent="Nobody", text="x")
     assert result["ok"] is False and "no specialist called" in result["error"]
+
+
+# --- a specialist slower than Jarvis will wait for ------------------------------
+
+def test_a_slow_specialist_is_never_cut_off_and_its_result_is_delivered_when_it_lands(
+        model, monkeypatch):
+    """Measured live: a research run on free-tier models took over fifteen minutes and
+    the chat sat silent, then gave up. Now Jarvis stops WAITING after a while, never
+    stops the work, and the result reaches the person when it finishes."""
+    from jarvis import notifications
+    from jarvis.events import EventType
+    from jarvis.events.bus import bus
+    from jarvis.heartbeat import outbox
+
+    monkeypatch.setattr(runner, "DELEGATION_WAIT_S", 0.3)
+    release = threading.Event()
+
+    def slow_research(messages):
+        release.wait(10)
+        return ("say", "UK espresso cart start-up costs: GBP 8k-25k [sources].")
+
+    model.on("research").responds(slow_research)
+    model.on("jarvis").calls_tool("ask_specialist", {"agent": "research", "task": "Cart costs"})
+    model.on("jarvis").says("Research is still on it — I'll pass it on the moment it lands.")
+    finished = []
+    stop = bus.subscribe(EventType.AGENT_RUN_FINISHED, lambda e: finished.append(e.payload))
+    try:
+        events = jarvis_turn("what does a coffee cart cost to start?")
+        assert done_text(events).startswith("Research is still on it")
+        [told] = tool_results(model, "jarvis")
+        assert told["result"]["status"] == "still_working"
+        [run] = store.list_runs()
+        assert run["status"] == "running"      # not stopped — just no longer waited on
+
+        release.set()
+        for _ in range(100):
+            if store.get_run(run["id"])["status"] == "done" and finished:
+                break
+            threading.Event().wait(0.05)
+    finally:
+        stop()
+
+    assert store.get_run(run["id"])["result"].startswith("UK espresso cart start-up costs")
+    # An open chat is told, with the result, as a late finish.
+    assert finished[-1]["late"] is True and finished[-1]["result"].startswith("UK espresso")
+    # The bell has it.
+    assert any(n.get("meta", {}) and n["meta"].get("runId") == run["id"]
+               for n in notifications.listed())
+    # And the very next message the person sends, Jarvis is shown the whole result.
+    [notice] = outbox.list_pending(source="agent")
+    assert notice["detail"]["result"].startswith("UK espresso cart start-up costs")
+    model.on("jarvis").says("Here's what Research found: 8 to 25 thousand pounds.")
+    jarvis_turn("any news?")
+    system = model.requests_of("jarvis")[-1]["system"]
+    assert "Research & Intelligence finished" in system and "GBP 8k-25k" in system

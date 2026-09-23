@@ -68,7 +68,7 @@ def test_a_builtin_can_be_edited_disabled_and_reset_but_not_deleted():
 def test_a_newer_default_refreshes_an_untouched_builtin_but_never_an_edited_one():
     ensure_builtins()
     store.update_agent("scout", {"mission": "mine"})
-    newer = [{**d, "version": 2, "mission": "new default"} for d in BUILTIN_AGENTS
+    newer = [{**d, "version": 99, "mission": "new default"} for d in BUILTIN_AGENTS
              if d["id"] in ("scout", "research")]
     assert store.seed_builtins(newer) == ["research"]
     assert store.get_agent("research")["mission"] == "new default"

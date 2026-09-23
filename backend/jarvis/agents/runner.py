@@ -61,6 +61,19 @@ RESEED_RUNS = 3
 
 SESSION_PREFIX = "agent:"
 
+#: How long Jarvis's own turn waits for a specialist before telling the person it
+#: is still working and carrying on. Measured live: on free-tier models one
+#: specialist step took one to three minutes, and a research task several steps —
+#: a chat that sat silent for fifteen minutes and then gave up was the result.
+#: The run is never cut off (a slow model is not a failed one); it finishes in the
+#: background and its result is delivered then (`_deliver_late`).
+DELEGATION_WAIT_S = 240.0
+
+#: Runs whose asker stopped waiting. When one finishes, its result is delivered to
+#: the person instead of to a turn that is no longer listening.
+_detached: set[str] = set()
+_detached_lock = threading.Lock()
+
 
 class AgentUnavailable(RuntimeError):
     """This agent cannot take work, and why — in words fit to show."""
@@ -139,6 +152,12 @@ class RunOutcome:
     def as_result(self) -> dict[str, Any]:
         """What a delegating turn is told — plain data a model can reason over."""
         agent = store.get_agent(self.run["agentId"]) or {"name": self.run["agentId"]}
+        if self.status == "running":
+            return {"ok": True, "agent": agent["name"], "runId": self.run["id"],
+                    "status": "still_working",
+                    "note": (f"{agent['name']} is still working on this. Its result will be "
+                             "delivered to the operator automatically the moment it finishes — "
+                             "tell them that, carry on, and do not ask it again.")}
         out: dict[str, Any] = {"ok": self.status == "done", "agent": agent["name"],
                                "runId": self.run["id"], "status": self.status}
         if self.result:
@@ -246,10 +265,14 @@ def stream_run(agent: dict[str, Any], run: dict[str, Any], message: str, *,
         finished = store.finish_run(run["id"], status=status, result=result or None, error=error,
                                     approval_id=(approval or {}).get("id"), model_id=model_id,
                                     tools_used=tools)
+        late = _is_detached(run["id"])
         ebus.publish(EventType.AGENT_RUN_FINISHED, {
             "runId": run["id"], "agentId": agent["id"], "agentName": agent["name"],
             "status": status, "parentRunId": run["parentRunId"], "rootRunId": run["rootRunId"],
-            "conversationId": run["conversationId"], "error": error})
+            "conversationId": run["conversationId"], "error": error,
+            # Nobody's turn is waiting for this one any more: an open chat shows the
+            # result itself, as the specialist's own reply.
+            **({"late": True, "result": result} if late else {})})
         run.update(finished)
 
 
@@ -280,17 +303,65 @@ def usable_agent(which: str) -> dict[str, Any]:
     return agent
 
 
+def _is_detached(run_id: str) -> bool:
+    with _detached_lock:
+        return run_id in _detached
+
+
+def _deliver_late(run_id: str, files: list[dict[str, Any]]) -> None:
+    """A run whose asker stopped waiting has finished: get its result to the person.
+
+    Two ways, because they may or may not be looking: a notification (the bell),
+    and a waiting notice carrying the whole result, which Jarvis is shown on the
+    next turn they start (`prompt.notices_section`) and passes on. An open chat
+    also shows it at once, from the `late` finish event.
+    """
+    from .. import notifications
+    from ..heartbeat import outbox
+
+    with _detached_lock:
+        _detached.discard(run_id)
+    run = store.get_run(run_id)
+    if run is None:
+        return
+    agent = store.get_agent(run["agentId"]) or {"name": run["agentId"]}
+    task = run["task"] if len(run["task"]) <= 90 else run["task"][:87] + "..."
+    if run["status"] == "done":
+        summary = f'{agent["name"]} finished "{task}"'
+        body = (run["result"] or "")[:300]
+    elif run["status"] == "awaiting_approval":
+        summary = (f'{agent["name"]} stopped part-way through "{task}" because the next step '
+                   "needs the operator's go-ahead — ask it again to pick it up")
+        body = summary
+    else:
+        summary = f'{agent["name"]} could not finish "{task}": {run["error"] or "no reason given"}'
+        body = run["error"] or ""
+    try:
+        outbox.add(tier=2, source="agent", source_ref=run_id, reason="finished", summary=summary,
+                   detail={"agent": agent["name"], "runId": run_id, "status": run["status"],
+                           "result": run["result"] or "", "files": files})
+        notifications.add(kind="agent", level="success" if run["status"] == "done" else "warning",
+                          title=summary[:120], body=body,
+                          action={"label": "Specialists", "section": "agents"},
+                          meta={"runId": run_id})
+    except Exception:  # noqa: BLE001 — the run itself is recorded either way
+        logger.exception("could not deliver the late result of run %s", run_id)
+
+
 def run_agent(which: str, task: str, *, requested_by: str = "jarvis",
               conversation_id: str | None = None, context: str | None = None,
               parent: dict[str, Any] | None = None,
               autonomy: Autonomy = Autonomy.INTERACTIVE, surface: Surface = Surface.TEXT,
               job_id: str | None = None, session_id: str | None = None,
-              event_bus: Any = None) -> RunOutcome:
-    """Run one agent on one task to its end, and record it. Blocks until done.
+              wait_s: float | None = None, event_bus: Any = None) -> RunOutcome:
+    """Run one agent on one task, and record it.
 
     The turn runs on its own named thread (see the module header); this call just
-    waits for it. Two runs in the same agent session take turns, because they
-    would otherwise interleave one transcript.
+    waits for it — to the end, or for `wait_s` when given. A run still going after
+    that is NOT stopped: it is detached, the caller is told it is still working,
+    and its result is delivered to the person when it lands (`_deliver_late`).
+    Two runs in the same agent session take turns, because they would otherwise
+    interleave one transcript.
     """
     agent = usable_agent(which)
     session = session_id or session_for(agent["id"], conversation_id)
@@ -313,10 +384,21 @@ def run_agent(which: str, task: str, *, requested_by: str = "jarvis",
                         files.extend(a for a in event.attachments if a not in files)
         except Exception as err:  # noqa: BLE001 — reported through the run record
             holder["error"] = str(err)
+        finally:
+            if _is_detached(run["id"]):
+                _deliver_late(run["id"], files)
 
     thread = threading.Thread(target=go, name=f"agent-run-{run['id']}", daemon=True)
     thread.start()
-    thread.join()
+    thread.join(timeout=wait_s)
+    if thread.is_alive():
+        with _detached_lock:
+            _detached.add(run["id"])
+        # It may have finished in the instant between the wait ending and the line
+        # above; then nothing else will deliver it, so this does.
+        if not thread.is_alive() and (store.get_run(run["id"]) or {}).get("status") != "running":
+            _deliver_late(run["id"], files)
+        return RunOutcome(run=store.get_run(run["id"]) or run, status="running")
     final = store.get_run(run["id"]) or run
     approval = None
     if final["status"] == "awaiting_approval" and final.get("approvalId"):
@@ -358,9 +440,12 @@ def delegate(which: str, task: str, *, from_session: str, context: str | None = 
 
     if caller is None:
         # Jarvis itself (or a direct chat with no agent run behind it): a new root.
+        # Jarvis's turn is the one the person is watching, so it waits only so long
+        # (`DELEGATION_WAIT_S`); a specialist asking another waits for the answer,
+        # because its own deliverable needs it.
         return run_agent(target["id"], task, requested_by="jarvis", conversation_id=from_session,
                          context=context, autonomy=autonomy, surface=surface,
-                         event_bus=event_bus)
+                         wait_s=DELEGATION_WAIT_S, event_bus=event_bus)
 
     asker = store.get_agent(caller["agentId"])
     if asker is None:

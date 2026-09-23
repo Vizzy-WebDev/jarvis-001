@@ -138,7 +138,18 @@ def notices_section(entries: list[dict[str, Any]] | None) -> str:
         return ""
     lines = []
     for entry in entries:
-        if entry.get("source") == "heartbeat" or entry.get("source") == "verification":
+        if entry.get("source") == "agent":
+            # A specialist that finished after Jarvis stopped waiting for it: the
+            # whole result rides here, so it can be passed on without asking again.
+            detail = entry.get("detail") or {}
+            result = str(detail.get("result") or "").strip()
+            files = ", ".join(f.get("name") or f.get("url", "") for f in detail.get("files") or [])
+            lines.append(f"- {entry['summary']}."
+                         + (f" What they came back with:\n{result}" if result else "")
+                         + (f"\nFiles they made: {files}" if files else "")
+                         + f"\n(notice #{entry['id']} — once you have passed this on, call "
+                           f"acknowledge_notice with that number)")
+        elif entry.get("source") == "heartbeat" or entry.get("source") == "verification":
             lines.append(f"- {entry['summary']} (notice #{entry['id']} — if you mention this, "
                          f"call acknowledge_notice with that number)")
         else:
@@ -198,7 +209,8 @@ def volatile_instruction(*, memories: str = "", low_confidence: bool = False,
     return "\n\n".join(p for p in parts if p)
 
 
-_SPECIALIST_NOTES = """- Keep your own working notes with write_my_note and read them with read_my_notes — they persist between tasks, unlike this conversation. Read them before starting work that continues earlier work.
+_SPECIALIST_NOTES = """- Work economically. Every step you take is another model call — it costs the operator time and often their limited daily quota. Decide the few steps the task really needs, prefer one call that does a lot (look_it_up searches and reads several sources in one go) over many small ones, and stop as soon as you can deliver the work well.
+- Keep your own working notes with write_my_note and read them with read_my_notes — they persist between tasks, unlike this conversation. Read them before starting work that continues earlier work.
 - Report what your tools actually returned. If a tool failed or an ability you would need is missing, say so plainly and deliver everything else."""
 
 SPECIALIST_WORKING = """How you work inside Jarvis:

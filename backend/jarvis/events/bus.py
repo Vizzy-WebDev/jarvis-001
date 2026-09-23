@@ -78,6 +78,11 @@ class EventType(str, Enum):
     JOB_UPDATED = "job.updated"
     JOB_COMPLETED = "job.completed"
 
+    # Specialist agents (`jarvis/agents/`) — a run starting and finishing, so an
+    # open chat can say "Research is working…" while it happens.
+    AGENT_RUN_STARTED = "agent.run_started"
+    AGENT_RUN_FINISHED = "agent.run_finished"
+
     # Model calls — what the cost and self-model observers subscribe to,
     # instead of being imported by the turn loop.
     MODEL_CALL_STARTED = "model.call_started"

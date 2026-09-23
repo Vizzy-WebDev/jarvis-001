@@ -76,6 +76,32 @@ class AssembledContext:
     notes: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class AgentBrief:
+    """Who a turn is being run AS, when it is a specialist's rather than Jarvis's.
+
+    Plain data, built by `agents/runner.py` and carried on `TurnRequest.agent`, so
+    neither this module nor the turn loop ever imports the agents package: the
+    assembler only needs the words, never where they came from.
+    """
+
+    agent_id: str
+    name: str
+    mission: str = ""
+    doctrine: str = ""
+    #: The agent's own guardrails with the ones every specialist shares already
+    #: joined on — composed once by the runner.
+    guardrails: str = ""
+    #: Whether the user's saved Memory goes into this agent's prompt.
+    memory: bool = True
+    #: Who this agent may ask for help, as (id, name, what they do). Empty when it
+    #: may ask nobody.
+    collaborators: tuple[tuple[str, str, str], ...] = ()
+    #: True when the operator is talking to this agent directly in the chat, rather
+    #: than through Jarvis — then its reply IS what they read.
+    direct: bool = False
+
+
 @runtime_checkable
 class ContextAssembler(Protocol):
     def assemble(self, *, session_id: str, text: str) -> AssembledContext:
@@ -196,13 +222,21 @@ class RelevanceContext:
         self.memory_share = memory_share
 
     def assemble(self, *, session_id: str, text: str, low_confidence: bool = False,
-                 background: bool = False) -> AssembledContext:
+                 background: bool = False, agent: AgentBrief | None = None) -> AssembledContext:
         memory_budget = int(self.budget_tokens * self.memory_share)
 
         conflicted = memory_store.conflicted_memory_ids()
         available = [m for m in memory_store.list_memories() if m["id"] not in conflicted]
+        if agent is not None and not agent.memory:
+            # The person decided this agent does not see what Jarvis knows about them.
+            available = []
         chosen, selection = select_memories(text, available, memory_budget)
         memories_text = memory_store.approved_memories_text(chosen)
+
+        if agent is not None:
+            return self._specialist(agent, session_id=session_id, memories_text=memories_text,
+                                    chosen=chosen, selection=selection,
+                                    low_confidence=low_confidence)
 
         # Rules Jarvis has learned about its own work ride in the volatile half:
         # they change as it learns, and they apply to a background job's turn as
@@ -260,6 +294,33 @@ class RelevanceContext:
                 "messagesAvailable": len(conversation.get_messages(session_id)),
             },
         )
+
+
+    def _specialist(self, agent: AgentBrief, *, session_id: str, memories_text: str,
+                    chosen: list[dict[str, Any]], selection: dict[str, Any],
+                    low_confidence: bool) -> AssembledContext:
+        """A specialist's own prompt: its identity and doctrine in place of Jarvis's,
+        the same honesty rules, and the same learned rules. No waiting notices —
+        those are delivered by Jarvis to the person, never to a specialist."""
+        from ..improvement.store import active_rules_text
+
+        rules = prompt.rules_section(active_rules_text())
+        system = prompt.specialist_instruction(
+            agent, memories=memories_text, low_confidence=low_confidence,
+            extra=[rules] if rules else None)
+        remaining = max(0, self.budget_tokens - estimate_tokens(system))
+        messages = trim_messages(conversation.get_messages(session_id), remaining)
+        included = ("specialist_instruction",)
+        if rules:
+            included += ("learned_rules",)
+        if chosen:
+            included += ("memory",)
+        if messages:
+            included += ("conversation",)
+        return AssembledContext(
+            system=system, messages=messages, included=included,
+            notes={"agent": agent.agent_id, "budgetTokens": self.budget_tokens,
+                   "memory": selection, "messagesKept": len(messages)})
 
 
 class WindowContext:

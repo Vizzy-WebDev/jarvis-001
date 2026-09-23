@@ -326,4 +326,67 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
         ALTER TABLE model_outcomes ADD COLUMN fail_streak INTEGER NOT NULL DEFAULT 0;
         """
     ],
+
+    # 30: Specialist agents (`jarvis/agents/`). One table for every agent — the
+    # built-in ones are rows seeded from `agents/builtins.py`, a custom one is a
+    # row the person made — so nothing downstream can tell them apart except by
+    # the `builtin` flag, which only decides whether "delete" or "reset" is
+    # offered. `agent_runs` is the delegation record: who asked which agent for
+    # what, and what came back — the thing to read to know what actually ran.
+    # `agent_notes` is an agent's own working record (a learner's progress, what
+    # has already been surfaced), deliberately apart from the user's Memory.
+    30: [
+        """
+        CREATE TABLE IF NOT EXISTS agents (
+          id                TEXT PRIMARY KEY,
+          name              TEXT NOT NULL,
+          description       TEXT NOT NULL DEFAULT '',
+          mission           TEXT NOT NULL DEFAULT '',
+          doctrine          TEXT NOT NULL DEFAULT '',
+          guardrails        TEXT NOT NULL DEFAULT '',
+          model_pin         TEXT,
+          capability_access TEXT NOT NULL,
+          memory_access     TEXT NOT NULL DEFAULT 'read',
+          collaborators     TEXT NOT NULL,
+          enabled           INTEGER NOT NULL DEFAULT 1,
+          builtin           INTEGER NOT NULL DEFAULT 0,
+          builtin_version   INTEGER,
+          created_at        TEXT NOT NULL,
+          updated_at        TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS agent_runs (
+          id              TEXT PRIMARY KEY,
+          agent_id        TEXT NOT NULL,
+          parent_run_id   TEXT,
+          root_run_id     TEXT,
+          conversation_id TEXT,
+          session_id      TEXT NOT NULL,
+          requested_by    TEXT NOT NULL,
+          task            TEXT NOT NULL,
+          status          TEXT NOT NULL,
+          result          TEXT,
+          error           TEXT,
+          approval_id     TEXT,
+          model_id        TEXT,
+          tools_used      TEXT,
+          depth           INTEGER NOT NULL DEFAULT 1,
+          job_id          TEXT,
+          started_at      TEXT NOT NULL,
+          finished_at     TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_agent ON agent_runs(agent_id, started_at);
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_session ON agent_runs(session_id, started_at);
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_root ON agent_runs(root_run_id);
+        CREATE TABLE IF NOT EXISTS agent_notes (
+          id         TEXT PRIMARY KEY,
+          agent_id   TEXT NOT NULL,
+          topic      TEXT NOT NULL,
+          text       TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_notes_agent ON agent_notes(agent_id, topic);
+        ALTER TABLE jobs ADD COLUMN agent_id TEXT;
+        """
+    ],
 }

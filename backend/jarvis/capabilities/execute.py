@@ -46,11 +46,20 @@ _pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="capability")
 #: assistant simply stopping. A separate pool makes that impossible rather than
 #: unlikely.
 _nested_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="capability-nested")
+#: A specialist agent's turn runs on its own `agent-run-…` thread (see
+#: `agents/runner.py`), and its tool calls come here. A delegation from one agent
+#: to another waits for a whole nested turn while holding a worker, so these must
+#: never be the workers that nested turn needs — a pool of their own, sized well
+#: above the most delegations that can be waiting at once (the runner caps the
+#: depth of any chain).
+_agent_pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="agent-capability")
 
 
 def _pool_for_this_thread() -> ThreadPoolExecutor:
-    return (_nested_pool if threading.current_thread().name.startswith("capability")
-            else _pool)
+    name = threading.current_thread().name
+    if name.startswith("agent-run"):
+        return _agent_pool
+    return _nested_pool if name.startswith(("capability", "agent-capability")) else _pool
 
 
 class ExecOutcome(str, Enum):

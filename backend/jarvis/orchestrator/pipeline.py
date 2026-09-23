@@ -47,7 +47,7 @@ from ..events.bus import EventBus
 from ..intent import Intent, Route, classify
 from ..policy import Autonomy, CallContext, Surface
 from ..policy.decide import Grant
-from .context import AssembledContext, ContextAssembler, RelevanceContext
+from .context import AgentBrief, AssembledContext, ContextAssembler, RelevanceContext
 from .model_port import (
     ModelClient, ModelSwitched, ModelUnavailable, StepComplete, TextChunk, ToolCall,
 )
@@ -254,6 +254,15 @@ class TurnRequest:
     #: Upload ids attached to this turn. Ids, never paths: what arrives from the
     #: browser is untrusted, and resolving one is the upload store's job.
     attachments: tuple[str, ...] = ()
+    #: Set when this turn is run AS a specialist agent rather than as Jarvis: its
+    #: identity and doctrine replace Jarvis's in the prompt. Plain data built by
+    #: `agents/runner.py` — this loop never imports the agents package.
+    agent: AgentBrief | None = None
+    #: Under the declaration budget, the names declared up front besides the core
+    #: set. Defaults to `allowed_names`; an agent sets it apart because what it is
+    #: PERMITTED (every connector tool, say) can be far more than is worth
+    #: DECLARING on every step — the rest stay reachable through find_capability.
+    always_declare: frozenset[str] | None = None
 
 
 def _prepare_for_new_turn(state: AssistantState) -> None:
@@ -651,12 +660,15 @@ class Orchestrator:
         return prepared
 
     def _assemble(self, request: TurnRequest) -> AssembledContext:
+        # Passed only when set, so an assembler written before agents existed
+        # (a test's own, say) keeps working unchanged.
+        extra = {"agent": request.agent} if request.agent is not None else {}
         return self._assembler.assemble(
             session_id=request.session_id, text=request.text,
             low_confidence=request.low_confidence,
             # A job's or a scheduled task's own turn has nobody to tell: what is
             # waiting for the user belongs in a turn the user actually started.
-            background=request.surface in (Surface.JOB, Surface.SCHEDULED))
+            background=request.surface in (Surface.JOB, Surface.SCHEDULED), **extra)
 
     def _declarations(self, request: TurnRequest, unlocked: set[str]) -> list[dict[str, Any]]:
         specs = self._registry.list()
@@ -672,7 +684,8 @@ class Orchestrator:
             # An explicit allowlist counts as unlocking what it names: naming a
             # non-core tool for a restricted task and then not declaring it is
             # how a job ends up unable to do the one thing it was created for.
-            allowed = request.allowed_names or frozenset()
+            allowed = (request.always_declare if request.always_declare is not None
+                       else request.allowed_names or frozenset())
             specs = [s for s in specs
                      if s.has_tag("core") or s.name in unlocked or s.name in allowed]
         return self._registry.declarations(specs)

@@ -191,6 +191,54 @@ def volatile_instruction(*, memories: str = "", low_confidence: bool = False,
     return "\n\n".join(p for p in parts if p)
 
 
+_SPECIALIST_NOTES = """- Keep your own working notes with write_my_note and read them with read_my_notes — they persist between tasks, unlike this conversation. Read them before starting work that continues earlier work.
+- Report what your tools actually returned. If a tool failed or an ability you would need is missing, say so plainly and deliver everything else."""
+
+SPECIALIST_WORKING = """How you work inside Jarvis:
+- Jarvis is the operator's personal assistant and the orchestrator. It (or another specialist) handed you this task because it is your area. Do the work yourself, properly, with the abilities you have — do not hand back a plan for work you could do now.
+- Your final reply is your deliverable. It goes back to whoever asked, not straight to the operator, so make it complete and self-contained: the result first, then what supports it. Headings, lists and tables are fine when they make the result clearer.
+- If something is ambiguous, make the most sensible assumption, state it, and carry on. If the task genuinely cannot be done without information only the operator has, say exactly what you need.
+""" + _SPECIALIST_NOTES
+
+SPECIALIST_DIRECT = """The operator is talking to you directly right now, in the chat — Jarvis has handed them over to you:
+- Your replies go straight to them and may be read aloud, so be conversational and to the point, one step at a time, and wait for their answer when you ask something.
+- They can switch back to Jarvis whenever they like.
+""" + _SPECIALIST_NOTES
+
+
+def specialist_collaborators_section(collaborators: tuple[tuple[str, str, str], ...]) -> str:
+    if not collaborators:
+        return "You work alone on this: you cannot hand any part of it to another specialist."
+    lines = [f"- {agent_id} — {name}: {what}" for agent_id, name, what in collaborators]
+    return ("Specialists you can ask for help with ask_specialist, when their expertise genuinely "
+            "adds something (you stay responsible for your own deliverable, and each request "
+            "costs time):\n" + "\n".join(lines))
+
+
+def specialist_instruction(agent: Any, *, memories: str = "", low_confidence: bool = False,
+                           now: datetime | None = None, extra: list[str] | None = None) -> str:
+    """The system instruction for a turn run AS a specialist (`AgentBrief`).
+
+    Its identity, mission, doctrine and guardrails take the place of Jarvis's own
+    identity and speaking style; the honesty rules about tools are the same ones
+    Jarvis works under, because they are about the truth, not about tone.
+    """
+    parts = [f"You are {agent.name}, one of Jarvis's specialist agents."]
+    if agent.mission:
+        parts.append(f"Your mission: {agent.mission}")
+    parts.append(SPECIALIST_DIRECT if agent.direct else SPECIALIST_WORKING)
+    if agent.doctrine:
+        parts.append(f"Your doctrine — how you do this work:\n{agent.doctrine}")
+    if agent.guardrails:
+        parts.append(f"Your guardrails — these never bend:\n{agent.guardrails}")
+    parts.append(specialist_collaborators_section(agent.collaborators))
+    parts.append(HOW_YOU_USE_TOOLS)
+    stable = "\n\n".join(p for p in parts if p)
+    volatile = volatile_instruction(memories=memories, low_confidence=low_confidence,
+                                    now=now, extra=extra)
+    return stable + (CACHE_BREAK + volatile if volatile else "")
+
+
 def system_instruction(*, memories: str = "", low_confidence: bool = False,
                        now: datetime | None = None, extra: list[str] | None = None,
                        has_audience: bool = True) -> str:

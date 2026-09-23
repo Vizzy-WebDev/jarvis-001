@@ -416,3 +416,25 @@ def test_a_slow_specialist_is_never_cut_off_and_its_result_is_delivered_when_it_
     jarvis_turn("any news?")
     system = model.requests_of("jarvis")[-1]["system"]
     assert "Research & Intelligence finished" in system and "GBP 8k-25k" in system
+
+
+def test_a_late_result_is_shown_in_full_only_in_the_conversation_that_asked(model):
+    """Found live: a whole late result from another chat made Jarvis answer about that
+    instead of what it had just been asked."""
+    from jarvis import prompt
+    from jarvis.heartbeat import outbox
+
+    outbox.add(tier=2, source="agent", source_ref="arun_x", reason="finished",
+               summary='Scout finished "Hunt for opportunities"',
+               detail={"agent": "Scout", "runId": "arun_x", "status": "done",
+                       "result": "Kirkgate new-trader incentive. " + "detail " * 800,
+                       "files": [], "conversationId": "conv-asked"})
+    [entry] = outbox.list_pending(source="agent")
+
+    here = prompt.notices_section([entry], session_id="conv-asked")
+    assert "Kirkgate new-trader incentive" in here and "(the rest is on the Specialists screen)" in here
+    assert len(here) < prompt.LATE_RESULT_CHARS + 1000
+
+    elsewhere = prompt.notices_section([entry], session_id="another-chat")
+    assert "asked for in a different conversation" in elsewhere
+    assert "Kirkgate new-trader incentive" not in elsewhere

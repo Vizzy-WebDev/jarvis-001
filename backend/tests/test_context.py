@@ -158,3 +158,19 @@ def test_a_background_turn_gets_neither_half_of_the_register():
         session_id="s2", text="give it to me straight", background=True).system
     assert "How you communicate" not in system
     assert "for this reply specifically" not in system
+
+
+def test_the_question_being_answered_is_never_trimmed_away():
+    """Found live: a long result in the system prompt left a budget of zero, the
+    person's own question was cut, and the model answered a message it never saw."""
+    from jarvis.orchestrator.context import trim_messages
+
+    history = [{"role": "user", "text": "old " * 400}, {"role": "assistant", "text": "old reply " * 400},
+               {"role": "user", "text": "Plan my Instagram ads"},
+               {"role": "assistant", "toolCalls": [{"id": "c1", "name": "ask_specialist", "args": {}}]},
+               {"role": "tool", "toolResults": [{"id": "c1", "name": "ask_specialist", "result": "x" * 4000}]}]
+    kept = trim_messages(history, 0)
+    assert [m.get("text") for m in kept][0] == "Plan my Instagram ads"
+    assert [m["role"] for m in kept] == ["user", "assistant", "tool"]
+    # With room, older history comes back, newest first.
+    assert trim_messages(history, 10_000)[0]["text"].startswith("old")

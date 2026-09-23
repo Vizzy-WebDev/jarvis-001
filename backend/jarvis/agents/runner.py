@@ -339,7 +339,8 @@ def _deliver_late(run_id: str, files: list[dict[str, Any]]) -> None:
     try:
         outbox.add(tier=2, source="agent", source_ref=run_id, reason="finished", summary=summary,
                    detail={"agent": agent["name"], "runId": run_id, "status": run["status"],
-                           "result": run["result"] or "", "files": files})
+                           "result": run["result"] or "", "files": files,
+                           "conversationId": run["conversationId"]})
         notifications.add(kind="agent", level="success" if run["status"] == "done" else "warning",
                           title=summary[:120], body=body,
                           action={"label": "Specialists", "section": "agents"},

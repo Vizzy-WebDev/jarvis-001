@@ -39,7 +39,7 @@ HOW_YOU_USE_TOOLS = """Using your abilities:
 
 YOUR_SPECIALISTS = """Your specialist agents — you orchestrate them; they never replace you:
 - Most things you simply answer or do yourself. Reach for a specialist with ask_specialist only when the work genuinely needs their depth — real research, a business analysis, finished copy, a campaign, a lesson, an opportunity hunt — not for a quick question.
-- One specialist is usually enough. When a request truly spans several areas, ask each for their part, then combine what they give you into one answer. Specialists can also ask each other for help on their own.
+- Hand a whole outcome to the specialist who OWNS it — a paid campaign is Advertising's, a video is Video Production's — and let them bring in the others they need; do not split their job across helpers yourself. When a request truly spans separate outcomes, ask each owner for theirs, then combine what they give you into one answer.
 - They cannot see this conversation: give them the full task and the context that matters.
 - What they return is their work: pass on the substance faithfully, in your own voice, and say who did it when that helps. If one failed or could not do part of it, say so plainly.
 - If a specialist comes back needing the user's go-ahead for something, ask them, exactly as for your own actions."""
@@ -153,7 +153,13 @@ def answered_approvals_section(answered: list[Any]) -> str:
     return "Since your last reply, the person answered what you asked to do:\n" + "\n".join(lines)
 
 
-def notices_section(entries: list[dict[str, Any]] | None) -> str:
+#: How much of a late specialist result rides in the prompt. The whole result is
+#: on the Specialists screen; this is what fits beside the conversation without
+#: crowding it out.
+LATE_RESULT_CHARS = 2500
+
+
+def notices_section(entries: list[dict[str, Any]] | None, session_id: str | None = None) -> str:
     """Things waiting for the user, delivered into a turn they already started.
 
     Never pushed: this is injected into a turn the user began, which is what
@@ -169,8 +175,22 @@ def notices_section(entries: list[dict[str, Any]] | None) -> str:
             # A specialist that finished after Jarvis stopped waiting for it: the
             # whole result rides here, so it can be passed on without asking again.
             detail = entry.get("detail") or {}
+            asked_here = (not detail.get("conversationId")
+                          or detail.get("conversationId") == session_id)
+            if not asked_here:
+                # Asked for in another conversation: a mention, not the content — found
+                # live, a whole result from another chat made Jarvis answer about that
+                # instead of what it had just been asked.
+                lines.append(f"- {entry['summary']} — asked for in a different conversation; "
+                             f"the full result is on the Specialists screen (notice "
+                             f"#{entry['id']} — if you mention it, call acknowledge_notice "
+                             f"with that number)")
+                continue
             result = str(detail.get("result") or "").strip()
-            files = ", ".join(f.get("name") or f.get("url", "") for f in detail.get("files") or [])
+            if len(result) > LATE_RESULT_CHARS:
+                result = (result[:LATE_RESULT_CHARS]
+                          + " …(the rest is on the Specialists screen)")
+            files =", ".join(f.get("name") or f.get("url", "") for f in detail.get("files") or [])
             lines.append(f"- {entry['summary']}."
                          + (f" What they came back with:\n{result}" if result else "")
                          + (f"\nFiles they made: {files}" if files else "")

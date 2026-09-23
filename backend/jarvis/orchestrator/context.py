@@ -182,19 +182,36 @@ def select_memories(text: str, memories: list[dict[str, Any]], budget_tokens: in
     }
 
 
+def _message_cost(message: dict[str, Any]) -> int:
+    return (estimate_tokens(str(message.get("text") or ""))
+            + estimate_tokens(str(message.get("toolCalls") or ""))
+            + estimate_tokens(str(message.get("toolResults") or "")))
+
+
 def trim_messages(messages: list[dict[str, Any]], budget_tokens: int) -> list[dict[str, Any]]:
-    """The newest messages that fit, never cutting a tool call from its result."""
+    """The newest messages that fit, never cutting a tool call from its result —
+    and never dropping the turn being answered.
+
+    The current turn (the person's latest message and everything since) is a floor,
+    kept whatever the budget says. Found live: a long result carried in the system
+    prompt left the transcript a budget of zero, the person's own question was cut,
+    and the model answered a message it never saw ("what would you like to tackle
+    today?"). Older history is what gives way, not the question.
+    """
+    last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=None)
+    floor = messages[last_user:] if last_user is not None else []
+    older = messages[:last_user] if last_user is not None else list(messages)
+
+    used = sum(_message_cost(m) for m in floor)
     kept: list[dict[str, Any]] = []
-    used = 0
-    for message in reversed(messages):
-        cost = estimate_tokens(str(message.get("text") or "")) + \
-            estimate_tokens(str(message.get("toolCalls") or "")) + \
-            estimate_tokens(str(message.get("toolResults") or ""))
-        if used + cost > budget_tokens and kept:
+    for message in reversed(older):
+        cost = _message_cost(message)
+        if used + cost > budget_tokens and (kept or floor):
             break
         kept.append(message)
         used += cost
     kept.reverse()
+    kept += floor
 
     # A transcript that STARTS with tool results has lost the assistant message
     # that requested them; every provider rejects that outright.
@@ -280,7 +297,8 @@ class RelevanceContext:
         # Things waiting for the user — only on a turn a PERSON started. A
         # background job's own turn has nobody to tell, and putting a notice
         # there would deliver it to the machinery instead of to them.
-        notices = "" if background else prompt.notices_section(_waiting_notices())
+        notices = "" if background else prompt.notices_section(_waiting_notices(),
+                                                                session_id=session_id)
 
         # The adaptive communication register — both its stable half
         # (STYLE_FRAMEWORK, via has_audience below) and its per-turn half

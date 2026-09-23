@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterator
 
 from .. import conversation
@@ -76,6 +76,10 @@ def step_ceiling() -> int:
 FINAL_STEP_NOTE = ("This is your last step for this request: there is nothing more to call. "
                    "Answer now from what you have already found, and say plainly what you "
                    "did not get to.")
+#: Added to the one extra attempt a turn gets when its last step asked for a tool
+#: anyway (see `_run_model_loop`).
+INSIST_NOTE = ("No tools exist for this reply — any tool call will be ignored. Write your "
+               "answer to the person now, in plain words, from what you already have.")
 
 
 #: Above this many capabilities, a turn is declared its CORE set plus whatever
@@ -506,8 +510,13 @@ class Orchestrator:
         # loop keeps the list; it does not know or care who reads it.
         tools_used: list[str] = []
         ceiling = step_ceiling()
+        # Set when the last step came back asking for a tool it was not offered:
+        # that earns exactly one more attempt at the answer (see below).
+        insist = False
 
-        for step in range(1, ceiling + 1):
+        for step in range(1, ceiling + 2):
+            if step > ceiling and not insist:
+                break
             if cancel.is_set():
                 yield self._interrupt(request, state, "".join(spoken_so_far))
                 return
@@ -515,7 +524,8 @@ class Orchestrator:
             assembled = self._assemble(request)
             tools = self._declarations(request, unlocked)
             system = assembled.system
-            if step == ceiling and ceiling > 1:
+            final = step >= ceiling and ceiling > 1
+            if final:
                 # The last step this turn gets. Found live: a specialist made 22
                 # successful lookups across its steps, never wrote its answer, and
                 # everything it had found was thrown away with "I went round 8
@@ -523,6 +533,8 @@ class Orchestrator:
                 # call — the work it already did is still in front of it.
                 tools = []
                 system = f"{system}\n\n{FINAL_STEP_NOTE}"
+                if step > ceiling:
+                    system = f"{system}\n\n{INSIST_NOTE}"
 
             self._bus.publish(
                 EventType.MODEL_CALL_STARTED,
@@ -597,6 +609,20 @@ class Orchestrator:
                  "step": step, "modelId": completed.model_id,
                  "toolCalls": len(completed.tool_calls)},
             )
+
+            if final and completed.tool_calls:
+                # Offered nothing to call, it asked to call something anyway — found
+                # live: some models copy the tool-calling pattern from earlier in the
+                # conversation. Nothing is run. Words it wrote alongside are the
+                # answer; with none, it gets ONE more, firmer, attempt, and then the
+                # honest "went round" failure below.
+                if strip_reaction_markers(completed.text).strip():
+                    completed = replace(completed, tool_calls=())
+                elif step == ceiling:
+                    insist = True
+                    continue
+                else:
+                    break
 
             if not completed.tool_calls:
                 # `completed.text` is the model client's own final assembly, built

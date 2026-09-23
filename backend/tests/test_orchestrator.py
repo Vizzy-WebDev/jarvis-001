@@ -190,7 +190,9 @@ def test_a_turn_that_gets_nowhere_stops_and_says_so(reg):
 
     events = run(orch, "keep poking at that thing")
 
-    assert model.call_count == MAX_STEPS
+    # Every step, plus the one firmer attempt a last step that still asked for a
+    # tool gets — and then it stops and says so rather than looping.
+    assert model.call_count == MAX_STEPS + 1
     assert isinstance(events[-1], Failed)
     assert str(MAX_STEPS) in events[-1].error
 
@@ -220,6 +222,51 @@ def test_on_its_last_step_a_turn_answers_with_what_it_has_instead_of_losing_it(r
     assert len(seen) == MAX_STEPS
     assert all(count > 0 and FINAL_STEP_NOTE not in system for count, system in seen[:-1])
     assert seen[-1][0] == 0 and FINAL_STEP_NOTE in seen[-1][1]
+
+
+def test_a_last_step_that_asks_for_an_unoffered_tool_is_answered_not_run(reg):
+    """Found live: offered no tools on its last step, a model still sent a tool call
+    (copying the pattern from earlier in the conversation). Nothing is run; with no
+    words it is asked once more, firmly, and the answer it gives is the reply."""
+    from jarvis.orchestrator.model_port import StepComplete, TextChunk, ToolCall
+    from jarvis.orchestrator.pipeline import INSIST_NOTE
+
+    poked = add(reg, "poke")
+    seen = []
+
+    class Stubborn:
+        def stream(self, *, tools, system, **_):
+            seen.append((len(tools), system))
+            if len(seen) <= MAX_STEPS:  # keeps calling, even when offered nothing
+                yield StepComplete(tool_calls=(ToolCall(id=f"c{len(seen)}", name="poke", args={}),),
+                                   finish_reason="tool_calls", model_id="m")
+                return
+            yield TextChunk("Here is the answer from what I have.")
+            yield StepComplete(text="Here is the answer from what I have.", model_id="m")
+
+    events = run(Orchestrator(Stubborn(), registry=reg, event_bus=EventBus()), "dig in")
+    assert isinstance(events[-1], Done) and events[-1].text == "Here is the answer from what I have."
+    assert len(seen) == MAX_STEPS + 1 and INSIST_NOTE in seen[-1][1] and seen[-1][0] == 0
+    # The unoffered call on the last step was never run.
+    assert len([e for e in events if isinstance(e, ToolRan)]) == MAX_STEPS - 1
+
+
+def test_words_written_beside_an_unoffered_last_step_call_are_the_answer(reg):
+    from jarvis.orchestrator.model_port import StepComplete, ToolCall
+
+    add(reg, "poke")
+    calls = []
+
+    class Both:
+        def stream(self, *, tools, **_):
+            calls.append(len(tools))
+            yield StepComplete(text="Summary so far." if not tools else "",
+                               tool_calls=(ToolCall(id=f"c{len(calls)}", name="poke", args={}),),
+                               finish_reason="tool_calls", model_id="m")
+
+    events = run(Orchestrator(Both(), registry=reg, event_bus=EventBus()), "dig in")
+    assert isinstance(events[-1], Done) and events[-1].text == "Summary so far."
+    assert len(calls) == MAX_STEPS
 
 
 def test_a_provider_failure_ends_the_turn_honestly(reg):

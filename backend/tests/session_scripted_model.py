@@ -93,10 +93,13 @@ class SessionScriptedModel:
                                   "tools": [t["name"] for t in tools], "sessionId": session_id,
                                   "modelId": model_id, "role": role})
             script = self._scripts.setdefault(speaker, _Script())
-            if script.responder is not None:
-                kind, value = script.responder(messages)
-            else:
+            responder = script.responder
+            if responder is None:
                 kind, value = script.steps.pop(0) if script.steps else ("say", "OK.")
+        if responder is not None:
+            # Outside the lock: a responder may deliberately take its time (a slow
+            # specialist), and holding the lock would stall every other speaker.
+            kind, value = responder(messages)
         if kind == "call":
             yield StepComplete(tool_calls=(value,), finish_reason="tool_calls", model_id="scripted")
             return

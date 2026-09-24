@@ -134,8 +134,7 @@ def decide(
         # action it later decides to take. Park it rather than run it.
         return PolicyResult(
             Outcome.NEEDS_APPROVAL,
-            f"{spec.name} is high-risk, so it needs your go-ahead even inside a "
-            "task you scheduled.",
+            f"{spec.name} needs your go-ahead, even inside a task you scheduled.",
             escalate=True,
         )
     return PolicyResult(

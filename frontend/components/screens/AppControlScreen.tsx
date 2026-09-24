@@ -12,7 +12,7 @@ import { Modal } from '@/components/ui/Modal';
 import { Popover } from '@/components/ui/Popover';
 import { Toggle } from '@/components/ui/Toggle';
 import { api, ApiRequestError } from '@/lib/api';
-import type { CatalogEntry, Connector, ConnectorTool } from '@/lib/api-types';
+import type { CatalogEntry, Connector, ConnectorTool, ToolPermission } from '@/lib/api-types';
 
 /**
  * The apps and services Jarvis is connected to.
@@ -231,7 +231,10 @@ export function AppControlScreen() {
       {detail && (
         <ConnectorDetail
           target={detail}
-          onClose={() => setDetail(null)}
+          onClose={() => {
+            setDetail(null);
+            void load();
+          }}
           onChanged={afterChange}
         />
       )}
@@ -464,26 +467,56 @@ function ConnectorDetail({ target, onClose, onChanged }: {
   onClose: () => void;
   onChanged: () => Promise<void>;
 }) {
+  const [connectorId, setConnectorId] = useState<string | null>(target.connectorId ?? null);
   const [connector, setConnector] = useState<Connector | null>(null);
   const [tools, setTools] = useState<ConnectorTool[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [toolsError, setToolsError] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [confirmDisconnect, setConfirmDisconnect] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Reading an app's tools reaches its server, so it happens once on its own
+  // per opening — never in a loop if the server keeps failing.
+  const autoRefreshed = useRef(false);
+
+  /** The server's view, always: what a tool is set to is never guessed here. */
+  const reload = useCallback(async (id: string) => {
+    const res = await api.connectors.open(id);
+    setConnector(res.connector);
+    setTools(res.tools);
+    return res;
+  }, []);
+
+  const refreshTools = useCallback(async (id: string) => {
+    setRefreshing(true);
+    setToolsError(null);
+    try {
+      await api.connectors.refresh(id);
+      await reload(id);
+    } catch (err) {
+      setToolsError(err instanceof ApiRequestError ? err.message : "Couldn't read this app's tools.");
+    } finally {
+      setRefreshing(false);
+    }
+  }, [reload]);
 
   useEffect(() => {
     let cancelled = false;
     async function run() {
-      if (!target.connectorId) {
+      if (!connectorId) {
         setLoaded(true);
         return;
       }
       try {
-        const res = await api.connectors.open(target.connectorId);
-        if (!cancelled) {
-          setConnector(res.connector);
-          setTools(res.tools);
+        const res = await reload(connectorId);
+        // Connected but nothing read yet: read it now rather than showing an
+        // empty list the person can do nothing with.
+        if (!cancelled && res.connector.type === 'mcp' && res.connector.status?.state === 'working'
+            && res.tools.length === 0 && !autoRefreshed.current) {
+          autoRefreshed.current = true;
+          void refreshTools(connectorId);
         }
       } catch (err) {
         if (!cancelled) setError(err instanceof ApiRequestError ? err.message : 'Could not load this connector.');
@@ -494,25 +527,50 @@ function ConnectorDetail({ target, onClose, onChanged }: {
     void run();
     return () => {
       cancelled = true;
-      if (pollRef.current) clearInterval(pollRef.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target.connectorId]);
+  }, [connectorId, reload, refreshTools]);
+
+  useEffect(() => () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+  }, []);
 
   const label = target.catalogEntry?.label || connector?.label || 'Connector';
   const description = target.catalogEntry?.description || connector?.description
     || `A custom ${target.type.toUpperCase()} connector.`;
   const isConfigured = connector?.status?.state === 'working';
 
-  async function setToolPermission(toolName: string, permission: string) {
+  /** One save for any number of tools — a whole group is one request, so it
+   *  can never end up half-changed. */
+  async function setPermissions(map: Record<string, ToolPermission>) {
     if (!connector) return;
+    setError(null);
     try {
-      const updated = await api.connectors.update(connector.id, { toolPermissions: { [toolName]: permission } });
-      setConnector(updated.connector);
+      await api.connectors.update(connector.id, { toolPermissions: map });
     } catch {
       setError("Couldn't save that — try again.");
     }
+    await reload(connector.id).catch(() => undefined);
   }
+
+  /** Stay open after connecting and show what the app can do, rather than
+   *  closing on the person the moment it works. */
+  async function handleConnected(id: string) {
+    autoRefreshed.current = true;
+    setConnectorId(id);
+    const res = await reload(id).catch(() => null);
+    if (res && res.tools.length === 0) await refreshTools(id);
+  }
+
+  const toolsSection = (
+    <ToolsSection
+      tools={tools}
+      onSetPermissions={setPermissions}
+      refreshing={refreshing}
+      toolsError={toolsError}
+      note={connector?.status?.detail ?? null}
+      onRefresh={connector?.type === 'mcp' ? () => void refreshTools(connector.id) : undefined}
+    />
+  );
 
   return (
     <Modal open title={label} onClose={onClose}>
@@ -532,15 +590,12 @@ function ConnectorDetail({ target, onClose, onChanged }: {
               </Button>
             </div>
           )}
-          {isConfigured ? (
-            <ToolsSection tools={tools} permissions={(connector?.config as { toolPermissions?: Record<string, string> })?.toolPermissions ?? {}}
-                          onSetPermission={setToolPermission} />
-          ) : (
+          {isConfigured ? toolsSection : (
             <McpConnect
               connector={connector}
               catalogEntry={target.catalogEntry}
               label={label}
-              onConnected={onChanged}
+              onConnected={handleConnected}
               setPoll={(t) => { pollRef.current = t; }}
             />
           )}
@@ -562,10 +617,7 @@ function ConnectorDetail({ target, onClose, onChanged }: {
               until one is added another way.
             </p>
           )}
-          {tools.length > 0 && (
-            <ToolsSection tools={tools} permissions={(connector?.config as { toolPermissions?: Record<string, string> })?.toolPermissions ?? {}}
-                          onSetPermission={setToolPermission} />
-          )}
+          {tools.length > 0 && toolsSection}
         </>
       )}
 
@@ -620,7 +672,7 @@ function ConnectorDetail({ target, onClose, onChanged }: {
   );
 }
 
-type Permission = 'allow' | 'ask' | 'deny';
+type Permission = ToolPermission;
 const PERMISSIONS: Permission[] = ['allow', 'ask', 'deny'];
 const PERMISSION_LABEL: Record<Permission, string> = {
   allow: 'Always allow', ask: 'Need approval', deny: 'Blocked',
@@ -663,15 +715,23 @@ function groupFor(name: string): string {
   return 'Other';
 }
 
-function ToolsSection({ tools, permissions, onSetPermission }: {
+function ToolsSection({ tools, onSetPermissions, refreshing, toolsError, note, onRefresh }: {
   tools: ConnectorTool[];
-  permissions: Record<string, string>;
-  onSetPermission: (name: string, permission: string) => void | Promise<void>;
+  onSetPermissions: (map: Record<string, Permission>) => void | Promise<void>;
+  refreshing: boolean;
+  toolsError: string | null;
+  /** The connection's own status line — e.g. why reading its tools after
+   *  connecting did not work — shown while there is nothing listed. */
+  note?: string | null;
+  /** Present for an app whose tools are read from its server (MCP). */
+  onRefresh?: () => void;
 }) {
   const groups = useMemo(() => {
     const byGroup = new Map<string, ConnectorTool[]>();
     for (const tool of tools) {
-      const group = groupFor(tool.name);
+      // By the app's own tool name: the prefixed one also carries the
+      // connector's label, whose words ("Search Console") are not a verb.
+      const group = groupFor(tool.title);
       const list = byGroup.get(group);
       if (list) list.push(tool);
       else byGroup.set(group, [tool]);
@@ -680,41 +740,61 @@ function ToolsSection({ tools, permissions, onSetPermission }: {
       .map((group) => [group, byGroup.get(group)!] as const);
   }, [tools]);
 
+  const refreshButton = onRefresh && (
+    <Button tone="quiet" data-testid="refresh-tools" disabled={refreshing} onClick={onRefresh}>
+      {refreshing ? 'Reading tools…' : 'Refresh tools'}
+    </Button>
+  );
+
   if (tools.length === 0) {
-    return <p className="text-[13px] text-ink-faint">Nothing set up yet.</p>;
+    return (
+      <div data-testid="tools-empty">
+        <p className="mb-3 text-[13px] text-ink-faint">
+          {refreshing
+            ? "Reading this app's tools…"
+            : onRefresh
+              ? "Connected, but Jarvis hasn't read this app's tools yet."
+              : 'Nothing set up yet.'}
+        </p>
+        {!refreshing && (toolsError ? (
+          <p className="mb-3 text-[13px] text-state-danger" data-testid="tools-error">{toolsError}</p>
+        ) : note && (
+          <p className="mb-3 text-[13px] text-ink-muted" data-testid="tools-note">{note}</p>
+        ))}
+        {refreshButton}
+      </div>
+    );
   }
 
   return (
     <div>
-      <p className="mb-3 text-[12px] font-medium text-ink-muted">Available tools</p>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <p className="text-[12px] font-medium text-ink-muted">Available tools</p>
+        {refreshButton}
+      </div>
+      {toolsError && !refreshing && (
+        <p className="mb-3 text-[13px] text-state-danger" data-testid="tools-error">{toolsError}</p>
+      )}
       <div className="space-y-4">
         {groups.map(([group, groupTools]) => {
-          const values = groupTools.map((tool) => (permissions[tool.name] ?? 'allow') as Permission);
+          const values = groupTools.map((tool) => tool.permission);
           const uniform = values.every((value) => value === values[0]) ? values[0] : null;
           return (
-            <div key={group}>
+            <div key={group} data-testid="tool-group" data-group={group}>
               <div className="mb-1.5 flex items-center justify-between gap-2">
-                <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-faint">
+                <p className="flex items-center gap-2 whitespace-nowrap text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-faint">
                   {group}
                   <span className="rounded-pill bg-white/[0.06] px-1.5 py-px text-[10px] normal-case tracking-normal text-ink-faint">
                     {groupTools.length}
                   </span>
                 </p>
                 <select
-                  className={`${inputClass} w-auto py-1 text-[12px]`}
+                  className={`${inputClass} !w-auto shrink-0 py-1 text-[12px]`}
                   data-testid="group-permission"
                   value={uniform ?? 'custom'}
                   onChange={(event) => {
                     const next = event.target.value as Permission;
-                    // In sequence, not Promise.all/forEach: each PATCH is a
-                    // real read-modify-write over the same connector record,
-                    // and firing them concurrently risks the second request's
-                    // write clobbering the first's.
-                    void (async () => {
-                      for (const tool of groupTools) {
-                        await onSetPermission(tool.name, next);
-                      }
-                    })();
+                    void onSetPermissions(Object.fromEntries(groupTools.map((tool) => [tool.name, next])));
                   }}
                 >
                   <option value="allow">✓ Always allow</option>
@@ -725,12 +805,17 @@ function ToolsSection({ tools, permissions, onSetPermission }: {
               </div>
               <div className="space-y-1">
                 {groupTools.map((tool) => {
-                  const current = (permissions[tool.name] ?? 'allow') as Permission;
+                  const current = tool.permission;
                   return (
-                    <div key={tool.name} className="flex items-center justify-between gap-3 py-1.5">
+                    <div key={tool.name} className="flex items-center justify-between gap-3 py-1.5"
+                         data-testid="tool-row" data-tool={tool.title} data-permission={current}>
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-[13px] text-ink">{tool.name}</p>
-                        {tool.confirms && <p className="text-[11px] text-ink-faint">Always confirms</p>}
+                        <p className="truncate text-[13px] text-ink" title={tool.description}>{tool.title}</p>
+                        {/* Only where it would surprise: "Always allow" still
+                            pauses for a tool Jarvis judges risky. */}
+                        {tool.risky && current === 'allow' && (
+                          <p className="text-[11px] text-ink-faint" data-testid="always-confirms">Still confirms — Jarvis treats this as risky</p>
+                        )}
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
                         {PERMISSIONS.map((permission) => {
@@ -740,10 +825,12 @@ function ToolsSection({ tools, permissions, onSetPermission }: {
                               key={permission}
                               type="button"
                               title={PERMISSION_LABEL[permission]}
-                              aria-label={`${PERMISSION_LABEL[permission]} for ${tool.name}`}
+                              aria-label={`${PERMISSION_LABEL[permission]} for ${tool.title}`}
                               aria-pressed={current === permission}
                               data-testid={`tool-permission-${permission}`}
-                              onClick={() => onSetPermission(tool.name, permission)}
+                              onClick={() => {
+                                if (permission !== current) void onSetPermissions({ [tool.name]: permission });
+                              }}
                               className={[
                                 'flex h-6 w-6 items-center justify-center rounded-full border transition duration-150 ease-out',
                                 current === permission
@@ -772,7 +859,7 @@ function McpConnect({ connector, catalogEntry, label, onConnected, setPoll }: {
   connector: Connector | null;
   catalogEntry: CatalogEntry | null;
   label: string;
-  onConnected: () => Promise<void>;
+  onConnected: (connectorId: string) => Promise<void>;
   setPoll: (timer: ReturnType<typeof setInterval> | null) => void;
 }) {
   const wasErrored = connector?.status?.state === 'error';
@@ -810,7 +897,7 @@ function McpConnect({ connector, catalogEntry, label, onConnected, setPoll }: {
         return;
       }
       if (result.noAuthNeeded) {
-        await onConnected();
+        await onConnected(connectorId);
         return;
       }
       if (result.authUrl) {
@@ -822,7 +909,7 @@ function McpConnect({ connector, catalogEntry, label, onConnected, setPoll }: {
             const res = await api.connectors.open(connectorId!);
             if (res.connector.status?.state === 'working') {
               clearInterval(timer);
-              await onConnected();
+              await onConnected(connectorId!);
             } else if (res.connector.status?.state === 'error') {
               clearInterval(timer);
               setStatus(`Could not connect: ${res.connector.status.detail || 'unknown error'}`);

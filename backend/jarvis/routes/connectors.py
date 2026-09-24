@@ -8,9 +8,11 @@ per tool, and neither implies the other.
 from __future__ import annotations
 
 import logging
+import threading
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from ..connectors import capabilities as connector_capabilities
 from ..connectors import catalog, catalog_credentials, icons, oauth, store
@@ -25,6 +27,32 @@ def _sync() -> None:
     from ..assembly import get_registry
 
     connector_capabilities.sync(get_registry())
+
+
+def _discover_in_background(connector_id: str) -> None:
+    """Read a just-connected server's tools without making anyone wait for it.
+
+    Connecting only proves the sign-in worked; until the tool list is read,
+    Jarvis has nothing to offer and the permission list has nothing to show.
+    A failure leaves the connection itself alone — it did connect — and says
+    why in its status detail, which the connector screen shows.
+    """
+    def work() -> None:
+        try:
+            connector_capabilities.refresh_tools(connector_id)
+            _sync()
+        except Exception as err:  # noqa: BLE001 — an unreachable server is a result
+            logger.warning("connector %s: reading tools after connect failed: %s",
+                           connector_id, err)
+            try:
+                store.update_connector(connector_id, {"status": {
+                    "state": "working", "checkedAt": now_iso(),
+                    "detail": f"Connected, but couldn't read its tools: {err}"}})
+            except Exception:  # noqa: BLE001 — best-effort
+                pass
+
+    threading.Thread(target=work, name=f"connector-discover-{connector_id}",
+                     daemon=True).start()
 
 
 def _public(connector: dict) -> dict:
@@ -192,6 +220,8 @@ async def oauth_redirect_uri():
 @router.get("/oauth/callback")
 async def oauth_callback(request: Request):
     outcome = await oauth.handle_callback(dict(request.query_params))
+    if outcome.get("ok") and outcome.get("connectorId"):
+        _discover_in_background(outcome["connectorId"])
     if not outcome.get("ok") and outcome.get("connectorId"):
         try:
             store.update_connector(outcome["connectorId"], {
@@ -239,6 +269,8 @@ async def connect(connector_id: str, body: dict | None = None):
         outcome = await oauth.start_connect(connector_id, server_url,
                                             manual_client_id=client_id or None,
                                             manual_client_secret=client_secret or None)
+        if outcome.get("noAuthNeeded"):
+            _discover_in_background(connector_id)
         return {"ok": True, "connectorId": connector_id, **outcome}
     except Exception as err:  # noqa: BLE001 — a real, hand-written oauth.py message goes straight to the user
         message = str(err) or "Could not start connecting that service."
@@ -274,10 +306,8 @@ async def detail(connector_id: str):
     connector = store.get_connector(connector_id)
     if connector is None:
         return JSONResponse({"ok": False, "error": "Unknown connector."}, status_code=404)
-    tools = connector_capabilities.connector_specs(connector)
     return {"ok": True, "connector": _public(connector),
-            "tools": [{"name": s.name, "description": s.description,
-                       "confirms": s.risk.value != "low"} for s in tools]}
+            "tools": connector_capabilities.tool_rows(connector)}
 
 
 @router.post("")
@@ -338,7 +368,10 @@ async def update(connector_id: str, body: dict):
 @router.post("/{connector_id}/refresh")
 async def refresh(connector_id: str):
     try:
-        result = connector_capabilities.refresh_tools(connector_id)
+        # Off the event loop: reading an MCP server's tools drives its own
+        # async client from sync code, which refuses to start inside a running
+        # loop — called directly here, every MCP refresh failed with a 502.
+        result = await run_in_threadpool(connector_capabilities.refresh_tools, connector_id)
     except KeyError:
         return JSONResponse({"ok": False, "error": "Unknown connector."}, status_code=404)
     except Exception as err:  # noqa: BLE001 — an unreachable server is a result, not a crash

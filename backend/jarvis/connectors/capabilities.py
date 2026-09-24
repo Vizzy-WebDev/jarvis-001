@@ -115,6 +115,47 @@ def _dispatch(connector_id: str, kind: str, tool_name: str, permission_name: str
     return {"ok": False, "error": f"{tool_name} is not something that connection can do."}
 
 
+def _risk_for(permission: str, classified: str) -> Risk:
+    """The user's "ask" is HIGH so it asks wherever the tool runs.
+
+    The policy lets a MEDIUM action through inside a task the user set up in
+    advance; a person who chose "ask" for a tool meant every time, a scheduled
+    task and a specialist included. HIGH is the one level no autonomy setting
+    and no blanket grant waves through, so no second rule is needed for it. An
+    inferred "risky" stays MEDIUM: it still confirms in conversation, and
+    neither can lower the other.
+    """
+    if permission == "ask":
+        return Risk.HIGH
+    if classified == "risky":
+        return Risk.MEDIUM
+    return Risk.LOW
+
+
+def _classified(connector: dict[str, Any], tool: dict[str, Any]) -> str:
+    # A declared risk is honoured only for Jarvis's OWN connectors, whose
+    # declarations are written here: for those, guessing from words when the
+    # answer is known is strictly worse. Anything from a server this build has
+    # never seen is still classified, and cannot declare itself safe.
+    declared = tool.get("risk") if connector.get("type") in store.SINGLETON_TYPES else None
+    return declared or risk.classify(tool["name"], tool.get("description", ""))
+
+
+def tool_rows(connector: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every tool a connector reports, for the screen that sets permissions.
+
+    Includes blocked ones, unlike `connector_specs()`: the model must never see
+    a blocked tool, but the person must, or blocking would be a one-way door.
+    `risky` is Jarvis's own judgment, kept apart from the person's choice.
+    """
+    return [{"name": prefixed_name(connector, tool["name"]),
+             "title": tool["name"],
+             "description": tool.get("description") or tool["name"],
+             "permission": store.tool_permission(connector, prefixed_name(connector, tool["name"])),
+             "risky": _classified(connector, tool) == "risky"}
+            for tool in _raw_tools(connector)]
+
+
 def connector_specs(connector: dict[str, Any]) -> list[CapabilitySpec]:
     specs: list[CapabilitySpec] = []
     kind = str(connector.get("type"))
@@ -130,20 +171,13 @@ def connector_specs(connector: dict[str, Any]) -> list[CapabilitySpec]:
             # something the model has to be refused, it should be absent.
             continue
 
-        # A declared risk is honoured only for Jarvis's OWN connectors, whose
-        # declarations are written here: for those, guessing from words when the
-        # answer is known is strictly worse. Anything from a server this build
-        # has never seen is still classified, and cannot declare itself safe.
-        declared = tool.get("risk") if kind in store.SINGLETON_TYPES else None
-        classified = declared or risk.classify(tool["name"], tool.get("description", ""))
+        classified = _classified(connector, tool)
         specs.append(CapabilitySpec(
             id=f"connector.{connector['id']}.{tool['name']}",
             name=name,
             description=tool.get("description") or name,
             input_schema=tool.get("parameters") or {"type": "object", "properties": {}},
-            # An inferred "risky" and a user's own "ask" both mean confirm, and
-            # neither can override the other into not asking.
-            risk=Risk.MEDIUM if (classified == "risky" or permission == "ask") else Risk.LOW,
+            risk=_risk_for(permission, classified),
             handler=(lambda _cid=connector["id"], _kind=kind, _tool=tool["name"], _perm=name, **args:
                      _dispatch(_cid, _kind, _tool, _perm, args)),
             kind=CapabilityKind.CONNECTOR,

@@ -28,16 +28,26 @@ scheduled task or briefing saves connector IDS and asks here at every run, becau
 changes when a connector reconnects. Non-singleton tool names are prefixed `<label>__<tool>`.
 
 **Standing permission and runtime confirmation are two different things, deliberately not merged.**
-- A standing PERMISSION (`store.tool_permission()`: `allow` | `ask` | `deny`, default `allow`, set
-  per tool by the user) answers "may Jarvis use this at all". A `deny` tool is not declared at all, so
-  the model never has to be refused. The lookup uses the PREFIXED name, since that is the only name the
-  frontend, and therefore any saved permission, knows. Looking it up by the raw server name was a real
-  bug: it always missed, so a tool set to "Blocked" stayed reachable. `_dispatch` re-checks at call
-  time and re-reads the connector, since a permission or key may have changed since the declaration.
-- A runtime CONFIRMATION comes from the risk classifier. A tool is `Risk.MEDIUM` (so it needs
-  approval, through `policy/decide.py`) if it is classified `risky` OR its standing permission is
-  `ask`; neither can suppress the other, so "always allow" does not stop a risky tool confirming.
-  Connector tools are never HIGH.
+- A standing PERMISSION (`store.tool_permission()`: `allow` | `ask` | `deny`, set per tool by the
+  user) answers "may Jarvis use this at all". **A tool never set is `ask`** for mcp/api/cli — so every
+  newly discovered tool asks first — and `allow` for the files/browser singletons. A `deny` tool is not
+  declared at all, so the model never has to be refused. The lookup uses the PREFIXED name, since that
+  is the only name the frontend, and therefore any saved permission, knows. Looking it up by the raw
+  server name was a real bug: it always missed, so a tool set to "Blocked" stayed reachable.
+  `_dispatch` re-checks at call time and re-reads the connector, since a permission or key may have
+  changed since the declaration.
+- **`ask` is `Risk.HIGH`, so it asks everywhere** — chat, specialists, scheduled tasks, briefings,
+  jobs. The policy (`policy/decide.py`) lets MEDIUM through inside a pre-consented task; HIGH is the one
+  level no autonomy and no blanket grant waves through, so the person's "ask" needs no second rule.
+  A tool the classifier calls `risky` is `Risk.MEDIUM`: it confirms in conversation even on "allow".
+  Neither can lower the other.
+- `tool_rows()` is what the connector screen reads (`GET /api/connectors/{id}`): EVERY tool, blocked
+  ones included, with `permission` and `risky` as separate fields. Only `connector_specs()` decides what
+  the model sees. A blocked tool vanishing from the screen made blocking a one-way door — a real bug.
+- `refresh_tools()` runs automatically after an OAuth connect (or a server needing no sign-in), on a
+  background thread (`routes/connectors.py`'s `_discover_in_background`); the `/refresh` route runs it
+  off the event loop, because `mcp_client` drives its async client from sync code and refuses to start
+  inside a running loop.
 
 Errors from a connector are passed through `redact.py`'s `redact_text()` before they go back to the
 model, the saved conversation and the next provider's request, since a service that quotes a request
@@ -80,7 +90,10 @@ false "risky" costs one confirmation, a false "safe" sends the email). Pure: no 
   (already a dependency). **It connects per call, not once and kept**: a held-open subprocess is a
   lifecycle to get wrong, so a call is slower than against a warm process, and that trade is stated
   rather than hidden. The tool LIST is cached in the connector's config, so listing declarations never
-  starts a server. Tokens live behind the connector's `secretRef` (see `oauth.py`).
+  starts a server. Tokens live behind the connector's `secretRef` (see `oauth.py`). **A URL target
+  must go through `streamable_http_client(url, http_client=create_mcp_http_client(headers=...))`** —
+  `Client(url)` alone has no way to carry a header, and the bearer token was once built and silently
+  never sent (every signed-in server answered 401; the tests only checked the token was looked up).
 - **`api_client.py`** (`api`) — an HTTP API as tools. Operations come from an OpenAPI document
   (`discover_from_spec()`) or are added by hand. **The key never reaches the model**: it is a secret
   reference read at call time, and a declaration carries only name, description and parameters.

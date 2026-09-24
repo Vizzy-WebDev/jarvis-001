@@ -375,7 +375,11 @@ def test_the_files_connector_keeps_its_plain_names():
 
 
 def test_a_risky_connector_tool_confirms_even_though_nobody_declared_it():
-    _api_connector()
+    """Even on "always allow": the person's choice cannot lower Jarvis's own
+    judgment that a tool is risky."""
+    connector = _api_connector()
+    for name in ("pet_store__getpet", "pet_store__deletepet"):
+        store.set_tool_permission(connector["id"], name, "allow")
     registry = CapabilityRegistry()
     capabilities.sync(registry)
     assert registry.get("pet_store__getpet").risk is Risk.LOW
@@ -397,12 +401,21 @@ def test_a_tool_the_user_turned_off_is_absent_rather_than_refused():
     assert capabilities.sync(registry) == ["pet_store__getpet"]
 
 
-def test_marking_a_tool_ask_makes_it_confirm_without_changing_what_it_is():
+def test_marking_a_tool_ask_makes_it_confirm_everywhere():
+    """HIGH, not MEDIUM: the policy lets MEDIUM through inside a task the user
+    set up in advance, and "ask" means ask there too."""
     connector = _api_connector()
     store.set_tool_permission(connector["id"], "pet_store__getpet", "ask")
     registry = CapabilityRegistry()
     capabilities.sync(registry)
-    assert registry.get("pet_store__getpet").risk is Risk.MEDIUM
+    assert registry.get("pet_store__getpet").risk is Risk.HIGH
+
+
+def test_a_tool_nobody_has_set_yet_asks_first():
+    _api_connector()
+    registry = CapabilityRegistry()
+    capabilities.sync(registry)
+    assert registry.get("pet_store__getpet").risk is Risk.HIGH
 
 
 def test_always_allow_cannot_stop_a_risky_tool_asking():
@@ -561,8 +574,11 @@ def test_connectors_can_be_listed_inspected_and_removed(live_server):
         detail = client.get(f"/api/connectors/{connector['id']}").json()
         assert {t["name"] for t in detail["tools"]} == {"pet_store__getpet",
                                                         "pet_store__deletepet"}
-        assert next(t for t in detail["tools"]
-                    if t["name"] == "pet_store__deletepet")["confirms"] is True
+        delete = next(t for t in detail["tools"] if t["name"] == "pet_store__deletepet")
+        # Jarvis's own judgment and the person's choice are separate fields: a
+        # tool nobody has set yet asks first, and "risky" is reported apart.
+        assert delete["risky"] is True and delete["permission"] == "ask"
+        assert delete["title"] == "deletepet"
 
         # Keyed by the PREFIXED name — the only name a real caller (the
         # frontend) ever has, since that is the only name `detail["tools"]`
@@ -576,8 +592,14 @@ def test_connectors_can_be_listed_inspected_and_removed(live_server):
         assert turned_off["connector"]["config"]["toolPermissions"] == {
             "pet_store__deletepet": "deny"}
 
+        # Still listed, marked blocked — otherwise the person could never
+        # unblock it (a real bug: it used to vanish from this screen) — but no
+        # longer something the model is offered.
         detail_after = client.get(f"/api/connectors/{connector['id']}").json()
-        assert {t["name"] for t in detail_after["tools"]} == {"pet_store__getpet"}
+        assert {t["name"]: t["permission"] for t in detail_after["tools"]} == {
+            "pet_store__getpet": "ask", "pet_store__deletepet": "deny"}
+        from jarvis.assembly import get_registry
+        assert not get_registry().has("pet_store__deletepet")
 
         assert client.delete(f"/api/connectors/{connector['id']}").json()["ok"] is True
         assert client.get(f"/api/connectors/{connector['id']}").status_code == 404

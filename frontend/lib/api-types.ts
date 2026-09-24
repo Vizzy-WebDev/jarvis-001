@@ -345,13 +345,20 @@ export interface Connector {
   [key: string]: unknown;
 }
 
+export type ToolPermission = 'allow' | 'ask' | 'deny';
+
 export interface ConnectorTool {
+  /** The capability name permissions are keyed on (`label__tool`). */
   name: string;
+  /** The app's own name for the tool — what a person reads. */
+  title: string;
   description: string;
-  /** Whether using this tool pauses to ask, independent of the standing
-   *  per-tool permission — informational only, matches what actually
-   *  happens at runtime. */
-  confirms: boolean;
+  /** The person's standing choice, as the server resolves it (a tool never
+   *  set is 'ask'). Blocked tools are listed too, so they can be unblocked. */
+  permission: ToolPermission;
+  /** Jarvis's own judgment that this tool always confirms in conversation,
+   *  whatever the permission — separate from the person's choice. */
+  risky: boolean;
 }
 
 export interface ConnectFlow {

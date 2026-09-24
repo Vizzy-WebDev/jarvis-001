@@ -120,7 +120,13 @@ def tool_permission(connector: dict[str, Any], tool_name: str) -> str:
     """
     permissions = (connector.get("config") or {}).get("toolPermissions") or {}
     value = permissions.get(tool_name)
-    return value if value in ("allow", "ask", "deny") else "allow"
+    if value in ("allow", "ask", "deny"):
+        return value
+    # A tool the user has never looked at — including every tool an app reports
+    # the first time it is read — asks first. Only Jarvis's own built-in
+    # abilities (files, browser) start allowed; they are written here, not by a
+    # server this build has never seen.
+    return "ask" if connector.get("type") in USER_TYPES else "allow"
 
 
 def set_tool_permission(connector_id: str, tool_name: str, permission: str) -> dict[str, Any]:

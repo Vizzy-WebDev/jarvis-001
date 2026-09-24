@@ -86,9 +86,63 @@ async def _with_client(config: dict[str, Any], work: Any, *, connector_id: str |
         headers["Authorization"] = f"Bearer {token}"
 
     target = _connect_target(config)
-    client = Client(target, read_timeout_seconds=CALL_TIMEOUT_S)
-    async with client:
-        return await work(client)
+    if not isinstance(target, str):
+        try:
+            async with Client(target, read_timeout_seconds=CALL_TIMEOUT_S) as client:
+                return await work(client)
+        except Exception as err:  # noqa: BLE001 — reworded, never swallowed
+            raise RuntimeError(_plain_failure(err, [], None)) from err
+
+    # A bare URL handed to `Client` gets a transport with no way to carry a
+    # header, so the token above was built and then silently never sent — every
+    # server that needs signing in answered 401. The library's own HTTP client,
+    # passed to its own transport, is how a header reaches the wire.
+    from mcp.client.streamable_http import streamable_http_client
+    from mcp.shared._httpx_utils import create_mcp_http_client
+
+    # The library reports a refused request as a bare "Server returned an error
+    # response", with the status gone; this is the only place it is still seen.
+    statuses: list[int] = []
+
+    async def _note_status(response: Any) -> None:
+        statuses.append(response.status_code)
+
+    try:
+        async with create_mcp_http_client(headers=headers) as http:
+            http.event_hooks["response"].append(_note_status)
+            transport = streamable_http_client(target, http_client=http)
+            async with Client(transport, read_timeout_seconds=CALL_TIMEOUT_S) as client:
+                return await work(client)
+    except Exception as err:  # noqa: BLE001 — reworded, never swallowed
+        raise RuntimeError(_plain_failure(err, statuses, target)) from err
+
+
+def _innermost(err: BaseException) -> BaseException:
+    while isinstance(err, BaseExceptionGroup) and err.exceptions:
+        err = err.exceptions[0]
+    return err
+
+
+def _plain_failure(err: BaseException, statuses: list[int], url: str | None) -> str:
+    """What went wrong, in words the person can act on.
+
+    The client library wraps every failure in task-group exceptions, so what
+    reached the screen was "unhandled errors in a TaskGroup (1 sub-exception)"
+    — true, and no use to anyone.
+    """
+    if any(code in (401, 403) for code in statuses):
+        return ("The app didn't accept Jarvis's sign-in. Disconnect it and connect again.")
+    leaf = _innermost(err)
+    name = type(leaf).__name__
+    if url is None and isinstance(leaf, OSError):
+        return f"Couldn't start that app's program on this computer: {leaf}"
+    if name in ("ConnectError", "ConnectTimeout") or isinstance(leaf, (ConnectionError, OSError)):
+        return f"Couldn't reach the app's server at {url}. Check it is running and try again."
+    if name in ("ReadTimeout", "TimeoutError") or isinstance(leaf, TimeoutError):
+        return "The app's server took too long to answer."
+    if any(code >= 500 for code in statuses):
+        return "The app's server had a problem answering. Try again in a moment."
+    return str(leaf) or name
 
 
 def _run(coroutine: Any) -> Any:
@@ -125,7 +179,7 @@ def fetch_tools(config: dict[str, Any], *, connector_id: str | None = None) -> l
 def tool_declarations(config: dict[str, Any]) -> list[dict[str, Any]]:
     """What was found last time this connector was refreshed. A pure read: no
     process is started to build a declaration list."""
-    return [t for t in (config or {}).get("tools") or [] if t.get("enabled", True)]
+    return list((config or {}).get("tools") or [])
 
 
 def _flatten(content: Any) -> str:

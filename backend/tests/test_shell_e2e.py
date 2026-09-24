@@ -1919,9 +1919,68 @@ def test_a_custom_mcp_connector_connects_end_to_end_against_a_real_server(page, 
     )
     assert callback.ok
 
-    # The connect card's own poll picks the change up on its own — no reload.
-    page.wait_for_selector("[data-testid=modal]", state="detached", timeout=10_000)
+    # The connect card's own poll picks the change up on its own — no reload —
+    # and the pop-up stays open to show what the app can do. This stub speaks
+    # only enough MCP to probe OAuth, so reading its tools fails, and the
+    # pop-up says so rather than showing an empty list with no way forward.
+    page.wait_for_selector("[data-testid=disconnect]", timeout=10_000)
+    page.wait_for_selector("[data-testid=tools-empty] [data-testid=refresh-tools]", timeout=20_000)
+    page.click("[data-testid=modal-close]")
     page.wait_for_selector("text=Connected")
+
+
+def test_an_mcp_apps_tools_appear_and_their_permissions_work_in_the_popup(page):
+    """A connected MCP app with no tools read yet: opening it reads them from a
+    real server that demands its token, every one starts on Ask, and a row, a
+    group, blocking and unblocking all save, survive reopening, and change what
+    Jarvis may actually run — not just what the screen shows."""
+    sys.path.insert(0, str(Path(__file__).parent))
+    from stub_mcp_server import StubMcpHttp
+
+    from jarvis.assembly import get_registry
+    from jarvis.capabilities import Risk
+    from jarvis.config import save_secret
+    from jarvis.connectors import store as connector_store
+
+    with StubMcpHttp(token="tok-e2e") as stub:
+        save_secret("conn_e2e_notes", stub.token)
+        connector = connector_store.add_connector(type="mcp", label="Notes", config={
+            "connectFlow": {"kind": "token", "url": stub.url}, "secretRef": "conn_e2e_notes"})
+        connector_store.update_connector(connector["id"], {
+            "status": {"state": "working", "checkedAt": None, "detail": None}})
+
+        _open_app_control(page)
+        page.locator("[data-testid=connector-row]", has_text="Notes").locator("text=Notes").first.click()
+        page.wait_for_selector("[data-testid=tool-row][data-tool=search_notes]", timeout=20_000)
+        assert stub.auth_seen and all(a == "Bearer tok-e2e" for a in stub.auth_seen)
+
+        rows = page.locator("[data-testid=tool-row]")
+        assert rows.count() == 2
+        assert {rows.nth(i).get_attribute("data-permission") for i in range(2)} == {"ask"}
+        assert get_registry().get("notes__search_notes").risk is Risk.HIGH
+
+        # One row: Always allow.
+        search = "[data-testid=tool-row][data-tool=search_notes]"
+        page.click(f"{search} [data-testid=tool-permission-allow]")
+        page.wait_for_selector(f"{search}[data-permission=allow]")
+        assert get_registry().get("notes__search_notes").risk is Risk.LOW
+
+        # A whole group at once: Blocked. The row stays, marked blocked.
+        delete_group = page.locator("[data-testid=tool-group]", has=page.locator("[data-tool=delete_note]"))
+        delete_group.locator("[data-testid=group-permission]").select_option("deny")
+        page.wait_for_selector("[data-testid=tool-row][data-tool=delete_note][data-permission=deny]")
+        assert not get_registry().has("notes__delete_note")
+
+        # Reopen: the server's state, not the screen's memory.
+        page.click("[data-testid=modal-close]")
+        page.locator("[data-testid=connector-row]", has_text="Notes").locator("text=Notes").first.click()
+        page.wait_for_selector("[data-testid=tool-row][data-tool=delete_note][data-permission=deny]")
+        page.wait_for_selector(f"{search}[data-permission=allow]")
+
+        # Unblock straight back to Ask.
+        page.click("[data-testid=tool-row][data-tool=delete_note] [data-testid=tool-permission-ask]")
+        page.wait_for_selector("[data-testid=tool-row][data-tool=delete_note][data-permission=ask]")
+        assert get_registry().get("notes__delete_note").risk is Risk.HIGH
 
 
 def live_server_url(page: Page) -> str:
@@ -1943,7 +2002,10 @@ def test_toggling_a_connector_off_stops_its_tools_from_being_offered(page):
     page.fill("[data-testid=custom-label]", "Toggle Me")
     page.fill("[data-testid=custom-base-url]", "https://api.example.invalid")
     page.click("[data-testid=save-custom-connector]")
-    page.wait_for_selector("[data-testid=modal]")
+    # The new connector's own pop-up, not just "a" pop-up: the Add form is one
+    # too, and the first save in a fresh app takes a couple of seconds (the
+    # registry loads) — closing the form before it lands raced the save.
+    page.wait_for_selector("[data-testid=modal] >> text=A custom API connector.")
     page.click("[data-testid=modal-close]")
 
     connector = next(c for c in connector_store.list_connectors(kind="api") if c["label"] == "Toggle Me")
@@ -2011,7 +2073,10 @@ def test_the_group_permission_control_sets_every_tool_at_once_and_shows_custom(p
     page.fill("[data-testid=custom-label]", "Grouped Ops")
     page.fill("[data-testid=custom-base-url]", "https://api.example.invalid")
     page.click("[data-testid=save-custom-connector]")
-    page.wait_for_selector("[data-testid=modal]")
+    # The new connector's own pop-up, not just "a" pop-up: the Add form is one
+    # too, and the first save in a fresh app takes a couple of seconds (the
+    # registry loads) — closing the form before it lands raced the save.
+    page.wait_for_selector("[data-testid=modal] >> text=A custom API connector.")
 
     connector = next(c for c in connector_store.list_connectors(kind="api")
                      if c["label"] == "Grouped Ops")
@@ -2026,21 +2091,20 @@ def test_the_group_permission_control_sets_every_tool_at_once_and_shows_custom(p
     page.locator("[data-testid=connector-row]", has_text="Grouped Ops").click()
     page.wait_for_selector("[data-testid=group-permission]")
 
-    # Both tools default to "allow" — the group control reads a real, single value.
-    assert page.locator("[data-testid=group-permission]").input_value() == "allow"
+    # A tool nobody has set yet asks first — the group control reads a real,
+    # single value.
+    assert page.locator("[data-testid=group-permission]").input_value() == "ask"
 
     # Diverge one tool from the other; the group control must now say Custom.
     # The permission write is a real PATCH round trip, so wait for the button's
     # own state to flip before reading the (separately re-rendered) group
     # control — a plain assert right after the click would race the response.
-    page.locator("[data-testid=tool-permission-ask]").first.click()
-    page.wait_for_selector("[data-testid=tool-permission-ask][aria-pressed=true]")
+    page.locator("[data-testid=tool-permission-allow]").first.click()
+    page.wait_for_selector("[data-testid=tool-permission-allow][aria-pressed=true]")
     assert page.locator("[data-testid=group-permission]").input_value() == "custom"
 
-    # Setting the group applies to every tool in it — both buttons agree again.
-    # The handler awaits each tool's PATCH in sequence (never concurrently —
-    # two requests racing a read-modify-write over the same connector record
-    # could otherwise let the second clobber the first), so give both time.
+    # Setting the group applies to every tool in it — both buttons agree again,
+    # in ONE request for the whole group, so it can never end up half-changed.
     page.locator("[data-testid=group-permission]").select_option("deny")
     page.wait_for_function(
         "() => document.querySelectorAll("

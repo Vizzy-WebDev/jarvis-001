@@ -247,6 +247,58 @@ def sharing_section() -> str:
             "unless they ask.")
 
 
+def connected_apps_section() -> str:
+    """The apps the user has set up in the Connector section, as they stand now.
+
+    Without this, Jarvis had no way to know what was connected: asked "how many
+    apps do we have connected", it searched its tools, found one app's OWN tool
+    for listing that app's integrations, and answered from that. The Connector
+    records are the answer, so they are stated — read from the same store and
+    the same tool list the Connector screen shows, never a copy of either.
+    Volatile: it changes whenever something is connected, switched off or read.
+    """
+    try:
+        from .connectors import capabilities as connector_capabilities
+        from .connectors import store as connector_store
+    except Exception:  # noqa: BLE001 — the prompt must build with or without it
+        return ""
+    try:
+        connectors = [c for c in connector_store.list_connectors()
+                      if c.get("type") in connector_store.USER_TYPES]
+    except Exception:  # noqa: BLE001
+        return ""
+    heading = "Apps set up in the Connector section of this app (older name: App Control):"
+    if not connectors:
+        return heading + "\n- None yet."
+    lines = []
+    for connector in connectors:
+        label = connector.get("label") or connector.get("id")
+        if not connector.get("enabled", True):
+            lines.append(f"- {label} — switched off by the user; its tools are not available.")
+            continue
+        if (connector.get("status") or {}).get("state") != "working":
+            lines.append(f"- {label} — added, but not connected yet.")
+            continue
+        try:
+            rows = connector_capabilities.tool_rows(connector)
+        except Exception:  # noqa: BLE001 — one broken record is not the turn's problem
+            rows = []
+        if not rows:
+            lines.append(f"- {label} — connected, but its tools have not been read yet "
+                         "(opening it in Connector reads them).")
+            continue
+        usable = [r for r in rows if r["permission"] != "deny"]
+        prefix = connector_capabilities.prefixed_name(connector, "x")[:-1]
+        blocked = len(rows) - len(usable)
+        count = (f"{len(rows)} tools, {len(usable)} of them usable and {blocked} blocked by the user"
+                 if blocked else f"{len(rows)} tools")
+        lines.append(f"- {label} — connected, {count}; their names start with {prefix}")
+    return (heading + "\n" + "\n".join(lines) + "\n"
+            "This list is the real answer to what apps or connectors they have. To use one, call "
+            "find_capability naming the app and what is needed. Some of its tools ask for the "
+            "user's go-ahead first, as they chose.")
+
+
 def volatile_instruction(*, memories: str = "", low_confidence: bool = False,
                          now: datetime | None = None, extra: list[str] | None = None) -> str:
     parts = [situation_section(now), memory_section(memories), sharing_section()]
@@ -312,5 +364,5 @@ def system_instruction(*, memories: str = "", low_confidence: bool = False,
                        has_audience: bool = True) -> str:
     """Both halves, joined by the cache breakpoint the Anthropic adapter splits on."""
     volatile = volatile_instruction(memories=memories, low_confidence=low_confidence,
-                                    now=now, extra=extra)
+                                    now=now, extra=[connected_apps_section(), *(extra or [])])
     return stable_instruction(has_audience=has_audience) + (CACHE_BREAK + volatile if volatile else "")

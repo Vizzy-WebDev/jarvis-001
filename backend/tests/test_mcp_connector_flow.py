@@ -240,3 +240,27 @@ def test_a_local_stdio_server_lists_and_runs_tools():
     store.set_tool_permission(connector["id"], "local_notes__search_notes", "allow")
     result = execute("local_notes__search_notes", {"query": "plan"}, _ctx(), registry=_registry())
     assert result.ok and "Weekly plan" in result.value["result"], result.error
+
+
+# --- Jarvis knowing what is connected -----------------------------------------
+
+def test_jarvis_is_told_what_is_set_up_in_connector(stub):
+    """Asked "how many apps do we have connected", Jarvis once had nothing to go
+    on and answered from one app's own "list connectors" tool. The Connector
+    records themselves are now in its instruction, every turn, as they stand."""
+    from jarvis.prompt import connected_apps_section, system_instruction
+
+    assert connected_apps_section().endswith("- None yet.")
+
+    connector = _connector(stub, tools=True)
+    store.set_tool_permission(connector["id"], "notes__delete_note", "deny")
+    store.add_connector(type="mcp", label="Mail", config={"connectFlow": {"url": stub.url}})
+    off = store.add_connector(type="api", label="Weather", config={"baseUrl": "https://w.invalid"})
+    store.update_connector(off["id"], {"enabled": False})
+
+    section = connected_apps_section()
+    assert "- Notes — connected, 2 tools, 1 of them usable and 1 blocked by the user; their names start with notes__" in section
+    assert "- Mail — added, but not connected yet." in section
+    assert "- Weather — switched off by the user" in section
+    assert "Files" not in section and "Browser" not in section  # Jarvis's own, not apps
+    assert section in system_instruction()

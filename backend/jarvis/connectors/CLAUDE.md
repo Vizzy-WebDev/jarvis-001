@@ -44,6 +44,12 @@ changes when a connector reconnects. Non-singleton tool names are prefixed `<lab
 - `tool_rows()` is what the connector screen reads (`GET /api/connectors/{id}`): EVERY tool, blocked
   ones included, with `permission` and `risky` as separate fields. Only `connector_specs()` decides what
   the model sees. A blocked tool vanishing from the screen made blocking a one-way door — a real bug.
+- **Jarvis is told what is set up**: `prompt.connected_apps_section()` puts every mcp/api/cli
+  connector — connected, added-but-not-connected, switched off, tools not read yet, how many tools and
+  their name prefix — into the VOLATILE half of Jarvis's own instruction each turn, read from this
+  store and `tool_rows()`. Without it, asked "how many apps are connected", Jarvis searched its tools,
+  found one app's OWN `list_connectors` tool (Lovable's workspace integrations) and answered from that.
+  It never reaches the network, so it is safe per turn.
 - `refresh_tools()` runs automatically after an OAuth connect (or a server needing no sign-in), on a
   background thread (`routes/connectors.py`'s `_discover_in_background`); the `/refresh` route runs it
   off the event loop, because `mcp_client` drives its async client from sync code and refuses to start

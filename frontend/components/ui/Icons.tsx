@@ -246,6 +246,14 @@ export const TrendIcon = (p: IconProps) => (
  * is read by the router and by voice navigation, neither of which has any use
  * for a React component.
  */
+export const ContentIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3.5" y="6.5" width="13" height="13" rx="2" />
+    <path d="M7.5 3.5h11a2 2 0 0 1 2 2v11" />
+    <path d="M8.5 11l4 2.5-4 2.5z" />
+  </Svg>
+);
+
 const SECTION_ICONS: Record<string, (p: IconProps) => JSX.Element> = {
   home: SparkIcon,
   notifications: BellIcon,
@@ -253,6 +261,7 @@ const SECTION_ICONS: Record<string, (p: IconProps) => JSX.Element> = {
   models: ChipIcon,
   skills: BookIcon,
   'app-control': GridIcon,
+  content: ContentIcon,
   tasks: CalendarIcon,
   jobs: LayersIcon,
   briefing: SunIcon,

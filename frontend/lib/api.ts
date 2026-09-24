@@ -54,6 +54,15 @@ import type {
   Status,
   Task,
   TaskRun,
+  ContentAccount,
+  ContentCalendarEntry,
+  ContentFilters,
+  ContentItem,
+  ContentItemDetail,
+  ContentMeta,
+  ContentPlacement,
+  ContentStage,
+  ContentSummary,
 } from './api-types';
 
 /** A failed request, carrying the server's own message.
@@ -97,6 +106,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) });
+
+/** `?a=1&b=2` from the set values only; empty when nothing is set. */
+function query(params: Record<string, string | undefined | null>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) if (value) search.set(key, value);
+  const text = search.toString();
+  return text ? `?${text}` : '';
+}
 
 export const api = {
   status: () => request<Status>('/status'),
@@ -596,6 +613,82 @@ export const api = {
         method: 'POST',
         ...json({ decision }),
       }),
+  },
+
+  content: {
+    meta: () => request<ContentMeta>('/content-meta'),
+    list: (stage: ContentStage | 'bin', filters: ContentFilters & {
+      from?: string; to?: string; archivedFrom?: string;
+    } = {}) =>
+      request<{ items: ContentItem[] }>(`/content-items${query({ stage, ...filters })}`),
+    summary: (filters: ContentFilters = {}) =>
+      request<ContentSummary>(`/content-items/summary${query({ ...filters })}`),
+    calendar: (start: string, end: string, filters: ContentFilters = {}) =>
+      request<{ entries: ContentCalendarEntry[] }>(`/content-items/calendar${query({ start, end, ...filters })}`),
+    get: (id: string) => request<{ item: ContentItemDetail }>(`/content-items/${encodeURIComponent(id)}`),
+    edit: (id: string, patch: { name?: string; niche?: string; fields?: Record<string, string | string[]> }) =>
+      request<{ ok: true; item: ContentItem }>(`/content-items/${encodeURIComponent(id)}`,
+        { method: 'PATCH', ...json(patch) }),
+    approve: (id: string) =>
+      request<{ ok: true; item: ContentItem }>(`/content-items/${encodeURIComponent(id)}/approve`, { method: 'POST' }),
+    requestChanges: (id: string, body: { what: string; why: string; assignee: 'agent' | 'jarvis' }) =>
+      request<{ ok: true; item: ContentItem }>(`/content-items/${encodeURIComponent(id)}/request-changes`,
+        { method: 'POST', ...json(body) }),
+    addPlacement: (id: string, body: { platform: string; accountId?: string | null; destination?: string }) =>
+      request<{ ok: true; placement: ContentPlacement; item: ContentItem }>(
+        `/content-items/${encodeURIComponent(id)}/placements`, { method: 'POST', ...json(body) }),
+    archive: (id: string) =>
+      request<{ ok: true; item: ContentItem }>(`/content-items/${encodeURIComponent(id)}/archive`, { method: 'POST' }),
+    unarchive: (id: string) =>
+      request<{ ok: true; item: ContentItem }>(`/content-items/${encodeURIComponent(id)}/unarchive`, { method: 'POST' }),
+    /** To the recycle bin — not a permanent delete. See `purge()`. */
+    remove: (id: string) =>
+      request<{ ok: true; item: ContentItem }>(`/content-items/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    restore: (id: string) =>
+      request<{ ok: true; item: ContentItem }>(`/content-items/${encodeURIComponent(id)}/restore`, { method: 'POST' }),
+    purge: (id: string) =>
+      request<{ ok: true }>(`/content-items/${encodeURIComponent(id)}/permanent`, { method: 'DELETE' }),
+    emptyBin: () => request<{ ok: true; removed: number }>('/content-items/trash', { method: 'DELETE' }),
+    updatePlacement: (id: string, body: {
+      overrides?: Record<string, string | string[]>; accountId?: string | null; destination?: string;
+    }) =>
+      request<{ ok: true; placement: ContentPlacement }>(`/content-placements/${encodeURIComponent(id)}`,
+        { method: 'PATCH', ...json(body) }),
+    removePlacement: (id: string) =>
+      request<{ ok: true; item: ContentItem }>(`/content-placements/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    schedule: (id: string, scheduledAt: string, timezone: string) =>
+      request<{ ok: true; placement: ContentPlacement }>(`/content-placements/${encodeURIComponent(id)}/schedule`,
+        { method: 'POST', ...json({ scheduledAt, timezone }) }),
+    unschedule: (id: string) =>
+      request<{ ok: true; item: ContentItem }>(`/content-placements/${encodeURIComponent(id)}/unschedule`,
+        { method: 'POST' }),
+    postNow: (id: string) =>
+      request<{ ok: true; item: ContentItem }>(`/content-placements/${encodeURIComponent(id)}/post-now`,
+        { method: 'POST' }),
+    requeue: (id: string) =>
+      request<{ ok: true; item: ContentItem }>(`/content-placements/${encodeURIComponent(id)}/requeue`,
+        { method: 'POST' }),
+    markPosted: (id: string, url: string) =>
+      request<{ ok: true; item: ContentItem }>(`/content-placements/${encodeURIComponent(id)}/mark-posted`,
+        { method: 'POST', ...json({ url }) }),
+    updateRequest: (id: string, body: { what?: string; why?: string; assignee?: 'agent' | 'jarvis' }) =>
+      request<{ ok: true; item: ContentItemDetail }>(`/content-change-requests/${encodeURIComponent(id)}`,
+        { method: 'PATCH', ...json(body) }),
+    cancelRequest: (id: string) =>
+      request<{ ok: true; item: ContentItem }>(`/content-change-requests/${encodeURIComponent(id)}/cancel`,
+        { method: 'POST' }),
+    retryJarvis: (id: string) =>
+      request<{ ok: boolean; item: ContentItemDetail | null }>(
+        `/content-change-requests/${encodeURIComponent(id)}/start-jarvis`, { method: 'POST' }),
+    accounts: {
+      create: (body: { platform: string; handle: string; destinations: string[]; defaultNiche: string }) =>
+        request<{ ok: true; account: ContentAccount }>('/content-accounts', { method: 'POST', ...json(body) }),
+      update: (id: string, body: { handle?: string; destinations?: string[]; defaultNiche?: string }) =>
+        request<{ ok: true; account: ContentAccount }>(`/content-accounts/${encodeURIComponent(id)}`,
+          { method: 'PATCH', ...json(body) }),
+      remove: (id: string) =>
+        request<{ ok: true }>(`/content-accounts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    },
   },
 
   uploads: {

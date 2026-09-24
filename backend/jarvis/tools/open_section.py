@@ -21,6 +21,7 @@ SECTIONS = {
     "models": "Model Settings",
     "skills": "Skills",
     "agents": "Specialists",
+    "content": "Content Management",
     "app-control": "Connector",
     "tasks": "Scheduled Tasks",
     "jobs": "Background Jobs",
@@ -45,11 +46,13 @@ SPEC = CapabilitySpec(
     id="builtin.open_section",
     name="open_section",
     description=(
-        "Open a section of the Jarvis app for the user — Model Settings, Skills, Connector, "
+        "Open a section of the Jarvis app for the user — Model Settings, Skills, Specialists, "
+        "Connector, Content Management (reviewing, scheduling and publishing their content), "
         "Scheduled Tasks, Background Jobs, Morning Briefing, Notifications, Chat History, "
         "Memory, Self-Improvement, or Profile & Goals. Use it when they say “open…”, "
-        "“show me…” or “go to…” one of those. Planning and shared content are not sections: "
-        "they happen in the conversation, so never try to open a page for them."),
+        "“show me…” or “go to…” one of those. Planning, and looking into something they "
+        "shared with you, are not sections: they happen in the conversation, so never try "
+        "to open a page for them."),
     input_schema={"type": "object", "properties": {
         "section": {"type": "string", "enum": sorted(SECTIONS),
                     "description": "Which section to open."}},

@@ -66,7 +66,7 @@ The project has a real automated suite. Use it.
 
 ```
 cd backend && python -m pytest tests -q          # ~1300 tests
-cd backend && python -m pytest tests/test_shell_e2e.py -q   # ~80 Playwright tests, real browser
+cd backend && python -m pytest tests/test_shell_e2e.py tests/test_content_e2e.py -q   # ~90 Playwright tests, real browser
 cd frontend && npm run typecheck && npm run build
 ```
 
@@ -280,6 +280,21 @@ model system, tool system or memory for them. Tools/connectors are capabilities 
 be given; agents are split by responsibility, never by tool. Approval floors are unchanged
 inside a specialist, and a slow specialist is detached, never cut off, with its result
 delivered when it lands.
+
+## Content Management — `jarvis/content_manager/` (see its own `CLAUDE.md`)
+
+Finished content — made by agents and tools outside this screen — taken through Review,
+Changes Requested, Ready to Post, Scheduling, Published, Archived and a Recycle Bin. **It
+manages content; it never produces it**: no research/script/generation/edit pages here. An
+item is the publishable thing (video, carousel, post…); title, caption, hashtags, thumbnail
+are its supporting fields and assets, shown per content type and platform from ONE registry
+(`kinds.py`, served at `/api/content-meta`). Niche is a filter over the one workflow, never a
+copy of it. Every move goes through `lifecycle.py`; after approval the stage is DERIVED from
+the item's placements. Agents use a local HTTP API (submit, pick up a change request, revise,
+claim a queued post, report the result); publishing is a hand-off queue — nothing here posts
+to a platform itself. The person alone approves, schedules, archives and deletes: no Jarvis
+tool can. The Recycle Bin is never emptied automatically. Not to be confused with
+`jarvis/content/` (Content Analysis of things the person shares — unrelated, older).
 
 ## The Adaptive Communication Register — `jarvis/personality.py`
 

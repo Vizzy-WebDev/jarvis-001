@@ -389,4 +389,111 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
         ALTER TABLE jobs ADD COLUMN agent_id TEXT;
         """
     ],
+
+    # 31: Content Management (`jarvis/content_manager/`) — finished content taken
+    # from review to publication. An item is the publishable thing; a placement is
+    # one platform/account it goes to, and after approval the item's stage is
+    # DERIVED from its placements rather than set by hand. `deleted_at` is kept
+    # apart from `stage` so a restore from the recycle bin puts an item back
+    # exactly where it was. Revisions and events are append-only history.
+    31: [
+        """
+        CREATE TABLE IF NOT EXISTS cm_items (
+          id            TEXT PRIMARY KEY,
+          name          TEXT NOT NULL,
+          content_type  TEXT NOT NULL,
+          niche         TEXT NOT NULL DEFAULT '',
+          stage         TEXT NOT NULL,
+          producer      TEXT NOT NULL DEFAULT '',
+          revision      INTEGER NOT NULL DEFAULT 1,
+          fields_json   TEXT NOT NULL DEFAULT '{}',
+          media_json    TEXT NOT NULL DEFAULT '[]',
+          findings_json TEXT NOT NULL DEFAULT '[]',
+          approved_at   TEXT,
+          archived_at   TEXT,
+          archived_from TEXT,
+          deleted_at    TEXT,
+          created_at    TEXT NOT NULL,
+          updated_at    TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_cm_items_stage ON cm_items(deleted_at, stage);
+        CREATE TABLE IF NOT EXISTS cm_placements (
+          id             TEXT PRIMARY KEY,
+          item_id        TEXT NOT NULL REFERENCES cm_items(id) ON DELETE CASCADE,
+          platform       TEXT NOT NULL,
+          account_id     TEXT,
+          account_label  TEXT NOT NULL DEFAULT '',
+          destination    TEXT NOT NULL DEFAULT '',
+          overrides_json TEXT NOT NULL DEFAULT '{}',
+          status         TEXT NOT NULL DEFAULT 'draft',
+          scheduled_at   TEXT,
+          timezone       TEXT,
+          claimed_by     TEXT,
+          claimed_at     TEXT,
+          published_at   TEXT,
+          published_url  TEXT,
+          failure        TEXT,
+          metrics_json   TEXT,
+          created_at     TEXT NOT NULL,
+          updated_at     TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_cm_placements_item ON cm_placements(item_id);
+        CREATE INDEX IF NOT EXISTS idx_cm_placements_due ON cm_placements(status, scheduled_at);
+        CREATE TABLE IF NOT EXISTS cm_change_requests (
+          id                TEXT PRIMARY KEY,
+          item_id           TEXT NOT NULL REFERENCES cm_items(id) ON DELETE CASCADE,
+          revision          INTEGER NOT NULL,
+          what              TEXT NOT NULL,
+          why               TEXT NOT NULL DEFAULT '',
+          assignee          TEXT NOT NULL,
+          status            TEXT NOT NULL DEFAULT 'open',
+          picked_up_by      TEXT,
+          picked_up_at      TEXT,
+          job_id            TEXT,
+          start_error       TEXT,
+          created_at        TEXT NOT NULL,
+          resolved_at       TEXT,
+          resolved_revision INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_cm_requests_item ON cm_change_requests(item_id);
+        CREATE INDEX IF NOT EXISTS idx_cm_requests_status ON cm_change_requests(status);
+        CREATE TABLE IF NOT EXISTS cm_revisions (
+          item_id     TEXT NOT NULL REFERENCES cm_items(id) ON DELETE CASCADE,
+          revision    INTEGER NOT NULL,
+          fields_json TEXT NOT NULL,
+          media_json  TEXT NOT NULL,
+          by          TEXT NOT NULL DEFAULT '',
+          note        TEXT NOT NULL DEFAULT '',
+          created_at  TEXT NOT NULL,
+          PRIMARY KEY (item_id, revision)
+        );
+        CREATE TABLE IF NOT EXISTS cm_events (
+          id       INTEGER PRIMARY KEY AUTOINCREMENT,
+          item_id  TEXT NOT NULL REFERENCES cm_items(id) ON DELETE CASCADE,
+          at       TEXT NOT NULL,
+          actor    TEXT NOT NULL,
+          kind     TEXT NOT NULL,
+          note     TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_cm_events_item ON cm_events(item_id, id);
+        CREATE TABLE IF NOT EXISTS cm_accounts (
+          id                TEXT PRIMARY KEY,
+          platform          TEXT NOT NULL,
+          handle            TEXT NOT NULL,
+          destinations_json TEXT NOT NULL DEFAULT '[]',
+          default_niche     TEXT NOT NULL DEFAULT '',
+          created_at        TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS cm_files (
+          id         TEXT PRIMARY KEY,
+          item_id    TEXT REFERENCES cm_items(id) ON DELETE CASCADE,
+          name       TEXT NOT NULL,
+          mime       TEXT NOT NULL,
+          size       INTEGER NOT NULL,
+          suffix     TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_cm_files_item ON cm_files(item_id);
+        """
+    ],
 }

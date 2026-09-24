@@ -25,6 +25,7 @@ export function Modal({
   footer,
   children,
   nested = false,
+  size = 'normal',
 }: {
   open: boolean;
   title: string;
@@ -33,6 +34,8 @@ export function Modal({
   children?: React.ReactNode;
   /** Set when this modal was opened from inside another one. */
   nested?: boolean;
+  /** `wide` for a workspace that shows content beside its details. */
+  size?: 'normal' | 'wide';
 }) {
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
@@ -72,8 +75,8 @@ export function Modal({
         aria-modal="true"
         aria-label={title}
         data-testid="modal"
-        className="animate-fade-up relative flex max-h-[86vh] w-[min(560px,100%)] flex-col
-                   overflow-hidden rounded-xl border border-surface-border bg-surface-raised shadow-panel"
+        className={`animate-fade-up relative flex flex-col ${size === 'wide' ? 'max-h-[92vh] w-[min(1180px,100%)]' : 'max-h-[86vh] w-[min(560px,100%)]'}
+                   overflow-hidden rounded-xl border border-surface-border bg-surface-raised shadow-panel`}
       >
         <div className="flex shrink-0 items-center gap-3 px-5 py-3.5">
           <h2 className="min-w-0 flex-1 truncate text-[15px] font-medium text-ink">{title}</h2>

@@ -83,6 +83,11 @@ class EventType(str, Enum):
     AGENT_RUN_STARTED = "agent.run_started"
     AGENT_RUN_FINISHED = "agent.run_finished"
 
+    #: A content item moved, was edited, or was deleted (`jarvis/content_manager/`).
+    #: An open Content screen reloads on it, whoever made the change — the
+    #: person, an agent over the local API, or Jarvis's own revision job.
+    CONTENT_CHANGED = "content.changed"
+
     # Model calls — what the cost and self-model observers subscribe to,
     # instead of being imported by the turn loop.
     MODEL_CALL_STARTED = "model.call_started"

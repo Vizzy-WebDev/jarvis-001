@@ -15,14 +15,14 @@ as "passed":
    (`run_in_background: true`) with `JARVIS_DATA_DIR`/`JARVIS_ENV_PATH` pointed at empty
    scratch paths and an unusual `PORT`. Must come up with no unhandled exception.
 3. **Migrations + tool loader** — read the scratch `jarvis.db` read-only and confirm
-   `PRAGMA user_version` reached 26: `jarvis/migrations.py`'s `MIGRATION_SQL` (19,
+   `PRAGMA user_version` reached 31: `jarvis/migrations.py`'s `MIGRATION_SQL` (19,
    the original schema, never hand-edited) plus
-   `migrations_extra.py`'s `EXTRA_MIGRATION_SQL` (7, this build's own — the latest
-   being migration 26, which drops the old AI model system's `ai_*` tables). Counting only
+   `migrations_extra.py`'s `EXTRA_MIGRATION_SQL` (12, this build's own — the latest
+   being migration 31, Content Management's `cm_*` tables). Counting only
    the first file gives 19 and a false failure — the gate caught exactly that mistake
    in this document. **The database is created lazily on first use**, so hit a route
    before looking for the file. Confirm `load_tools()` (or a route that touches the
-   capability registry) succeeds with no import error — currently 60 tools across 33
+   capability registry) succeeds with no import error — currently 69 tools across 36
    modules; a real launch's own startup log is not a reliable place to see the count,
    since nothing in this project configures root logging by default and `jarvis.*`
    loggers have no handler attached unless something else in the process added one.
@@ -31,7 +31,7 @@ as "passed":
    static mount).
 5. **Any recently-fixed security behaviour** — re-confirm it live rather than by reading
    the code, e.g. `GET /api/artifacts/:id`'s forced-download headers on a plain request.
-6. **The full suites** — `pytest tests -q` and the Playwright file, run as the two
+6. **The full suites** — `pytest tests -q` and the Playwright files, run as the two
    separate commands in CLAUDE.md's Testing section, both green.
 
 Teardown: stop the scratch server by the PID actually bound to the scratch port, delete

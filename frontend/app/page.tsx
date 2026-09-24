@@ -9,6 +9,7 @@ import { AgentsScreen } from '@/components/screens/AgentsScreen';
 import { AppControlScreen } from '@/components/screens/AppControlScreen';
 import { BriefingScreen } from '@/components/screens/BriefingScreen';
 import { ChatHistoryScreen } from '@/components/screens/ChatHistoryScreen';
+import { ContentScreen } from '@/components/screens/ContentScreen';
 import { GenericScreen, NotPortedYet } from '@/components/screens/GenericScreen';
 import { ImprovementScreen } from '@/components/screens/ImprovementScreen';
 import { JobsScreen } from '@/components/screens/JobsScreen';
@@ -854,6 +855,7 @@ function screenFor(
   if (id === 'briefing') return <BriefingScreen onNavigate={go} />;
   if (id === 'skills') return <SkillsScreen onCreateWithJarvis={startChatWith} />;
   if (id === 'agents') return <AgentsScreen />;
+  if (id === 'content') return <ContentScreen onNavigate={go} />;
   if (id === 'chat-history') {
     return <ChatHistoryScreen onNavigate={go} onResumeConversation={resumeConversation} />;
   }

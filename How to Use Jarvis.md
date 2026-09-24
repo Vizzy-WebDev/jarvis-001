@@ -22,6 +22,7 @@ main chat:
   built-in computer control
 - **Planning** — turn an idea into a plan and a ready-to-paste prompt
 - **Content Analysis** — hand Jarvis a video, article or file and ask about it
+- **Content Management** — review, approve, schedule and publish the content your agents make
 - **Scheduled Tasks** — reminders and repeating things, including ones that use a
   specific ability of Jarvis's
 - **Background Jobs** — longer things Jarvis is working on behind the scenes
@@ -491,10 +492,57 @@ You can adjust how trigger-happy that second layer is from Model Settings →
 
 ---
 
+## 19. Content Management — from finished content to published
+
+Your agents and tools make the content — videos, images, carousels, flyers, posts,
+articles, newsletters, podcasts. **Content Management** (menu → **Content Management**)
+is where you look after it once it's made. It doesn't make anything itself.
+
+Across the top is the whole journey, left to right, with how many things are at each
+step: **Review → Changes Requested → Ready to Post → Scheduling → Published**, and off to
+the side **Archived** and the **Recycle Bin**. A dot means something there needs you, and
+the line above it says exactly what ("2 to review · 1 post failed").
+
+- **Review** — new content lands here. Click one to see the actual video, image, slides
+  or text first, with its title, caption, hashtags and thumbnail beside it. Only the
+  parts that type of content has are shown. Fix a caption right there if you like, then
+  **Approve** or **Request changes**.
+- **Request changes** — say what needs to change and why, and who does it: the agent
+  that made it, or **Jarvis** (Jarvis can rewrite words — captions, titles, a post — but
+  can't re-edit video or images). You'll see who's working on it, and it comes back to
+  Review as the next revision, with every earlier version still there to look at.
+- **Ready to Post** — pick where it goes (platform, account, and where on it — e.g.
+  YouTube Shorts), then **Post now** or **Schedule**. Each platform can have its own
+  version of the caption.
+- **Scheduling** — every scheduled post, as a list or a **calendar**. Pick a date, time
+  and timezone; reschedule or cancel any time before it goes out. Click an empty day on
+  the calendar to schedule something that's ready.
+- **Published** — the record of what went out, where, when, and the link to it. If a
+  post fails, it says why and gives you **Retry**. Posted it yourself? Use
+  **I posted it myself** and paste the link.
+- **Archived** — things you're done with, kept out of the way but still searchable.
+- **Recycle Bin** — anything you delete goes here first. **Restore** puts it back
+  exactly where it was; **Delete forever** really removes it, files and all, and asks
+  you first. Nothing is ever deleted from the bin on its own.
+
+The **Niche**, **Type** and **Platform** filters work on every step, so however many
+niches you run, it's still one list — just filter to the one you want. **Accounts** is
+where you list the accounts you post to; type each handle exactly as it appears on the
+platform.
+
+*Posting itself is done by a publisher* — an agent, or a posting service you connect
+later. Jarvis hands it the post, the platform, the account and the files, and it reports
+back "posted, here's the link" or "failed, here's why".
+
+---
+
 ## Quick reference
 
 | Want to... | Where |
 |---|---|
+| See what content needs reviewing | Menu → Content Management, or ask "anything to review?" |
+| Schedule a finished post | Content Management → Ready to Post → open it → Schedule… |
+| Get deleted content back | Content Management → Recycle Bin → open it → Restore |
 | Add a Skill (upload, or from a GitHub link) | Menu → Skills → + Add a Skill / Install from a GitHub link |
 | Set a reminder or repeating task | Just ask Jarvis, or Menu → Scheduled Tasks → + New task |
 | Have a scheduled task use a specific ability | Scheduled Tasks → + New task → "Run one specific skill" |

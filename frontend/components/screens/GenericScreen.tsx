@@ -40,7 +40,7 @@ export function GenericScreen({
       </header>
 
       <div className="scroll-quiet flex-1 overflow-y-auto px-5 pb-10 pt-6">
-        <div className="mx-auto w-full max-w-3xl">
+        <div className={`mx-auto w-full ${section.wide ? 'max-w-6xl' : 'max-w-3xl'}`}>
           <PageHeader title={section.label} blurb={section.blurb}>
             {controls}
           </PageHeader>

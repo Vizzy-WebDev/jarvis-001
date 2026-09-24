@@ -22,7 +22,8 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .routes import (
-    agents, approvals, artifacts, automation, connectors, control, conversations, core, events,
+    agents, approvals, artifacts, automation, connectors, content_manager, control, conversations,
+    core, events,
     external_services, improvement, jobs, memory, models, notifications, realtime,
     sandbox, skills, speech, tasks, turn, uploads, voice,
 )
@@ -67,6 +68,7 @@ def create_app() -> FastAPI:
     app.include_router(agents.router)
     app.include_router(automation.router)
     app.include_router(sandbox.router)
+    app.include_router(content_manager.router)
 
     # Everything here is behind its own interlock — off by default so a test's
     # own create_app() never starts a real background thread unasked. `main()`

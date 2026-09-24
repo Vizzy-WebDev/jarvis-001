@@ -774,3 +774,154 @@ export interface AgentAbilities {
   skills: { name: string; description: string }[];
   connectors: { id: string; label: string; type: string | null }[];
 }
+
+// --- Content Management ------------------------------------------------------------
+
+export type ContentStage =
+  'review' | 'changes_requested' | 'approved' | 'scheduling' | 'published' | 'archived';
+
+export type PlacementStatus = 'draft' | 'scheduled' | 'queued' | 'publishing' | 'published' | 'failed';
+
+export interface ContentMedia {
+  fileId: string;
+  name: string;
+  mime: string;
+  size: number;
+  /** 'image' | 'video' | 'audio' | 'document' | 'unknown' */
+  kind: string;
+  url: string;
+  role: 'primary' | 'slide' | 'thumbnail' | 'cover' | 'attachment';
+  order: number;
+}
+
+export interface ContentPlacement {
+  id: string;
+  itemId: string;
+  platform: string;
+  platformLabel: string;
+  accountId: string | null;
+  accountLabel: string;
+  destination: string;
+  overrides: Record<string, string | string[]>;
+  status: PlacementStatus;
+  scheduledAt: string | null;
+  timezone: string | null;
+  /** Scheduled, and its time has come: waiting for a publisher to take it. */
+  due: boolean;
+  claimedBy: string | null;
+  claimedAt: string | null;
+  /** Claimed by a publisher that has said nothing for a long while. */
+  stale: boolean;
+  publishedAt: string | null;
+  publishedUrl: string | null;
+  failure: string | null;
+  metrics: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ContentJobState {
+  id: string;
+  status: string;
+  error: string | null;
+  currentStep: string | null;
+  result: string | null;
+}
+
+export interface ContentChangeRequest {
+  id: string;
+  itemId: string;
+  revision: number;
+  what: string;
+  why: string;
+  assignee: 'agent' | 'jarvis';
+  status: 'open' | 'in_progress' | 'resolved' | 'cancelled';
+  pickedUpBy: string | null;
+  pickedUpAt: string | null;
+  jobId: string | null;
+  startError: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  resolvedRevision: number | null;
+  job?: ContentJobState | null;
+}
+
+export interface ContentItem {
+  id: string;
+  name: string;
+  contentType: string;
+  typeLabel: string;
+  niche: string;
+  stage: ContentStage;
+  producer: string;
+  revision: number;
+  fields: Record<string, string | string[]>;
+  media: ContentMedia[];
+  findings: { level: 'note' | 'warning' | 'problem'; text: string }[];
+  approvedAt: string | null;
+  archivedAt: string | null;
+  archivedFrom: ContentStage | null;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  placements: ContentPlacement[];
+  openRequest: ContentChangeRequest | null;
+  /** What needs the person, in their words. Empty when nothing does. */
+  attention: string[];
+  /** The next thing that has to happen, and who is responsible for it. */
+  next: { step: string; who: string };
+}
+
+export interface ContentItemDetail extends ContentItem {
+  requests: ContentChangeRequest[];
+  revisions: { revision: number; fields: Record<string, string | string[]>; media: ContentMedia[];
+               by: string; note: string; createdAt: string }[];
+  events: { at: string; actor: string; kind: string; note: string }[];
+}
+
+export interface ContentAccount {
+  id: string;
+  platform: string;
+  platformLabel: string;
+  handle: string;
+  destinations: string[];
+  defaultNiche: string;
+  createdAt: string;
+}
+
+export interface ContentTypeInfo {
+  label: string;
+  render: 'video' | 'image' | 'slides' | 'text' | 'audio';
+  media: 'primary' | 'slide' | null;
+  fields: string[];
+  assets: string[];
+}
+
+export interface ContentMeta {
+  fields: Record<string, { label: string; kind: 'text' | 'longtext' | 'list' }>;
+  assets: Record<string, string>;
+  types: Record<string, ContentTypeInfo>;
+  platforms: Record<string, { label: string; fields: string[]; accepts: string[] }>;
+  stages: { id: ContentStage; label: string }[];
+  niches: string[];
+  accounts: ContentAccount[];
+}
+
+export interface ContentSummary {
+  counts: Record<ContentStage | 'bin', number>;
+  attention: { toReview: number; revisionsReady: number; failedPosts: number; revisionsStuck: number };
+}
+
+export interface ContentCalendarEntry extends ContentPlacement {
+  itemName: string;
+  contentType: string;
+  typeLabel: string;
+  niche: string;
+}
+
+export interface ContentFilters {
+  niche?: string;
+  type?: string;
+  platform?: string;
+  q?: string;
+}

@@ -14,6 +14,7 @@ export type SectionId =
   | 'models'
   | 'skills'
   | 'agents'
+  | 'content'
   | 'app-control'
   | 'tasks'
   | 'jobs'
@@ -30,6 +31,9 @@ export interface Section {
   blurb: string;
   /** False until the screen itself is ported — the drawer says so plainly. */
   ready: boolean;
+  /** A screen that needs more than the standard reading column (a calendar,
+   *  a side-by-side preview). */
+  wide?: boolean;
 }
 
 export const SECTIONS: Section[] = [
@@ -47,6 +51,8 @@ export const SECTIONS: Section[] = [
     blurb: 'Expert agents Jarvis hands work to — and ones you create yourself.' },
   { id: 'app-control', label: 'Connector', group: 'Abilities', ready: true,
     blurb: 'The apps and services Jarvis is connected to.' },
+  { id: 'content', label: 'Content Management', group: 'Content', ready: true, wide: true,
+    blurb: 'Finished content from your agents — review it, approve it, schedule it, publish it.' },
   { id: 'tasks', label: 'Scheduled Tasks', group: 'Automation', ready: true,
     blurb: 'Work that runs on a clock.' },
   { id: 'jobs', label: 'Background Jobs', group: 'Automation', ready: true,

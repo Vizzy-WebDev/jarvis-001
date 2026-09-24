@@ -95,8 +95,9 @@ Errors are `{"ok": false, "error": "<plain sentence>"}` with 400, or 404 when a 
    "platforms": [{"platform": "tiktok"}, {"platform": "youtube", "destination": "Shorts"}]}
   ```
   Or upload first with `POST /api/content-files` and use `{"fileId": "cmf_…"}`. A refused
-  submission leaves no stray files behind. (`readyToPost: true` adds it straight to Ready to Post, the same as a submit followed
-  by `/approve`; open to any API caller, never to a Jarvis tool.)
+  submission leaves no stray files behind. (`readyToPost: true` adds it straight to Ready
+  to Post, the same as a submit followed by `/approve`; open to any API caller, never to a
+  Jarvis tool.)
 - `GET /api/content-items?stage=…[&limit=&offset=]` — with `limit`, one page plus `total`.
   `q` searches names, niche, producer and field VALUES (never the stored JSON's key names).
 - `PATCH /api/content-items/{id}` and `PATCH /api/content-placements/{id}` — JSON or

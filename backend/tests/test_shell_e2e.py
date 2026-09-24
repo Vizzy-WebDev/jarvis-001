@@ -612,6 +612,26 @@ def test_model_settings_starts_empty_and_offers_every_kind_of_provider(page):
         assert gone not in text
 
 
+def test_a_turn_that_stops_to_ask_shows_the_card_and_no_dropped_connection(
+        page, live_server, serve_provider):
+    """A turn that ends by asking for a go-ahead closes its stream with no
+    `done`. The page treated that close as a failure: every "Need approval"
+    showed "The connection to Jarvis dropped." under the approval card, and the
+    same happened, with no card at all, when the request was spoken."""
+    stub = serve_provider("openai-chat", tool=("remember_about_me", {"text": "I drink green tea"}))
+    connect_and_select(live_server, stub)
+    refresh(page)
+
+    say(page, "remember that I drink green tea")
+    page.wait_for_selector("[data-testid=approval] [data-testid=approve]", timeout=90_000)
+    page.wait_for_timeout(2_000)  # long enough for a stream close to have been mis-read
+    # The failure showed as the reply bubble turned into an error, not as new text.
+    assert page.locator("[data-testid=turn-error]").count() == 0
+    # The turn is over, not hung: the composer takes the next message.
+    page.fill("[data-testid=composer-input]", "next")
+    assert page.is_enabled("[data-testid=send]")
+
+
 def test_connecting_a_provider_and_using_a_model_reaches_that_model_at_the_provider(
         page, live_server, serve_provider):
     stub = serve_provider("openai-chat", reply="Hello from the stub.")

@@ -353,12 +353,10 @@ export interface ConnectorTool {
   /** The app's own name for the tool — what a person reads. */
   title: string;
   description: string;
-  /** The person's standing choice, as the server resolves it (a tool never
-   *  set is 'ask'). Blocked tools are listed too, so they can be unblocked. */
+  /** The person's choice, and the final word: 'allow' runs without asking,
+   *  'ask' asks every time, 'deny' never runs. A tool never set is 'ask'.
+   *  Blocked tools are listed too, so they can be unblocked. */
   permission: ToolPermission;
-  /** Jarvis's own judgment that this tool always confirms in conversation,
-   *  whatever the permission — separate from the person's choice. */
-  risky: boolean;
 }
 
 export interface ConnectFlow {

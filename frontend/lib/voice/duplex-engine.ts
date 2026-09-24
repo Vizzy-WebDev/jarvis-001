@@ -674,6 +674,14 @@ export class DuplexEngine extends VoiceEngine {
           if (data.messageId) this.emit('saved', { replyMessageId: data.messageId });
           this.emit('done', { text: full });
           break;
+        case 'approval_required':
+          // The turn ends here, asking — the stream closes with no `done`, and
+          // treating that close as a failure said "Could not reach Jarvis."
+          finish();
+          this.emit('approval', { approvalId: data.approvalId!, capability: data.capability!,
+                                  reason: data.reason });
+          this.emit('done', { text: full });
+          break;
         case 'error':
           finish();
           this.emit('error', { message: data.error!, code: data.code, turn: true });

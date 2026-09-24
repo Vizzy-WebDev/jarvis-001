@@ -187,12 +187,16 @@ def test_allow_runs_the_real_tool_with_the_token(stub):
     assert stub.auth_seen[-1] == "Bearer tok-stub"
 
 
-def test_allow_on_a_risky_tool_still_confirms_in_conversation(stub):
+@pytest.mark.parametrize("autonomy", [Autonomy.INTERACTIVE, Autonomy.PRE_CONSENTED,
+                                      Autonomy.ESCALATE])
+def test_always_allow_runs_without_asking_everywhere_even_a_risky_sounding_tool(stub, autonomy):
+    """The person's setting is final: "delete" in the name no longer makes an
+    Always-allowed tool ask in chat — nor anywhere else."""
     connector = _connector(stub, tools=True)
     store.set_tool_permission(connector["id"], "notes__delete_note", "allow")
-    result = execute("notes__delete_note", {"note_id": "n1"}, _ctx(), registry=_registry())
-    assert result.outcome is ExecOutcome.NEEDS_APPROVAL
-    assert stub.calls == []
+    result = execute("notes__delete_note", {"note_id": "n1"}, _ctx(autonomy), registry=_registry())
+    assert result.ok, result.error
+    assert stub.calls == [{"tool": "delete_note", "args": {"note_id": "n1"}}]
 
 
 def test_deny_is_not_offered_and_is_refused_even_if_called(stub):

@@ -6,11 +6,11 @@ same executor. What differs is where its risk comes from — a built-in declares
 its own, and a connector tool's has to be inferred, because its name and
 description come from a server this build has never seen.
 
-**Two separate things, deliberately not merged.** A standing PERMISSION answers
-"is Jarvis allowed to use this at all" and is the user's call per tool. A runtime
-CONFIRMATION answers "does using an allowed tool pause to ask right now", and
-comes from the risk classifier. Neither can suppress the other: setting a tool to
-"always allow" does not make a risky one stop confirming.
+**For an app the user added, their per-tool permission is final.** "Always
+allow" runs without asking, "Need approval" asks wherever the tool runs, and
+"Blocked" is never offered and is refused if called. The risk classifier only
+decides for Jarvis's own connectors (files, browser), which have no permission
+screen; see `_risk_for()`.
 """
 
 from __future__ import annotations
@@ -115,21 +115,26 @@ def _dispatch(connector_id: str, kind: str, tool_name: str, permission_name: str
     return {"ok": False, "error": f"{tool_name} is not something that connection can do."}
 
 
-def _risk_for(permission: str, classified: str) -> Risk:
-    """The user's "ask" is HIGH so it asks wherever the tool runs.
+def _risk_for(permission: str, classified: str, *, user_connector: bool) -> Risk:
+    """For an app the user added, their permission is the final word.
 
-    The policy lets a MEDIUM action through inside a task the user set up in
-    advance; a person who chose "ask" for a tool meant every time, a scheduled
-    task and a specialist included. HIGH is the one level no autonomy setting
-    and no blanket grant waves through, so no second rule is needed for it. An
-    inferred "risky" stays MEDIUM: it still confirms in conversation, and
-    neither can lower the other.
+    "Always allow" runs it without asking, "Need approval" asks everywhere
+    (HIGH is the one level no autonomy setting or blanket grant waves through,
+    so a scheduled task or a specialist asks too), and "Blocked" never gets
+    here. Jarvis's word-based guess no longer overrides the choice: it flagged
+    harmless reads (a "get_message", a "query_database") and held back tools
+    set to Always allow in conversation while letting them run unasked inside a
+    scheduled task — overriding the person where they were watching and not
+    where they were not. The user asked for their setting to decide.
+
+    Jarvis's OWN connectors (files, browser) have no permission screen, so
+    their declared or classified risk still decides for them.
     """
     if permission == "ask":
         return Risk.HIGH
-    if classified == "risky":
-        return Risk.MEDIUM
-    return Risk.LOW
+    if user_connector:
+        return Risk.LOW
+    return Risk.MEDIUM if classified == "risky" else Risk.LOW
 
 
 def _classified(connector: dict[str, Any], tool: dict[str, Any]) -> str:
@@ -146,13 +151,11 @@ def tool_rows(connector: dict[str, Any]) -> list[dict[str, Any]]:
 
     Includes blocked ones, unlike `connector_specs()`: the model must never see
     a blocked tool, but the person must, or blocking would be a one-way door.
-    `risky` is Jarvis's own judgment, kept apart from the person's choice.
     """
     return [{"name": prefixed_name(connector, tool["name"]),
              "title": tool["name"],
              "description": tool.get("description") or tool["name"],
-             "permission": store.tool_permission(connector, prefixed_name(connector, tool["name"])),
-             "risky": _classified(connector, tool) == "risky"}
+             "permission": store.tool_permission(connector, prefixed_name(connector, tool["name"]))}
             for tool in _raw_tools(connector)]
 
 
@@ -177,7 +180,8 @@ def connector_specs(connector: dict[str, Any]) -> list[CapabilitySpec]:
             name=name,
             description=tool.get("description") or name,
             input_schema=tool.get("parameters") or {"type": "object", "properties": {}},
-            risk=_risk_for(permission, classified),
+            risk=_risk_for(permission, classified,
+                           user_connector=kind in store.USER_TYPES),
             handler=(lambda _cid=connector["id"], _kind=kind, _tool=tool["name"], _perm=name, **args:
                      _dispatch(_cid, _kind, _tool, _perm, args)),
             kind=CapabilityKind.CONNECTOR,

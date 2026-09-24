@@ -39,10 +39,13 @@ changes when a connector reconnects. Non-singleton tool names are prefixed `<lab
 - **`ask` is `Risk.HIGH`, so it asks everywhere** — chat, specialists, scheduled tasks, briefings,
   jobs. The policy (`policy/decide.py`) lets MEDIUM through inside a pre-consented task; HIGH is the one
   level no autonomy and no blanket grant waves through, so the person's "ask" needs no second rule.
-  A tool the classifier calls `risky` is `Risk.MEDIUM`: it confirms in conversation even on "allow".
-  Neither can lower the other.
+  **For mcp/api/cli the person's permission is FINAL** (`_risk_for()`): "allow" is `Risk.LOW`, so it
+  runs without asking everywhere, whatever the classifier thinks. The user decided this after the
+  classifier was found overriding "Always allow" for 26 of their 197 tools — harmless reads like a
+  `get_message` or `query_database` included — in chat, while letting the same tools run unasked in a
+  scheduled task. Do not reintroduce a risk layer above the user's choice for these types.
 - `tool_rows()` is what the connector screen reads (`GET /api/connectors/{id}`): EVERY tool, blocked
-  ones included, with `permission` and `risky` as separate fields. Only `connector_specs()` decides what
+  ones included, with each tool's `permission`. Only `connector_specs()` decides what
   the model sees. A blocked tool vanishing from the screen made blocking a one-way door — a real bug.
 - **Jarvis is told what is set up**: `prompt.connected_apps_section()` puts every mcp/api/cli
   connector — connected, added-but-not-connected, switched off, tools not read yet, how many tools and
@@ -61,9 +64,10 @@ back could otherwise send a key straight through.
 
 ## `risk.py` — how dangerous is a tool nobody here declared?
 
-A built-in declares its own risk; a connector tool's name and description come from a server this
-build has never seen, so risk is inferred, bluntly and word-based, because the cost is asymmetric (a
-false "risky" costs one confirmation, a false "safe" sends the email). Pure: no I/O, no state.
+**It decides only for Jarvis's own connectors (files, browser)**, which have no permission screen, and
+feeds `control/guard.py`. It never overrides a user-added connector's per-tool permission (above).
+Risk is inferred, bluntly and word-based, because the cost is asymmetric (a false "risky" costs one
+confirmation, a false "safe" sends the email). Pure: no I/O, no state.
 - **Whole words, never substrings.** Substring matching found "share" in "SharePoint" and "order" in
   "in sidebar order".
 - **camelCase is split in a tool's NAME but not in its description.** A name is an identifier where

@@ -521,6 +521,13 @@ export default function Home() {
       withSavedIds(current, userMessageId, replyMessageId)));
     started.on('restart', () => setTurns((current) => clearReply(current)));
     started.on('done', () => setBusy(false));
+    // The same Allow / Not now card a typed turn shows: a spoken request for a
+    // tool set to "Need approval" used to end with nothing on screen at all.
+    started.on('approval', ({ approvalId, capability, reason }) => setTurns((current) => [
+      ...current,
+      { id: newId(), role: 'approval', approvalId, capability,
+        text: reason || `${capability} needs your go-ahead.` },
+    ]));
     started.on('paused', ({ reason }) => setStatus(reason));
     // Not an error: the browser's own recognition is a real path, just not the
     // one that was picked. Saying nothing here is how someone ends up wondering

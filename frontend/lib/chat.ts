@@ -72,7 +72,11 @@ export function streamTurn({
       return; // a frame we cannot read is not worth ending the turn over
     }
     onEvent(event);
-    if (event.type === 'done' || event.type === 'error') finish();
+    // An approval request ENDS the turn: the server closes the stream right
+    // after it, with no `done`. Not finishing here meant that close landed in
+    // onerror below and every "Need approval" showed "The connection to Jarvis
+    // dropped." under the approval card.
+    if (event.type === 'done' || event.type === 'error' || event.type === 'approval_required') finish();
   };
 
   events.onerror = () => {

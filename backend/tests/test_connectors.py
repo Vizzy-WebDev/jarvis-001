@@ -374,16 +374,17 @@ def test_the_files_connector_keeps_its_plain_names():
     assert "read_file" in capabilities.sync(registry)
 
 
-def test_a_risky_connector_tool_confirms_even_though_nobody_declared_it():
-    """Even on "always allow": the person's choice cannot lower Jarvis's own
-    judgment that a tool is risky."""
+def test_always_allow_is_final_even_for_a_tool_the_classifier_calls_risky():
+    """The person's choice decides for an app they added: Jarvis's word-based
+    guess ("delete" is in the name) no longer turns Always allow into an ask."""
+    assert risk.classify("deletepet", "Delete a pet.") == "risky"
     connector = _api_connector()
     for name in ("pet_store__getpet", "pet_store__deletepet"):
         store.set_tool_permission(connector["id"], name, "allow")
     registry = CapabilityRegistry()
     capabilities.sync(registry)
     assert registry.get("pet_store__getpet").risk is Risk.LOW
-    assert registry.get("pet_store__deletepet").risk is Risk.MEDIUM
+    assert registry.get("pet_store__deletepet").risk is Risk.LOW
 
 
 def test_a_tool_the_user_turned_off_is_absent_rather_than_refused():
@@ -418,14 +419,22 @@ def test_a_tool_nobody_has_set_yet_asks_first():
     assert registry.get("pet_store__getpet").risk is Risk.HIGH
 
 
-def test_always_allow_cannot_stop_a_risky_tool_asking():
-    """Standing permission and runtime confirmation are separate, and neither
-    can suppress the other."""
+def test_need_approval_asks_even_for_a_tool_the_classifier_calls_safe():
     connector = _api_connector()
-    store.set_tool_permission(connector["id"], "pet_store__deletepet", "allow")
+    store.set_tool_permission(connector["id"], "pet_store__getpet", "ask")
     registry = CapabilityRegistry()
     capabilities.sync(registry)
-    assert registry.get("pet_store__deletepet").risk is Risk.MEDIUM
+    assert registry.get("pet_store__getpet").risk is Risk.HIGH
+
+
+def test_jarvis_own_file_tools_keep_their_own_safety_rules():
+    """Files and browser have no permission screen, so no person's choice
+    decides for them: writing or moving a file still confirms."""
+    files = store.get_or_create_singleton("files")
+    specs = {s.name: s for s in capabilities.connector_specs(files)}
+    assert specs["write_file"].risk is Risk.MEDIUM
+    assert specs["move_file"].risk is Risk.MEDIUM
+    assert specs["read_file"].risk is Risk.LOW
 
 
 def test_switching_a_connector_off_removes_its_tools():
@@ -577,7 +586,7 @@ def test_connectors_can_be_listed_inspected_and_removed(live_server):
         delete = next(t for t in detail["tools"] if t["name"] == "pet_store__deletepet")
         # Jarvis's own judgment and the person's choice are separate fields: a
         # tool nobody has set yet asks first, and "risky" is reported apart.
-        assert delete["risky"] is True and delete["permission"] == "ask"
+        assert delete["permission"] == "ask" and "risky" not in delete
         assert delete["title"] == "deletepet"
 
         # Keyed by the PREFIXED name — the only name a real caller (the

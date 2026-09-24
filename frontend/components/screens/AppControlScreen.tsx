@@ -811,11 +811,6 @@ function ToolsSection({ tools, onSetPermissions, refreshing, toolsError, note, o
                          data-testid="tool-row" data-tool={tool.title} data-permission={current}>
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-[13px] text-ink" title={tool.description}>{tool.title}</p>
-                        {/* Only where it would surprise: "Always allow" still
-                            pauses for a tool Jarvis judges risky. */}
-                        {tool.risky && current === 'allow' && (
-                          <p className="text-[11px] text-ink-faint" data-testid="always-confirms">Still confirms — Jarvis treats this as risky</p>
-                        )}
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
                         {PERMISSIONS.map((permission) => {

@@ -54,6 +54,12 @@ export interface EngineEvents {
    *  itself is fine: this is deliberately not an error. */
   tts_failure: { provider?: string };
   done: { text: string };
+  /** The turn stopped to ask the person's go-ahead for something (a tool set to
+   *  "Need approval", say). The stream ends right after it, with no `done` of
+   *  its own — without handling it, a spoken turn that asked read as a dropped
+   *  connection and the question was never shown. A `done` follows from the
+   *  engine so the turn closes the normal way. */
+  approval: { approvalId: string; capability: string; reason?: string };
   /** The server's saved ids for this spoken turn — the message the person said
    *  (from `routed`) and Jarvis's reply (from `done`). Without them a spoken
    *  message keeps a placeholder id, and Edit/Retry on it cut nothing on the

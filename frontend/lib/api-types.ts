@@ -799,10 +799,10 @@ export interface ContentPlacement {
   itemId: string;
   platform: string;
   platformLabel: string;
-  accountId: string | null;
-  accountLabel: string;
   destination: string;
   overrides: Record<string, string | string[]>;
+  /** This platform's OWN files; a role it has none of uses the item's. */
+  media: ContentMedia[];
   status: PlacementStatus;
   scheduledAt: string | null;
   timezone: string | null;
@@ -815,9 +815,41 @@ export interface ContentPlacement {
   publishedAt: string | null;
   publishedUrl: string | null;
   failure: string | null;
-  metrics: Record<string, unknown> | null;
+  /** The latest numbers someone REPORTED for this post; null when nobody has. */
+  metrics: ContentMetricsSnapshot | null;
+  /** Every report, newest first — on the item's detail only, published posts only. */
+  metricsHistory?: ContentMetricsSnapshot[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ContentMetricsSnapshot {
+  capturedAt: string;
+  reportedAt?: string;
+  source: string;
+  values: Record<string, number>;
+}
+
+/** A file an item or a platform uses: one already stored (`fileId`) or one
+ *  sent in the same request (`file`, the key it is uploaded under). */
+export interface ContentMediaRef {
+  fileId?: string;
+  file?: string;
+  role: ContentMedia['role'];
+  order?: number;
+}
+
+/** What the person (or anyone) hands in. `readyToPost` is the screen's choice
+ *  to approve it as it is added. */
+export interface ContentDraft {
+  name: string;
+  contentType: string;
+  niche?: string;
+  producer?: string;
+  fields?: Record<string, string | string[]>;
+  media?: ContentMediaRef[];
+  platforms?: { platform: string; destination?: string }[];
+  readyToPost?: boolean;
 }
 
 export interface ContentJobState {
@@ -866,6 +898,8 @@ export interface ContentItem {
   updatedAt: string;
   placements: ContentPlacement[];
   openRequest: ContentChangeRequest | null;
+  /** Whether its text and files can still be changed (Review until it has gone out). */
+  editable: boolean;
   /** What needs the person, in their words. Empty when nothing does. */
   attention: string[];
   /** The next thing that has to happen, and who is responsible for it. */
@@ -877,16 +911,6 @@ export interface ContentItemDetail extends ContentItem {
   revisions: { revision: number; fields: Record<string, string | string[]>; media: ContentMedia[];
                by: string; note: string; createdAt: string }[];
   events: { at: string; actor: string; kind: string; note: string }[];
-}
-
-export interface ContentAccount {
-  id: string;
-  platform: string;
-  platformLabel: string;
-  handle: string;
-  destinations: string[];
-  defaultNiche: string;
-  createdAt: string;
 }
 
 export interface ContentTypeInfo {
@@ -904,12 +928,39 @@ export interface ContentMeta {
   platforms: Record<string, { label: string; fields: string[]; accepts: string[] }>;
   stages: { id: ContentStage; label: string }[];
   niches: string[];
-  accounts: ContentAccount[];
+  metrics: Record<string, { label: string; kind: 'count' | 'seconds' | 'number' }>;
 }
 
 export interface ContentSummary {
+  /** Items per stage. An item is counted under every stage one of its platforms is in. */
   counts: Record<ContentStage | 'bin', number>;
+  /** Platform posts in each post-approval stage. */
+  posts: { approved: number; scheduling: number; published: number };
   attention: { toReview: number; revisionsReady: number; failedPosts: number; revisionsStuck: number };
+}
+
+export interface ContentAnalyticsPost {
+  placementId: string;
+  itemId: string;
+  name: string;
+  contentType: string;
+  typeLabel: string;
+  niche: string;
+  platform: string;
+  platformLabel: string;
+  destination: string;
+  publishedAt: string | null;
+  publishedUrl: string | null;
+  metrics: ContentMetricsSnapshot | null;
+}
+
+export interface ContentAnalytics {
+  posts: ContentAnalyticsPost[];
+  /** Sums of what was REPORTED — a post nobody reported adds nothing. */
+  totals: Record<string, number>;
+  reported: number;
+  byPlatform: { platform: string; platformLabel: string; posts: number; reported: number;
+                totals: Record<string, number> }[];
 }
 
 export interface ContentCalendarEntry extends ContentPlacement {

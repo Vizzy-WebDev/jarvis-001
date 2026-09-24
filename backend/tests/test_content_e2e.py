@@ -276,14 +276,14 @@ def test_the_whole_lifecycle_through_the_screen(browser_page, scratch):
     expect(workspace(page)).to_have_attribute("data-stage", "approved")
     expect(page.locator("[data-testid=ws-next]")).to_contain_text("post or schedule it")
 
-    # A third platform, on an account added right here.
+    # A third platform, added right here. No account to pick: which account a
+    # post goes out on is the publishing tool's business, not this screen's.
     page.click("[data-testid=ws-add-platform]")
+    expect(page.locator("[data-testid=schedule-account]")).to_have_count(0)
     page.select_option("[data-testid=schedule-platform]", "instagram")
-    page.select_option("[data-testid=schedule-account]", "__new")
-    page.fill("[data-testid=schedule-new-account]", "@fitwithvin")
     page.fill("[data-testid=schedule-destination]", "Reels")
     page.click("[data-testid=schedule-save]")
-    expect(row(page, "instagram")).to_contain_text("@fitwithvin")
+    expect(row(page, "instagram")).to_contain_text("Reels")
 
     # --- SCHEDULING: two platforms, two timezones -------------------------------------------
     d3, d4 = days_ahead(3), days_ahead(4)
@@ -339,7 +339,7 @@ def test_the_whole_lifecycle_through_the_screen(browser_page, scratch):
     queue = postbot.queue()
     assert len(queue) == 1
     job = queue[0]
-    assert (job["platform"], job["account"], job["destination"]) == ("instagram", "@fitwithvin", "Reels")
+    assert (job["platform"], job["destination"]) == ("instagram", "Reels") and "account" not in job
     assert job["version"] == {"caption": "Your knees caving? That's mistake #1.",
                               "hashtags": ["#squat", "#gymtips", "#legday"]}
     assert {m["role"] for m in job["media"]} == {"primary", "thumbnail"}

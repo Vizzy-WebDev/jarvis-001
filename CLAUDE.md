@@ -283,18 +283,22 @@ delivered when it lands.
 
 ## Content Management — `jarvis/content_manager/` (see its own `CLAUDE.md`)
 
-Finished content — made by agents and tools outside this screen — taken through Review,
-Changes Requested, Ready to Post, Scheduling, Published, Archived and a Recycle Bin. **It
-manages content; it never produces it**: no research/script/generation/edit pages here. An
-item is the publishable thing (video, carousel, post…); title, caption, hashtags, thumbnail
-are its supporting fields and assets, shown per content type and platform from ONE registry
-(`kinds.py`, served at `/api/content-meta`). Niche is a filter over the one workflow, never a
-copy of it. Every move goes through `lifecycle.py`; after approval the stage is DERIVED from
-the item's placements. Agents use a local HTTP API (submit, pick up a change request, revise,
-claim a queued post, report the result); publishing is a hand-off queue — nothing here posts
-to a platform itself. The person alone approves, schedules, archives and deletes: no Jarvis
-tool can. The Recycle Bin is never emptied automatically. Not to be confused with
-`jarvis/content/` (Content Analysis of things the person shares — unrelated, older).
+Finished content taken through Review, Changes Requested, Ready to Post, Scheduling,
+Published, Archived and a Recycle Bin. **It manages content and its workflow; it never
+produces it, and it models no accounts, no creators' special paths and no publishing
+provider.** Content enters through ONE door (`lifecycle.submit`) whoever brings it — the
+person on the screen ("New content", with their own uploads), Jarvis (tools, including a
+file attached in chat), or an agent (local HTTP API) — and every later action is the same
+function for everyone. An item is the publishable thing; title, caption, hashtags,
+thumbnail are its supporting fields and assets, from ONE registry (`kinds.py`,
+`/api/content-meta`). A platform (placement) may use its own files/text per role, else the
+item's. After approval the stage is DERIVED from the placements, and an item is LISTED under
+every stage one of its platforms is in. Niche is a filter, never a copy. Publishing is a
+hand-off queue — nothing here posts to a platform itself; which account a post goes out on
+is the publishing tool's business. Reported numbers are dated snapshots (`cm_metrics`), never
+calculated. Jarvis may hand in, edit text and schedule (the last two confirm first); only
+the person approves, archives and deletes. The Recycle Bin is never emptied automatically.
+Not to be confused with `jarvis/content/` (Content Analysis — unrelated, older).
 
 ## The Adaptive Communication Register — `jarvis/personality.py`
 

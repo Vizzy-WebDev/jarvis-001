@@ -85,7 +85,15 @@ Three engines, all extending the shared `VoiceEngine` contract
 `interrupt`/`setMuted`), so `app/page.tsx` wires UI to whichever is selected in
 settings and doesn't otherwise care which one it's talking to. Events: `state`,
 `transcript`, `chunk`, `tool`, `tool_result`, `model_switch`, `style_floors`,
-`reaction`, `restart`, `stt_fallback`, `paused`, `tts_failure`, `done`, `error`.
+`reaction`, `restart`, `stt_fallback`, `paused`, `tts_failure`, `done`, `saved`, `error`.
+
+**`saved` carries the server's stored ids for a spoken turn** (`routed`'s `userMessageId`,
+`done`'s `messageId`), and `app/page.tsx` swaps them for the placeholder ids (`t7`) — the
+same swap `send()` does for a typed message. Without it, Edit/Retry on something SAID sent
+the server an id it had never heard of: it cut nothing, the replaced exchange stayed in
+Jarvis's memory, and it reappeared on reload. `tests/test_voice_edit_e2e.py` drives a real
+engine with a stand-in recogniser and a silent fake microphone and checks the stored
+messages, not the screen.
 
 - **`PipelineEngine`** (`pipeline-engine.ts`) — Engine A. Chrome's own
   `SpeechRecognition` → any model, over the ordinary `/api/chat/stream` path →

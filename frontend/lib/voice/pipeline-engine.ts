@@ -490,8 +490,12 @@ export class PipelineEngine extends VoiceEngine {
           this.emit('paused', { reason: data.reason! });
           this.backToListening();
           break;
+        case 'routed':
+          if (data.userMessageId) this.emit('saved', { userMessageId: data.userMessageId });
+          break;
         case 'done':
           finish();
+          if (data.messageId) this.emit('saved', { replyMessageId: data.messageId });
           this.emit('done', { text: full });
           break;
         case 'error':

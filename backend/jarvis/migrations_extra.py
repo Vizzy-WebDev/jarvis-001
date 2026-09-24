@@ -496,4 +496,30 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
         CREATE INDEX IF NOT EXISTS idx_cm_files_item ON cm_files(item_id);
         """
     ],
+    # 32: Content Management keeps content and its workflow only. The accounts list
+    # (and a placement's account) is removed: which account a post goes out on is
+    # the publishing tool's business, not something this screen manages. A
+    # placement may carry its OWN media (a vertical cut, a different thumbnail),
+    # falling back per role to the item's. Reported numbers are dated snapshots,
+    # one row each, so day 1 and day 30 both survive; the latest is also kept on
+    # the placement (`metrics_json`) for cheap reads.
+    32: [
+        """
+        DROP TABLE IF EXISTS cm_accounts;
+        ALTER TABLE cm_placements DROP COLUMN account_id;
+        ALTER TABLE cm_placements DROP COLUMN account_label;
+        ALTER TABLE cm_placements ADD COLUMN media_json TEXT NOT NULL DEFAULT '[]';
+        CREATE INDEX IF NOT EXISTS idx_cm_placements_item_status ON cm_placements(item_id, status);
+        CREATE TABLE IF NOT EXISTS cm_metrics (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          placement_id TEXT NOT NULL REFERENCES cm_placements(id) ON DELETE CASCADE,
+          item_id      TEXT NOT NULL REFERENCES cm_items(id) ON DELETE CASCADE,
+          captured_at  TEXT NOT NULL,
+          reported_at  TEXT NOT NULL,
+          source       TEXT NOT NULL DEFAULT '',
+          metrics_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_cm_metrics_placement ON cm_metrics(placement_id, captured_at);
+        """
+    ],
 }

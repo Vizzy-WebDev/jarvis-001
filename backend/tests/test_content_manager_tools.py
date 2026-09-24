@@ -47,12 +47,18 @@ def _post():
                                                        "hashtags": ["#AI"]})
 
 
-def test_no_tool_can_approve_schedule_publish_or_delete_content():
-    names = set(load_tools(CapabilityRegistry()))
+def test_no_tool_can_approve_publish_archive_or_delete_content():
+    registry = CapabilityRegistry()
+    names = set(load_tools(registry))
     mine = {n for n in names if "content" in n and n not in (
         "share_content", "examine_content")}
     assert mine == {"submit_content_for_review", "submit_content_revision",
-                    "list_content_change_requests", "content_status"}
+                    "list_content_change_requests", "content_status", "edit_content_item",
+                    "schedule_content", "record_content_metrics"}
+    # What changes what may go public asks the person first.
+    from jarvis.capabilities import Risk
+    assert registry.get("edit_content_item").risk is Risk.MEDIUM
+    assert registry.get("schedule_content").risk is Risk.MEDIUM
 
 
 def test_submit_tool_puts_content_in_review_and_never_further():

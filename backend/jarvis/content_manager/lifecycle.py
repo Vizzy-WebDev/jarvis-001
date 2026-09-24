@@ -15,13 +15,16 @@ Scheduling; otherwise anything published means Published; otherwise Ready to
 Post. The recycle bin is `deleted_at`, separate from the stage, so a restore
 returns an item exactly where it was.
 
-Nothing here approves, schedules or publishes on its own. Jarvis's own tools
-only ever call `submit`, `submit_revision` and `pick_up`; everything else is the
-person, through the screen.
+Nothing here approves, schedules or publishes on its own. The same functions
+serve everyone — the screen, Jarvis's tools and agents over HTTP. Jarvis's tools
+call `submit`, `submit_revision`, `edit`, `schedule` (those two after the person
+confirms) and `record_metrics`; approving, archiving and deleting are only ever
+the person, through the screen.
 """
 
 from __future__ import annotations
 
+import re
 import threading
 import uuid
 from typing import Any
@@ -31,12 +34,10 @@ from ..events import EventType, bus as default_bus
 from ..jscompat import now_iso
 from . import files
 from .kinds import ASSETS, PLATFORMS, TYPES, platform_label, type_label
-from .store import PENDING, _loads as store_loads, dumps, get_item, normalize_time, request_dict
+from .store import PENDING, _loads as store_loads, dumps, editable, get_item, normalize_time, request_dict
 
 _lock = threading.RLock()
 
-#: Stages where the actual content and its supporting information may be edited.
-EDITABLE_STAGES = ("review", "approved")
 POST_APPROVAL = ("approved", "scheduling", "published")
 MEDIA_ROLES = ("primary", "slide", *ASSETS)
 YOU = "you"
@@ -219,9 +220,15 @@ def _clean_platform(content_type: str, platform: str) -> str:
 # --- producing (agents) --------------------------------------------------------------
 
 def submit(*, name: str, content_type: str, niche: str = "", fields: Any = None, media: Any = None,
-           findings: Any = None, producer: str = "", platforms: Any = None,
+           findings: Any = None, producer: str = "", platforms: Any = None, approve_now: bool = False,
            event_bus: Any = None) -> dict[str, Any]:
-    """A finished piece of content, handed in for review."""
+    """A finished piece of content, handed in — by an agent, by Jarvis, or by the
+    person uploading it on the screen; all the same door.
+
+    `approve_now` is the person choosing "Ready to Post" as they add it: the same
+    submit, then the ordinary `approve()`, recorded the same way. Only the screen
+    offers it — approving is the person's, and no Jarvis tool passes it.
+    """
     name = (name or "").strip()
     if not name:
         raise ContentError("Give the content a name, so it can be told apart in the list.")
@@ -257,6 +264,8 @@ def submit(*, name: str, content_type: str, niche: str = "", fields: Any = None,
         _event(db, item_id, producer or "agent", "submitted", "Handed in for review")
 
     _tx(work)
+    if approve_now:
+        return approve(item_id, event_bus=event_bus)
     _notify(f"New content to review: {name}",
             f"{type_label(content_type)}{' · ' + niche if niche else ''} from {producer or 'an agent'}.",
             item_id, event_bus=event_bus)
@@ -330,7 +339,12 @@ def submit_revision(item_id: str, *, fields: Any = None, media: Any = None, note
 # --- reviewing (the person) --------------------------------------------------------------
 
 def edit(item_id: str, *, name: str | None = None, niche: str | None = None, fields: Any = None,
-         event_bus: Any = None) -> dict[str, Any]:
+         media: Any = None, by: str = YOU, event_bus: Any = None) -> dict[str, Any]:
+    """Change the content itself: its supporting text and/or its files (`media`,
+    the full new list). Allowed from Review until it has gone out
+    (`store.editable`) — a scheduled post is still a plan, so the change goes out
+    with it. Once any platform has published, the change becomes a NEW revision,
+    so the record of what already went out is never rewritten."""
     def work(db):
         row = _live(db, item_id)
         changes = []
@@ -342,21 +356,41 @@ def edit(item_id: str, *, name: str | None = None, niche: str | None = None, fie
         if niche is not None:
             db.execute("UPDATE cm_items SET niche = ? WHERE id = ?", (niche.strip()[:80], item_id))
             changes.append("niche")
-        if fields is not None:
-            if row["stage"] not in EDITABLE_STAGES:
-                raise ContentError("The content can only be edited while it's in Review or Ready to Post.")
-            patch = _clean_fields(row["content_type"], fields)
+        if fields is not None or media is not None:
+            statuses = [r["status"] for r in db.execute(
+                "SELECT status FROM cm_placements WHERE item_id = ?", (item_id,))]
+            if not editable(row["stage"], statuses):
+                if any(s in ("queued", "publishing") for s in statuses):
+                    raise ContentError("A post of this is on its way to a platform right now — wait for it "
+                                       "to finish, or cancel it first.")
+                raise ContentError("The content can be changed from Review until it has been published.")
+            patch = _clean_fields(row["content_type"], fields) if fields is not None else {}
             merged = {**store_loads(row["fields_json"], {}), **patch}
-            _check_content_present(row["content_type"], merged, store_loads(row["media_json"], []))
-            db.execute("UPDATE cm_items SET fields_json = ? WHERE id = ?", (dumps(merged), item_id))
-            # The revision on record is the version as it stood when reviewed —
-            # the person's own edits included — not the agent's first draft.
-            db.execute("UPDATE cm_revisions SET fields_json = ? WHERE item_id = ? AND revision = ?",
-                       (dumps(merged), item_id, row["revision"]))
+            new_media = (_clean_media(row["content_type"], media, item_id=item_id) if media is not None
+                         else store_loads(row["media_json"], []))
+            _check_content_present(row["content_type"], merged, new_media)
+            files.claim_for_item([m["fileId"] for m in new_media], item_id)
+            db.execute("UPDATE cm_items SET fields_json = ?, media_json = ? WHERE id = ?",
+                       (dumps(merged), dumps(new_media), item_id))
+            if "published" in statuses:
+                # What already went out stays on record as the revision it was.
+                revision = row["revision"] + 1
+                db.execute("UPDATE cm_items SET revision = ? WHERE id = ?", (revision, item_id))
+                db.execute("INSERT INTO cm_revisions (item_id, revision, fields_json, media_json, by, note, "
+                           "created_at) VALUES (?,?,?,?,?,?,?)",
+                           (item_id, revision, dumps(merged), dumps(new_media), by, "Edited after publishing",
+                            now_iso()))
+            else:
+                # The revision on record is the version as it stands — the
+                # person's own edits included — not the first draft.
+                db.execute("UPDATE cm_revisions SET fields_json = ?, media_json = ? WHERE item_id = ? "
+                           "AND revision = ?", (dumps(merged), dumps(new_media), item_id, row["revision"]))
             changes += sorted(patch)
+            if media is not None:
+                changes.append("files")
         if changes:
             _touch(db, item_id)
-            _event(db, item_id, YOU, "edited", "Edited " + ", ".join(changes))
+            _event(db, item_id, by, "edited", "Edited " + ", ".join(changes))
 
     _tx(work)
     return _announce(item_id, event_bus)
@@ -519,35 +553,23 @@ def record_job(request_id: str, *, starting: bool = False, job_id: str | None = 
 
 # --- where it goes (placements) -------------------------------------------------------------
 
-def add_placement(item_id: str, *, platform: str, account_id: str | None = None,
-                  destination: str = "", event_bus: Any = None) -> dict[str, Any]:
+def add_placement(item_id: str, *, platform: str, destination: str = "", by: str = YOU,
+                  event_bus: Any = None) -> dict[str, Any]:
     def work(db):
         row = _live(db, item_id)
         if row["stage"] in ("archived", "changes_requested"):
             raise ContentError("Platforms can be added in Review, Ready to Post, Scheduling or Published.")
         _clean_platform(row["content_type"], platform)
-        label = ""
-        if account_id:
-            account = db.execute("SELECT * FROM cm_accounts WHERE id = ?", (account_id,)).fetchone()
-            if account is None:
-                raise ContentError("That account no longer exists.")
-            if account["platform"] != platform:
-                raise ContentError(f"{account['handle']} isn't a {platform_label(platform)} account.")
-            label = account["handle"]
         dest = (destination or "").strip()[:120]
-        clash = db.execute("SELECT 1 FROM cm_placements WHERE item_id = ? AND platform = ? AND "
-                           "COALESCE(account_id,'') = ? AND destination = ?",
-                           (item_id, platform, account_id or "", dest)).fetchone()
+        clash = db.execute("SELECT 1 FROM cm_placements WHERE item_id = ? AND platform = ? AND destination = ?",
+                           (item_id, platform, dest)).fetchone()
         if clash:
-            raise ContentError(f"It's already going to {platform_label(platform)}"
-                               f"{' · ' + label if label else ''}{' · ' + dest if dest else ''}.")
+            raise ContentError(f"It's already going to {platform_label(platform)}{' · ' + dest if dest else ''}.")
         placement_id = _id("cp")
         stamp = now_iso()
-        db.execute("INSERT INTO cm_placements (id, item_id, platform, account_id, account_label, destination, "
-                   "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
-                   (placement_id, item_id, platform, account_id, label, dest, stamp, stamp))
-        _event(db, item_id, YOU, "platform_added",
-               f"{platform_label(platform)}{' · ' + label if label else ''}{' · ' + dest if dest else ''}")
+        db.execute("INSERT INTO cm_placements (id, item_id, platform, destination, created_at, updated_at) "
+                   "VALUES (?,?,?,?,?,?)", (placement_id, item_id, platform, dest, stamp, stamp))
+        _event(db, item_id, by, "platform_added", f"{platform_label(platform)}{' · ' + dest if dest else ''}")
         _touch(db, item_id)
         return placement_id
 
@@ -556,9 +578,11 @@ def add_placement(item_id: str, *, platform: str, account_id: str | None = None,
     return next(p for p in item["placements"] if p["id"] == placement_id)
 
 
-def update_placement(placement_id: str, *, overrides: Any = None, account_id: Any = ...,
+def update_placement(placement_id: str, *, overrides: Any = None, media: Any = None,
                      destination: str | None = None, event_bus: Any = None) -> dict[str, Any]:
-    """The platform-specific version (overrides), or which account/destination."""
+    """This platform's own version: its text (`overrides`, blank = use the
+    item's), its own files (`media`, the full list for this platform — an empty
+    list goes back to the shared files), and where on the platform it goes."""
     def work(db):
         p = _placement(db, placement_id)
         row = _live(db, p["item_id"])
@@ -574,20 +598,16 @@ def update_placement(placement_id: str, *, overrides: Any = None, account_id: An
             current = store_loads(p["overrides_json"], {})
             merged = {k: v for k, v in {**current, **clean}.items() if v not in ("", [], None)}
             db.execute("UPDATE cm_placements SET overrides_json = ? WHERE id = ?", (dumps(merged), placement_id))
-        if account_id is not ...:
-            label = ""
-            if account_id:
-                account = db.execute("SELECT * FROM cm_accounts WHERE id = ?", (account_id,)).fetchone()
-                if account is None or account["platform"] != p["platform"]:
-                    raise ContentError("Pick an account on the same platform.")
-                label = account["handle"]
-            db.execute("UPDATE cm_placements SET account_id = ?, account_label = ? WHERE id = ?",
-                       (account_id or None, label, placement_id))
+        if media is not None:
+            own = _clean_media(row["content_type"], media, item_id=p["item_id"])
+            files.claim_for_item([m["fileId"] for m in own], p["item_id"])
+            db.execute("UPDATE cm_placements SET media_json = ? WHERE id = ?", (dumps(own), placement_id))
         if destination is not None:
             db.execute("UPDATE cm_placements SET destination = ? WHERE id = ?",
                        (destination.strip()[:120], placement_id))
         db.execute("UPDATE cm_placements SET updated_at = ? WHERE id = ?", (now_iso(), placement_id))
-        _event(db, p["item_id"], YOU, "version_edited", f"Edited the {platform_label(p['platform'])} version")
+        what = "files" if media is not None and overrides is None else "version"
+        _event(db, p["item_id"], YOU, "version_edited", f"Edited the {platform_label(p['platform'])} {what}")
         _touch(db, p["item_id"])
         return p["item_id"]
 
@@ -618,7 +638,7 @@ def _approved_placement(db, placement_id: str):
     return p, row
 
 
-def schedule(placement_id: str, *, scheduled_at: Any, timezone_name: str = "",
+def schedule(placement_id: str, *, scheduled_at: Any, timezone_name: str = "", by: str = YOU,
              event_bus: Any = None) -> dict[str, Any]:
     when = normalize_time(scheduled_at)
     if when is None:
@@ -633,7 +653,7 @@ def schedule(placement_id: str, *, scheduled_at: Any, timezone_name: str = "",
         kind = "rescheduled" if p["status"] == "scheduled" else "scheduled"
         db.execute("UPDATE cm_placements SET status = 'scheduled', scheduled_at = ?, timezone = ?, failure = NULL, "
                    "updated_at = ? WHERE id = ?", (when, (timezone_name or "")[:64], now_iso(), placement_id))
-        _event(db, p["item_id"], YOU, kind, f"{platform_label(p['platform'])} · {when} ({timezone_name or 'UTC'})")
+        _event(db, p["item_id"], by, kind, f"{platform_label(p['platform'])} · {when} ({timezone_name or 'UTC'})")
         _derive(db, p["item_id"])
         _touch(db, p["item_id"])
         return p["item_id"]
@@ -767,6 +787,49 @@ def report_result(placement_id: str, *, ok: bool, url: str = "", error: str = ""
     return next(x for x in item["placements"] if x["id"] == placement_id)
 
 
+# --- reported numbers ---------------------------------------------------------------------------
+
+_METRIC_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_ ]{0,39}$")
+
+
+def record_metrics(placement_id: str, *, metrics: Any, captured_at: Any = None, by: str = "",
+                   event_bus: Any = None) -> dict[str, Any]:
+    """Numbers someone REPORTED for a published post — a publishing tool, an
+    agent, Jarvis, or the person typing them in. Stored as a dated snapshot, so
+    day 1 and day 30 both survive; nothing here is ever calculated."""
+    if not isinstance(metrics, dict) or not metrics:
+        raise ContentError('Send the numbers as an object, e.g. {"views": 1200, "likes": 85}.')
+    values: dict[str, float] = {}
+    for key, value in metrics.items():
+        name = str(key).strip()
+        if not _METRIC_NAME.match(name):
+            raise ContentError(f"“{name}” isn't a name a number can be kept under.")
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or value < 0:
+            raise ContentError(f"“{name}” must be a number of zero or more.")
+        values[name] = int(value) if float(value).is_integer() else float(value)
+    when = normalize_time(captured_at) if captured_at else now_iso()
+    if when is None:
+        raise ContentError("“capturedAt” must be a date and time with its timezone.")
+    source = (by or "").strip()[:80] or YOU
+
+    def work(db):
+        p = _placement(db, placement_id)
+        _row(db, p["item_id"])
+        if p["status"] != "published":
+            raise ContentError("Numbers can only be recorded for a post that has been published.")
+        db.execute("INSERT INTO cm_metrics (placement_id, item_id, captured_at, reported_at, source, metrics_json) "
+                   "VALUES (?,?,?,?,?,?)", (placement_id, p["item_id"], when, now_iso(), source, dumps(values)))
+        latest = db.execute("SELECT * FROM cm_metrics WHERE placement_id = ? ORDER BY captured_at DESC, id DESC "
+                            "LIMIT 1", (placement_id,)).fetchone()
+        db.execute("UPDATE cm_placements SET metrics_json = ? WHERE id = ?",
+                   (dumps({"capturedAt": latest["captured_at"], "source": latest["source"],
+                           "values": store_loads(latest["metrics_json"], {})}), placement_id))
+        return p["item_id"]
+
+    item = _announce(_tx(work), event_bus)
+    return next(x for x in item["placements"] if x["id"] == placement_id)
+
+
 # --- archive and recycle bin -------------------------------------------------------------------
 
 def archive(item_id: str, *, event_bus: Any = None) -> dict[str, Any]:
@@ -844,64 +907,3 @@ def empty_bin(*, event_bus: Any = None) -> int:
     for item_id in ids:
         purge(item_id, event_bus=event_bus)
     return len(ids)
-
-
-# --- accounts ------------------------------------------------------------------------------------
-
-def create_account(*, platform: str, handle: str, destinations: Any = None,
-                   default_niche: str = "") -> dict[str, Any]:
-    from .store import get_account
-    if platform not in PLATFORMS:
-        raise ContentError(f"“{platform}” isn't a platform I know.")
-    handle = (handle or "").strip()
-    if not handle:
-        raise ContentError("Give the account's handle or name, exactly as it appears on the platform.")
-    dests = [str(d).strip()[:120] for d in (destinations or []) if str(d).strip()]
-    account_id = _id("ca")
-
-    def work(db):
-        if db.execute("SELECT 1 FROM cm_accounts WHERE platform = ? AND handle = ? COLLATE NOCASE",
-                      (platform, handle)).fetchone():
-            raise ContentError(f"{handle} on {platform_label(platform)} is already in the list.")
-        db.execute("INSERT INTO cm_accounts (id, platform, handle, destinations_json, default_niche, created_at) "
-                   "VALUES (?,?,?,?,?,?)", (account_id, platform, handle[:120], dumps(dests),
-                                             (default_niche or "").strip()[:80], now_iso()))
-
-    _tx(work)
-    return get_account(account_id)
-
-
-def update_account(account_id: str, *, handle: str | None = None, destinations: Any = None,
-                   default_niche: str | None = None) -> dict[str, Any]:
-    from .store import get_account
-
-    def work(db):
-        if db.execute("SELECT 1 FROM cm_accounts WHERE id = ?", (account_id,)).fetchone() is None:
-            raise NotFound("That account no longer exists.")
-        if handle is not None:
-            if not handle.strip():
-                raise ContentError("The handle can't be empty.")
-            db.execute("UPDATE cm_accounts SET handle = ? WHERE id = ?", (handle.strip()[:120], account_id))
-            db.execute("UPDATE cm_placements SET account_label = ? WHERE account_id = ? AND status != 'published'",
-                       (handle.strip()[:120], account_id))
-        if destinations is not None:
-            dests = [str(d).strip()[:120] for d in destinations if str(d).strip()]
-            db.execute("UPDATE cm_accounts SET destinations_json = ? WHERE id = ?", (dumps(dests), account_id))
-        if default_niche is not None:
-            db.execute("UPDATE cm_accounts SET default_niche = ? WHERE id = ?",
-                       (default_niche.strip()[:80], account_id))
-
-    _tx(work)
-    return get_account(account_id)
-
-
-def delete_account(account_id: str) -> None:
-    """Posts that used it keep its name (`account_label`) — history is not rewritten."""
-    def work(db):
-        if db.execute("SELECT 1 FROM cm_placements WHERE account_id = ? AND status IN "
-                      "('scheduled','queued','publishing')", (account_id,)).fetchone():
-            raise ContentError("Something is scheduled on that account — cancel it first.")
-        db.execute("UPDATE cm_placements SET account_id = NULL WHERE account_id = ?", (account_id,))
-        db.execute("DELETE FROM cm_accounts WHERE id = ?", (account_id,))
-
-    _tx(work)

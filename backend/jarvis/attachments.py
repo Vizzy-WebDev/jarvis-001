@@ -63,6 +63,9 @@ class Prepared:
         self.text_blocks: list[str] = []
         self.notes: list[str] = []
         self.need: dict[str, bool] = {}
+        #: (name, upload id) of each picture, video or sound attached — the id is
+        #: how a tool (handing it to Content Management, say) finds the file again.
+        self.files: list[tuple[str, str]] = []
 
     def as_dict(self) -> dict[str, Any]:
         return {"media": self.media, "textBlocks": self.text_blocks,
@@ -84,6 +87,8 @@ def prepare_for_turn(ids: list[str] | None, *, session_id: str) -> Prepared:
         name = upload["name"]
         kind = file_kind(name)
         mime_type = mime_type_for(name)
+        if kind in ("image", "video", "audio"):
+            prepared.files.append((name, upload_id))
 
         # --- images: inline, and they stay ---
         if kind == "image":
@@ -192,8 +197,12 @@ def compose_message(user_text: str, prepared: Prepared | None) -> str:
     parts = []
     if prepared.text_blocks:
         parts.append("\n\n".join(prepared.text_blocks))
-    if prepared.notes:
-        parts.append(f"[Note for you, not spoken by the user: {' '.join(prepared.notes)}]")
+    notes = list(prepared.notes)
+    if prepared.files:
+        notes.append("Attached file ids (for a tool that takes an upload id): "
+                      + "; ".join(f'"{name}" = {upload_id}' for name, upload_id in prepared.files) + ".")
+    if notes:
+        parts.append(f"[Note for you, not spoken by the user: {' '.join(notes)}]")
     if user_text:
         parts.append(user_text)
     return "\n\n".join(parts).strip()

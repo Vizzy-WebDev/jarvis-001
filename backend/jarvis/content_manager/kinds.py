@@ -77,6 +77,22 @@ PLATFORMS: dict[str, dict[str, Any]] = {
                 "accepts": ["audio"]},
 }
 
+#: Numbers a post can be reported with, in the order the screen shows them.
+#: Only ever what a platform, a publishing tool or the person REPORTED — nothing
+#: here is calculated (a platform's own "engagement" is shown when it sends one).
+#: Any other number a source reports is kept under its own name.
+METRICS: dict[str, dict[str, str]] = {
+    "views": {"label": "Views", "kind": "count"},
+    "likes": {"label": "Likes", "kind": "count"},
+    "comments": {"label": "Comments", "kind": "count"},
+    "shares": {"label": "Shares", "kind": "count"},
+    "saves": {"label": "Saves", "kind": "count"},
+    "reach": {"label": "Reach", "kind": "count"},
+    "impressions": {"label": "Impressions", "kind": "count"},
+    "watchTimeSeconds": {"label": "Watch time", "kind": "seconds"},
+    "engagement": {"label": "Engagement", "kind": "number"},
+}
+
 #: The lifecycle stages, in order, with the words the UI shows.
 STAGES: list[dict[str, str]] = [
     {"id": "review", "label": "Review"},
@@ -107,4 +123,4 @@ def platform_fields(content_type: str, platform: str) -> list[str]:
 
 def meta() -> dict[str, Any]:
     return {"fields": FIELDS, "assets": ASSETS, "types": TYPES,
-            "platforms": PLATFORMS, "stages": STAGES}
+            "platforms": PLATFORMS, "stages": STAGES, "metrics": METRICS}

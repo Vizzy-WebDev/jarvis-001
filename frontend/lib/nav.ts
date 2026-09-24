@@ -52,7 +52,7 @@ export const SECTIONS: Section[] = [
   { id: 'app-control', label: 'Connector', group: 'Abilities', ready: true,
     blurb: 'The apps and services Jarvis is connected to.' },
   { id: 'content', label: 'Content Management', group: 'Content', ready: true, wide: true,
-    blurb: 'Finished content from your agents — review it, approve it, schedule it, publish it.' },
+    blurb: 'Your finished content — added by you, Jarvis or your agents. Review it, schedule it, publish it.' },
   { id: 'tasks', label: 'Scheduled Tasks', group: 'Automation', ready: true,
     blurb: 'Work that runs on a clock.' },
   { id: 'jobs', label: 'Background Jobs', group: 'Automation', ready: true,

@@ -179,7 +179,7 @@ def test_stage_is_derived_from_placements_after_approval(ebus):
     lifecycle.schedule(tiktok["id"], scheduled_at=_later(120), timezone_name="Europe/London", event_bus=ebus)
     current = store.get_item(item["id"])
     assert current["stage"] == "scheduling"
-    assert current["next"]["who"] == "Publisher (at the scheduled time)"
+    assert current["next"]["who"] == "Publisher"
 
     lifecycle.schedule(tiktok["id"], scheduled_at=_later(240), timezone_name="Europe/London", event_bus=ebus)
     kinds = [e["kind"] for e in store.item_detail(item["id"])["events"]]
@@ -227,17 +227,53 @@ def test_platform_version_overrides_fall_back_to_base(ebus):
     assert merged == {"caption": "TikTok-only caption", "hashtags": ["#squat", "#gym"]}
 
 
-def test_accounts_attach_to_their_own_platform_only(ebus):
-    account = lifecycle.create_account(platform="tiktok", handle="@fitwithvin",
-                                       destinations=["Main feed"], default_niche="Fitness")
-    with pytest.raises(ContentError, match="already in the list"):
-        lifecycle.create_account(platform="tiktok", handle="@FitWithVin")
+def test_migration_32_removes_accounts_and_keeps_every_post(tmp_path):
+    """An existing database from before the Accounts feature was removed: its
+    accounts table and a post's account go; the post itself, its schedule and
+    everything else stay exactly as they were."""
+    import sqlite3
+
+    from jarvis import db as db_module
+
+    conn = sqlite3.connect(str(tmp_path / "old.db"), isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    for version in range(1, 32):
+        conn.execute("BEGIN")
+        db_module._apply_migration(conn, version)
+        conn.execute(f"PRAGMA user_version = {version}")
+        conn.execute("COMMIT")
+    conn.execute("INSERT INTO cm_accounts (id, platform, handle, created_at) VALUES "
+                 "('ca_1', 'tiktok', '@fitwithvin', '2026-09-01T00:00:00.000Z')")
+    conn.execute("INSERT INTO cm_items (id, name, content_type, stage, created_at, updated_at) VALUES "
+                 "('ci_1', 'Old video', 'video', 'scheduling', 'x', 'x')")
+    conn.execute("INSERT INTO cm_placements (id, item_id, platform, account_id, account_label, destination, "
+                 "status, scheduled_at, created_at, updated_at) VALUES ('cp_1', 'ci_1', 'tiktok', 'ca_1', "
+                 "'@fitwithvin', 'Main feed', 'scheduled', '2026-12-01T09:00:00.000Z', 'x', 'x')")
+
+    db_module.migrate(conn)
+
+    assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name = 'cm_accounts'").fetchone()[0] == 0
+    columns = {r["name"] for r in conn.execute("PRAGMA table_info(cm_placements)")}
+    assert not {"account_id", "account_label"} & columns
+    assert {"media_json", "metrics_json"} <= columns
+    post = conn.execute("SELECT * FROM cm_placements WHERE id = 'cp_1'").fetchone()
+    assert (post["platform"], post["destination"], post["status"], post["scheduled_at"], post["media_json"]) == \
+        ("tiktok", "Main feed", "scheduled", "2026-12-01T09:00:00.000Z", "[]")
+    conn.close()
+
+
+def test_there_is_no_account_anywhere_in_content_management(ebus):
     item = _video(ebus)
-    with pytest.raises(ContentError, match="isn't a YouTube account"):
-        lifecycle.add_placement(item["id"], platform="youtube", account_id=account["id"], event_bus=ebus)
-    placed = lifecycle.add_placement(item["id"], platform="tiktok", account_id=account["id"], event_bus=ebus)
-    assert placed["accountLabel"] == "@fitwithvin"
-    assert "Fitness" in store.niches()
+    lifecycle.approve(item["id"], event_bus=ebus)
+    placed = lifecycle.add_placement(item["id"], platform="tiktok", event_bus=ebus)
+    assert not [k for k in placed if "account" in k.lower()]
+    with pytest.raises(TypeError):
+        lifecycle.add_placement(item["id"], platform="youtube", account_id="ca_1", event_bus=ebus)
+    lifecycle.post_now(placed["id"], event_bus=ebus)
+    (job,) = store.publish_queue()
+    assert "account" not in job
+    assert not hasattr(lifecycle, "create_account") and not hasattr(store, "list_accounts")
 
 
 # --- publishing -------------------------------------------------------------------------
@@ -379,16 +415,48 @@ def test_calendar_lists_scheduled_and_published_posts(ebus):
         (placement["id"], "3 Squat Mistakes Killing Your Gains", "Africa/Lagos")]
 
 
-def test_editing_is_limited_to_review_and_ready(ebus):
+def test_content_stays_editable_until_it_has_gone_out(ebus):
     item = _post(ebus)
     lifecycle.edit(item["id"], fields={"body": "Edited body"}, niche="AI Tools", event_bus=ebus)
     assert store.get_item(item["id"])["fields"]["body"] == "Edited body"
     lifecycle.request_changes(item["id"], what="x", event_bus=ebus)
-    with pytest.raises(ContentError, match="only be edited"):
+    assert store.get_item(item["id"])["editable"] is False
+    with pytest.raises(ContentError, match="from Review until it has been published"):
         lifecycle.edit(item["id"], fields={"body": "nope"}, event_bus=ebus)
     lifecycle.cancel_request(store.get_item(item["id"])["openRequest"]["id"], event_bus=ebus)
     with pytest.raises(ContentError, match="needs its text"):
         lifecycle.edit(item["id"], fields={"body": ""}, event_bus=ebus)
+
+    # Scheduled is still a plan: the change goes out with it.
+    lifecycle.approve(item["id"], event_bus=ebus)
+    x = lifecycle.add_placement(item["id"], platform="x", event_bus=ebus)
+    li = lifecycle.add_placement(item["id"], platform="linkedin", event_bus=ebus)
+    lifecycle.schedule(x["id"], scheduled_at=_later(), timezone_name="Europe/London", event_bus=ebus)
+    assert store.get_item(item["id"])["stage"] == "scheduling"
+    lifecycle.edit(item["id"], fields={"body": "Changed while scheduled"}, event_bus=ebus)
+    assert store.get_item(item["id"])["revision"] == 1
+
+    # Not while a post is on its way — the publisher may already hold the old text.
+    lifecycle.post_now(li["id"], event_bus=ebus)
+    with pytest.raises(ContentError, match="on its way"):
+        lifecycle.edit(item["id"], fields={"body": "nope"}, event_bus=ebus)
+
+    # Once one platform has published, a change is a NEW revision: what went out stays on record.
+    lifecycle.claim(li["id"], by="PostBot", event_bus=ebus)
+    lifecycle.report_result(li["id"], ok=True, url="https://linkedin.example/1", event_bus=ebus)
+    lifecycle.edit(item["id"], fields={"body": "For the X post only now"}, event_bus=ebus)
+    detail = store.item_detail(item["id"])
+    assert detail["revision"] == 2
+    assert [r["fields"]["body"] for r in detail["revisions"]] == ["For the X post only now",
+                                                                  "Changed while scheduled"]
+
+    # Everything out: nothing left to change.
+    lifecycle.post_now(x["id"], event_bus=ebus)
+    lifecycle.claim(x["id"], by="PostBot", event_bus=ebus)
+    lifecycle.report_result(x["id"], ok=True, url="https://x.example/1", event_bus=ebus)
+    assert store.get_item(item["id"])["editable"] is False
+    with pytest.raises(ContentError, match="until it has been published"):
+        lifecycle.edit(item["id"], fields={"body": "too late"}, event_bus=ebus)
 
 
 def test_a_revision_on_record_includes_the_persons_own_edits(ebus):

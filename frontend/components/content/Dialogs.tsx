@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/Button';
 import { Field, inputClass } from '@/components/ui/Field';
 import { Modal } from '@/components/ui/Modal';
 import { api, ApiRequestError } from '@/lib/api';
-import type { ContentAccount, ContentItem, ContentMeta, ContentPlacement } from '@/lib/api-types';
+import type { ContentItem, ContentMeta, ContentPlacement } from '@/lib/api-types';
 
 import { allZones, browserZone, inZone, utcToZoned, zonedToUtc } from './format';
 
@@ -100,8 +100,13 @@ export function RequestChangesDialog({
             <label className="flex items-start gap-2">
               <input type="radio" className="mt-1 accent-accent" name="assignee" data-testid="assign-agent"
                      checked={assignee === 'agent'} onChange={() => setAssignee('agent')} />
-              <span><span className="text-ink">{item.producer || 'The agent that made it'}</span>
-                <span className="block text-ink-faint">It picks the request up and hands back a new version.</span></span>
+              {item.producer === 'you' ? (
+                <span><span className="text-ink">You</span>
+                  <span className="block text-ink-faint">You change it yourself and hand the new version in.</span></span>
+              ) : (
+                <span><span className="text-ink">{item.producer || 'The agent that made it'}</span>
+                  <span className="block text-ink-faint">It picks the request up and hands back a new version.</span></span>
+              )}
             </label>
             <label className="flex items-start gap-2">
               <input type="radio" className="mt-1 accent-accent" name="assignee" data-testid="assign-jarvis"
@@ -161,10 +166,12 @@ export function MarkPostedDialog({
 
 /**
  * Choosing where it goes and when. With no `placement`, it first adds one
- * (platform, account, destination); with `scheduleIt` off it only adds.
+ * (the platform, and optionally where on it); with `scheduleIt` off it only adds.
+ * Which ACCOUNT a post goes out on is the publishing tool's business, not this
+ * screen's — so there is no account to pick here.
  */
 export function ScheduleDialog({
-  item, meta, placement, initialDate, scheduleIt = true, onDone, onClose, onAccountsChanged,
+  item, meta, placement, initialDate, scheduleIt = true, onDone, onClose,
 }: {
   item: ContentItem;
   meta: ContentMeta;
@@ -173,7 +180,6 @@ export function ScheduleDialog({
   scheduleIt?: boolean;
   onDone: () => void;
   onClose: () => void;
-  onAccountsChanged: () => void;
 }) {
   const platforms = Object.entries(meta.platforms).filter(([, p]) => p.accepts.includes(item.contentType));
   // Scheduling with no particular post in mind: offer the platforms it already
@@ -182,9 +188,6 @@ export function ScheduleDialog({
     : item.placements.filter((p) => p.status === 'draft' || p.status === 'failed');
   const [target, setTarget] = useState<string>(placement?.id ?? unscheduled[0]?.id ?? 'new');
   const [platform, setPlatform] = useState(placement?.platform ?? platforms[0]?.[0] ?? '');
-  const accounts = meta.accounts.filter((a) => a.platform === platform);
-  const [accountId, setAccountId] = useState<string>(placement?.accountId ?? accounts[0]?.id ?? '');
-  const [newHandle, setNewHandle] = useState('');
   const [destination, setDestination] = useState(placement?.destination ?? '');
   const zone0 = placement?.timezone || browserZone();
   const start = placement?.scheduledAt ? utcToZoned(placement.scheduledAt, zone0) : null;
@@ -194,7 +197,6 @@ export function ScheduleDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const zones = useMemo(() => allZones(), []);
-  const account: ContentAccount | undefined = meta.accounts.find((a) => a.id === accountId);
   const utc = scheduleIt ? zonedToUtc(date, time, zone) : null;
   const rescheduling = placement?.status === 'scheduled';
 
@@ -204,18 +206,7 @@ export function ScheduleDialog({
     try {
       let chosenPlacement = placement ?? item.placements.find((p) => p.id === target) ?? null;
       if (!chosenPlacement) {
-        let chosen: string | null = accountId === '__new' ? null : accountId || null;
-        if (accountId === '__new') {
-          if (!newHandle.trim()) throw new ApiRequestError(400, 'Type the account handle, or pick one.');
-          const created = await api.content.accounts.create({
-            platform, handle: newHandle.trim(), destinations: destination.trim() ? [destination.trim()] : [],
-            defaultNiche: item.niche,
-          });
-          chosen = created.account.id;
-          onAccountsChanged();
-        }
-        chosenPlacement = (await api.content.addPlacement(item.id, { platform, accountId: chosen, destination }))
-          .placement;
+        chosenPlacement = (await api.content.addPlacement(item.id, { platform, destination })).placement;
       }
       if (now) await api.content.postNow(chosenPlacement.id);
       else if (scheduleIt) {
@@ -253,7 +244,7 @@ export function ScheduleDialog({
                     onChange={(e) => setTarget(e.target.value)}>
               {unscheduled.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {[p.platformLabel, p.accountLabel, p.destination].filter(Boolean).join(' · ')}
+                  {[p.platformLabel, p.destination].filter(Boolean).join(' · ')}
                 </option>
               ))}
               <option value="new">Another platform…</option>
@@ -261,36 +252,18 @@ export function ScheduleDialog({
           </Field>
         )}
         {!placement && target === 'new' && (
-          <>
+          <div className="grid grid-cols-2 gap-3">
             <Field label="Platform">
-              <select data-testid="schedule-platform" className={inputClass} value={platform} onChange={(e) => {
-                setPlatform(e.target.value);
-                const first = meta.accounts.find((a) => a.platform === e.target.value);
-                setAccountId(first?.id ?? '');
-              }}>
+              <select data-testid="schedule-platform" className={inputClass} value={platform}
+                      onChange={(e) => setPlatform(e.target.value)}>
                 {platforms.map(([id, p]) => <option key={id} value={id}>{p.label}</option>)}
               </select>
             </Field>
-            <Field label="Account" hint="The account it goes out on. Type the handle exactly as it appears there.">
-              <select data-testid="schedule-account" className={inputClass} value={accountId}
-                      onChange={(e) => setAccountId(e.target.value)}>
-                {accounts.map((a) => <option key={a.id} value={a.id}>{a.handle}</option>)}
-                <option value="">No specific account</option>
-                <option value="__new">+ Add an account…</option>
-              </select>
-              {accountId === '__new' && (
-                <input data-testid="schedule-new-account" className={`${inputClass} mt-2`} value={newHandle}
-                       placeholder="@handle" onChange={(e) => setNewHandle(e.target.value)} />
-              )}
-            </Field>
-            <Field label="Where on it" hint="Optional — e.g. Shorts, a Page, a playlist, a board.">
+            <Field label="Where on it" hint="Optional — e.g. Shorts, Reels, a board.">
               <input data-testid="schedule-destination" className={inputClass} value={destination}
-                     list="content-destinations" onChange={(e) => setDestination(e.target.value)} />
-              <datalist id="content-destinations">
-                {(account?.destinations ?? []).map((d) => <option key={d} value={d} />)}
-              </datalist>
+                     onChange={(e) => setDestination(e.target.value)} />
             </Field>
-          </>
+          </div>
         )}
         {scheduleIt && (
           <>
@@ -321,90 +294,63 @@ export function ScheduleDialog({
   );
 }
 
-/** The accounts content goes out on — a simple list, per platform. */
-export function AccountsDialog({
-  meta, onChanged, onClose,
-}: { meta: ContentMeta; onChanged: () => void; onClose: () => void }) {
-  const [platform, setPlatform] = useState(Object.keys(meta.platforms)[0] ?? '');
-  const [handle, setHandle] = useState('');
-  const [destinations, setDestinations] = useState('');
-  const [niche, setNiche] = useState('');
+/** Typing in numbers a platform shows for a published post. Only what the
+ *  platform reported — a blank box records nothing, never a zero. */
+export function AddNumbersDialog({
+  placement, meta, onDone, onClose,
+}: { placement: ContentPlacement; meta: ContentMeta; onDone: () => void; onClose: () => void }) {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const entered = Object.entries(values).filter(([, v]) => v.trim() !== '');
+
+  async function save() {
+    setBusy(true);
+    setError(null);
+    try {
+      const metrics: Record<string, number> = {};
+      for (const [key, raw] of entered) {
+        const number = Number(raw.replace(/,/g, ''));
+        if (!Number.isFinite(number) || number < 0) {
+          throw new ApiRequestError(400, `${meta.metrics[key]?.label ?? key} must be a number of zero or more.`);
+        }
+        metrics[key] = key === 'watchTimeSeconds' ? Math.round(number * 60) : number;
+      }
+      await api.content.recordMetrics(placement.id, metrics);
+      onDone();
+      onClose();
+    } catch (err) {
+      setError(message(err, 'Could not record those numbers.'));
+      setBusy(false);
+    }
+  }
 
   return (
-    <Modal open title="Accounts" onClose={onClose}>
-      <p className="mb-4 text-[13px] text-ink-muted">
-        The accounts your content goes out on. A publisher (an agent, or a posting service you connect later)
-        is handed the platform, the handle and where on it — so type the handle exactly as it appears there.
+    <Modal open nested title={`Numbers for ${placement.platformLabel}`} onClose={onClose} footer={
+      <>
+        <Button tone="primary" data-testid="numbers-save" disabled={busy || entered.length === 0}
+                onClick={() => void save()}>Record numbers</Button>
+        <Button onClick={onClose}>Cancel</Button>
+      </>
+    }>
+      <p className="mb-3 text-[13px] text-ink-muted">
+        Type what {placement.platformLabel} shows right now. Leave anything it doesn&apos;t show blank —
+        it&apos;s kept as a dated snapshot, so later numbers never overwrite earlier ones.
       </p>
-      <ul className="mb-5 space-y-2" data-testid="accounts-list">
-        {meta.accounts.length === 0 && <li className="text-[13px] text-ink-faint">No accounts yet.</li>}
-        {meta.accounts.map((a) => (
-          <li key={a.id} className="flex items-center gap-3 rounded border border-surface-border px-3 py-2 text-[13px]">
-            <span className="min-w-0 flex-1">
-              <span className="text-ink">{a.handle}</span>
-              <span className="text-ink-faint"> · {a.platformLabel}</span>
-              {a.destinations.length > 0 && <span className="text-ink-faint"> · {a.destinations.join(', ')}</span>}
-              {a.defaultNiche && <span className="text-ink-faint"> · {a.defaultNiche}</span>}
-            </span>
-            <Button tone="danger" onClick={async () => {
-              try {
-                await api.content.accounts.remove(a.id);
-                onChanged();
-              } catch (err) {
-                setError(message(err, 'Could not remove it.'));
-              }
-            }}>Remove</Button>
-          </li>
+      <div className="grid grid-cols-2 gap-x-3 sm:grid-cols-3">
+        {Object.entries(meta.metrics).map(([key, spec]) => (
+          <Field key={key} label={key === 'watchTimeSeconds' ? 'Watch time (minutes)' : spec.label}>
+            <input data-testid={`numbers-${key}`} inputMode="decimal" className={inputClass}
+                   value={values[key] ?? ''} onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))} />
+          </Field>
         ))}
-      </ul>
-      <div className="space-y-3 rounded border border-surface-border p-3">
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Platform">
-            <select data-testid="account-platform" className={inputClass} value={platform}
-                    onChange={(e) => setPlatform(e.target.value)}>
-              {Object.entries(meta.platforms).map(([id, p]) => <option key={id} value={id}>{p.label}</option>)}
-            </select>
-          </Field>
-          <Field label="Handle">
-            <input data-testid="account-handle" className={inputClass} value={handle} placeholder="@handle"
-                   onChange={(e) => setHandle(e.target.value)} />
-          </Field>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Destinations" hint="Comma-separated, optional.">
-            <input data-testid="account-destinations" className={inputClass} value={destinations}
-                   placeholder="Shorts, Main feed" onChange={(e) => setDestinations(e.target.value)} />
-          </Field>
-          <Field label="Usual niche" hint="Optional.">
-            <input data-testid="account-niche" className={inputClass} value={niche} list="content-niches"
-                   onChange={(e) => setNiche(e.target.value)} />
-          </Field>
-        </div>
-        <Button tone="primary" data-testid="account-add" disabled={!handle.trim()} onClick={async () => {
-          setError(null);
-          try {
-            await api.content.accounts.create({
-              platform, handle: handle.trim(), defaultNiche: niche.trim(),
-              destinations: destinations.split(',').map((d) => d.trim()).filter(Boolean),
-            });
-            setHandle('');
-            setDestinations('');
-            setNiche('');
-            onChanged();
-          } catch (err) {
-            setError(message(err, 'Could not add it.'));
-          }
-        }}>Add account</Button>
-        {error && <p className="text-[13px] text-state-danger">{error}</p>}
       </div>
-      <datalist id="content-niches">{meta.niches.map((n) => <option key={n} value={n} />)}</datalist>
+      {error && <p className="mt-2 text-[13px] text-state-danger">{error}</p>}
     </Modal>
   );
 }
 
 function tomorrow(): string {
   const d = new Date(Date.now() + 24 * 3600 * 1000);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }

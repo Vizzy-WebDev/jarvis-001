@@ -9,16 +9,17 @@ import { api, ApiRequestError } from '@/lib/api';
 import type { ContentItemDetail, ContentMeta, ContentPlacement } from '@/lib/api-types';
 
 import { ContentPreview } from './ContentPreview';
-import { ConfirmDialog, MarkPostedDialog, RequestChangesDialog, ScheduleDialog } from './Dialogs';
+import { AddNumbersDialog, ConfirmDialog, MarkPostedDialog, RequestChangesDialog, ScheduleDialog } from './Dialogs';
+import { entriesFrom, type FileEntry, FilesEditor, rolesFor, toRequest } from './FilesEditor';
 import {
-  actorLabel, asList, FLOW, inZone, PLACEMENT_LABEL, PLACEMENT_TONE, STAGE_LABEL, when,
+  actorLabel, FLOW, fromDraft, inZone, listText, metricText, PLACEMENT_LABEL, PLACEMENT_TONE, STAGE_LABEL,
+  toDraft, when,
 } from './format';
+import { HandInRevisionDialog } from './NewContentDialog';
 
 type Confirm = { title: string; body: React.ReactNode; confirm: string; tone?: 'danger' | 'primary';
                  run: () => Promise<unknown> };
 type Scheduling = { placement: ContentPlacement | null; scheduleIt: boolean; date?: string };
-
-const EDITABLE = ['review', 'approved'];
 
 /**
  * One content item, whole: the actual content first, its supporting
@@ -26,7 +27,7 @@ const EDITABLE = ['review', 'approved'];
  * next and who does it — and only the actions that make sense right now.
  */
 export function Workspace({
-  itemId, meta, refreshKey, initialSchedule, onClose, onChanged, onAccountsChanged, onNavigate,
+  itemId, meta, refreshKey, initialSchedule, onClose, onChanged, onNavigate,
 }: {
   itemId: string;
   meta: ContentMeta;
@@ -36,7 +37,6 @@ export function Workspace({
   initialSchedule?: string;
   onClose: () => void;
   onChanged: () => void;
-  onAccountsChanged: () => void;
   onNavigate: (section: string) => void;
 }) {
   const [item, setItem] = useState<ContentItemDetail | null>(null);
@@ -53,6 +53,9 @@ export function Workspace({
   const [posting, setPosting] = useState<ContentPlacement | null>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [versionOf, setVersionOf] = useState<string | null>(null);
+  const [files, setFiles] = useState<FileEntry[] | null>(null);
+  const [revising, setRevising] = useState(false);
+  const [numbersFor, setNumbersFor] = useState<ContentPlacement | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -104,7 +107,7 @@ export function Workspace({
 
   const info = meta.types[item.contentType];
   const deleted = Boolean(item.deletedAt);
-  const editable = !deleted && EDITABLE.includes(item.stage) && viewing === null;
+  const editable = item.editable && viewing === null;
   const revision = viewing !== null ? item.revisions.find((r) => r.revision === viewing) : null;
   const shownFields = revision ? revision.fields : item.fields;
   const shownMedia = revision ? revision.media : item.media;
@@ -202,10 +205,27 @@ export function Workspace({
         )}
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
-          {/* The content itself, first. */}
-          <section>
+          {/* The content itself, first — and it stays in view while the long
+              column beside it (text, platforms, numbers) is scrolled. */}
+          <section className="lg:sticky lg:top-0 lg:self-start">
             <SectionTitle>{info?.label ?? item.typeLabel}</SectionTitle>
             <ContentPreview item={item} info={info} fields={shownFields} media={shownMedia} />
+            {editable && files === null && rolesFor(info).length > 0 && (
+              <Button className="mt-2" data-testid="ws-change-files" disabled={busy}
+                      onClick={() => setFiles(entriesFrom(item.media))}>Change files…</Button>
+            )}
+            {editable && files !== null && (
+              <div className="mt-3">
+                <FilesEditor info={info} meta={meta} entries={files} onChange={setFiles} testid="ws-files" />
+                <div className="mt-2 flex gap-2">
+                  <Button tone="primary" data-testid="ws-files-save" disabled={busy} onClick={() => {
+                    const { media, uploads } = toRequest(files);
+                    void run(() => api.content.edit(item.id, { media }, uploads), () => setFiles(null));
+                  }}>Save files</Button>
+                  <Button onClick={() => setFiles(null)} disabled={busy}>Cancel</Button>
+                </div>
+              </div>
+            )}
             {assets.length > 0 && (
               <div className="mt-4">
                 <SectionTitle>Supporting assets</SectionTitle>
@@ -232,7 +252,8 @@ export function Workspace({
 
           <section className="space-y-5">
             {item.openRequest && !deleted && (
-              <RequestPanel item={item} busy={busy} run={run} onNavigate={onNavigate} />
+              <RequestPanel item={item} busy={busy} run={run} onNavigate={onNavigate}
+                            onHandIn={() => setRevising(true)} />
             )}
 
             {item.findings.length > 0 && (
@@ -278,9 +299,12 @@ export function Workspace({
                 );
               })}
               {!editable && !deleted && viewing === null && (
-                <p className="text-[12px] text-ink-faint">
-                  {item.stage === 'changes_requested' ? 'Waiting on the revision — edit it once it is back in Review.'
-                    : 'The content is locked once it is scheduled or published.'}
+                <p className="text-[12px] text-ink-faint" data-testid="ws-locked">
+                  {item.stage === 'changes_requested' ? 'Waiting on the revision — or hand one in yourself.'
+                    : item.stage === 'archived' ? 'Archived — unarchive it to change anything.'
+                      : item.placements.some((p) => p.status === 'queued' || p.status === 'publishing')
+                        ? 'A post of this is on its way to a platform — it can be changed again once that finishes.'
+                        : 'Everything has been published, so there is nothing left to change.'}
                 </p>
               )}
               {dirty && !deleted && (
@@ -311,7 +335,7 @@ export function Workspace({
                     open={versionOf === p.id} onToggle={() => setVersionOf(versionOf === p.id ? null : p.id)}
                     run={run}
                     onSchedule={() => setScheduling({ placement: p, scheduleIt: true })}
-                    onMarkPosted={() => setPosting(p)} />
+                    onMarkPosted={() => setPosting(p)} onNumbers={() => setNumbersFor(p)} />
                 ))}
               </ul>
               {!deleted && !['archived', 'changes_requested'].includes(item.stage) && (
@@ -364,7 +388,7 @@ export function Workspace({
                 <li key={i} className="text-[13px]">
                   <span className="text-ink-faint">{when(e.at)} · </span>
                   <span className="text-ink">{actorLabel(e.actor)}</span>
-                  <span className="text-ink-muted"> — {e.note || e.kind}</span>
+                  <span className="text-ink-muted"> — {readableNote(e.note) || e.kind}</span>
                 </li>
               ))}
             </ol>
@@ -380,11 +404,23 @@ export function Workspace({
       )}
       {scheduling && (
         <ScheduleDialog item={item} meta={meta} placement={scheduling.placement} scheduleIt={scheduling.scheduleIt}
-                        initialDate={scheduling.date} onAccountsChanged={onAccountsChanged}
+                        initialDate={scheduling.date}
                         onClose={() => setScheduling(null)} onDone={() => {
                           onChanged();
                           void load();
                         }} />
+      )}
+      {revising && (
+        <HandInRevisionDialog item={item} meta={meta} onClose={() => setRevising(false)} onDone={() => {
+          onChanged();
+          void load();
+        }} />
+      )}
+      {numbersFor && (
+        <AddNumbersDialog placement={numbersFor} meta={meta} onClose={() => setNumbersFor(null)} onDone={() => {
+          onChanged();
+          void load();
+        }} />
       )}
       {posting && (
         <MarkPostedDialog placement={posting} onClose={() => setPosting(null)} onDone={() => {
@@ -402,6 +438,13 @@ export function Workspace({
       )}
     </Modal>
   );
+}
+
+/** A history note with any stored instant (`2026-10-30T09:00:00.000Z (Europe/London)`)
+ *  shown the way a person reads a time — in the zone it names, if it names one. */
+function readableNote(note: string): string {
+  return note.replace(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)(?: \(([^)]+)\))?/g,
+    (_match, iso: string, zone?: string) => (zone && zone !== 'UTC' ? `${inZone(iso, zone)} (${zone})` : when(iso)));
 }
 
 function SectionTitle({ children, className = '' }: { children: React.ReactNode; className?: string }) {
@@ -454,12 +497,13 @@ function Progress({ item }: { item: ContentItemDetail }) {
 }
 
 function RequestPanel({
-  item, busy, run, onNavigate,
+  item, busy, run, onNavigate, onHandIn,
 }: {
   item: ContentItemDetail;
   busy: boolean;
   run: (action: () => Promise<unknown>) => Promise<void>;
   onNavigate: (section: string) => void;
+  onHandIn: () => void;
 }) {
   const request = item.openRequest!;
   const [editing, setEditing] = useState(false);
@@ -479,8 +523,10 @@ function RequestPanel({
   } else if (request.status === 'in_progress') {
     status = <span>{request.pickedUpBy} is working on it, since {when(request.pickedUpAt)}.</span>;
   } else {
-    status = <span>Waiting for {request.assignee === 'jarvis' ? 'Jarvis' : item.producer || 'the agent that made it'} to
-      pick it up.</span>;
+    status = request.assignee !== 'jarvis' && item.producer === 'you'
+      ? <span>Waiting for you — hand in a revision when it&apos;s ready.</span>
+      : <span>Waiting for {request.assignee === 'jarvis' ? 'Jarvis' : item.producer || 'the agent that made it'} to
+        pick it up.</span>;
   }
 
   return (
@@ -512,6 +558,8 @@ function RequestPanel({
             <Button tone="primary" data-testid="ws-retry-jarvis" disabled={busy}
                     onClick={() => void run(() => api.content.retryJarvis(request.id))}>Try again</Button>
           )}
+          <Button tone={item.producer === 'you' ? 'primary' : undefined} data-testid="ws-hand-in" disabled={busy}
+                  onClick={onHandIn}>Hand in a revision yourself</Button>
           {request.jobId && <Button onClick={() => onNavigate('jobs')}>Open the job</Button>}
           <Button disabled={busy} data-testid="ws-reassign" onClick={() => void run(() => api.content.updateRequest(
             request.id, { assignee: request.assignee === 'jarvis' ? 'agent' : 'jarvis' }))}>
@@ -527,7 +575,7 @@ function RequestPanel({
 }
 
 function PlacementRow({
-  p, item, meta, busy, approvedish, open, onToggle, run, onSchedule, onMarkPosted,
+  p, item, meta, busy, approvedish, open, onToggle, run, onSchedule, onMarkPosted, onNumbers,
 }: {
   p: ContentPlacement;
   item: ContentItemDetail;
@@ -536,25 +584,37 @@ function PlacementRow({
   approvedish: boolean;
   open: boolean;
   onToggle: () => void;
-  run: (action: () => Promise<unknown>) => Promise<void>;
+  run: (action: () => Promise<unknown>, after?: () => void) => Promise<void>;
   onSchedule: () => void;
   onMarkPosted: () => void;
+  onNumbers: () => void;
 }) {
-  const typeFields = meta.types[item.contentType]?.fields ?? [];
+  const info = meta.types[item.contentType];
+  const typeFields = info?.fields ?? [];
   const fields = typeFields.filter((f) => (meta.platforms[p.platform]?.fields ?? []).includes(f));
   const [over, setOver] = useState<Record<string, string>>(() => toDraft(p.overrides, meta));
-  const locked = ['queued', 'publishing', 'published'].includes(p.status) || Boolean(item.deletedAt);
+  const [ownFiles, setOwnFiles] = useState<FileEntry[] | null>(null);
+  const [history, setHistory] = useState(false);
+  const locked = ['queued', 'publishing', 'published'].includes(p.status) || Boolean(item.deletedAt)
+    || item.stage === 'archived';
   const safeUrl = p.publishedUrl && /^https?:\/\//i.test(p.publishedUrl) ? p.publishedUrl : null;
   const status = p.due ? 'Due — waiting for publisher' : p.stale ? `Gone quiet (claimed by ${p.claimedBy})`
     : p.status === 'publishing' ? `Being posted by ${p.claimedBy}` : PLACEMENT_LABEL[p.status];
+  const ownRoles = [...new Set(p.media.map((m) => m.role))];
+  const filesNote = ownRoles.length === 0 ? 'Shared files'
+    : `Own ${ownRoles.map((r) => (r === 'primary' ? (info?.label ?? 'file').toLowerCase() : meta.assets[r]?.toLowerCase() ?? r)).join(' and ')}`
+      + (rolesFor(info).some((r) => !ownRoles.includes(r)) ? ' · the rest shared' : '');
+  const numbers = p.metrics?.values ?? {};
+  const known = Object.keys(meta.metrics).filter((k) => numbers[k] !== undefined);
+  const others = Object.keys(numbers).filter((k) => !(k in meta.metrics));
 
   return (
     <li className="rounded border border-surface-border p-3" data-testid="ws-placement" data-platform={p.platform}
         data-status={p.status}>
       <div className="flex flex-wrap items-baseline gap-x-2 text-[13px]">
         <span className="font-medium text-ink">{p.platformLabel}</span>
-        {p.accountLabel && <span className="text-ink-muted">{p.accountLabel}</span>}
         {p.destination && <span className="text-ink-faint">· {p.destination}</span>}
+        <span className="text-[12px] text-ink-faint" data-testid="placement-files">· {filesNote}</span>
         <span className={`ml-auto ${p.due || p.stale ? 'text-state-warn' : PLACEMENT_TONE[p.status]}`}
               data-testid="placement-status">{status}</span>
       </div>
@@ -564,7 +624,7 @@ function PlacementRow({
         </p>
       )}
       {p.status === 'published' && (
-        <p className="mt-1 text-[12px] text-ink-muted">
+        <p className="mt-1 break-all text-[12px] text-ink-muted">
           Published {when(p.publishedAt)}
           {safeUrl && <> · <a className="text-accent underline" href={safeUrl} target="_blank"
                               rel="noopener noreferrer" data-testid="placement-link">{safeUrl}</a></>}
@@ -572,6 +632,42 @@ function PlacementRow({
       )}
       {p.status === 'failed' && p.failure && (
         <p className="mt-1 text-[12px] text-state-danger" data-testid="placement-failure">{p.failure}</p>
+      )}
+      {p.status === 'published' && (
+        <div className="mt-2 rounded bg-white/[0.03] p-2" data-testid="placement-numbers">
+          {p.metrics ? (
+            <>
+              <dl className="grid grid-cols-3 gap-x-3 gap-y-1 sm:grid-cols-4">
+                {[...known, ...others].map((key) => (
+                  <div key={key} className="min-w-0">
+                    <dt className="truncate text-[11px] text-ink-faint">{meta.metrics[key]?.label ?? key}</dt>
+                    <dd className="text-[14px] tabular-nums text-ink">{metricText(key, numbers[key]!)}</dd>
+                  </div>
+                ))}
+              </dl>
+              <p className="mt-1 text-[11px] text-ink-faint">
+                As of {when(p.metrics.capturedAt)} · reported by {actorLabel(p.metrics.source)}
+                {(p.metricsHistory?.length ?? 0) > 1 && (
+                  <> · <button type="button" className="underline" data-testid="numbers-history-toggle"
+                               onClick={() => setHistory(!history)}>
+                    {history ? 'Hide' : `${p.metricsHistory!.length} reports`}</button></>
+                )}
+              </p>
+              {history && (
+                <ul className="mt-1 space-y-0.5 text-[11px] text-ink-muted" data-testid="numbers-history">
+                  {p.metricsHistory!.map((h, i) => (
+                    <li key={i}>
+                      {when(h.capturedAt)}: {Object.entries(h.values).map(([k, v]) =>
+                        `${meta.metrics[k]?.label ?? k} ${metricText(k, v)}`).join(' · ')}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          ) : (
+            <p className="text-[12px] text-ink-faint">No numbers reported yet.</p>
+          )}
+        </div>
       )}
 
       <div className="mt-2 flex flex-wrap gap-2">
@@ -604,14 +700,38 @@ function PlacementRow({
         {approvedish && p.status !== 'published' && (
           <Button data-testid="pl-mark-posted" disabled={busy} onClick={onMarkPosted}>I posted it myself</Button>
         )}
+        {p.status === 'published' && !item.deletedAt && (
+          <Button data-testid="pl-add-numbers" disabled={busy} onClick={onNumbers}>Add numbers…</Button>
+        )}
         {fields.length > 0 && (
-          <Button data-testid="pl-version" onClick={onToggle}>{open ? 'Hide' : 'Show'} {p.platformLabel} version</Button>
+          <Button data-testid="pl-version" onClick={onToggle}>{open ? 'Hide' : 'Show'} {p.platformLabel} text</Button>
+        )}
+        {!locked && rolesFor(info).length > 0 && ownFiles === null && (
+          <Button data-testid="pl-files" disabled={busy} onClick={() => setOwnFiles(entriesFrom(p.media))}>
+            {p.platformLabel} files…</Button>
         )}
         {['draft', 'failed'].includes(p.status) && !item.deletedAt && item.stage !== 'archived' && (
           <Button tone="danger" data-testid="pl-remove" disabled={busy}
                   onClick={() => void run(() => api.content.removePlacement(p.id))}>Remove</Button>
         )}
       </div>
+
+      {ownFiles !== null && (
+        <div className="mt-3 border-t border-surface-border pt-2" data-testid="pl-files-editor">
+          <p className="mb-2 text-[12px] text-ink-faint">
+            What {p.platformLabel} gets. Anything without its own file uses the shared one.
+          </p>
+          <FilesEditor info={info} meta={meta} entries={ownFiles} onChange={setOwnFiles} shared={item.media}
+                       testid="pl-files-slots" />
+          <div className="mt-2 flex gap-2">
+            <Button tone="primary" data-testid="pl-files-save" disabled={busy} onClick={() => {
+              const { media, uploads } = toRequest(ownFiles);
+              void run(() => api.content.updatePlacement(p.id, { media }, uploads), () => setOwnFiles(null));
+            }}>Save {p.platformLabel} files</Button>
+            <Button onClick={() => setOwnFiles(null)} disabled={busy}>Cancel</Button>
+          </div>
+        </div>
+      )}
 
       {open && (
         <div className="mt-3 border-t border-surface-border pt-2" data-testid="pl-version-editor">
@@ -634,43 +754,11 @@ function PlacementRow({
           {!locked && (
             <Button tone="primary" data-testid="version-save" disabled={busy} onClick={() => void run(() =>
               api.content.updatePlacement(p.id, { overrides: fromDraft(over, {}, meta, fields, true) }))}>
-              Save {p.platformLabel} version
+              Save {p.platformLabel} text
             </Button>
           )}
         </div>
       )}
     </li>
   );
-}
-
-function listText(field: string, value: string | string[] | undefined): string {
-  if (Array.isArray(value)) return value.join(field === 'hashtags' ? ' ' : ', ');
-  return value ?? '';
-}
-
-function toDraft(fields: Record<string, string | string[]>, meta: ContentMeta): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(fields)) {
-    out[key] = meta.fields[key]?.kind === 'list' ? listText(key, asList(value)) : String(value ?? '');
-  }
-  return out;
-}
-
-/** Only fields that changed (or, for a platform version, every field — blank clears it). */
-function fromDraft(draft: Record<string, string>, base: Record<string, string | string[]>, meta: ContentMeta,
-                   allowed: string[], everything = false): Record<string, string | string[]> {
-  const out: Record<string, string | string[]> = {};
-  for (const field of allowed) {
-    const text = draft[field] ?? '';
-    const before = listText(field, base[field]);
-    if (!everything && text === before) continue;
-    if (meta.fields[field]?.kind === 'list') {
-      out[field] = field === 'hashtags'
-        ? text.split(/[\s,]+/).map((t) => t.trim()).filter(Boolean)
-        : text.split(',').map((t) => t.trim()).filter(Boolean);
-    } else {
-      out[field] = text;
-    }
-  }
-  return out;
 }

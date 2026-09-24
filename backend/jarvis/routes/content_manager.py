@@ -87,7 +87,7 @@ def _filters(request: Request) -> dict[str, Any]:
 
 @router.get("/content-meta")
 def content_meta() -> dict[str, Any]:
-    return {**kinds_meta(), "niches": store.niches(), "accounts": store.list_accounts()}
+    return {**kinds_meta(), "niches": store.niches()}
 
 
 @router.get("/content-media/{file_id}")
@@ -106,12 +106,29 @@ def serve_media(file_id: str):
 # --- the lists ----------------------------------------------------------------------
 
 @router.get("/content-items")
-def list_items(request: Request) -> dict[str, Any]:
+def list_items(request: Request):
+    """Every matching item, or one page of them with `limit`/`offset` (the screen
+    asks for pages: a busy stage holds thousands). `total` counts them all."""
     q = request.query_params
-    items = store.list_items(stage=q.get("stage") or None, date_from=q.get("from") or None,
-                             date_to=q.get("to") or None, archived_from=q.get("archivedFrom") or None,
-                             **_filters(request))
-    return {"items": [_with_job(i) for i in items]}
+    found = {"stage": q.get("stage") or None, "date_from": q.get("from") or None,
+             "date_to": q.get("to") or None, "archived_from": q.get("archivedFrom") or None,
+             **_filters(request)}
+    try:
+        limit = int(q["limit"]) if q.get("limit") else None
+        offset = int(q.get("offset") or 0)
+    except ValueError:
+        return JSONResponse({"ok": False, "error": "“limit” and “offset” must be whole numbers."}, status_code=400)
+    items = store.list_items(**found, limit=limit, offset=offset)
+    body: dict[str, Any] = {"items": [_with_job(i) for i in items]}
+    if limit is not None:
+        body["total"] = store.count_items(**found)
+    return body
+
+
+@router.get("/content-analytics")
+def analytics(request: Request) -> dict[str, Any]:
+    q = request.query_params
+    return store.analytics(date_from=q.get("from") or None, date_to=q.get("to") or None, **_filters(request))
 
 
 @router.get("/content-items/summary")
@@ -220,7 +237,7 @@ async def submit(request: Request):
             name=str(body.get("name") or ""), content_type=str(body.get("contentType") or ""),
             niche=str(body.get("niche") or ""), fields=body.get("fields"), media=body.get("media"),
             findings=body.get("findings"), producer=str(body.get("producer") or ""),
-            platforms=body.get("platforms"))
+            platforms=body.get("platforms"), approve_now=body.get("readyToPost") is True)
     except BaseException:
         files.discard(saved)
         raise
@@ -312,8 +329,16 @@ def item_detail(item_id: str):
 
 @router.patch("/content-items/{item_id}")
 @_guard
-def edit(item_id: str, body: dict[str, Any] = Body(default_factory=dict)):
-    item = lifecycle.edit(item_id, name=body.get("name"), niche=body.get("niche"), fields=body.get("fields"))
+async def edit(item_id: str, request: Request):
+    """Name, niche, supporting text and — as JSON or multipart, like handing in —
+    the files (`media`, the full new list)."""
+    body, saved = await _read_submission(request)
+    try:
+        item = lifecycle.edit(item_id, name=body.get("name"), niche=body.get("niche"), fields=body.get("fields"),
+                              media=body.get("media"))
+    except BaseException:
+        files.discard(saved)
+        raise
     return {"ok": True, "item": _with_job(item)}
 
 
@@ -337,7 +362,6 @@ def request_changes(item_id: str, body: dict[str, Any] = Body(default_factory=di
 @_guard
 def add_placement(item_id: str, body: dict[str, Any] = Body(default_factory=dict)):
     placement = lifecycle.add_placement(item_id, platform=str(body.get("platform") or ""),
-                                        account_id=body.get("accountId") or None,
                                         destination=str(body.get("destination") or ""))
     return {"ok": True, "placement": placement, "item": _with_job(store.get_item(item_id))}
 
@@ -377,11 +401,17 @@ def delete(item_id: str):
 
 @router.patch("/content-placements/{placement_id}")
 @_guard
-def update_placement(placement_id: str, body: dict[str, Any] = Body(default_factory=dict)):
-    kwargs: dict[str, Any] = {"overrides": body.get("overrides"), "destination": body.get("destination")}
-    if "accountId" in body:
-        kwargs["account_id"] = body.get("accountId") or None
-    return {"ok": True, "placement": lifecycle.update_placement(placement_id, **kwargs)}
+async def update_placement(placement_id: str, request: Request):
+    """This platform's own text (`overrides`), own files (`media`, JSON or
+    multipart; an empty list goes back to the shared files) and destination."""
+    body, saved = await _read_submission(request)
+    try:
+        placement = lifecycle.update_placement(placement_id, overrides=body.get("overrides"),
+                                               media=body.get("media"), destination=body.get("destination"))
+    except BaseException:
+        files.discard(saved)
+        raise
+    return {"ok": True, "placement": placement}
 
 
 @router.delete("/content-placements/{placement_id}")
@@ -421,33 +451,16 @@ def mark_posted(placement_id: str, body: dict[str, Any] = Body(default_factory=d
     return {"ok": True, "item": lifecycle.mark_posted(placement_id, url=str(body.get("url") or ""))}
 
 
-# --- accounts ------------------------------------------------------------------------------
+# --- reported numbers ------------------------------------------------------------------------
 
-@router.get("/content-accounts")
-def accounts() -> dict[str, Any]:
-    return {"accounts": store.list_accounts()}
+@router.get("/content-placements/{placement_id}/metrics")
+def metrics_history(placement_id: str) -> dict[str, Any]:
+    return {"history": store.metrics_history(placement_id)}
 
 
-@router.post("/content-accounts")
+@router.post("/content-placements/{placement_id}/metrics")
 @_guard
-def create_account(body: dict[str, Any] = Body(default_factory=dict)):
-    return {"ok": True, "account": lifecycle.create_account(
-        platform=str(body.get("platform") or ""), handle=str(body.get("handle") or ""),
-        destinations=body.get("destinations") if isinstance(body.get("destinations"), list) else [],
-        default_niche=str(body.get("defaultNiche") or ""))}
-
-
-@router.patch("/content-accounts/{account_id}")
-@_guard
-def update_account(account_id: str, body: dict[str, Any] = Body(default_factory=dict)):
-    return {"ok": True, "account": lifecycle.update_account(
-        account_id, handle=body.get("handle"),
-        destinations=body.get("destinations") if isinstance(body.get("destinations"), list) else None,
-        default_niche=body.get("defaultNiche"))}
-
-
-@router.delete("/content-accounts/{account_id}")
-@_guard
-def delete_account(account_id: str):
-    lifecycle.delete_account(account_id)
-    return {"ok": True}
+def record_metrics(placement_id: str, body: dict[str, Any] = Body(default_factory=dict)):
+    return {"ok": True, "placement": lifecycle.record_metrics(
+        placement_id, metrics=body.get("metrics"), captured_at=body.get("capturedAt"),
+        by=str(body.get("by") or ""))}

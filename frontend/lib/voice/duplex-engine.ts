@@ -666,8 +666,12 @@ export class DuplexEngine extends VoiceEngine {
           // directly. If it did, leave it: the echo tail is still owed.
           if (!this.speaking) this.backToListening();
           break;
+        case 'routed':
+          if (data.userMessageId) this.emit('saved', { userMessageId: data.userMessageId });
+          break;
         case 'done':
           finish();
+          if (data.messageId) this.emit('saved', { replyMessageId: data.messageId });
           this.emit('done', { text: full });
           break;
         case 'error':

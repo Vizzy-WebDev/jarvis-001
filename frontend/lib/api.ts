@@ -54,11 +54,13 @@ import type {
   Status,
   Task,
   TaskRun,
-  ContentAccount,
+  ContentAnalytics,
   ContentCalendarEntry,
+  ContentDraft,
   ContentFilters,
   ContentItem,
   ContentItemDetail,
+  ContentMediaRef,
   ContentMeta,
   ContentPlacement,
   ContentStage,
@@ -85,7 +87,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, {
     ...init,
     headers: {
-      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+      // A FormData body (files) sets its own multipart boundary; labelling it
+      // JSON would make the server unable to read it.
+      ...(init?.body && !(init.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}),
       ...init?.headers,
     },
   });
@@ -106,6 +110,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 const json = (body: unknown): RequestInit => ({ body: JSON.stringify(body) });
+
+/** JSON, or multipart when there are files: the description as an `item` field
+ *  and each file under the key its media entry names (`{"file": key}`). */
+function withFiles(body: unknown, uploads: { key: string; file: File }[]): string | FormData {
+  if (!uploads.length) return JSON.stringify(body);
+  const form = new FormData();
+  form.set('item', JSON.stringify(body));
+  for (const { key, file } of uploads) form.append(key, file, file.name);
+  return form;
+}
 
 /** `?a=1&b=2` from the set values only; empty when nothing is set. */
 function query(params: Record<string, string | undefined | null>): string {
@@ -618,23 +632,41 @@ export const api = {
   content: {
     meta: () => request<ContentMeta>('/content-meta'),
     list: (stage: ContentStage | 'bin', filters: ContentFilters & {
-      from?: string; to?: string; archivedFrom?: string;
-    } = {}) =>
-      request<{ items: ContentItem[] }>(`/content-items${query({ stage, ...filters })}`),
+      from?: string; to?: string; archivedFrom?: string; limit?: number; offset?: number;
+    } = {}) => {
+      const { limit, offset, ...rest } = filters;
+      return request<{ items: ContentItem[]; total?: number }>(`/content-items${query({
+        stage, ...rest, limit: limit ? String(limit) : undefined, offset: offset ? String(offset) : undefined,
+      })}`);
+    },
     summary: (filters: ContentFilters = {}) =>
       request<ContentSummary>(`/content-items/summary${query({ ...filters })}`),
     calendar: (start: string, end: string, filters: ContentFilters = {}) =>
       request<{ entries: ContentCalendarEntry[] }>(`/content-items/calendar${query({ start, end, ...filters })}`),
+    analytics: (filters: ContentFilters & { from?: string; to?: string } = {}) =>
+      request<ContentAnalytics>(`/content-analytics${query({ ...filters })}`),
     get: (id: string) => request<{ item: ContentItemDetail }>(`/content-items/${encodeURIComponent(id)}`),
-    edit: (id: string, patch: { name?: string; niche?: string; fields?: Record<string, string | string[]> }) =>
+    /** Adding content — the same door agents and Jarvis use. With files it is
+     *  multipart: `item` (JSON) plus each file under the name its media entry uses. */
+    create: (item: ContentDraft, uploads: { key: string; file: File }[] = []) =>
+      request<{ ok: true; item: ContentItem }>('/content-items', { method: 'POST', body: withFiles(item, uploads) }),
+    edit: (id: string, patch: {
+      name?: string; niche?: string; fields?: Record<string, string | string[]>; media?: ContentMediaRef[];
+    }, uploads: { key: string; file: File }[] = []) =>
       request<{ ok: true; item: ContentItem }>(`/content-items/${encodeURIComponent(id)}`,
-        { method: 'PATCH', ...json(patch) }),
+        { method: 'PATCH', body: withFiles(patch, uploads) }),
+    /** Handing back a revised version — what an agent does, from the screen. */
+    revise: (id: string, body: {
+      fields?: Record<string, string | string[]>; media?: ContentMediaRef[]; note?: string; by?: string;
+    }, uploads: { key: string; file: File }[] = []) =>
+      request<{ ok: true; item: ContentItem }>(`/content-items/${encodeURIComponent(id)}/revisions`,
+        { method: 'POST', body: withFiles(body, uploads) }),
     approve: (id: string) =>
       request<{ ok: true; item: ContentItem }>(`/content-items/${encodeURIComponent(id)}/approve`, { method: 'POST' }),
     requestChanges: (id: string, body: { what: string; why: string; assignee: 'agent' | 'jarvis' }) =>
       request<{ ok: true; item: ContentItem }>(`/content-items/${encodeURIComponent(id)}/request-changes`,
         { method: 'POST', ...json(body) }),
-    addPlacement: (id: string, body: { platform: string; accountId?: string | null; destination?: string }) =>
+    addPlacement: (id: string, body: { platform: string; destination?: string }) =>
       request<{ ok: true; placement: ContentPlacement; item: ContentItem }>(
         `/content-items/${encodeURIComponent(id)}/placements`, { method: 'POST', ...json(body) }),
     archive: (id: string) =>
@@ -650,10 +682,10 @@ export const api = {
       request<{ ok: true }>(`/content-items/${encodeURIComponent(id)}/permanent`, { method: 'DELETE' }),
     emptyBin: () => request<{ ok: true; removed: number }>('/content-items/trash', { method: 'DELETE' }),
     updatePlacement: (id: string, body: {
-      overrides?: Record<string, string | string[]>; accountId?: string | null; destination?: string;
-    }) =>
+      overrides?: Record<string, string | string[]>; media?: ContentMediaRef[]; destination?: string;
+    }, uploads: { key: string; file: File }[] = []) =>
       request<{ ok: true; placement: ContentPlacement }>(`/content-placements/${encodeURIComponent(id)}`,
-        { method: 'PATCH', ...json(body) }),
+        { method: 'PATCH', body: withFiles(body, uploads) }),
     removePlacement: (id: string) =>
       request<{ ok: true; item: ContentItem }>(`/content-placements/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     schedule: (id: string, scheduledAt: string, timezone: string) =>
@@ -671,6 +703,9 @@ export const api = {
     markPosted: (id: string, url: string) =>
       request<{ ok: true; item: ContentItem }>(`/content-placements/${encodeURIComponent(id)}/mark-posted`,
         { method: 'POST', ...json({ url }) }),
+    recordMetrics: (id: string, metrics: Record<string, number>, capturedAt?: string) =>
+      request<{ ok: true; placement: ContentPlacement }>(`/content-placements/${encodeURIComponent(id)}/metrics`,
+        { method: 'POST', ...json({ metrics, capturedAt, by: 'you' }) }),
     updateRequest: (id: string, body: { what?: string; why?: string; assignee?: 'agent' | 'jarvis' }) =>
       request<{ ok: true; item: ContentItemDetail }>(`/content-change-requests/${encodeURIComponent(id)}`,
         { method: 'PATCH', ...json(body) }),
@@ -680,15 +715,6 @@ export const api = {
     retryJarvis: (id: string) =>
       request<{ ok: boolean; item: ContentItemDetail | null }>(
         `/content-change-requests/${encodeURIComponent(id)}/start-jarvis`, { method: 'POST' }),
-    accounts: {
-      create: (body: { platform: string; handle: string; destinations: string[]; defaultNiche: string }) =>
-        request<{ ok: true; account: ContentAccount }>('/content-accounts', { method: 'POST', ...json(body) }),
-      update: (id: string, body: { handle?: string; destinations?: string[]; defaultNiche?: string }) =>
-        request<{ ok: true; account: ContentAccount }>(`/content-accounts/${encodeURIComponent(id)}`,
-          { method: 'PATCH', ...json(body) }),
-      remove: (id: string) =>
-        request<{ ok: true }>(`/content-accounts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-    },
   },
 
   uploads: {

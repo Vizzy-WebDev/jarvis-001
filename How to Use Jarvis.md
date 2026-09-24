@@ -22,7 +22,7 @@ main chat:
   built-in computer control
 - **Planning** — turn an idea into a plan and a ready-to-paste prompt
 - **Content Analysis** — hand Jarvis a video, article or file and ask about it
-- **Content Management** — review, approve, schedule and publish the content your agents make
+- **Content Management** — add, review, schedule and publish your finished content, and see its numbers
 - **Scheduled Tasks** — reminders and repeating things, including ones that use a
   specific ability of Jarvis's
 - **Background Jobs** — longer things Jarvis is working on behind the scenes
@@ -494,45 +494,68 @@ You can adjust how trigger-happy that second layer is from Model Settings →
 
 ## 19. Content Management — from finished content to published
 
-Your agents and tools make the content — videos, images, carousels, flyers, posts,
-articles, newsletters, podcasts. **Content Management** (menu → **Content Management**)
-is where you look after it once it's made. It doesn't make anything itself.
+Content is made by you, by Jarvis, or by your agents — videos, images, carousels, flyers,
+posts, articles, newsletters, podcasts. **Content Management** (menu → **Content
+Management**) is where you look after it once it's made. It doesn't make anything itself.
+
+**Adding your own content.** Press **+ New content**, give it a name, pick what it is
+(Video, Image, Carousel…) and add the actual file — a video you made, the slides of a
+carousel, an image — plus a thumbnail or cover if you have one. Tick the platforms it's
+going to (you can add more later). Then choose **Send to Review** or **Add as Ready to
+Post**. It joins the same list as everything else, wherever that list currently is. You
+can also just give a file to Jarvis in the chat ("put this video in Content Management")
+and it lands in Review.
 
 Across the top is the whole journey, left to right, with how many things are at each
 step: **Review → Changes Requested → Ready to Post → Scheduling → Published**, and off to
-the side **Archived** and the **Recycle Bin**. A dot means something there needs you, and
-the line above it says exactly what ("2 to review · 1 post failed").
+the side **Analytics**, **Archived** and the **Recycle Bin**. A dot means something there
+needs you, and the line above it says exactly what ("2 to review · 1 post failed").
+
+One piece of content can go to several platforms, and each platform moves on its own.
+If a video is **scheduled** for YouTube, already **published** on TikTok and still
+**ready** for Instagram, you'll find it under all three — each view highlights the
+platforms it's about.
 
 - **Review** — new content lands here. Click one to see the actual video, image, slides
-  or text first, with its title, caption, hashtags and thumbnail beside it. Only the
-  parts that type of content has are shown. Fix a caption right there if you like, then
-  **Approve** or **Request changes**.
+  or text first, with its title, caption, hashtags and thumbnail beside it. Fix a caption
+  — or **Change files…** to swap the video or thumbnail — then **Approve** or **Request
+  changes**.
 - **Request changes** — say what needs to change and why, and who does it: the agent
-  that made it, or **Jarvis** (Jarvis can rewrite words — captions, titles, a post — but
-  can't re-edit video or images). You'll see who's working on it, and it comes back to
-  Review as the next revision, with every earlier version still there to look at.
-- **Ready to Post** — pick where it goes (platform, account, and where on it — e.g.
-  YouTube Shorts), then **Post now** or **Schedule**. Each platform can have its own
-  version of the caption.
+  that made it, or **Jarvis** (Jarvis can rewrite words, not video or images). You can
+  also do it yourself: **Hand in a revision yourself** lets you change the words and files
+  and send the new version back to Review. Every earlier version is kept.
+- **Ready to Post** — pick the platform (and where on it — e.g. YouTube Shorts), then
+  **Post now** or **Schedule**. Every platform uses the same files and words unless you
+  give it its own: **Show … text** for its own caption, **… files** for its own video,
+  thumbnail or cover (for example a vertical cut for TikTok). Anything you don't change
+  stays shared.
 - **Scheduling** — every scheduled post, as a list or a **calendar**. Pick a date, time
-  and timezone; reschedule or cancel any time before it goes out. Click an empty day on
-  the calendar to schedule something that's ready.
-- **Published** — the record of what went out, where, when, and the link to it. If a
-  post fails, it says why and gives you **Retry**. Posted it yourself? Use
-  **I posted it myself** and paste the link.
+  and timezone; reschedule or cancel any time before it goes out. You can still change the
+  words or files of something scheduled — the change goes out with it. Click an empty day
+  on the calendar to schedule something for that day; a busy day shows **+ more**.
+- **Published** — what went out, where, when, and the link. If a post fails, it says why
+  and gives you **Retry**. Posted it yourself? Use **I posted it myself** and paste the
+  link. **Add numbers…** records the views, likes and so on the platform shows you.
+- **Analytics** — every published post with its link and the numbers reported for it,
+  with totals. Numbers come from whatever reports them — a publishing tool, an agent,
+  Jarvis, or you. Nothing is made up: a post nobody reported numbers for shows a dash.
 - **Archived** — things you're done with, kept out of the way but still searchable.
 - **Recycle Bin** — anything you delete goes here first. **Restore** puts it back
   exactly where it was; **Delete forever** really removes it, files and all, and asks
   you first. Nothing is ever deleted from the bin on its own.
 
 The **Niche**, **Type** and **Platform** filters work on every step, so however many
-niches you run, it's still one list — just filter to the one you want. **Accounts** is
-where you list the accounts you post to; type each handle exactly as it appears on the
-platform.
+niches you run, it's still one list — just filter to the one you want. Long lists come a
+page at a time: **Show more** at the bottom.
+
+Jarvis can do the same things from the chat — add content, write or change a caption,
+schedule a post, record numbers. Before it changes or schedules anything, it asks you.
+Approving, archiving and deleting are always yours, on this screen.
 
 *Posting itself is done by a publisher* — an agent, or a posting service you connect
-later. Jarvis hands it the post, the platform, the account and the files, and it reports
-back "posted, here's the link" or "failed, here's why".
+later. It's handed the post, the platform, its words and its files, and reports back
+"posted, here's the link" or "failed, here's why". Which account it posts from is set up
+in that posting service, not here.
 
 ---
 
@@ -541,6 +564,7 @@ back "posted, here's the link" or "failed, here's why".
 | Want to... | Where |
 |---|---|
 | See what content needs reviewing | Menu → Content Management, or ask "anything to review?" |
+| Add content you made yourself | Content Management → + New content |
 | Schedule a finished post | Content Management → Ready to Post → open it → Schedule… |
 | Get deleted content back | Content Management → Recycle Bin → open it → Restore |
 | Add a Skill (upload, or from a GitHub link) | Menu → Skills → + Add a Skill / Install from a GitHub link |

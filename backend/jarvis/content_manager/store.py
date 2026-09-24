@@ -78,8 +78,9 @@ def placement_dict(row: Any, now: str | None = None) -> dict[str, Any]:
     return {
         "id": row["id"], "itemId": row["item_id"], "platform": row["platform"],
         "platformLabel": platform_label(row["platform"]),
-        "accountId": row["account_id"], "accountLabel": row["account_label"],
         "destination": row["destination"], "overrides": _loads(row["overrides_json"], {}),
+        # This platform's OWN media only; a role it has none of uses the item's.
+        "media": _media(_loads(row["media_json"], [])),
         "status": status, "scheduledAt": row["scheduled_at"], "timezone": row["timezone"],
         "due": status == "scheduled" and bool(row["scheduled_at"]) and row["scheduled_at"] <= now,
         "claimedBy": row["claimed_by"], "claimedAt": row["claimed_at"],
@@ -130,9 +131,27 @@ def _item(row: Any) -> dict[str, Any]:
     }
     item["placements"] = placements_for(row["id"])
     item["openRequest"] = _open_request(row["id"])
+    item["editable"] = editable(item["stage"], [p["status"] for p in item["placements"]],
+                                bool(item["deletedAt"]))
     item["attention"] = _attention(item)
     item["next"] = _next_step(item)
     return item
+
+
+def editable(stage: str, statuses: list[str], deleted: bool = False) -> bool:
+    """Whether the content (its text and files) can still be changed.
+
+    From Review until it has gone out: a scheduled post is still just a plan, so
+    it stays editable, and the change goes out with it. Not while a post is on its
+    way (queued or being posted — the publisher may already hold the old version),
+    not once every platform has published, and not while changes are being made
+    by someone else or it is archived or in the bin.
+    """
+    if deleted or stage not in ("review", "approved", "scheduling", "published"):
+        return False
+    if any(s in ("queued", "publishing") for s in statuses):
+        return False
+    return not (statuses and all(s == "published" for s in statuses))
 
 
 def _who_revises(item: dict[str, Any], request: dict[str, Any]) -> str:
@@ -192,8 +211,8 @@ def _next_step(item: dict[str, Any]) -> dict[str, str]:
             return {"step": f"Waiting for the publisher to post it to {p['platformLabel']}",
                     "who": "Publisher"}
         soonest = min(pending, key=lambda p: p["scheduledAt"] or "")
-        return {"step": f"Goes out on {soonest['platformLabel']} at the scheduled time",
-                "who": "Publisher (at the scheduled time)"}
+        return {"step": f"Goes out on {soonest['platformLabel']} as scheduled",
+                "who": "Publisher"}
     if stage == "published":
         if any(p["status"] == "failed" for p in placements):
             return {"step": "Retry the failed post, or leave it", "who": "You"}
@@ -230,6 +249,9 @@ def item_detail(item_id: str) -> dict[str, Any] | None:
     item["events"] = [
         {"at": r["at"], "actor": r["actor"], "kind": r["kind"], "note": r["note"]}
         for r in db.execute("SELECT * FROM cm_events WHERE item_id = ? ORDER BY id DESC", (item_id,))]
+    for placement in item["placements"]:
+        if placement["status"] == "published":
+            placement["metricsHistory"] = metrics_history(placement["id"])
     return item
 
 
@@ -248,9 +270,42 @@ def _filters(*, niche: str | None, content_type: str | None, platform: str | Non
         args.append(platform)
     if q and q.strip():
         like = f"%{q.strip()}%"
-        where.append("(i.name LIKE ? OR i.niche LIKE ? OR i.fields_json LIKE ? OR i.producer LIKE ?)")
+        # The field VALUES, never the stored JSON: a LIKE over `fields_json` also
+        # matched the key names, so searching "title" found almost everything.
+        where.append("(i.name LIKE ? OR i.niche LIKE ? OR i.producer LIKE ? OR EXISTS "
+                     "(SELECT 1 FROM json_each(i.fields_json) f WHERE f.value LIKE ?))")
         args += [like, like, like, like]
     return where, args
+
+
+#: Which items a post-approval view holds. An item is in EVERY stage one of its
+#: platforms is in — YouTube scheduled and TikTok published puts it under both —
+#: so nothing live on one platform is missing from Published while another waits.
+_POST_APPROVAL = "i.stage IN ('approved','scheduling','published')"
+
+
+def _has(statuses: str) -> str:
+    return f"EXISTS (SELECT 1 FROM cm_placements p WHERE p.item_id = i.id AND p.status IN ({statuses}))"
+
+
+_READY = _has("'draft','failed'")
+_PENDING_SQL = _has("'scheduled','queued','publishing'")
+_OUT = _has("'published'")
+_FAILED = _has("'failed'")
+_NO_PLATFORMS = "NOT EXISTS (SELECT 1 FROM cm_placements p WHERE p.item_id = i.id)"
+_VIEW_SQL = {
+    "approved": f"({_POST_APPROVAL} AND ({_NO_PLATFORMS} OR {_READY}))",
+    "scheduling": f"({_POST_APPROVAL} AND {_PENDING_SQL})",
+    "published": f"({_POST_APPROVAL} AND {_OUT})",
+}
+#: The platform statuses each post-approval view is about.
+VIEW_STATUSES = {"approved": ("draft", "failed"), "scheduling": PENDING, "published": ("published",)}
+
+
+def _stage_clause(stage: str) -> tuple[str, list[Any]]:
+    if stage in _VIEW_SQL:
+        return _VIEW_SQL[stage], []
+    return "i.stage = ?", [stage]
 
 
 #: Which date a "from/to" filter means depends on where you are looking.
@@ -261,10 +316,9 @@ _DATE_COLUMN = {
 }
 
 
-def list_items(*, stage: str | None = None, niche: str | None = None,
-               content_type: str | None = None, platform: str | None = None,
-               q: str | None = None, date_from: str | None = None,
-               date_to: str | None = None, archived_from: str | None = None) -> list[dict[str, Any]]:
+def _list_query(*, stage: str | None, niche: str | None, content_type: str | None, platform: str | None,
+                q: str | None, date_from: str | None, date_to: str | None,
+                archived_from: str | None) -> tuple[str, list[Any], str]:
     where, args = _filters(niche=niche, content_type=content_type, platform=platform, q=q)
     if stage == "bin":
         where.append("i.deleted_at IS NOT NULL")
@@ -272,8 +326,9 @@ def list_items(*, stage: str | None = None, niche: str | None = None,
     else:
         where.append("i.deleted_at IS NULL")
         if stage:
-            where.append("i.stage = ?")
-            args.append(stage)
+            clause, extra = _stage_clause(stage)
+            where.append(clause)
+            args += extra
         # Review is a queue: oldest first. Everything else: most recent first.
         order = "i.updated_at ASC" if stage == "review" else "i.updated_at DESC"
     if archived_from:
@@ -286,43 +341,78 @@ def list_items(*, stage: str | None = None, niche: str | None = None,
     if date_to:
         where.append(f"{column} <= ?")
         args.append(date_to)
-    sql = f"SELECT i.* FROM cm_items i WHERE {' AND '.join(where)} ORDER BY {order}"
+    return " AND ".join(where), args, order
+
+
+def list_items(*, stage: str | None = None, niche: str | None = None,
+               content_type: str | None = None, platform: str | None = None,
+               q: str | None = None, date_from: str | None = None,
+               date_to: str | None = None, archived_from: str | None = None,
+               limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
+    where, args, order = _list_query(stage=stage, niche=niche, content_type=content_type, platform=platform,
+                                     q=q, date_from=date_from, date_to=date_to, archived_from=archived_from)
+    sql = f"SELECT i.* FROM cm_items i WHERE {where} ORDER BY {order}, i.id"
+    if limit is not None:
+        sql += " LIMIT ? OFFSET ?"
+        args = [*args, max(1, int(limit)), max(0, int(offset))]
     return [_item(row) for row in get_db().execute(sql, args).fetchall()]
+
+
+def count_items(**filters: Any) -> int:
+    where, args, _order = _list_query(**{"stage": None, "niche": None, "content_type": None, "platform": None,
+                                          "q": None, "date_from": None, "date_to": None,
+                                          "archived_from": None, **filters})
+    return get_db().execute(f"SELECT COUNT(*) FROM cm_items i WHERE {where}", args).fetchone()[0]
 
 
 def summary(*, niche: str | None = None, content_type: str | None = None,
             platform: str | None = None, q: str | None = None) -> dict[str, Any]:
     """Counts per stage (and the bin) under the same filters the list uses, plus
-    what needs the person right now."""
+    what needs the person right now — in one pass over the items. An item counts
+    in every post-approval stage one of its platforms is in, exactly as the lists
+    show it; `posts` says how many platform posts each of those stages holds."""
     where, args = _filters(niche=niche, content_type=content_type, platform=platform, q=q)
     clause = f"WHERE {' AND '.join(where)}" if where else ""
+    live = "i.deleted_at IS NULL"
+    active = f"{live} AND i.stage != 'archived'"
+    cases = {
+        "bin": "i.deleted_at IS NOT NULL",
+        "review": f"{live} AND i.stage = 'review'",
+        "changes_requested": f"{live} AND i.stage = 'changes_requested'",
+        "archived": f"{live} AND i.stage = 'archived'",
+        **{view: f"{live} AND {sql}" for view, sql in _VIEW_SQL.items()},
+        "toReview": f"{live} AND i.stage = 'review' AND i.revision = 1",
+        "revisionsReady": f"{live} AND i.stage = 'review' AND i.revision > 1",
+        "failedPosts": f"{active} AND {_FAILED}",
+        "revisionsStuck": (f"{live} AND i.stage = 'changes_requested' AND EXISTS (SELECT 1 FROM "
+                           "cm_change_requests r WHERE r.item_id = i.id AND r.status IN ('open','in_progress') "
+                           "AND r.start_error IS NOT NULL)"),
+    }
+    select = ", ".join(f"COALESCE(SUM(CASE WHEN {cond} THEN 1 ELSE 0 END), 0) AS {name}"
+                       for name, cond in cases.items())
     db = get_db()
-    counts = {stage: 0 for stage in STAGE_IDS}
-    counts["bin"] = 0
-    for row in db.execute(
-            f"SELECT CASE WHEN i.deleted_at IS NOT NULL THEN 'bin' ELSE i.stage END AS s, "
-            f"COUNT(*) AS n FROM cm_items i {clause} GROUP BY s", args):
-        counts[row["s"]] = row["n"]
+    row = db.execute(f"SELECT {select} FROM cm_items i {clause}", args).fetchone()
+    counts = {stage: row[stage] for stage in STAGE_IDS}
+    counts["bin"] = row["bin"]
 
-    active = f"{clause + ' AND' if clause else 'WHERE'} i.deleted_at IS NULL AND i.stage != 'archived'"
-    to_review = db.execute(f"SELECT COUNT(*) AS n FROM cm_items i {active} AND i.stage = 'review' "
-                           "AND i.revision = 1", args).fetchone()["n"]
-    revisions = db.execute(f"SELECT COUNT(*) AS n FROM cm_items i {active} AND i.stage = 'review' "
-                           "AND i.revision > 1", args).fetchone()["n"]
-    failed = db.execute(f"SELECT COUNT(*) AS n FROM cm_items i {active} AND EXISTS (SELECT 1 FROM "
-                        "cm_placements p WHERE p.item_id = i.id AND p.status = 'failed')", args).fetchone()["n"]
-    stuck = db.execute(f"SELECT COUNT(*) AS n FROM cm_items i {active} AND i.stage = 'changes_requested' "
-                       "AND EXISTS (SELECT 1 FROM cm_change_requests r WHERE r.item_id = i.id AND "
-                       "r.status IN ('open','in_progress') AND r.start_error IS NOT NULL)", args).fetchone()["n"]
-    return {"counts": counts,
-            "attention": {"toReview": to_review, "revisionsReady": revisions,
-                          "failedPosts": failed, "revisionsStuck": stuck}}
+    post_where, post_args = _filters(niche=niche, content_type=content_type, platform=None, q=q)
+    post_where += [live, _POST_APPROVAL]
+    if platform:
+        post_where.append("p.platform = ?")
+        post_args.append(platform)
+    posts = {view: 0 for view in VIEW_STATUSES}
+    for r in db.execute(f"SELECT p.status AS status, COUNT(*) AS n FROM cm_placements p JOIN cm_items i "
+                        f"ON i.id = p.item_id WHERE {' AND '.join(post_where)} GROUP BY p.status", post_args):
+        for view, statuses in VIEW_STATUSES.items():
+            if r["status"] in statuses:
+                posts[view] += r["n"]
+    return {"counts": counts, "posts": posts,
+            "attention": {key: row[key] for key in ("toReview", "revisionsReady", "failedPosts",
+                                                     "revisionsStuck")}}
 
 
 def niches() -> list[str]:
-    rows = get_db().execute(
-        "SELECT niche FROM cm_items WHERE niche != '' UNION SELECT default_niche FROM cm_accounts "
-        "WHERE default_niche != ''").fetchall()
+    rows = get_db().execute("SELECT DISTINCT niche FROM cm_items WHERE niche != ''").fetchall()
     return sorted({r[0] for r in rows}, key=str.lower)
 
 
@@ -349,24 +439,6 @@ def calendar(*, start: str, end: str, niche: str | None = None, content_type: st
     return out
 
 
-# --- accounts ------------------------------------------------------------------
-
-def account_dict(row: Any) -> dict[str, Any]:
-    return {"id": row["id"], "platform": row["platform"], "platformLabel": platform_label(row["platform"]),
-            "handle": row["handle"], "destinations": _loads(row["destinations_json"], []),
-            "defaultNiche": row["default_niche"], "createdAt": row["created_at"]}
-
-
-def list_accounts() -> list[dict[str, Any]]:
-    rows = get_db().execute("SELECT * FROM cm_accounts ORDER BY platform, handle COLLATE NOCASE").fetchall()
-    return [account_dict(r) for r in rows]
-
-
-def get_account(account_id: str) -> dict[str, Any] | None:
-    row = get_db().execute("SELECT * FROM cm_accounts WHERE id = ?", (account_id,)).fetchone()
-    return account_dict(row) if row else None
-
-
 # --- for agents ------------------------------------------------------------------
 
 def merged_version(item: dict[str, Any], placement: dict[str, Any]) -> dict[str, Any]:
@@ -379,6 +451,18 @@ def merged_version(item: dict[str, Any], placement: dict[str, Any]) -> dict[str,
     merged = {f: (over[f] if over.get(f) not in (None, "", []) else base.get(f)) for f in wanted}
     # A field nobody filled in is left out, not sent to a publisher as null.
     return {f: v for f, v in merged.items() if v not in (None, "", [])}
+
+
+def merged_media(item: dict[str, Any], placement: dict[str, Any]) -> list[dict[str, Any]]:
+    """The files that actually go to one platform. Shared by default: for each
+    role (the video, the slides, the thumbnail, the cover…) the platform uses its
+    OWN files when it has any of that role, and the item's otherwise. So "same
+    video, own cover" is a platform holding just a cover."""
+    own = placement.get("media") or []
+    own_roles = {m["role"] for m in own}
+    merged = [m for m in item["media"] if m["role"] not in own_roles] + own
+    merged.sort(key=lambda m: (m["role"], m["order"]))
+    return merged
 
 
 def publish_queue() -> list[dict[str, Any]]:
@@ -396,14 +480,13 @@ def publish_queue() -> list[dict[str, Any]]:
         item = get_item(row["item_id"])
         if item is None:
             continue
-        account = get_account(placement["accountId"]) if placement["accountId"] else None
         out.append({
             "placementId": placement["id"], "itemId": item["id"], "name": item["name"],
             "contentType": item["contentType"], "niche": item["niche"],
-            "platform": placement["platform"], "account": account["handle"] if account else placement["accountLabel"],
+            "platform": placement["platform"],
             "destination": placement["destination"], "scheduledAt": placement["scheduledAt"],
             "timezone": placement["timezone"], "version": merged_version(item, placement),
-            "media": item["media"],
+            "media": merged_media(item, placement),
         })
     return out
 
@@ -431,3 +514,57 @@ def open_change_requests(status: str | None = None, assignee: str | None = None)
 
 def utc_now_plus(minutes: int) -> str:
     return to_iso_z(datetime.now(timezone.utc) + timedelta(minutes=minutes))
+
+
+# --- analytics -------------------------------------------------------------------
+
+def metrics_history(placement_id: str) -> list[dict[str, Any]]:
+    rows = get_db().execute("SELECT * FROM cm_metrics WHERE placement_id = ? ORDER BY captured_at DESC, id DESC",
+                            (placement_id,)).fetchall()
+    return [{"capturedAt": r["captured_at"], "reportedAt": r["reported_at"], "source": r["source"],
+             "values": _loads(r["metrics_json"], {})} for r in rows]
+
+
+def analytics(*, niche: str | None = None, content_type: str | None = None, platform: str | None = None,
+              q: str | None = None, date_from: str | None = None, date_to: str | None = None) -> dict[str, Any]:
+    """Every published post under the filters, with its latest REPORTED numbers,
+    and totals of what was reported. A post nobody has reported numbers for is
+    listed with none — never with zeros that look like a real result."""
+    where, args = _filters(niche=niche, content_type=content_type, platform=None, q=q)
+    where += ["i.deleted_at IS NULL", "p.status = 'published'"]
+    if platform:
+        where.append("p.platform = ?")
+        args.append(platform)
+    if date_from:
+        where.append("p.published_at >= ?")
+        args.append(date_from)
+    if date_to:
+        where.append("p.published_at <= ?")
+        args.append(date_to)
+    rows = get_db().execute(
+        f"SELECT p.id, p.item_id, p.platform, p.destination, p.published_at, p.published_url, p.metrics_json, "
+        f"i.name, i.content_type, i.niche FROM cm_placements p JOIN cm_items i ON i.id = p.item_id "
+        f"WHERE {' AND '.join(where)} ORDER BY p.published_at DESC", args).fetchall()
+    posts, totals, reported = [], {}, 0
+    by_platform: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        latest = _loads(r["metrics_json"], {}) or None
+        values = (latest or {}).get("values") or {}
+        if values:
+            reported += 1
+        group = by_platform.setdefault(r["platform"], {"platform": r["platform"],
+                                                       "platformLabel": platform_label(r["platform"]),
+                                                       "posts": 0, "reported": 0, "totals": {}})
+        group["posts"] += 1
+        group["reported"] += 1 if values else 0
+        for key, value in values.items():
+            totals[key] = totals.get(key, 0) + value
+            group["totals"][key] = group["totals"].get(key, 0) + value
+        posts.append({"placementId": r["id"], "itemId": r["item_id"], "name": r["name"],
+                      "contentType": r["content_type"], "typeLabel": type_label(r["content_type"]),
+                      "niche": r["niche"], "platform": r["platform"], "platformLabel": platform_label(r["platform"]),
+                      "destination": r["destination"], "publishedAt": r["published_at"],
+                      "publishedUrl": r["published_url"], "metrics": latest})
+    return {"posts": posts, "totals": totals, "reported": reported,
+            "byPlatform": sorted(by_platform.values(), key=lambda g: -g["posts"])}
+

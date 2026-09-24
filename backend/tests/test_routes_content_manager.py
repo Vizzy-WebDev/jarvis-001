@@ -159,14 +159,14 @@ def test_refusals_are_plain_400s_and_missing_things_404(client):
     assert client.post(f"/api/content-items/{item['id']}/permanent").status_code in (404, 405)
 
 
-def test_meta_accounts_calendar_and_empty_bin(client):
+def test_meta_calendar_and_empty_bin_and_no_accounts(client):
     meta = client.get("/api/content-meta").json()
     assert "video" in meta["types"] and "tiktok" in meta["platforms"]
     assert [s["id"] for s in meta["stages"]][0] == "review"
-    account = client.post("/api/content-accounts", json={
-        "platform": "tiktok", "handle": "@fitwithvin", "destinations": ["Main"], "defaultNiche": "Fitness"})
-    assert account.status_code == 200
-    assert client.get("/api/content-meta").json()["accounts"][0]["handle"] == "@fitwithvin"
+    assert "views" in meta["metrics"] and "accounts" not in meta
+    assert client.get("/api/content-accounts").status_code in (404, 405)
+    assert client.post("/api/content-accounts", json={"platform": "tiktok", "handle": "@x"}).status_code \
+        in (404, 405)
     assert client.get("/api/content-items/calendar").status_code == 400
     assert client.get("/api/content-items/calendar?start=2020-01-01T00:00:00Z&end=2100-01-01T00:00:00Z") \
         .json() == {"entries": []}

@@ -54,6 +54,12 @@ export interface EngineEvents {
    *  itself is fine: this is deliberately not an error. */
   tts_failure: { provider?: string };
   done: { text: string };
+  /** The server's saved ids for this spoken turn — the message the person said
+   *  (from `routed`) and Jarvis's reply (from `done`). Without them a spoken
+   *  message keeps a placeholder id, and Edit/Retry on it cut nothing on the
+   *  server: the replaced exchange stayed in Jarvis's memory and came back on
+   *  reload. Typed messages get the same swap in `send()`. */
+  saved: { userMessageId?: string; replyMessageId?: string };
   error: { message: string; code?: string; turn?: boolean; fatal?: boolean };
 }
 

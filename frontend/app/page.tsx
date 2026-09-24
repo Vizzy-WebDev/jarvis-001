@@ -515,6 +515,10 @@ export default function Home() {
       if (final && text) setTurns((current) => [...current, { id: newId(), role: 'user', text }]);
     });
     started.on('chunk', ({ text }) => setTurns((current) => appendToReply(current, text)));
+    // The real, stored ids — the same swap `send()` does for a typed message, so
+    // Edit and Retry on something SAID cut the conversation on the server too.
+    started.on('saved', ({ userMessageId, replyMessageId }) => setTurns((current) =>
+      withSavedIds(current, userMessageId, replyMessageId)));
     started.on('restart', () => setTurns((current) => clearReply(current)));
     started.on('done', () => setBusy(false));
     started.on('paused', ({ reason }) => setStatus(reason));
@@ -815,6 +819,34 @@ function appendToReply(turns: Turn[], text: string): Turn[] {
   return [...turns, { id: newId(), role: 'assistant', text, streaming: true }];
 }
 
+/**
+ * A spoken turn's placeholder ids (`t7`) replaced by the ones the server stored.
+ * The person's words: the most recent user turn still on a placeholder — a new
+ * utterance supersedes the one before it, so `routed` always belongs to the
+ * latest. Jarvis's reply: the latest assistant turn, which is also no longer
+ * streaming once its `done` has arrived.
+ */
+function withSavedIds(turns: Turn[], userMessageId?: string, replyMessageId?: string): Turn[] {
+  const placeholder = (turn: Turn) => /^t\d+$/.test(turn.id);
+  let next = turns;
+  if (userMessageId && !turns.some((turn) => turn.id === userMessageId)) {
+    const index = findLastIndex(turns, (turn) => turn.role === 'user' && placeholder(turn));
+    if (index !== -1) next = next.map((turn, i) => (i === index ? { ...turn, id: userMessageId } : turn));
+  }
+  if (replyMessageId && !next.some((turn) => turn.id === replyMessageId)) {
+    const index = findLastIndex(next, (turn) => turn.role === 'assistant' && placeholder(turn));
+    if (index !== -1) {
+      next = next.map((turn, i) => (i === index ? { ...turn, id: replyMessageId, streaming: false } : turn));
+    }
+  }
+  return next;
+}
+
+function findLastIndex<T>(items: T[], test: (item: T) => boolean): number {
+  for (let i = items.length - 1; i >= 0; i -= 1) if (test(items[i]!)) return i;
+  return -1;
+}
+
 /** A model switch mid-reply: drop what the failed one said, a fresh one follows. */
 function clearReply(turns: Turn[]): Turn[] {
   const last = turns[turns.length - 1];
@@ -872,7 +904,16 @@ function toTurn(message: StoredMessage): Turn {
   return {
     id: message.id,
     role: message.role === 'user' ? 'user' : 'assistant',
-    text: message.text ?? '',
+    text: message.role === 'user' ? withoutModelNote(message.text ?? '') : message.text ?? '',
     interrupted: message.interrupted,
   };
+}
+
+/**
+ * The server folds a note about attached files into the stored user message
+ * (attachments.py's compose_message) — it is for the model, and was never
+ * something the person typed, so it is not shown back to them.
+ */
+function withoutModelNote(text: string): string {
+  return text.replace(/\[Note for you, not spoken by the user: [\s\S]*?\](\n\n|$)/, '').trim();
 }

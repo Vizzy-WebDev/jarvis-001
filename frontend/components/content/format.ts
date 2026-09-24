@@ -1,4 +1,4 @@
-import type { ContentItem, ContentMedia, ContentStage, PlacementStatus } from '@/lib/api-types';
+import type { ContentItem, ContentMedia, ContentMeta, ContentStage, PlacementStatus } from '@/lib/api-types';
 
 /** The lifecycle, in order. Approved and Ready to Post are one state. */
 export const FLOW: { id: ContentStage; label: string }[] = [
@@ -150,4 +150,59 @@ export function asList(value: string | string[] | undefined): string[] {
 
 export function hasPending(item: ContentItem): boolean {
   return item.placements.some((p) => ['scheduled', 'queued'].includes(p.status));
+}
+
+// --- supporting text, as the form edits it ---------------------------------------
+
+export function listText(field: string, value: string | string[] | undefined): string {
+  if (Array.isArray(value)) return value.join(field === 'hashtags' ? ' ' : ', ');
+  return value ?? '';
+}
+
+export function toDraft(fields: Record<string, string | string[]>, meta: ContentMeta): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    out[key] = meta.fields[key]?.kind === 'list' ? listText(key, asList(value)) : String(value ?? '');
+  }
+  return out;
+}
+
+/** Only fields that changed (or, for a platform version, every field — blank clears it). */
+export function fromDraft(draft: Record<string, string>, base: Record<string, string | string[]>, meta: ContentMeta,
+                   allowed: string[], everything = false): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = {};
+  for (const field of allowed) {
+    const text = draft[field] ?? '';
+    const before = listText(field, base[field]);
+    if (!everything && text === before) continue;
+    if (meta.fields[field]?.kind === 'list') {
+      out[field] = field === 'hashtags'
+        ? text.split(/[\s,]+/).map((t) => t.trim()).filter(Boolean)
+        : text.split(',').map((t) => t.trim()).filter(Boolean);
+    } else {
+      out[field] = text;
+    }
+  }
+  return out;
+}
+
+/** The platform statuses each post-approval view is about — an item shows
+ *  under every stage one of its platforms is in (store.VIEW_STATUSES). */
+export const VIEW_STATUSES: Partial<Record<ContentStage, PlacementStatus[]>> = {
+  approved: ['draft', 'failed'],
+  scheduling: ['scheduled', 'queued', 'publishing'],
+  published: ['published'],
+};
+
+/** A reported number, the way a person reads it. */
+export function metricText(key: string, value: number): string {
+  if (key === 'watchTimeSeconds') {
+    const hours = value / 3600;
+    return hours >= 1 ? `${hours.toLocaleString(undefined, { maximumFractionDigits: 1 })} h`
+      : `${Math.round(value / 60).toLocaleString()} min`;
+  }
+  if (Math.abs(value) >= 10000) {
+    return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+  }
+  return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }

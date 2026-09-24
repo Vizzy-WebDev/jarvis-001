@@ -50,6 +50,23 @@ def _score(spec: CapabilitySpec, terms: list[str]) -> int:
     return score
 
 
+BRIEF_CHARS = 240
+
+
+def _brief(description: str) -> str:
+    """Enough to choose by, not the whole manual.
+
+    A connected app's own tool description can run to thousands of characters
+    (Notion's longest is ~8,700): returned in full, one search for "create a
+    Notion page" was ~19,000 characters, and every tool it unlocks is declared
+    right after WITH that full description anyway — the model paid for it twice,
+    on the free tiers this app usually runs on.
+    """
+    lines = [line.strip() for line in (description or "").splitlines()]
+    text = " ".join(line for line in lines if line and not line.startswith("#"))
+    return text if len(text) <= BRIEF_CHARS else text[:BRIEF_CHARS].rsplit(" ", 1)[0] + "…"
+
+
 def build(registry: CapabilityRegistry) -> list[CapabilitySpec]:
     def _run(intent: str = "") -> dict[str, Any]:
         terms = _terms(intent)
@@ -75,7 +92,7 @@ def build(registry: CapabilityRegistry) -> list[CapabilitySpec]:
                     "note": f"I have nothing that does that ({intent})."}
         return {
             "ok": True,
-            "found": [{"name": s.name, "description": s.description} for s, _ in matches],
+            "found": [{"name": s.name, "description": _brief(s.description)} for s, _ in matches],
             "unlock": [s.name for s, _ in matches],
             "note": "These are callable now, in this same turn.",
         }

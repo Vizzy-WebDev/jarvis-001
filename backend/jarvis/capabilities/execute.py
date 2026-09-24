@@ -95,6 +95,33 @@ class ExecutionResult:
     work_may_continue: bool = False
 
 
+def _unwrap_json_strings(args: Any, spec: CapabilitySpec) -> Any:
+    """An array or object the model sent as JSON TEXT, turned back into one.
+
+    Weaker models often encode a nested argument as a string — a connected
+    app's `pages: "[{...}]"` instead of `pages: [{...}]` — and the call was
+    refused ("pages should be a array.") although it said exactly what was
+    meant. Only where the schema declares that argument an array or object,
+    and only when the text parses to precisely that type; anything else is
+    left alone for `_validate` to refuse as before.
+    """
+    if not isinstance(args, dict):
+        return args
+    props = (spec.input_schema or {}).get("properties") or {}
+    fixed = dict(args)
+    for key, value in args.items():
+        declared = (props.get(key) or {}).get("type")
+        if declared not in ("array", "object") or not isinstance(value, str):
+            continue
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            continue
+        if isinstance(parsed, list if declared == "array" else dict):
+            fixed[key] = parsed
+    return fixed
+
+
 def _validate(args: dict[str, Any], spec: CapabilitySpec) -> str | None:
     """A deliberately small structural check, not a JSON Schema implementation.
 
@@ -219,6 +246,7 @@ def execute(
     if previous is not None:
         return previous
 
+    args = _unwrap_json_strings(args, spec)
     invalid = _validate(args, spec)
     if invalid:
         return ExecutionResult(

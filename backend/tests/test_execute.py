@@ -303,3 +303,25 @@ def test_published_arguments_are_redacted(reg):
             registry=reg, event_bus=eb)
     assert seen[0].payload["args"]["api_key"] == "<redacted>"
     assert "sk-secret" not in str(seen[0].payload)
+
+
+def test_an_array_sent_as_json_text_is_taken_as_the_array(reg):
+    """Found live: a model sent a connected app's `pages` as the string
+    '[{...}]', and a correct request was refused as "pages should be a array"."""
+    got = {}
+    add(reg, "create_pages", handler=lambda **kw: got.update(kw) or "made",
+        input_schema={"type": "object", "required": ["pages"], "properties": {
+            "pages": {"type": "array"}, "options": {"type": "object"}, "title": {"type": "string"}}})
+    result = execute("create_pages", {"pages": '[{"title": "Jarvis MCP check"}]',
+                                      "options": '{"draft": true}', "title": '["stays text"]'},
+                     ctx(), registry=reg)
+    assert result.ok, result.error
+    assert got == {"pages": [{"title": "Jarvis MCP check"}], "options": {"draft": True},
+                   "title": '["stays text"]'}
+
+
+@pytest.mark.parametrize("pages", ["not json at all", '{"an": "object, not a list"}'])
+def test_text_that_is_not_the_declared_shape_is_still_refused(reg, pages):
+    add(reg, "create_pages", input_schema={"type": "object", "properties": {"pages": {"type": "array"}}})
+    result = execute("create_pages", {"pages": pages}, ctx(), registry=reg)
+    assert result.outcome is ExecOutcome.INVALID_ARGUMENTS

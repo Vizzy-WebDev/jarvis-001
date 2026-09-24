@@ -292,11 +292,15 @@ def connected_apps_section() -> str:
         blocked = len(rows) - len(usable)
         count = (f"{len(rows)} tools, {len(usable)} of them usable and {blocked} blocked by the user"
                  if blocked else f"{len(rows)} tools")
-        lines.append(f"- {label} — connected, {count}; their names start with {prefix}")
+        lines.append(f"- {label} — connected; {count} (tool names start with {prefix})")
+    connected = sum(" — connected" in line for line in lines)
+    heading += f" {connected} of {len(lines)} connected."
     return (heading + "\n" + "\n".join(lines) + "\n"
-            "This list is the real answer to what apps or connectors they have. To use one, call "
-            "find_capability naming the app and what is needed. Some of its tools ask for the "
-            "user's go-ahead first, as they chose.")
+            "This list is the real answer to what apps or connectors they have. Asked which are "
+            "connected, give each app and its state only; mention how many tools one has only if "
+            "they ask about its tools. Tool names are for your own use, never to repeat. To use "
+            "one, call find_capability naming the app and what is needed. Some of its tools ask "
+            "for the user's go-ahead first, as they chose.")
 
 
 def volatile_instruction(*, memories: str = "", low_confidence: bool = False,

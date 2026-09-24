@@ -259,8 +259,36 @@ def test_jarvis_is_told_what_is_set_up_in_connector(stub):
     store.update_connector(off["id"], {"enabled": False})
 
     section = connected_apps_section()
-    assert "- Notes — connected, 2 tools, 1 of them usable and 1 blocked by the user; their names start with notes__" in section
+    assert "- Notes — connected; 2 tools, 1 of them usable and 1 blocked by the user (tool names start with notes__)" in section
     assert "- Mail — added, but not connected yet." in section
+    assert "1 of 3 connected." in section
     assert "- Weather — switched off by the user" in section
     assert "Files" not in section and "Browser" not in section  # Jarvis's own, not apps
     assert section in system_instruction()
+
+
+def test_a_connector_being_saved_is_never_read_as_removed():
+    """On Windows a read that lands while the file is being swapped in raised
+    PermissionError, which was read as "no connectors": a live Composio call
+    told the user "That connection has been removed" while they reconnected it
+    (15% of reads during repeated saves). A read now waits for the swap."""
+    import threading
+
+    connector = store.add_connector(type="mcp", label="Busy", config={
+        "connectFlow": {"url": "http://127.0.0.1:1/mcp"},
+        "tools": [{"name": f"t{i}", "description": "d" * 400} for i in range(40)]})
+    stop = threading.Event()
+
+    def keep_saving():
+        while not stop.is_set():
+            store.update_connector(connector["id"], {"status": {
+                "state": "working", "checkedAt": None, "detail": str(time.time())}})
+
+    writer = threading.Thread(target=keep_saving)
+    writer.start()
+    try:
+        missing = sum(store.get_connector(connector["id"]) is None for _ in range(600))
+    finally:
+        stop.set()
+        writer.join()
+    assert missing == 0

@@ -23,7 +23,8 @@ revision as a Background Job). Routes: `jarvis/routes/content_manager.py`. Tools
   an agent over HTTP. Every later action is the same function for everyone. `producer` is a
   label ("you", "Jarvis", "ClipBot") used for display and for where a change request goes;
   nothing else branches on it. "Ready to Post" at creation (`approve_now`) is submit followed
-  by the ordinary `approve()` — only the screen passes it; no tool can.
+  by the ordinary `approve()` — the screen offers it, and the local API accepts it from any
+  caller just as it accepts `/approve`; no Jarvis tool can pass it (tested).
 - **An item is the publishable thing** — the video, the carousel, the post's text. Title,
   description, caption, hashtags and tags are its *supporting fields*; thumbnail, cover and
   attachments are its *supporting assets*. Which show is decided by the content type; a
@@ -94,7 +95,8 @@ Errors are `{"ok": false, "error": "<plain sentence>"}` with 400, or 404 when a 
    "platforms": [{"platform": "tiktok"}, {"platform": "youtube", "destination": "Shorts"}]}
   ```
   Or upload first with `POST /api/content-files` and use `{"fileId": "cmf_…"}`. A refused
-  submission leaves no stray files behind. (`readyToPost: true` is the screen's own choice.)
+  submission leaves no stray files behind. (`readyToPost: true` adds it straight to Ready to Post, the same as a submit followed
+  by `/approve`; open to any API caller, never to a Jarvis tool.)
 - `GET /api/content-items?stage=…[&limit=&offset=]` — with `limit`, one page plus `total`.
   `q` searches names, niche, producer and field VALUES (never the stored JSON's key names).
 - `PATCH /api/content-items/{id}` and `PATCH /api/content-placements/{id}` — JSON or

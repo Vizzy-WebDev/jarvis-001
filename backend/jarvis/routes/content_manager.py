@@ -80,7 +80,8 @@ def _with_job(item: dict[str, Any] | None) -> dict[str, Any] | None:
 def _filters(request: Request) -> dict[str, Any]:
     q = request.query_params
     return {"niche": q.get("niche") or None, "content_type": q.get("type") or None,
-            "platform": q.get("platform") or None, "q": q.get("q") or None}
+            "platform": q.get("platform") or None, "q": q.get("q") or None,
+            "no_niche": q.get("noNiche") in ("1", "true")}
 
 
 # --- what exists ------------------------------------------------------------------
@@ -88,6 +89,33 @@ def _filters(request: Request) -> dict[str, Any]:
 @router.get("/content-meta")
 def content_meta() -> dict[str, Any]:
     return {**kinds_meta(), "niches": store.niches()}
+
+
+# --- niches: the folders -------------------------------------------------------------
+
+@router.get("/content-niches")
+def niche_overview() -> dict[str, Any]:
+    return store.niche_overview()
+
+
+@router.post("/content-niches")
+@_guard
+def create_niche(body: dict[str, Any] = Body(default_factory=dict)):
+    return {"ok": True, "name": lifecycle.create_niche(body.get("name"))}
+
+
+# `{name:path}`: a niche name may hold a "/" ("Health / Fitness").
+@router.patch("/content-niches/{name:path}")
+@_guard
+def rename_niche(name: str, body: dict[str, Any] = Body(default_factory=dict)):
+    return {"ok": True, "name": lifecycle.rename_niche(name, body.get("name"))}
+
+
+@router.delete("/content-niches/{name:path}")
+@_guard
+def delete_niche(name: str):
+    lifecycle.delete_niche(name)
+    return {"ok": True}
 
 
 @router.get("/content-media/{file_id}")

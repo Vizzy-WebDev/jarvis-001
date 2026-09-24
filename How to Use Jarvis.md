@@ -498,16 +498,31 @@ Content is made by you, by Jarvis, or by your agents — videos, images, carouse
 posts, articles, newsletters, podcasts. **Content Management** (menu → **Content
 Management**) is where you look after it once it's made. It doesn't make anything itself.
 
-**Adding your own content.** Press **+ New content**, give it a name, pick what it is
-(Video, Image, Carousel…) and add the actual file — a video you made, the slides of a
-carousel, an image — plus a thumbnail or cover if you have one. Tick the platforms it's
-going to (you can add more later). Then choose **Send to Review** or **Add as Ready to
-Post**. It joins the same list as everything else, wherever that list currently is. You
-can also just give a file to Jarvis in the chat ("put this video in Content Management")
-and it lands in Review.
+**Niches are folders.** The first thing you see is one folder per niche — Psychology,
+Fitness, Cooking… — each showing how many pieces it holds of each kind ("Video 22 · Carousel
+6 · Image 5 · Blog / Article 4") and how many are waiting in Review. Open one and everything
+for that niche is there together, every kind at once; every video, image and carousel is
+still its own separate piece, moving through the steps on its own. **+ New niche** makes a
+folder, even before anything is in it. Inside a niche, **Rename** changes its name (all of
+its content moves with it) and **Delete** removes it — only once it's empty, so deleting a
+folder never deletes content. **All content** shows every niche at once; **No niche** holds
+anything handed in without one — open a piece and type a niche to file it (that's also how
+you move a piece to another niche). If Jarvis or an agent hands something in under a niche
+you don't have yet, its folder appears on its own.
 
-Across the top is the whole journey, left to right, with how many things are at each
-step: **Review → Changes Requested → Ready to Post → Scheduling → Published**, and off to
+**Adding your own content.** Inside a niche, press **+ Add** and pick what it is (Video,
+Image, Carousel…) — the niche is already filled in. Give it a name, add the actual file — a
+video you made, the slides of a carousel, an image — plus a thumbnail or cover if you have
+one. Tick the platforms it's going to (you can add more later). Then choose **Send to
+Review** or **Add as Ready to Post**. **+ Add → Add several files…** takes many videos (or
+images, flyers, audio) at once: each file becomes its own piece, named after the file —
+change any name before sending. If a file can't be added, it says which one and why, and
+the rest are kept. You can also just give a file to Jarvis in the chat ("put this video in
+Content Management") and it lands in Review.
+
+Inside a niche, across the top is the whole journey, left to right, with how many things are at each
+step — first **All** (everything in the niche that's still in play), then **Review →
+Changes Requested → Ready to Post → Scheduling → Published**, and off to
 the side **Analytics**, **Archived** and the **Recycle Bin**. A dot means something there
 needs you, and the line above it says exactly what ("2 to review · 1 post failed").
 
@@ -544,9 +559,9 @@ platforms it's about.
   exactly where it was; **Delete forever** really removes it, files and all, and asks
   you first. Nothing is ever deleted from the bin on its own.
 
-The **Niche**, **Type** and **Platform** filters work on every step, so however many
-niches you run, it's still one list — just filter to the one you want. Long lists come a
-page at a time: **Show more** at the bottom.
+Inside a folder, the row of kinds (**Video**, **Image**, **Carousel**…) narrows it to one
+kind, and **Search** and **Platform** work on every step. Long lists come a page at a time:
+**Show more** at the bottom.
 
 Jarvis can do the same things from the chat — add content, write or change a caption,
 schedule a post, record numbers. Before it changes or schedules anything, it asks you.
@@ -564,7 +579,9 @@ in that posting service, not here.
 | Want to... | Where |
 |---|---|
 | See what content needs reviewing | Menu → Content Management, or ask "anything to review?" |
-| Add content you made yourself | Content Management → + New content |
+| Make a folder for a niche | Content Management → + New niche |
+| Add content you made yourself | Content Management → open the niche → + Add |
+| Add lots of videos or images at once | Content Management → open the niche → + Add → Add several files… |
 | Schedule a finished post | Content Management → Ready to Post → open it → Schedule… |
 | Get deleted content back | Content Management → Recycle Bin → open it → Restore |
 | Add a Skill (upload, or from a GitHub link) | Menu → Skills → + Add a Skill / Install from a GitHub link |

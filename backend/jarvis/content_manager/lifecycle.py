@@ -137,6 +137,107 @@ def _touch(db, item_id: str) -> None:
     db.execute("UPDATE cm_items SET updated_at = ? WHERE id = ?", (now_iso(), item_id))
 
 
+# --- niches: the folders content lives in ------------------------------------------
+
+def _niche_name(name: Any) -> str:
+    """A niche as written: trimmed, inner runs of spaces made one, 80 characters."""
+    return " ".join(str(name or "").split())[:80]
+
+
+def _ensure_niche(db, name: Any) -> str:
+    """The folder `name` belongs in, created if it is new — whoever named it (the
+    person, Jarvis or an agent). Returns the folder's own spelling, so
+    "psychology" lands in "Psychology" rather than beside it. '' is no niche."""
+    clean = _niche_name(name)
+    if not clean:
+        return ""
+    found = db.execute("SELECT name FROM cm_niches WHERE name = ?", (clean,)).fetchone()
+    if found:
+        return found["name"]
+    db.execute("INSERT INTO cm_niches (name, created_at) VALUES (?, ?)", (clean, now_iso()))
+    return clean
+
+
+def _niche_changed(name: str, event_bus: Any = None) -> None:
+    (event_bus or default_bus).publish(EventType.CONTENT_CHANGED, {"niche": name})
+
+
+def create_niche(name: Any, *, event_bus: Any = None) -> str:
+    clean = _niche_name(name)
+    if not clean:
+        raise ContentError("Give the niche a name.")
+
+    def work(db):
+        found = db.execute("SELECT name FROM cm_niches WHERE name = ?", (clean,)).fetchone()
+        if found:
+            raise ContentError(f"There's already a niche called “{found['name']}”.")
+        return _ensure_niche(db, clean)
+
+    made = _tx(work)
+    _niche_changed(made, event_bus)
+    return made
+
+
+def rename_niche(old: Any, new: Any, *, event_bus: Any = None) -> str:
+    """Rename a folder; everything in it — Recycle Bin included — moves with it.
+    Renaming onto ANOTHER existing niche is refused: that would be a merge, which
+    cannot be told apart afterwards. A change of capitals only is a rename."""
+    clean = _niche_name(new)
+    if not clean:
+        raise ContentError("The niche needs a name.")
+
+    def work(db):
+        row = db.execute("SELECT * FROM cm_niches WHERE name = ?", (_niche_name(old),)).fetchone()
+        if row is None:
+            raise NotFound("That niche no longer exists.")
+        current = row["name"]
+        if clean == current:
+            return current
+        other = db.execute("SELECT name FROM cm_niches WHERE name = ?", (clean,)).fetchone()
+        if other and other["name"].lower() != current.lower():
+            raise ContentError(f"There's already a niche called “{other['name']}”. Pick another name — "
+                               "two niches are never merged by renaming.")
+        db.execute("DELETE FROM cm_niches WHERE name = ?", (current,))
+        db.execute("INSERT INTO cm_niches (name, created_at) VALUES (?, ?)", (clean, row["created_at"]))
+        ids = [r["id"] for r in db.execute("SELECT id FROM cm_items WHERE niche = ? COLLATE NOCASE", (current,))]
+        db.execute("UPDATE cm_items SET niche = ? WHERE niche = ? COLLATE NOCASE", (clean, current))
+        for item_id in ids:
+            _event(db, item_id, YOU, "moved", f"Niche renamed from “{current}” to “{clean}”")
+        return clean
+
+    renamed = _tx(work)
+    _niche_changed(renamed, event_bus)
+    return renamed
+
+
+def delete_niche(name: Any, *, event_bus: Any = None) -> None:
+    """Remove an EMPTY folder. Deleting a folder never deletes content, so one that
+    still holds anything — even only in the Recycle Bin — is refused, saying what."""
+    def work(db):
+        row = db.execute("SELECT name FROM cm_niches WHERE name = ?", (_niche_name(name),)).fetchone()
+        if row is None:
+            raise NotFound("That niche no longer exists.")
+        counts = db.execute(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(deleted_at IS NOT NULL), 0) AS binned FROM cm_items "
+            "WHERE niche = ? COLLATE NOCASE", (row["name"],)).fetchone()
+        if counts["n"]:
+            held = f"{counts['n']} item{'' if counts['n'] == 1 else 's'}"
+            binned = counts["binned"]
+            where = ""
+            if binned == counts["n"]:
+                where = " in the Recycle Bin"
+            elif binned:
+                where = f" ({binned} of them in the Recycle Bin)"
+            them = "it" if counts["n"] == 1 else "them"
+            raise ContentError(f"“{row['name']}” still holds {held}{where}. Move {them} to another niche or "
+                               f"delete {them} forever first — deleting a niche never deletes content.")
+        db.execute("DELETE FROM cm_niches WHERE name = ?", (row["name"],))
+        return row["name"]
+
+    gone = _tx(work)
+    _niche_changed(gone, event_bus)
+
+
 # --- validating what an agent hands in -------------------------------------------
 
 def _clean_fields(content_type: str, fields: Any, *, partial: bool = False) -> dict[str, Any]:
@@ -248,10 +349,11 @@ def submit(*, name: str, content_type: str, niche: str = "", fields: Any = None,
     stamp = now_iso()
 
     def work(db):
+        folder = _ensure_niche(db, niche)
         db.execute(
             "INSERT INTO cm_items (id, name, content_type, niche, stage, producer, revision, fields_json, "
             "media_json, findings_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (item_id, name[:200], content_type, (niche or "").strip()[:80], "review", producer, 1,
+            (item_id, name[:200], content_type, folder, "review", producer, 1,
              dumps(clean_fields), dumps(clean_media), dumps(clean_findings), stamp, stamp))
         files.claim_for_item([m["fileId"] for m in clean_media], item_id)
         db.execute("INSERT INTO cm_revisions (item_id, revision, fields_json, media_json, by, note, "
@@ -262,10 +364,15 @@ def submit(*, name: str, content_type: str, niche: str = "", fields: Any = None,
                        "updated_at) VALUES (?,?,?,?,?,?)",
                        (_id("cp"), item_id, platform, destination[:120], stamp, stamp))
         _event(db, item_id, producer or "agent", "submitted", "Handed in for review")
+        return folder
 
-    _tx(work)
+    niche = _tx(work)
     if approve_now:
         return approve(item_id, event_bus=event_bus)
+    if producer == YOU:
+        # The person adding it is looking at it: ten files added at once are not
+        # ten things to be told about.
+        return _announce(item_id, event_bus)
     _notify(f"New content to review: {name}",
             f"{type_label(content_type)}{' · ' + niche if niche else ''} from {producer or 'an agent'}.",
             item_id, event_bus=event_bus)
@@ -348,14 +455,19 @@ def edit(item_id: str, *, name: str | None = None, niche: str | None = None, fie
     def work(db):
         row = _live(db, item_id)
         changes = []
+        moved = False
         if name is not None:
             if not name.strip():
                 raise ContentError("The name can't be empty.")
             db.execute("UPDATE cm_items SET name = ? WHERE id = ?", (name.strip()[:200], item_id))
             changes.append("name")
         if niche is not None:
-            db.execute("UPDATE cm_items SET niche = ? WHERE id = ?", (niche.strip()[:80], item_id))
-            changes.append("niche")
+            folder = _ensure_niche(db, niche)
+            if folder != row["niche"]:
+                db.execute("UPDATE cm_items SET niche = ? WHERE id = ?", (folder, item_id))
+                _event(db, item_id, by, "moved",
+                       f"Moved to “{folder}”" if folder else f"Taken out of “{row['niche']}”")
+                moved = True
         if fields is not None or media is not None:
             statuses = [r["status"] for r in db.execute(
                 "SELECT status FROM cm_placements WHERE item_id = ?", (item_id,))]
@@ -389,8 +501,9 @@ def edit(item_id: str, *, name: str | None = None, niche: str | None = None, fie
             if media is not None:
                 changes.append("files")
         if changes:
-            _touch(db, item_id)
             _event(db, item_id, by, "edited", "Edited " + ", ".join(changes))
+        if changes or moved:
+            _touch(db, item_id)
 
     _tx(work)
     return _announce(item_id, event_bus)

@@ -187,6 +187,9 @@ def test_the_busiest_reads_stay_quick(busy):
         "a search across everything": (lambda: store.list_items(stage="published", q="rain"), 1.0),
         "one item, whole": (lambda: store.item_detail(busy.seeded.items[0]), 0.1),
         "analytics": (store.analytics, 1.0),
+        "the niche folders": (store.niche_overview, 0.5),
+        "one niche's page": (lambda: store.list_items(stage="active", niche="Fitness", limit=50), 0.5),
+        "one niche's counts": (lambda: store.summary(niche="Fitness"), 0.5),
     }
     measured = {name: timed(fn) for name, (fn, _) in limits.items()}
     print("\n" + json.dumps({k: round(v * 1000) for k, v in measured.items()}, indent=1))

@@ -15,7 +15,9 @@ that quietly breaks one fails there, where a screenshot review would not.
 `frontend/lib/nav.ts`'s `SECTIONS` array remains the single source of truth for the
 drawer, the hash router (`lib/useHashRoute.ts`) and voice navigation
 (`open_section`). Adding a section is one entry here plus one screen component plus one
-line in `app/page.tsx`'s `screenFor()`.
+line in `app/page.tsx`'s `screenFor()`. Only the hash's FIRST segment picks the section; a
+screen may keep its own place in the rest (`#/content/niche/Psychology`), so a refresh stays
+there and Back leaves it.
 
 ## Screens (`components/screens/`)
 

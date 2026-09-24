@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/Button';
 import { Field, inputClass } from '@/components/ui/Field';
@@ -57,13 +57,22 @@ export function Workspace({
   const [revising, setRevising] = useState(false);
   const [numbersFor, setNumbersFor] = useState<ContentPlacement | null>(null);
 
-  const load = useCallback(async () => {
+  // The item as last read, to tell what the person has typed from what was stored.
+  const loaded = useRef<ContentItemDetail | null>(null);
+  /** Read the item again. The screen refreshes whenever ANYTHING changes — an
+   *  agent handing something in, a post going out — so what the person is in the
+   *  middle of typing must survive it: only a field they have not touched follows
+   *  the stored item. After their own save (`adopt`), everything does. */
+  const load = useCallback(async (adopt = false) => {
     try {
       const { item: fresh } = await api.content.get(itemId);
+      const before = adopt ? null : loaded.current;
+      loaded.current = fresh;
       setItem(fresh);
-      setName(fresh.name);
-      setNiche(fresh.niche);
-      setDraft(toDraft(fresh.fields, meta));
+      setName((typed) => (!before || typed === before.name ? fresh.name : typed));
+      setNiche((typed) => (!before || typed === before.niche ? fresh.niche : typed));
+      setDraft((typed) => (!before || JSON.stringify(typed) === JSON.stringify(toDraft(before.fields, meta))
+        ? toDraft(fresh.fields, meta) : typed));
     } catch (err) {
       if (err instanceof ApiRequestError && err.status === 404) setGone(true);
       else setError(err instanceof ApiRequestError ? err.message : 'Could not open it.');
@@ -74,13 +83,14 @@ export function Workspace({
     void load();
   }, [load, refreshKey]);
 
+
   async function run(action: () => Promise<unknown>, after?: () => void) {
     setBusy(true);
     setError(null);
     try {
       await action();
       onChanged();
-      await load();
+      await load(true);
       after?.();
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'That did not work.');
@@ -413,7 +423,7 @@ export function Workspace({
       {revising && (
         <HandInRevisionDialog item={item} meta={meta} onClose={() => setRevising(false)} onDone={() => {
           onChanged();
-          void load();
+          void load(true);
         }} />
       )}
       {numbersFor && (

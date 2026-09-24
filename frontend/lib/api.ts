@@ -62,6 +62,7 @@ import type {
   ContentItemDetail,
   ContentMediaRef,
   ContentMeta,
+  ContentNicheOverview,
   ContentPlacement,
   ContentStage,
   ContentSummary,
@@ -631,7 +632,18 @@ export const api = {
 
   content: {
     meta: () => request<ContentMeta>('/content-meta'),
-    list: (stage: ContentStage | 'bin', filters: ContentFilters & {
+    /** The folders: every niche (empty ones too), "No niche", and everything. */
+    niches: () => request<ContentNicheOverview>('/content-niches'),
+    createNiche: (name: string) =>
+      request<{ ok: true; name: string }>('/content-niches', { method: 'POST', ...json({ name }) }),
+    /** Everything in the folder moves with it. Onto another niche's name is refused. */
+    renameNiche: (name: string, to: string) =>
+      request<{ ok: true; name: string }>(`/content-niches/${encodeURIComponent(name)}`,
+        { method: 'PATCH', ...json({ name: to }) }),
+    /** Only an empty niche — deleting a folder never deletes content. */
+    deleteNiche: (name: string) =>
+      request<{ ok: true }>(`/content-niches/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    list: (stage: ContentStage | 'bin' | 'active', filters: ContentFilters & {
       from?: string; to?: string; archivedFrom?: string; limit?: number; offset?: number;
     } = {}) => {
       const { limit, offset, ...rest } = filters;

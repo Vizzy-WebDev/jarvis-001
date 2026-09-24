@@ -933,7 +933,7 @@ export interface ContentMeta {
 
 export interface ContentSummary {
   /** Items per stage. An item is counted under every stage one of its platforms is in. */
-  counts: Record<ContentStage | 'bin', number>;
+  counts: Record<ContentStage | 'bin' | 'active', number>;
   /** Platform posts in each post-approval stage. */
   posts: { approved: number; scheduling: number; published: number };
   attention: { toReview: number; revisionsReady: number; failedPosts: number; revisionsStuck: number };
@@ -970,8 +970,27 @@ export interface ContentCalendarEntry extends ContentPlacement {
   niche: string;
 }
 
+/** One folder's card: what is still in play (not archived, not in the bin) by
+ *  type, how many wait in Review, and what sits in the archive or the bin. */
+export interface ContentFolder {
+  total: number;
+  byType: Record<string, number>;
+  review: number;
+  archived: number;
+  binned: number;
+  updatedAt: string | null;
+}
+
+export interface ContentNicheOverview {
+  niches: (ContentFolder & { name: string; createdAt: string | null })[];
+  none: ContentFolder;
+  all: ContentFolder;
+}
+
 export interface ContentFilters {
   niche?: string;
+  /** '1': only content with no niche. */
+  noNiche?: '1';
   type?: string;
   platform?: string;
   q?: string;

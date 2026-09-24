@@ -522,4 +522,24 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
         CREATE INDEX IF NOT EXISTS idx_cm_metrics_placement ON cm_metrics(placement_id, captured_at);
         """
     ],
+    # 33: A niche is a folder the person opens, not only a label: it can exist
+    # while empty and be renamed. The list is its own small table; an item still
+    # carries its niche's NAME (`cm_items.niche`), so every filter, search and
+    # count that already reads it keeps working. Existing labels become folders,
+    # and two spellings of one niche ("psychology", "Psychology") become one —
+    # the spelling most items use wins.
+    33: [
+        """
+        CREATE TABLE IF NOT EXISTS cm_niches (
+          name       TEXT PRIMARY KEY COLLATE NOCASE,
+          created_at TEXT NOT NULL
+        );
+        INSERT OR IGNORE INTO cm_niches (name, created_at)
+          SELECT niche, MIN(created_at) FROM cm_items WHERE niche != ''
+          GROUP BY niche ORDER BY COUNT(*) DESC, niche;
+        UPDATE cm_items SET niche = (SELECT n.name FROM cm_niches n WHERE n.name = cm_items.niche)
+          WHERE niche != '';
+        CREATE INDEX IF NOT EXISTS idx_cm_items_niche ON cm_items(niche COLLATE NOCASE);
+        """
+    ],
 }

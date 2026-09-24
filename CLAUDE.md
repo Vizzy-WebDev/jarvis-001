@@ -287,13 +287,16 @@ Finished content taken through Review, Changes Requested, Ready to Post, Schedul
 Published, Archived and a Recycle Bin. **It manages content and its workflow; it never
 produces it, and it models no accounts, no creators' special paths and no publishing
 provider.** Content enters through ONE door (`lifecycle.submit`) whoever brings it — the
-person on the screen ("New content", with their own uploads), Jarvis (tools, including a
+person on the screen ("+ Add" inside a niche, one piece or several files at once — each file
+its own item — with their own uploads), Jarvis (tools, including a
 file attached in chat), or an agent (local HTTP API) — and every later action is the same
 function for everyone. An item is the publishable thing; title, caption, hashtags,
 thumbnail are its supporting fields and assets, from ONE registry (`kinds.py`,
 `/api/content-meta`). A platform (placement) may use its own files/text per role, else the
 item's. After approval the stage is DERIVED from the placements, and an item is LISTED under
-every stage one of its platforms is in. Niche is a filter, never a copy. Publishing is a
+every stage one of its platforms is in. A niche is a folder of many separate items (it can
+exist empty, be renamed, and is deleted only when it holds nothing) — the niche held fixed as
+a filter, never a copy and never one thing made of pieces. Publishing is a
 hand-off queue — nothing here posts to a platform itself; which account a post goes out on
 is the publishing tool's business. Reported numbers are dated snapshots (`cm_metrics`), never
 calculated. Jarvis may hand in, edit text and schedule (the last two confirm first); only

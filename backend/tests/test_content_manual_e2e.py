@@ -60,8 +60,9 @@ def test_adding_a_video_yourself_into_a_busy_pipeline_then_publishing_it_and_its
                       "fields": {"body": f"Body {n}"}})
     clip = record_webm(page, "Rain on a Tin Roof")
 
-    visit(page, f"{base}/#/content")
-    page.click("[data-testid=new-content]")
+    visit(page, f"{base}/#/content/all")
+    page.click("[data-testid=add-content]")
+    page.click("[data-testid=add-video]")
     expect(page.locator("[data-testid=new-content]").last).to_be_visible()
     page.fill("[data-testid=new-name]", "Nature Sounds Video #001")
     page.select_option("[data-testid=new-type]", "video")
@@ -142,10 +143,11 @@ def test_adding_a_video_yourself_into_a_busy_pipeline_then_publishing_it_and_its
 
 def test_ready_to_post_on_the_way_in_and_answering_your_own_change_request(browser_page):
     page, base = browser_page
-    visit(page, f"{base}/#/content")
+    visit(page, f"{base}/#/content/all")
 
     # A carousel, added as Ready to Post: the ordinary approve step, done as it's added.
-    page.click("[data-testid=new-content]")
+    page.click("[data-testid=add-content]")
+    page.click("[data-testid=add-carousel]")
     page.fill("[data-testid=new-name]", "5 Budget Rules")
     page.select_option("[data-testid=new-type]", "carousel")
     page.fill("[data-testid=new-field-caption]", "Save this")
@@ -190,7 +192,7 @@ def test_a_scheduled_post_can_still_be_changed_and_goes_out_changed(browser_page
                          "fields": {"body": "First draft", "hashtags": ["#weekend"]},
                          "platforms": [{"platform": "x"}]})
     httpx.post(f"{base}/api/content-items/{post['id']}/approve", timeout=30)
-    visit(page, f"{base}/#/content")
+    visit(page, f"{base}/#/content/all")
     page.click("[data-testid=stage-approved]")
     open_card(page, "Weekend plans")
     row(page, "x").locator("[data-testid=pl-schedule]").click()

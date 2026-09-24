@@ -26,12 +26,16 @@ export function Popover({
   anchorRef,
   onClose,
   width = 300,
+  align = 'start',
   children,
 }: {
   open: boolean;
   anchorRef: React.RefObject<HTMLElement>;
   onClose: () => void;
   width?: number;
+  /** `end`: the panel's right edge lines up with the trigger's — for a trigger
+   *  at the right of a row, whose panel would otherwise hang past the column. */
+  align?: 'start' | 'end';
   children?: React.ReactNode;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -51,7 +55,8 @@ export function Popover({
       const next: React.CSSProperties = {
         position: 'fixed',
         width,
-        left: Math.max(EDGE, Math.min(anchor.left, window.innerWidth - width - EDGE)),
+        left: Math.max(EDGE, Math.min(align === 'end' ? anchor.right - width : anchor.left,
+                                      window.innerWidth - width - EDGE)),
         ...(flip
           ? { bottom: window.innerHeight - anchor.top + GAP }
           : { top: anchor.bottom + GAP }),
@@ -77,7 +82,7 @@ export function Popover({
       window.removeEventListener('scroll', place, true);
       watcher?.disconnect();
     };
-  }, [open, anchorRef, width]);
+  }, [open, anchorRef, width, align]);
 
   const closeRef = useRef(onClose);
   closeRef.current = onClose;

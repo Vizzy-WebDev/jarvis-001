@@ -198,7 +198,7 @@ def test_the_whole_lifecycle_through_the_screen(browser_page, scratch):
     }, [(f"slide{i}.png", png(540, 540, c), "image/png")
         for i, c in enumerate([(20, 90, 60), (30, 60, 140), (140, 90, 20)])])
 
-    visit(page, f"{base}/#/content")
+    visit(page, f"{base}/#/content/all")
     stage_count(page, "review", 3)
     expect(page.locator("[data-testid=content-needs]")).to_contain_text("3 to review")
 
@@ -317,7 +317,7 @@ def test_the_whole_lifecycle_through_the_screen(browser_page, scratch):
         page.click("[data-testid=cal-next]")
     youtube_day = page.locator(f"[data-testid=cal-day][data-date='{d4}'] [data-testid=cal-entry]")
     expect(youtube_day).to_have_count(1)
-    page.goto(f"{base}/#/content")  # back to this month for the next pick
+    page.goto(f"{base}/#/content/all")  # back to this month for the next pick
     page.reload()
     page.click("[data-testid=stage-scheduling]")
     page.click("[data-testid=mode-calendar]")
@@ -385,11 +385,11 @@ def test_the_whole_lifecycle_through_the_screen(browser_page, scratch):
     stage_count(page, "archived", 1)
     page.click("[data-testid=stage-archived]")
     page.select_option("[data-testid=filter-niche]", "Fitness")
-    page.select_option("[data-testid=filter-type]", "video")
+    page.click("[data-testid=type-video]")
     expect(page.locator("[data-testid=content-card]")).to_have_count(1)
-    page.select_option("[data-testid=filter-type]", "carousel")
+    page.click("[data-testid=type-carousel]")
     expect(page.locator("[data-testid=content-card]")).to_have_count(0)
-    page.select_option("[data-testid=filter-type]", "")
+    page.click("[data-testid=type-all]")
     page.select_option("[data-testid=filter-archived-from]", "published")
     expect(page.locator("[data-testid=content-card]")).to_have_count(1)
     page.fill("[data-testid=content-search]", "knee")
@@ -454,7 +454,7 @@ def test_jarvis_revises_text_itself_and_the_bin_empties_only_when_confirmed(brow
         "note": "Opened with a question"}, call_id="rev")
     model.says("Sent back a version that opens with a question.")
     try:
-        visit(page, f"{base}/#/content")
+        visit(page, f"{base}/#/content/all")
         open_card(page, post["name"])
         page.click("[data-testid=ws-request-changes]")
         expect(page.locator("[data-testid=assign-jarvis]")).to_be_checked()  # text defaults to Jarvis
@@ -562,7 +562,7 @@ def test_every_stage_survives_a_real_restart(scratch):
         with sync_playwright() as play:
             browser = play.chromium.launch(executable_path=str(CHROME), args=["--no-sandbox"])
             page = browser.new_page(viewport={"width": 1440, "height": 900})
-            visit(page, f"{base}/#/content")
+            visit(page, f"{base}/#/content/all")
             for stage, count in (("review", 1), ("changes_requested", 1), ("approved", 1), ("scheduling", 1),
                                  ("published", 1), ("archived", 1), ("bin", 1)):
                 stage_count(page, stage, count)

@@ -125,14 +125,15 @@ def main() -> None:
                                    (820, 1100, "narrow")):
             page = browser.new_context(viewport={"width": width, "height": height}).new_page()
             started = time.monotonic()
-            page.goto(f"{base}/#/content", wait_until="load")
+            page.goto(f"{base}/#/content/all", wait_until="load")
             page.locator("[data-testid=content-card]").first.wait_for(timeout=60000)
             report["timings"][f"{tag}: first cards visible"] = round((time.monotonic() - started) * 1000)
             settle(page)
             shot(page, f"{tag}-review")
             if tag != "desktop":
                 if tag == "narrow":
-                    step(page, f"{tag}-new-content", lambda: page.click("[data-testid=new-content]"))
+                    step(page, f"{tag}-new-content", lambda: (page.click("[data-testid=add-content]"),
+                                                                    page.click("[data-testid=add-video]")))
                     close_all(page)
                     step(page, f"{tag}-workspace", lambda: (
                         page.click("[data-testid=stage-scheduling]"),
@@ -181,7 +182,7 @@ def main() -> None:
             targets = [("busiest", busiest)] + sorted(kinds.items())
             for label, it in targets:
                 def open_ws(it=it):
-                    page.goto(f"{base}/#/content", wait_until="load")
+                    page.goto(f"{base}/#/content/all", wait_until="load")
                     page.click(f"[data-testid=stage-{it['stage']}]")
                     page.fill("[data-testid=content-search]", it["name"])
                     page.wait_for_timeout(900)
@@ -199,7 +200,7 @@ def main() -> None:
             # Dialogs, opened for real on items that allow them. A fresh load
             # each time, so nothing left open from the last one is in the way.
             def fresh() -> None:
-                page.goto(f"{base}/?t={time.monotonic()}#/content", wait_until="load")
+                page.goto(f"{base}/?t={time.monotonic()}#/content/all", wait_until="load")
                 page.locator("[data-testid=content-screen]").wait_for(timeout=30000)
                 settle(page, 2000)
 
@@ -244,7 +245,8 @@ def main() -> None:
             close_all(page)
 
             # The new screen-level actions and views.
-            step(page, f"{tag}-new-content-empty", lambda: (fresh(), page.click("[data-testid=new-content]")))
+            step(page, f"{tag}-new-content-empty", lambda: (fresh(), page.click("[data-testid=add-content]"),
+                                                                      page.click("[data-testid=add-video]")))
             step(page, f"{tag}-new-content-filled", lambda: (
                 page.fill("[data-testid=new-name]", "Nature Sounds Video #001 — Rain on a Tin Roof, 10 hours"),
                 page.fill("[data-testid=new-niche]", "Nature Sounds"),

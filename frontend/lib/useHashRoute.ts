@@ -16,7 +16,9 @@ export function useHashRoute(): [Section, (id: string) => void] {
 
   useEffect(() => {
     const read = () => {
-      const raw = window.location.hash.replace(/^#\/?/, '').trim();
+      // The first segment is the section; a screen may keep its own place in
+      // the rest (`#/content/niche/Psychology`), so refresh and Back return there.
+      const raw = window.location.hash.replace(/^#\/?/, '').trim().split('/')[0];
       setId(raw || 'home');
     };
     read();

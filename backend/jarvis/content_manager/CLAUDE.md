@@ -12,12 +12,14 @@ Analysis — older and unrelated; it owns `data/content.json` and the `*_content
 (every read, plus "what next / who", "needs you", the stage views and analytics) ·
 `lifecycle.py` (every write) · `files.py` (media on disk) · `revise.py` (Jarvis doing a
 revision as a Background Job). Routes: `jarvis/routes/content_manager.py`. Tools:
-`jarvis/tools/content_manager_tools.py`. Schema: migrations 31 and 32 (`cm_*` tables).
+`jarvis/tools/content_manager_tools.py`. Schema: migrations 31, 32 and 33 (`cm_*` tables).
 
 ## The model
 
 - **One door in, one pipeline.** Content enters through `lifecycle.submit()` whoever brings
-  it: the person on the screen ("New content", with their own uploads — the same multipart
+  it: the person on the screen ("+ Add" inside a niche — one piece, or "Add several files…",
+  which calls the same door once per file so each file is its own item — with their own
+  uploads, the same multipart
   `POST /api/content-items` agents use), Jarvis (`submit_content_for_review`, which also
   takes a file the person attached in chat, copied in because chat uploads are pruned), or
   an agent over HTTP. Every later action is the same function for everyone. `producer` is a
@@ -53,7 +55,20 @@ revision as a Background Job). Routes: `jarvis/routes/content_manager.py`. Tools
 - **The recycle bin is `deleted_at`, separate from `stage`**, so restore puts an item back
   exactly where it was. It is never emptied automatically. Delete forever removes the rows
   (children cascade) AND the files.
-- **Niche** is a free-text label and a filter/search dimension over the one workflow.
+- **A niche is a folder of many separate items** — never a copy of anything and never one
+  thing made of pieces. `cm_niches` (migration 33) is the list, so a niche can exist while
+  empty and be renamed; an item carries its niche's NAME (`cm_items.niche`), so every filter,
+  search, count, calendar and analytics reading keeps working as a filter held fixed.
+  `lifecycle._ensure_niche()` runs inside `submit()` and `edit()`: whoever names a niche that
+  doesn't exist yet (the person, Jarvis or an agent) makes its folder, and "psychology" lands
+  in "Psychology" (the folder's own spelling). A rename moves every item with it, the Recycle
+  Bin included, and never merges onto another niche. **A niche is deleted only when it holds
+  nothing at all** — the bin included — so deleting a folder never deletes content. Items
+  with no niche are the "No niche" folder (`noNiche=1`). `store.niche_overview()` is the
+  first screen: per folder, what is in play (not archived, not binned) by type, how many are
+  in Review, and what sits in the archive and the bin, in one grouped pass.
+- **Adding it yourself doesn't notify you**: `submit()` sends "New content to review" for
+  Jarvis's and agents' content only (`producer == "you"` is the person, who is looking at it).
 - Revisions are snapshots (`cm_revisions`), the history is `cm_events` (a plain timeline).
 - **Reported numbers** are dated snapshots per published placement (`cm_metrics`), the
   latest also kept on the placement (`metrics_json`) for cheap lists. Numbers only, names
@@ -63,7 +78,8 @@ revision as a Background Job). Routes: `jarvis/routes/content_manager.py`. Tools
 
 ## Who may do what
 
-- **The person, on the screen**: add content (Review or Ready to Post), edit text and files,
+- **The person, on the screen**: create, rename and delete (empty) niches; add content
+  (Review or Ready to Post; one piece or several files at once), move it between niches, edit text and files,
   approve, request changes, hand in a revision, schedule/reschedule/cancel, post now, "I
   posted it myself", record numbers, archive/unarchive, delete/restore/delete forever.
 - **Agents, over the local API**: submit, pick up a change request, submit a revision, claim
@@ -85,6 +101,11 @@ revision as a Background Job). Routes: `jarvis/routes/content_manager.py`. Tools
 Errors are `{"ok": false, "error": "<plain sentence>"}` with 400, or 404 when a thing is gone.
 
 - `GET /api/content-meta` — types, fields, assets, platforms, stages, metric names, niches.
+- `GET /api/content-niches` — the folders (every niche, empty ones too), `none` and `all`.
+  `POST /api/content-niches {"name"}`, `PATCH /api/content-niches/{name} {"name"}` (rename),
+  `DELETE /api/content-niches/{name}` (only when empty). `{name:path}`: a name may hold "/".
+  Every list, count, calendar and analytics route takes `niche=` or `noNiche=1`; `stage=active`
+  is "All" — everything not archived and not in the bin.
 - `POST /api/content-items` — hand in content. JSON, or multipart with an `item` field (JSON)
   plus the files. A media entry names an uploaded file by its field name or filename:
   ```json
@@ -123,11 +144,17 @@ Media is served by `GET /api/content-media/{fileId}` with the forced-download he
 
 `tests/content_seed.py` builds a realistic, busy Content Management through the real
 lifecycle (ten niches, every format, several platforms each, every stage, six timezones,
-revisions, failures, numbers). `test_content_volume.py` checks every count against an
+revisions, failures, numbers); `seed_niches()` builds it the way niches are really used —
+ten folders each holding 20+ videos plus carousels, images, blogs and the rest, loose items
+with no niche, an empty niche, dates spread over three months. `test_content_volume.py` checks every count against an
 independent recount, search, paging, speed and a real restart; `test_content_concurrency.py`
 races agents, publishers and the person over real HTTP with an invariant checker;
 `tests/content_visual_tour.py` (not a test) screenshots every stage and dialog for a person to
-look at. **Every test here must run on a scratch data dir** — a test file without the
+look at. `tests/content_niche_tour.py` (not a test) uses niche folders the way a person does,
+in a real browser against a server in its own process — adding one and several, the whole
+lifecycle inside a niche, moving, renaming, deleting, a real restart — and after every phase
+recounts from the database read-only and compares every folder, tab and page with it;
+screenshots at four sizes. `python tests/content_niche_tour.py <out-dir> [scale]`. **Every test here must run on a scratch data dir** — a test file without the
 `scratch` fixture writes into the real project `data/` (it happened once).
 
 ## Gotchas
@@ -137,5 +164,9 @@ look at. **Every test here must run on a scratch data dir** — a test file with
   instants plus the zone's name. `normalize_time` refuses a naive time.
 - A form post with no files arrives as `application/x-www-form-urlencoded`, not multipart —
   both are read as a form. The front end's `request()` must not label a FormData body JSON.
+- **The screen refreshes on EVERY change anywhere** (an agent handing something in, a post
+  going out), and an open Workspace re-reads its item each time. It keeps what the person is
+  typing: only a field they haven't touched follows the stored item (`Workspace.load`).
+  `test_content_niches_e2e.py` fails if a refresh wipes a half-typed caption again.
 - The shared SQLite connection is used from many threads; every multi-statement write runs
   in one transaction under this module's lock (`lifecycle._tx`).

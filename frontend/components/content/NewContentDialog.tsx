@@ -51,12 +51,19 @@ export function SupportingFields({
  * is the ordinary approve step, done as it is added.
  */
 export function NewContentDialog({
-  meta, onCreated, onClose,
-}: { meta: ContentMeta; onCreated: (itemId: string) => void; onClose: () => void }) {
+  meta, onCreated, onClose, initialType, initialNiche = '',
+}: {
+  meta: ContentMeta;
+  onCreated: (itemId: string) => void;
+  onClose: () => void;
+  /** Chosen from a niche's "+ Add" menu: the type and the niche arrive filled in. */
+  initialType?: string;
+  initialNiche?: string;
+}) {
   const typeIds = Object.keys(meta.types);
-  const [type, setType] = useState(typeIds[0] ?? 'video');
+  const [type, setType] = useState(initialType && meta.types[initialType] ? initialType : typeIds[0] ?? 'video');
   const [name, setName] = useState('');
-  const [niche, setNiche] = useState('');
+  const [niche, setNiche] = useState(initialNiche);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [platforms, setPlatforms] = useState<string[]>([]);
@@ -91,7 +98,8 @@ export function NewContentDialog({
   }
 
   return (
-    <Modal open size="wide" title="New content" onClose={onClose} footer={
+    <Modal open size="wide" title={initialNiche ? `New ${info?.label ?? 'content'} in “${initialNiche}”` : 'New content'}
+           onClose={onClose} footer={
       <>
         <Button tone="primary" data-testid="new-send-review" disabled={busy || !name.trim()}
                 onClick={() => void create(false)}>Send to Review</Button>
@@ -115,7 +123,7 @@ export function NewContentDialog({
               </select>
             </Field>
           </div>
-          <Field label="Niche" hint="Optional — any label you filter by.">
+          <Field label="Niche" hint="The folder it goes in. Optional.">
             <input data-testid="new-niche" className={inputClass} value={niche} list="new-niches"
                    onChange={(e) => setNiche(e.target.value)} />
             <datalist id="new-niches">{meta.niches.map((n) => <option key={n} value={n} />)}</datalist>

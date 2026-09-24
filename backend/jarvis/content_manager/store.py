@@ -256,10 +256,12 @@ def item_detail(item_id: str) -> dict[str, Any] | None:
 
 
 def _filters(*, niche: str | None, content_type: str | None, platform: str | None,
-             q: str | None) -> tuple[list[str], list[Any]]:
+             q: str | None, no_niche: bool = False) -> tuple[list[str], list[Any]]:
     where: list[str] = []
     args: list[Any] = []
-    if niche:
+    if no_niche:
+        where.append("i.niche = ''")
+    elif niche:
         where.append("i.niche = ? COLLATE NOCASE")
         args.append(niche)
     if content_type:
@@ -302,7 +304,14 @@ _VIEW_SQL = {
 VIEW_STATUSES = {"approved": ("draft", "failed"), "scheduling": PENDING, "published": ("published",)}
 
 
+#: "All" inside a folder: everything still in play — every type, every stage
+#: before the archive. Not a stage an item is in; a view over all of them.
+ACTIVE = "active"
+
+
 def _stage_clause(stage: str) -> tuple[str, list[Any]]:
+    if stage == ACTIVE:
+        return "i.stage != 'archived'", []
     if stage in _VIEW_SQL:
         return _VIEW_SQL[stage], []
     return "i.stage = ?", [stage]
@@ -318,8 +327,8 @@ _DATE_COLUMN = {
 
 def _list_query(*, stage: str | None, niche: str | None, content_type: str | None, platform: str | None,
                 q: str | None, date_from: str | None, date_to: str | None,
-                archived_from: str | None) -> tuple[str, list[Any], str]:
-    where, args = _filters(niche=niche, content_type=content_type, platform=platform, q=q)
+                archived_from: str | None, no_niche: bool = False) -> tuple[str, list[Any], str]:
+    where, args = _filters(niche=niche, content_type=content_type, platform=platform, q=q, no_niche=no_niche)
     if stage == "bin":
         where.append("i.deleted_at IS NOT NULL")
         order = "i.deleted_at DESC"
@@ -347,10 +356,11 @@ def _list_query(*, stage: str | None, niche: str | None, content_type: str | Non
 def list_items(*, stage: str | None = None, niche: str | None = None,
                content_type: str | None = None, platform: str | None = None,
                q: str | None = None, date_from: str | None = None,
-               date_to: str | None = None, archived_from: str | None = None,
+               date_to: str | None = None, archived_from: str | None = None, no_niche: bool = False,
                limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
     where, args, order = _list_query(stage=stage, niche=niche, content_type=content_type, platform=platform,
-                                     q=q, date_from=date_from, date_to=date_to, archived_from=archived_from)
+                                     q=q, date_from=date_from, date_to=date_to, archived_from=archived_from,
+                                     no_niche=no_niche)
     sql = f"SELECT i.* FROM cm_items i WHERE {where} ORDER BY {order}, i.id"
     if limit is not None:
         sql += " LIMIT ? OFFSET ?"
@@ -366,17 +376,18 @@ def count_items(**filters: Any) -> int:
 
 
 def summary(*, niche: str | None = None, content_type: str | None = None,
-            platform: str | None = None, q: str | None = None) -> dict[str, Any]:
+            platform: str | None = None, q: str | None = None, no_niche: bool = False) -> dict[str, Any]:
     """Counts per stage (and the bin) under the same filters the list uses, plus
     what needs the person right now — in one pass over the items. An item counts
     in every post-approval stage one of its platforms is in, exactly as the lists
     show it; `posts` says how many platform posts each of those stages holds."""
-    where, args = _filters(niche=niche, content_type=content_type, platform=platform, q=q)
+    where, args = _filters(niche=niche, content_type=content_type, platform=platform, q=q, no_niche=no_niche)
     clause = f"WHERE {' AND '.join(where)}" if where else ""
     live = "i.deleted_at IS NULL"
     active = f"{live} AND i.stage != 'archived'"
     cases = {
         "bin": "i.deleted_at IS NOT NULL",
+        "active": active,
         "review": f"{live} AND i.stage = 'review'",
         "changes_requested": f"{live} AND i.stage = 'changes_requested'",
         "archived": f"{live} AND i.stage = 'archived'",
@@ -394,8 +405,10 @@ def summary(*, niche: str | None = None, content_type: str | None = None,
     row = db.execute(f"SELECT {select} FROM cm_items i {clause}", args).fetchone()
     counts = {stage: row[stage] for stage in STAGE_IDS}
     counts["bin"] = row["bin"]
+    counts[ACTIVE] = row["active"]
 
-    post_where, post_args = _filters(niche=niche, content_type=content_type, platform=None, q=q)
+    post_where, post_args = _filters(niche=niche, content_type=content_type, platform=None, q=q,
+                                     no_niche=no_niche)
     post_where += [live, _POST_APPROVAL]
     if platform:
         post_where.append("p.platform = ?")
@@ -412,15 +425,59 @@ def summary(*, niche: str | None = None, content_type: str | None = None,
 
 
 def niches() -> list[str]:
-    rows = get_db().execute("SELECT DISTINCT niche FROM cm_items WHERE niche != ''").fetchall()
-    return sorted({r[0] for r in rows}, key=str.lower)
+    """Every niche folder, empty ones included."""
+    rows = get_db().execute("SELECT name FROM cm_niches").fetchall()
+    return sorted((r[0] for r in rows), key=str.lower)
+
+
+def _folder(name: str | None = None, created_at: str | None = None) -> dict[str, Any]:
+    folder: dict[str, Any] = {"total": 0, "byType": {}, "review": 0, "archived": 0, "binned": 0,
+                              "updatedAt": None}
+    if name is not None:
+        folder.update({"name": name, "createdAt": created_at})
+    return folder
+
+
+def niche_overview() -> dict[str, Any]:
+    """The folders, for the first screen — in one grouped pass. Each niche (empty
+    ones too), the items with no niche, and everything together: what is still in
+    play (not archived, not in the bin) by type, how many wait in Review, and what
+    sits in the archive or the bin — the reason a niche with nothing in play
+    still cannot be deleted."""
+    db = get_db()
+    folders = {r["name"].lower(): _folder(r["name"], r["created_at"])
+               for r in db.execute("SELECT name, created_at FROM cm_niches")}
+    none, everything = _folder(), _folder()
+    rows = db.execute(
+        "SELECT niche, content_type, "
+        "SUM(deleted_at IS NULL AND stage != 'archived') AS active, "
+        "SUM(deleted_at IS NULL AND stage = 'review') AS review, "
+        "SUM(deleted_at IS NULL AND stage = 'archived') AS archived, "
+        "SUM(deleted_at IS NOT NULL) AS binned, "
+        "MAX(CASE WHEN deleted_at IS NULL THEN updated_at END) AS updated "
+        "FROM cm_items GROUP BY niche, content_type").fetchall()
+    for r in rows:
+        name = r["niche"] or ""
+        # Every write goes through a folder; a stray label still shows as one.
+        target = folders.setdefault(name.lower(), _folder(name)) if name else none
+        for folder in (target, everything):
+            if r["active"]:
+                folder["total"] += r["active"]
+                folder["byType"][r["content_type"]] = folder["byType"].get(r["content_type"], 0) + r["active"]
+            folder["review"] += r["review"]
+            folder["archived"] += r["archived"]
+            folder["binned"] += r["binned"]
+            if r["updated"] and (folder["updatedAt"] is None or r["updated"] > folder["updatedAt"]):
+                folder["updatedAt"] = r["updated"]
+    return {"niches": sorted(folders.values(), key=lambda f: f["name"].lower()), "none": none,
+            "all": everything}
 
 
 def calendar(*, start: str, end: str, niche: str | None = None, content_type: str | None = None,
-             platform: str | None = None, q: str | None = None) -> list[dict[str, Any]]:
+             platform: str | None = None, q: str | None = None, no_niche: bool = False) -> list[dict[str, Any]]:
     """Every placement with a date in [start, end): scheduled/queued ones by
     their schedule, published ones by when they went out."""
-    where, args = _filters(niche=niche, content_type=content_type, platform=None, q=q)
+    where, args = _filters(niche=niche, content_type=content_type, platform=None, q=q, no_niche=no_niche)
     where.append("i.deleted_at IS NULL AND i.stage != 'archived'")
     if platform:
         where.append("p.platform = ?")
@@ -526,11 +583,12 @@ def metrics_history(placement_id: str) -> list[dict[str, Any]]:
 
 
 def analytics(*, niche: str | None = None, content_type: str | None = None, platform: str | None = None,
-              q: str | None = None, date_from: str | None = None, date_to: str | None = None) -> dict[str, Any]:
+              q: str | None = None, date_from: str | None = None, date_to: str | None = None,
+              no_niche: bool = False) -> dict[str, Any]:
     """Every published post under the filters, with its latest REPORTED numbers,
     and totals of what was reported. A post nobody has reported numbers for is
     listed with none — never with zeros that look like a real result."""
-    where, args = _filters(niche=niche, content_type=content_type, platform=None, q=q)
+    where, args = _filters(niche=niche, content_type=content_type, platform=None, q=q, no_niche=no_niche)
     where += ["i.deleted_at IS NULL", "p.status = 'published'"]
     if platform:
         where.append("p.platform = ?")

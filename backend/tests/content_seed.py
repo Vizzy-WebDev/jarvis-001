@@ -270,3 +270,159 @@ def seed(count: int = 1500, *, rng_seed: int = 7, media: dict[str, bytes] | None
         out.items.append(item["id"])
         out.plan[item["id"]] = "bin"
     return out
+
+
+# --- niches as folders: many pieces of every kind per niche -------------------------------
+
+#: Ten niches as a creator would really run them: each one a folder holding 20+
+#: videos plus carousels, images, blogs and the rest — every piece its own item.
+#: One long name and one with "&" and "/", on purpose.
+NICHE_FOLDERS: dict[str, list[str]] = {
+    "Psychology": ["Why We Procrastinate", "The Spotlight Effect", "Dopamine and Habits", "Imposter Syndrome",
+                   "Decision Fatigue", "The Halo Effect", "Cognitive Dissonance", "Attachment Styles"],
+    "Fitness": ["3 Squat Mistakes", "10-Minute Core Burn", "Beginner Pull-Up Plan", "Mobility Before Lifting",
+                "Home Dumbbell Workout", "Protein Myths", "Zone 2 Cardio"],
+    "Personal Finance": ["Emergency Fund Basics", "Index Funds Explained", "Budgeting on a Low Income",
+                         "Paying Off Debt Faster", "Side Income Ideas", "Compound Interest"],
+    "Cooking & Baking": ["One-Pot Jollof Rice", "15-Minute Pasta", "Sourdough for Beginners", "Meal Prep Sunday",
+                         "Crispy Plantain", "Lemon Drizzle Cake"],
+    "Travel": ["48 Hours in Lisbon", "Budget Bali Guide", "Hidden Beaches of Ghana", "Packing Light",
+               "Night Markets of Taipei", "Train Across Europe"],
+    "Tech Reviews": ["Budget Phone Showdown", "Best Laptop for Students", "Noise-Cancelling Earbuds",
+                     "Smartwatch After 6 Months", "Mechanical Keyboards"],
+    "Parenting": ["Toddler Sleep Tips", "Screen Time Rules", "Lunchbox Ideas", "Talking About Feelings",
+                  "Homework Without Tears"],
+    "Mindfulness": ["5-Minute Breathing", "Body Scan for Sleep", "Morning Gratitude", "Walking Meditation",
+                    "Letting Go of Stress"],
+    "History / Ancient World": ["The Fall of Rome", "Life in Ancient Egypt", "The Silk Road",
+                                "Mansa Musa's Fortune", "The Library of Alexandria"],
+    "Productivity, Habits & Deep Work for Busy Creators": ["Time Blocking", "The 2-Minute Rule",
+                                                           "Batching Content", "Weekly Review", "Digital Minimalism"],
+}
+
+#: Per niche, how many of each kind (low, high).
+NICHE_MIX: dict[str, tuple[int, int]] = {
+    "video": (23, 28), "carousel": (5, 8), "image": (5, 8), "article": (3, 5), "text_post": (2, 3),
+    "flyer": (1, 2), "audio": (1, 2), "newsletter": (1, 2),
+}
+
+
+class _Clock:
+    """The lifecycle's clock, set to a moment in the past three months while one
+    item is made, so created, published and archived dates really spread out.
+    Everything else is the real code path."""
+
+    def __init__(self):
+        self.at = datetime.now(timezone.utc)
+
+    def __call__(self) -> str:
+        self.at += timedelta(seconds=37)
+        return to_iso_z(min(self.at, datetime.now(timezone.utc)))
+
+
+def seed_niches(*, scale: int = 1, rng_seed: int = 33, media: dict[str, bytes] | None = None,
+                loose: int = 30) -> Seeded:
+    """About 450 items per `scale`: ten niche folders of every kind, `loose` items
+    with no niche, one empty niche, and a few handed in by an agent under another
+    spelling of a niche ("psychology"). Every stage, several platforms each."""
+    from jarvis.content_manager import files as files_module
+    from jarvis.content_manager import lifecycle as lifecycle_module
+
+    rnd = random.Random(rng_seed)
+    maker = _Maker(rnd, media or {})
+    out = Seeded(niches=list(NICHE_FOLDERS))
+    clock = _Clock()
+    real = (lifecycle_module.now_iso, files_module.now_iso)
+    lifecycle_module.now_iso = clock
+    files_module.now_iso = clock
+    numbers: dict[str, int] = {}
+    try:
+        # The person made the folders first; "Astronomy" was made and never filled.
+        for niche in [*NICHE_FOLDERS, "Astronomy"]:
+            lifecycle.create_niche(niche)
+        work: list[tuple[str, str, str]] = []
+        for niche, subjects in NICHE_FOLDERS.items():
+            for content_type, (low, high) in NICHE_MIX.items():
+                for _ in range(rnd.randint(low, high) * scale):
+                    work.append((niche, content_type, rnd.choice(subjects)))
+        for n in range(loose * scale):
+            work.append(("", rnd.choice(["video", "video", "image", "carousel", "text_post"]),
+                         rnd.choice(["Untitled clip", "Random idea", "Test upload", "Behind the scenes"])))
+        rnd.shuffle(work)
+        for niche, content_type, subject in work:
+            numbers[subject] = numbers.get(subject, 0) + 1
+            name = f"{subject} #{numbers[subject]:03d}"
+            clock.at = datetime.now(timezone.utc) - timedelta(days=rnd.uniform(1, 92))
+            # A few from an agent that spells the niche its own way.
+            spelled = niche.lower() if niche == "Psychology" and rnd.random() < 0.1 else niche
+            out.items.append(_drive(rnd, maker, out, name, content_type, spelled, subject))
+    finally:
+        lifecycle_module.now_iso, files_module.now_iso = real
+    return out
+
+
+def _drive(rnd: random.Random, maker: _Maker, out: Seeded, name: str, content_type: str, niche: str,
+           subject: str) -> str:
+    """One piece, handed in and taken as far through the pipeline as it goes."""
+    vertical = content_type == "video" and rnd.random() < 0.6
+    accepts = [p for p, spec in PLATFORMS.items() if content_type in spec["accepts"]]
+    chosen = rnd.sample(accepts, k=min(len(accepts), rnd.randint(1, 4)))
+    platforms = [{"platform": p, "destination": "Shorts" if p == "youtube" and vertical
+                  else "Reels" if p == "instagram" and content_type == "video" else ""} for p in chosen]
+    item = lifecycle.submit(
+        name=name, content_type=content_type, niche=niche,
+        fields=maker.fields(content_type, niche or "General", subject),
+        media=maker.media(content_type, vertical),
+        producer=rnd.choice(["ClipBot", "Writer", "Jarvis", "you", "DesignBot"]), platforms=platforms)
+    item_id = item["id"]
+    roll = rnd.random()
+    if roll < 0.14:
+        out.plan[item_id] = "review"
+        return item_id
+    if roll < 0.22:
+        lifecycle.request_changes(item_id, what="Tighten the opening", why="Viewers drop off early",
+                                  assignee=rnd.choice(["agent", "agent", "jarvis"]))
+        if rnd.random() < 0.6:
+            out.plan[item_id] = "changes_requested"
+            return item_id
+        field_name = TYPES[content_type]["fields"][0]
+        lifecycle.submit_revision(item_id, fields={field_name: f"{subject} (revised)"}, note="Done", by="ClipBot")
+        if rnd.random() < 0.5:
+            out.plan[item_id] = "review"
+            return item_id
+    lifecycle.approve(item_id)
+    outcome = rnd.random()
+    for p in get_item(item_id)["placements"]:
+        fate = rnd.random()
+        if outcome < 0.22:
+            continue                                   # Ready to Post, nothing done yet
+        if fate < 0.35:
+            zone = rnd.choice(ZONES)
+            local = (datetime.now(timezone.utc) + timedelta(days=rnd.randint(1, 60))).astimezone(
+                ZoneInfo(zone)).replace(hour=rnd.choice([7, 9, 12, 18, 21]), minute=rnd.choice([0, 30]),
+                                        second=0, microsecond=0, tzinfo=None)
+            lifecycle.schedule(p["id"], scheduled_at=_utc(local, zone), timezone_name=zone)
+        elif fate < 0.85:
+            lifecycle.post_now(p["id"])
+            if rnd.random() < 0.05:
+                continue                               # still waiting for the publisher
+            lifecycle.claim(p["id"], by="PostBot")
+            if rnd.random() < 0.08:
+                lifecycle.report_result(p["id"], ok=False, by="PostBot", error="The login for this account expired.")
+                continue
+            lifecycle.report_result(p["id"], ok=True, by="PostBot",
+                                    url=f"https://{p['platform']}.example/{item_id}/{p['id']}")
+            if rnd.random() < 0.6:
+                views = rnd.randint(80, 250_000)
+                lifecycle.record_metrics(p["id"], metrics={"views": views, "likes": int(views * 0.04),
+                                                            "comments": int(views * 0.004)}, by="PostBot")
+    final = rnd.random()
+    if final < 0.06:
+        lifecycle.archive(item_id)
+        out.plan[item_id] = "archived"
+    elif final < 0.10:
+        lifecycle.delete(item_id)
+        out.plan[item_id] = "bin"
+    else:
+        out.plan[item_id] = get_item(item_id)["stage"]
+    return item_id

@@ -311,6 +311,22 @@ def list_page(*, limit: int = 50, before: str | None = None, q: str | None = Non
     return page, cursor
 
 
+def conversations_of(artifacts_: list[Artifact]) -> dict[str, dict[str, Any]]:
+    """For each conversation these artifacts belong to: its title and whether it
+    is `live`, in the recycle bin (`trashed`), or `gone` (permanently deleted —
+    no row at all). One query, however many artifacts."""
+    wanted = sorted({a.conversation_id for a in artifacts_ if a.conversation_id})
+    found: dict[str, dict[str, Any]] = {}
+    if wanted:
+        rows = get_db().execute(
+            f"SELECT id, title, deleted_at FROM conversations WHERE id IN "
+            f"({','.join('?' for _ in wanted)})", wanted).fetchall()
+        for row in rows:
+            found[row["id"]] = {"id": row["id"], "title": row["title"],
+                                "state": "trashed" if row["deleted_at"] else "live"}
+    return {cid: found.get(cid, {"id": cid, "title": None, "state": "gone"}) for cid in wanted}
+
+
 def delete(artifact_id: str) -> bool:
     """Remove the file and its record. False when there was no such artifact.
 

@@ -81,6 +81,11 @@ def create_app() -> FastAPI:
         # Mounted last so it can never shadow an /api route.
         app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
 
+    # Outermost, so a request a browser marks as foreign (an artifact's page in
+    # the viewer, another site) never reaches a route. See request_guard.py.
+    from .request_guard import RequestGuard
+    app.add_middleware(RequestGuard)
+
     return app
 
 

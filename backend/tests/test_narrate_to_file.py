@@ -76,7 +76,9 @@ def test_a_script_becomes_a_kept_audio_file(voice_service):
     kept = artifact_store.get(result["id"])
     assert kept.path.read_bytes() == FAKE_MP3
     assert result["ui_action"] == {"type": "attachment", "kind": "audio", "url": result["url"],
-                                   "mimeType": "audio/mpeg", "name": "cart intro.mp3"}
+                                   "mimeType": "audio/mpeg", "name": "cart intro.mp3",
+                                   "artifactId": result["id"], "title": "cart intro.mp3",
+                                   "artifactKind": "audio", "size": len(FAKE_MP3)}
 
 
 def test_with_no_voice_service_nothing_is_pretended():

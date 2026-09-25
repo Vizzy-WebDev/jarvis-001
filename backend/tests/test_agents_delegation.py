@@ -20,6 +20,7 @@ from jarvis.jobs import job_store, worker
 from jarvis.orchestrator import ApprovalRequired, Done, ToolRan, TurnRequest
 from jarvis.policy import Autonomy, CallContext, Surface
 
+import medium_tool
 from session_scripted_model import SessionScriptedModel, install
 
 
@@ -204,14 +205,15 @@ def test_a_disabled_or_unknown_specialist_is_refused_in_words(model):
 # --- approvals and notes -----------------------------------------------------
 
 def test_a_specialists_approval_reaches_the_person_and_only_they_can_answer(model):
+    medium_tool.install("content")
     model.on("jarvis").calls_tool("ask_specialist", {"agent": "content",
-                                                     "task": "Save the post as post.docx"})
-    model.on("content").calls_tool("create_artifact", {"filename": "post.docx",
-                                                       "paragraphs": ["Coffee!"]})
-    events = jarvis_turn("save it as a Word file")
+                                                     "task": "Save the post to the shared drive"})
+    model.on("content").calls_tool(medium_tool.NAME, {"filename": "post.docx",
+                                                      "content": "Coffee!"})
+    events = jarvis_turn("save it to the shared drive")
 
     [asked] = [e for e in events if isinstance(e, ApprovalRequired)]
-    assert asked.capability == "create_artifact"
+    assert asked.capability == medium_tool.NAME
     assert "Content needs your go-ahead" in asked.reason
     # Jarvis's turn stopped at the question — no reply was generated over it.
     assert not any(isinstance(e, Done) for e in events)

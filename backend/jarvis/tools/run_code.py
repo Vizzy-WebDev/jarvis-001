@@ -17,9 +17,10 @@ from typing import Any
 
 from ..capabilities import CapabilityRegistry, CapabilitySpec, Risk
 from ..sandbox import backend, describe_isolation, run_python
+from .create_artifact import attachment_action
 
 
-def _run(code: str = "", timeout_seconds: int = 30) -> dict[str, Any]:
+def _run(code: str = "", timeout_seconds: int = 30, ctx: Any = None) -> dict[str, Any]:
     result = run_python(code, timeout_s=max(1.0, min(120.0, float(timeout_seconds or 30))))
     kept: list[dict[str, Any]] = []
     if result.ok and result.files:
@@ -27,7 +28,10 @@ def _run(code: str = "", timeout_seconds: int = 30) -> dict[str, Any]:
 
         for produced in result.files:
             try:
-                kept.append(keep(Path(produced)).as_result())
+                # Kept as artifacts of the conversation that ran the code, so they
+                # show in that chat and on the Artifacts page like any other file.
+                kept.append(keep(Path(produced),
+                                 session_id=getattr(ctx, "session_id", None)).as_result())
             except ValueError as err:
                 # The file was produced and did not survive verification. Said
                 # plainly rather than dropped, because "it made a file" and "it
@@ -44,6 +48,9 @@ def _run(code: str = "", timeout_seconds: int = 30) -> dict[str, Any]:
         # this should not have to remember what the machine supports.
         "isolation": result.backend,
         **({"files": kept} if kept else {}),
+        **({"ui_action": {"type": "attachments",
+                          "items": [attachment_action(f) for f in kept if f.get("url")]}}
+           if any(f.get("url") for f in kept) else {}),
         **({"error": result.error} if result.error else {}),
     }
 
@@ -69,6 +76,7 @@ def build(registry: CapabilityRegistry) -> list[CapabilitySpec]:
         # HIGH without a real boundary — see this module's docstring.
         risk=Risk.MEDIUM if isolated else Risk.HIGH,
         handler=_run,
+        wants_context=True,
         summarize=_summary,
         timeout_s=130.0,
     )]

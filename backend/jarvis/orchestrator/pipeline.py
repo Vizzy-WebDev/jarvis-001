@@ -206,6 +206,13 @@ def _one_attachment(action: Any) -> dict[str, Any] | None:
     if action.get("name"):
         # What a file to download is called — an image needs no caption, a file does.
         out["name"] = str(action["name"])
+    # A saved artifact also says which one it is, so the chat card can open it in
+    # the viewer and "Open in Chat" can find the card again.
+    for key in ("artifactId", "title", "artifactKind"):
+        if action.get(key):
+            out[key] = str(action[key])
+    if isinstance(action.get("size"), int):
+        out["size"] = action["size"]
     return out
 
 
@@ -467,7 +474,8 @@ class Orchestrator:
 
         if result.outcome is ExecOutcome.NEEDS_APPROVAL:
             state.to(State.WAITING_FOR_APPROVAL, f"{spec.name} needs approval")
-            events.append(ApprovalRequired(result.approval_id or "", spec.name, result.error or ""))
+            events.append(ApprovalRequired(result.approval_id or "", spec.name,
+                                           result.ask or result.error or ""))
             return events, False
 
         conversation.push_assistant_tool_calls(
@@ -672,8 +680,10 @@ class Orchestrator:
                 unlocked |= _unlocked_by(result.value)
                 if parked is None:
                     if result.outcome is ExecOutcome.NEEDS_APPROVAL:
+                        # The card shows what the person is asked, in the
+                        # capability's own words, not the policy's.
                         parked = ApprovalRequired(result.approval_id or "", call.name,
-                                                  result.error or "")
+                                                  result.ask or result.error or "")
                     else:
                         parked = _approval_of(result.value)
 

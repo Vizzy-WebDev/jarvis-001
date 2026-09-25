@@ -34,7 +34,7 @@ from ..store import data_dir
 
 logger = logging.getLogger(__name__)
 
-VERIFIABLE = {".docx", ".xlsx", ".pptx"}
+VERIFIABLE = {".docx", ".xlsx", ".pptx", ".pdf"}
 MAX_FILENAME = 80
 MAX_TITLE = 120
 #: Where a writer builds a file before `keep()` takes it. `keep()` removes the

@@ -37,6 +37,13 @@ HOW_YOU_USE_TOOLS = """Using your abilities:
 - If something the user wants has no matching tool in front of you, do not assume it is impossible: most of what you can do is not declared on every turn, to keep replies fast. Call find_capability, describing what is needed in plain words, before answering from your own knowledge instead.
 - Some actions need the user's go-ahead before they take effect. When one comes back asking for confirmation, read the summary back in your own words and ask them — as your own request, never as "the system wants to" — and do not call it again until they answer. Their answer is given outside this turn; you cannot give it yourself."""
 
+MAKING_ARTIFACTS = """Making files (artifacts) — real files they keep, which appear in this chat and on their Artifacts page:
+- When they ask you to make, write up, draft, export or save something as a file, document, spreadsheet, presentation, PDF, web page, diagram, code file or similar, make it with create_artifact straight away. Their request is the go-ahead; do not ask whether to.
+- When they did not ask, but what you are giving them is substantial, standalone content they would clearly want to keep, reuse or open outside the chat — a long document, a table of data, a complete piece of code, a page, a diagram — do not make the file on your own. Answer, then offer it in one short sentence ("Want me to put that in a spreadsheet?") and make it only after they say yes.
+- Otherwise just answer. A short answer, a quick fact or a few lines of text is never worth a file.
+- Say a file is ready only after create_artifact reports it succeeded. It shows up in the chat by itself, so do not paste its whole content into your reply too. The no-markdown rule is for your replies; a file's own content can be formatted however suits the file.
+- create_artifact keeps the file inside Jarvis. write_file is different: it writes to a folder on their computer, and is only for when they ask for that."""
+
 YOUR_SPECIALISTS = """Your specialist agents — you orchestrate them; they never replace you:
 - Most things you simply answer or do yourself. Reach for a specialist with ask_specialist only when the work genuinely needs their depth — real research, a business analysis, finished copy, a campaign, a lesson, an opportunity hunt — not for a quick question.
 - Hand a whole outcome to the specialist who OWNS it — a paid campaign is Advertising's, a video is Video Production's — and let them bring in the others they need; do not split their job across helpers yourself. When a request truly spans separate outcomes, ask each owner for theirs, then combine what they give you into one answer.
@@ -86,7 +93,8 @@ def stable_instruction(*, has_audience: bool = True) -> str:
     # repeating it — this is the adaptive delivery register: warmth,
     # directness, playfulness, how hard to push back. See personality.py's own
     # header for the substance/style invariant this protects.
-    base = "\n\n".join([IDENTITY, HOW_YOU_TALK, HOW_YOU_USE_TOOLS, YOUR_SPECIALISTS, MEMORY_RULES,
+    base = "\n\n".join([IDENTITY, HOW_YOU_TALK, HOW_YOU_USE_TOOLS, MAKING_ARTIFACTS,
+                        YOUR_SPECIALISTS, MEMORY_RULES,
                         LEARNING_ABOUT_ITSELF, SELF_KNOWLEDGE, USING_THE_COMPUTER,
                         PAST_CONVERSATIONS])
     return base + STYLE_FRAMEWORK if has_audience else base
@@ -370,6 +378,10 @@ def specialist_instruction(agent: Any, *, memories: str = "", low_confidence: bo
         parts.append(f"Your guardrails — these never bend:\n{agent.guardrails}")
     parts.append(specialist_collaborators_section(agent.collaborators))
     parts.append(HOW_YOU_USE_TOOLS)
+    if agent.direct:
+        # Talking to the person directly, so the same ask-or-offer rule applies.
+        # Working for Jarvis, the brief it was given is the request.
+        parts.append(MAKING_ARTIFACTS)
     stable = "\n\n".join(p for p in parts if p)
     volatile = volatile_instruction(memories=memories, low_confidence=low_confidence,
                                     now=now, extra=extra)

@@ -91,6 +91,10 @@ class ExecutionResult:
     attempts: int = 0
     duration_ms: int = 0
     approval_id: str | None = None
+    #: With NEEDS_APPROVAL: the question the person is actually asked — the
+    #: capability's own summary ("Create \"report.docx\"?") when it has one.
+    #: `error` keeps the policy's reason, which is what the model is told.
+    ask: str | None = None
     #: True when a timeout left work possibly still running.
     work_may_continue: bool = False
 
@@ -270,8 +274,8 @@ def execute(
             operation_id=ctx.operation_id, error=verdict.reason,
         )
     if verdict.outcome is Outcome.NEEDS_APPROVAL:
-        approval = approvals_store.request(
-            spec, args, ctx, _ask_text(spec, args, verdict.reason), event_bus=ebus)
+        ask = _ask_text(spec, args, verdict.reason)
+        approval = approvals_store.request(spec, args, ctx, ask, event_bus=ebus)
         if verdict.escalate:
             # Parked, not asked — nobody is present to answer inline. Same
             # capture gap as REFUSED above: this never reaches _run() either.
@@ -283,7 +287,7 @@ def execute(
         return ExecutionResult(
             ok=False, outcome=ExecOutcome.NEEDS_APPROVAL, capability=name,
             operation_id=ctx.operation_id, error=verdict.reason,
-            approval_id=approval.id,
+            approval_id=approval.id, ask=ask,
         )
 
     return _run(spec, args, ctx, ebus)

@@ -19,8 +19,10 @@ from typing import Any
 from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 
+from .. import conversation
 from ..assembly import get_registry
 from ..capabilities.execute import execute_approved
+from ..orchestrator.pipeline import _attachments_of
 from ..policy import Autonomy, CallContext, Surface
 from ..policy import approvals as store
 from ..policy.approvals import Resolution, SameTurnRefused
@@ -92,9 +94,22 @@ def decide(approval_id: str, body: dict[str, Any] = Body(default_factory=dict)):
     except SameTurnRefused as err:
         return JSONResponse({"error": str(err)}, status_code=409)
 
+    # The turn that asked recorded "needs your go-ahead" as this call's result.
+    # Now that it has run, the saved conversation says what really happened, so
+    # the next turn does not believe the file was never made. A model's tool call
+    # runs under operation id `<turn>:<call id>` (orchestrator/pipeline.py).
+    _, _, call_id = (approval.operation_id or "").partition(":")
+    if call_id and approval.session_id:
+        conversation.settle_tool_result(
+            approval.session_id, call_id, approval.capability,
+            result.value if result.ok else {"error": result.error})
+
     return {
         "approval": _public(store.get(approval_id)),
         "ran": True,
         "result": {"ok": result.ok, "outcome": result.outcome.value,
                    "error": result.error, "value": result.value},
+        # Anything it made, in the same shape a live turn's tool result carries,
+        # so the chat can show the file on the turn that asked.
+        "attachments": _attachments_of(result.value) if result.ok else [],
     }

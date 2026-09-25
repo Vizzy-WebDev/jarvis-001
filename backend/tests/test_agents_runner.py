@@ -20,6 +20,7 @@ from jarvis.events.bus import bus
 from jarvis.memory import store as memory_store
 from jarvis.policy import Autonomy
 
+import medium_tool
 from session_scripted_model import SessionScriptedModel, install
 
 
@@ -138,13 +139,13 @@ def test_every_run_is_recorded_and_announced(model):
 
 
 def test_a_specialist_cannot_answer_its_own_approval(model):
-    # create_artifact is MEDIUM risk: with a person present it must be asked.
-    model.on("content").calls_tool("create_artifact", {
-        "filename": "post.docx", "paragraphs": ["Hello"]})
+    # A MEDIUM-risk capability: with a person present it must be asked.
+    medium_tool.install("content")
+    model.on("content").calls_tool(medium_tool.NAME, {"filename": "post.docx"})
     outcome = runner.run_agent("content", "Make the post a Word file", conversation_id="c1",
                                autonomy=Autonomy.INTERACTIVE)
     assert outcome.status == "awaiting_approval"
-    assert outcome.approval and outcome.approval["capability"] == "create_artifact"
+    assert outcome.approval and outcome.approval["capability"] == medium_tool.NAME
     assert outcome.as_result()["approval"]["id"] == outcome.approval["id"]
     # One model step: the run stopped at the question instead of going on.
     assert len(model.requests_of("content")) == 1
@@ -179,8 +180,9 @@ def test_after_the_person_approves_the_next_turn_sees_what_ran_and_does_not_ask_
     from jarvis.policy import CallContext, Surface
     from jarvis.policy import approvals as approvals_store
 
-    model.on("content").calls_tool("create_artifact", {"filename": "notes.txt",
-                                                       "content": "Cup counts"})
+    medium_tool.install("content")
+    model.on("content").calls_tool(medium_tool.NAME, {"filename": "notes.txt",
+                                                      "content": "Cup counts"})
     first = runner.run_agent("content", "Save the notes as a file", conversation_id="c1",
                              autonomy=Autonomy.INTERACTIVE)
     session = first.run["sessionId"]
@@ -198,7 +200,7 @@ def test_after_the_person_approves_the_next_turn_sees_what_ran_and_does_not_ask_
     runner.run_agent("content", "I approved it, carry on.", conversation_id="c1")
     system = model.requests_of("content")[-1]["system"]
     assert "the person answered what you asked to do" in system
-    assert "create_artifact: they approved it, and it has ALREADY RUN" in system
+    assert f"{medium_tool.NAME}: they approved it, and it has ALREADY RUN" in system
     assert "notes.txt" in system                    # what it actually returned
 
     # Once it has replied, that answer is history, not news.
@@ -210,10 +212,11 @@ def test_after_the_person_approves_the_next_turn_sees_what_ran_and_does_not_ask_
 def test_a_declined_action_is_reported_as_declined(model):
     from jarvis.policy import approvals as approvals_store
 
-    model.on("content").calls_tool("create_artifact", {"filename": "x.txt", "content": "x"})
+    medium_tool.install("content")
+    model.on("content").calls_tool(medium_tool.NAME, {"filename": "x.txt", "content": "x"})
     first = runner.run_agent("content", "Save it", conversation_id="c2",
                              autonomy=Autonomy.INTERACTIVE)
     approvals_store.resolve(first.approval["id"], approvals_store.Resolution.DENY, "later")
     model.on("content").says("Understood, not saved.")
     runner.run_agent("content", "go on", conversation_id="c2")
-    assert "create_artifact: they said no" in model.requests_of("content")[-1]["system"]
+    assert f"{medium_tool.NAME}: they said no" in model.requests_of("content")[-1]["system"]

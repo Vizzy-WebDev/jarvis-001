@@ -146,8 +146,81 @@ def read_pptx(path: Path | str) -> list[str]:
         ]
 
 
+_PDF_OBJ = re.compile(rb"(\d+)\s+(\d+)\s+obj\b")
+_PDF_STREAM = re.compile(rb"<<(.*?)>>\s*stream\r?\n(.*?)\r?\nendstream", re.S)
+_PDF_TEXT = re.compile(rb"\(((?:\\.|[^\\)])*)\)\s*Tj")
+
+
+def _pdf_string(raw: bytes) -> str:
+    out = bytearray()
+    i = 0
+    while i < len(raw):
+        if raw[i:i + 1] == b"\\" and i + 1 < len(raw):
+            nxt = raw[i + 1:i + 2]
+            out += {b"n": b"\n", b"r": b"\r", b"t": b"\t"}.get(nxt, nxt)
+            i += 2
+        else:
+            out += raw[i:i + 1]
+            i += 1
+    return out.decode("cp1252", errors="replace")
+
+
+def read_pdf(path: Path | str) -> list[str]:
+    """The text of each page's content, in order. Raises when the file is not a
+    PDF a reader could open: no header, no end marker, a cross-reference table
+    whose offsets do not land on the objects it names, or no pages at all.
+
+    Lenient on purpose about what it cannot follow: a PDF with compressed
+    cross-reference streams (made by other software) is structurally checked
+    as far as this reader goes and not rejected for using a newer feature.
+    """
+    import zlib
+
+    data = Path(path).read_bytes()
+    if not data.startswith(b"%PDF-"):
+        raise ValueError("it does not start like a PDF")
+    if b"%%EOF" not in data[-1024:]:
+        raise ValueError("it has no end-of-file marker")
+    start = re.search(rb"startxref\s+(\d+)\s+%%EOF\s*$", data)
+    if not start:
+        raise ValueError("it has no cross-reference pointer")
+    xref_at = int(start.group(1))
+    if data[xref_at:xref_at + 4] == b"xref":
+        header = re.match(rb"xref\s+(\d+)\s+(\d+)\s+", data[xref_at:])
+        if not header:
+            raise ValueError("its cross-reference table is malformed")
+        first, count = int(header.group(1)), int(header.group(2))
+        table = data[xref_at + header.end():]
+        for n in range(count):
+            entry = table[n * 20:(n + 1) * 20]
+            if len(entry) < 18:
+                raise ValueError("its cross-reference table is cut short")
+            if entry[17:18] != b"n":
+                continue
+            offset = int(entry[:10])
+            found = _PDF_OBJ.match(data, offset)
+            if not found or int(found.group(1)) != first + n:
+                raise ValueError(f"object {first + n} is not where the file says it is")
+    elif not _PDF_OBJ.match(data, xref_at):
+        raise ValueError("its cross-reference pointer leads nowhere")
+    if not re.search(rb"/Type\s*/Page\b(?!s)", data):
+        raise ValueError("it has no pages")
+
+    texts: list[str] = []
+    for dictionary, body in _PDF_STREAM.findall(data):
+        if b"/FlateDecode" in dictionary:
+            try:
+                body = zlib.decompress(body)
+            except zlib.error:
+                continue
+        found = [_pdf_string(t) for t in _PDF_TEXT.findall(body)]
+        if found:
+            texts.append("\n".join(found))
+    return texts
+
+
 def read_document(path: Path | str) -> str:
-    """Plain text from whichever of the three this is. Raises for anything
+    """Plain text from whichever of these this is. Raises for anything
     else, rather than returning an empty string that reads like an empty
     document."""
     suffix = Path(path).suffix.lower()
@@ -157,4 +230,6 @@ def read_document(path: Path | str) -> str:
         return "\n".join("\t".join(row) for row in read_xlsx(path))
     if suffix == ".pptx":
         return "\n\n".join(read_pptx(path))
+    if suffix == ".pdf":
+        return "\n\n".join(read_pdf(path))
     raise ValueError(f"I can't read a {suffix or 'file with no extension'} document.")

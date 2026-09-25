@@ -11,12 +11,12 @@ character it is asked to speak, so it is read back before it runs.
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 from typing import Any
 
-from ..artifacts import keep, safe_name
+from ..artifacts import keep, safe_name, staging_path
 from ..capabilities import CapabilitySpec, Risk
+from .create_artifact import attachment_action
 
 #: Above this, one request is refused rather than sent: voice services cap a
 #: single request, and a long script is better narrated section by section.
@@ -30,7 +30,8 @@ NO_VOICE = ("No voice service is set up, so I can't make audio. Add one (ElevenL
             "example) under speech services in Settings and choose it as Jarvis's voice.")
 
 
-def _run(script: str = "", filename: str = "", voice: str | None = None) -> dict[str, Any]:
+def _run(script: str = "", filename: str = "", voice: str | None = None,
+         ctx: Any = None) -> dict[str, Any]:
     from .. import tts
 
     text = (script or "").strip()
@@ -59,16 +60,15 @@ def _run(script: str = "", filename: str = "", voice: str | None = None) -> dict
     extension = _EXTENSION_FOR.get(mime, ".mp3")
     stem = Path(safe_name(filename or "narration")).stem or "narration"
     name = f"{stem}{extension}"
-    staging = Path(tempfile.mkdtemp(prefix="jarvis-narration-")) / name
+    staging = staging_path(name)
     staging.write_bytes(audio)
     try:
-        artifact = keep(staging, name=name)
+        artifact = keep(staging, name=name, session_id=getattr(ctx, "session_id", None))
     except ValueError as err:
         return {"ok": False, "error": str(err)}
     result = artifact.as_result()
     return {"ok": True, **result, "characters": len(text),
-            "ui_action": {"type": "attachment", "kind": "audio", "url": result["url"],
-                          "mimeType": artifact.mime_type, "name": artifact.name},
+            "ui_action": attachment_action(result),
             "speak": f"The voice-over {artifact.name} is ready."}
 
 
@@ -91,6 +91,7 @@ SPEC = CapabilitySpec(
         "required": ["script"]},
     risk=Risk.MEDIUM,
     handler=_run,
+    wants_context=True,
     summarize=_summary,
     timeout_s=180.0,
 )

@@ -245,7 +245,7 @@ def test_a_presentation_with_nothing_to_say_is_refused(reg):
 def test_image_generation_is_refused_plainly(reg):
     from jarvis.tools.create_artifact import _run
 
-    assert "can't make a .png" in _run(filename="photo.png", content="x")["error"]
+    assert "can't make images or photographs" in _run(filename="photo.png", content="x")["error"]
 
 
 def test_creating_an_artifact_is_reachable_from_a_background_job(reg):

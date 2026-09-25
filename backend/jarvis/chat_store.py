@@ -449,6 +449,28 @@ def update_last_assistant_message(conversation_id: str, patch: dict[str, Any]) -
     return True
 
 
+def replace_tool_result(conversation_id: str, call_id: str, name: str, result: Any) -> bool:
+    """Set the saved result of one tool call — the most recent `tool` message
+    holding a result for `call_id`/`name`. Used when a parked call is allowed
+    and runs later (`conversation.settle_tool_result`)."""
+    db = get_db()
+    rows = db.execute(
+        "SELECT id, payload FROM messages WHERE conversation_id = ? AND role = 'tool' "
+        "ORDER BY seq DESC LIMIT 50",
+        (conversation_id,),
+    ).fetchall()
+    for row in rows:
+        payload = json.loads(row["payload"]) if row["payload"] else {}
+        entries = payload.get("toolResults") or []
+        for entry in entries:
+            if entry.get("id") == call_id and entry.get("name") == name:
+                entry["result"] = result
+                db.execute("UPDATE messages SET payload = ? WHERE id = ?",
+                           (compact_json(payload), row["id"]))
+                return True
+    return False
+
+
 def rename_conversation(conversation_id: str, title: str) -> dict[str, Any] | None:
     # Deliberately does not touch updated_at — renaming should not bump a
     # conversation to the top of the recency sort the way actually talking in it

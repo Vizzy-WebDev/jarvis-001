@@ -220,6 +220,30 @@ def mark_last_assistant_interrupted(session_id: str, spoken_text: str) -> bool:
     return False
 
 
+def settle_tool_result(session_id: str, call_id: str, name: str, result: Any) -> bool:
+    """Replace a parked call's "needs your go-ahead" result with what really
+    happened once the person answered.
+
+    Without this, a call the person ALLOWED stays recorded as refused, and every
+    later turn reasons from a history saying the file was never made. Updates the
+    in-memory copy the next turn sends and the saved transcript both. False when
+    no parked result for that call was found.
+    """
+    found = False
+    for message in reversed(_sessions.get(session_id) or []):
+        if message["role"] != "tool":
+            continue
+        for entry in message.get("toolResults") or []:
+            if entry.get("id") == call_id and entry.get("name") == name:
+                entry["result"] = result
+                found = True
+                break
+        if found:
+            break
+    stored = chat_store.replace_tool_result(session_id, call_id, name, result)
+    return found or stored
+
+
 def remove_last_orphaned_tool_call(session_id: str) -> bool:
     """Remove the most recent message if it is an assistant tool-call turn with
     no matching tool-result after it.

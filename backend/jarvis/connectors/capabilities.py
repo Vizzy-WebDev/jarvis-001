@@ -296,7 +296,10 @@ def test_connection(connector_id: str) -> dict[str, Any]:
     from ..jscompat import now_iso
 
     updated = store.update_connector(connector_id, {"status": {
-        "state": "working" if result.get("ok") else "error",
+        # Nothing to check against is not the same as checked-and-fine: a
+        # connector with no test stays "untested" rather than showing Connected.
+        "state": ("untested" if result.get("untested")
+                  else "working" if result.get("ok") else "error"),
         "checkedAt": now_iso(), "detail": result.get("detail")}})
     return {"ok": bool(result.get("ok")), "detail": result.get("detail"),
             "connector": updated}

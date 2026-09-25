@@ -405,3 +405,35 @@ def test_a_hand_added_command_must_be_one_word_per_part():
     assert ok[0]["name"] == "say_hi" and ok[0]["args"][0]["name"] == "who"
     with pytest.raises(ValueError):
         cli_client.validate_commands([{"name": "bad", "argv": ["greet --force"]}])
+
+
+def test_nothing_to_check_is_not_shown_as_connected_and_jarvis_is_told_honestly(api, live_server):
+    """Found in the user's own first try: an API connector with no test and a
+    wrong address showed Connected, because "nothing to check" was recorded as
+    working. Now it stays unchecked, and a failed one tells Jarvis why."""
+    from jarvis.prompt import connected_apps_section
+
+    config = _api_config(api)
+    config.pop("test")
+    unchecked = store.add_connector(type="api", label="Unchecked API", config=config)
+    failing = store.add_connector(type="api", label="Failing API", config=_api_config(api))
+    with httpx.Client(base_url=live_server, timeout=30) as client:
+        first = client.post(f"/api/connectors/{unchecked['id']}/test").json()
+        client.post(f"/api/connectors/{failing['id']}/key", json={"apiKey": "wrong"})
+        state = client.get(f"/api/connectors/{unchecked['id']}").json()["connector"]["status"]
+    assert first["connected"] is True and state["state"] == "untested"
+    section = connected_apps_section()
+    assert "- Unchecked API — set up, connection not checked; 2 tools" in section
+    assert "- Failing API — not connected: The service refused the key (401)" in section
+
+
+def test_a_proposal_wrapped_in_a_code_fence_is_still_read(stubcli):
+    """Found live with `gh`: the model put its JSON inside a ```json fence and
+    every proposal was lost to a strict json.loads."""
+    from jarvis.ai import Answer
+
+    fenced = ('Here you go:\n```json\n{"commands": [{"name": "greet", "argv": ["greet", "{name}"],'
+              ' "args": [{"name": "name", "description": "Who."}]}]}\n```\nHope that helps.')
+    found = cli_client.discover_commands({"command": "stubcli"},
+                                         ask=lambda prompt, **kw: Answer(text=fenced))
+    assert [c["name"] for c in found["proposed"]] == ["greet"]

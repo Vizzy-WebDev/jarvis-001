@@ -1137,7 +1137,7 @@ function ApiConnection({ connector, setup, onChanged }: {
     <section className="mb-4 rounded-lg border border-surface-border p-3" data-testid="api-connection">
       <ConnectionStatus connector={connector} />
       {setup.baseUrl && <p className="mb-2 truncate text-[12px] text-ink-faint">Address: {setup.baseUrl}</p>}
-      <Field label={setup.hasSecret ? `Replace ${keyLabel.toLowerCase()}` : keyLabel}
+      <Field label={setup.hasSecret ? `Replace the ${keyLabel}` : keyLabel}
              hint={setup.keyHint || 'Saved on this computer only. Jarvis never shows it again.'}>
         <div className="flex gap-2">
           <input className={inputClass} type="password" data-testid="api-key-input" autoComplete="off"

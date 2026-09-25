@@ -276,24 +276,37 @@ def connected_apps_section() -> str:
         if not connector.get("enabled", True):
             lines.append(f"- {label} — switched off by the user; its tools are not available.")
             continue
-        if (connector.get("status") or {}).get("state") != "working":
-            lines.append(f"- {label} — added, but not connected yet.")
-            continue
+        status = connector.get("status") or {}
+        state = status.get("state")
         try:
             rows = connector_capabilities.tool_rows(connector)
         except Exception:  # noqa: BLE001 — one broken record is not the turn's problem
             rows = []
-        if not rows:
-            lines.append(f"- {label} — connected, but its tools have not been read yet "
-                         "(opening it in Connector reads them).")
-            continue
         usable = [r for r in rows if r["permission"] != "deny"]
         prefix = connector_capabilities.prefixed_name(connector, "x")[:-1]
         blocked = len(rows) - len(usable)
         count = (f"{len(rows)} tools, {len(usable)} of them usable and {blocked} blocked by the user"
                  if blocked else f"{len(rows)} tools")
+        if state == "error":
+            reason = str(status.get("detail") or "").strip()
+            lines.append(f"- {label} — not connected" + (f": {reason[:200]}" if reason else "."))
+            continue
+        if state != "working":
+            if rows and connector.get("type") in ("api", "cli"):
+                # Set up with tools, but there was nothing to check the connection
+                # against — usable, and honestly described as unchecked.
+                lines.append(f"- {label} — set up, connection not checked; {count} "
+                             f"(tool names start with {prefix})")
+            else:
+                lines.append(f"- {label} — added, but not connected yet.")
+            continue
+        if not rows:
+            lines.append(f"- {label} — connected, but its tools have not been read yet "
+                         "(opening it in Connector reads them)." if connector.get("type") == "mcp"
+                         else f"- {label} — connected, but no tools have been added to it yet.")
+            continue
         lines.append(f"- {label} — connected; {count} (tool names start with {prefix})")
-    connected = sum(" — connected" in line for line in lines)
+    connected = sum(" — connected" in line and " — not connected" not in line for line in lines)
     heading += f" {connected} of {len(lines)} connected."
     return (heading + "\n" + "\n".join(lines) + "\n"
             "This list is the real answer to what apps or connectors they have. Asked which are "

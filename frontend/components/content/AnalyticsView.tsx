@@ -29,15 +29,15 @@ export function AnalyticsView({
   const [error, setError] = useState<string | null>(null);
   const [sort, setSort] = useState<string>('publishedAt');
 
-  const { niche, type, platform, q } = filters;
+  const { niche, noNiche, type, platform, q } = filters;
   useEffect(() => {
-    api.content.analytics({ niche, type, platform, q, from, to })
+    api.content.analytics({ niche, noNiche, type, platform, q, from, to })
       .then((d) => {
         setData(d);
         setError(null);
       })
       .catch((err) => setError(err instanceof ApiRequestError ? err.message : 'Could not read the numbers.'));
-  }, [niche, type, platform, q, from, to, refreshKey]);
+  }, [niche, noNiche, type, platform, q, from, to, refreshKey]);
 
   const posts = useMemo(() => {
     if (!data) return [];

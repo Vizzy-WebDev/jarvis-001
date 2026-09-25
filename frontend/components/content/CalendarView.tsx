@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { Button } from '@/components/ui/Button';
+import { inputClass } from '@/components/ui/Field';
 import { Modal } from '@/components/ui/Modal';
 import { api, ApiRequestError } from '@/lib/api';
 import type { ContentCalendarEntry, ContentFilters } from '@/lib/api-types';
@@ -12,6 +13,9 @@ import { PLACEMENT_TONE } from './format';
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 /** A busy day shows this many posts in its cell; the rest are one click away. */
 const PER_DAY = 4;
+/** The year picker offers this many years back, and ahead, of this year. */
+const YEARS_BACK = 10;
+const YEARS_AHEAD = 5;
 
 function ymd(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -47,16 +51,16 @@ export function CalendarView({
   const days = useMemo(() => Array.from({ length: 42 }, (_, i) =>
     new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + i)), [gridStart]);
 
-  const { niche, type, platform, q } = filters;
+  const { niche, noNiche, type, platform, q } = filters;
   useEffect(() => {
     const end = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + 42);
-    api.content.calendar(gridStart.toISOString(), end.toISOString(), { niche, type, platform, q })
+    api.content.calendar(gridStart.toISOString(), end.toISOString(), { niche, noNiche, type, platform, q })
       .then((r) => {
         setEntries(r.entries);
         setError(null);
       })
       .catch((err) => setError(err instanceof ApiRequestError ? err.message : 'Could not read the calendar.'));
-  }, [gridStart, niche, type, platform, q, refreshKey]);
+  }, [gridStart, niche, noNiche, type, platform, q, refreshKey]);
 
   const byDay = useMemo(() => {
     const map = new Map<string, ContentCalendarEntry[]>();
@@ -70,15 +74,29 @@ export function CalendarView({
   }, [entries]);
 
   const today = ymd(new Date());
+  // Years to jump to: around this one — and the one on screen, however far the arrows went.
+  const years = useMemo(() => {
+    const now = new Date().getFullYear();
+    const shown = month.getFullYear();
+    const first = Math.min(now - YEARS_BACK, shown);
+    const last = Math.max(now + YEARS_AHEAD, shown);
+    return Array.from({ length: last - first + 1 }, (_, i) => first + i);
+  }, [month]);
 
   return (
     <div data-testid="content-calendar">
       <div className="mb-3 flex items-center gap-2">
         <Button data-testid="cal-prev" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() - 1, 1))}>
           ‹</Button>
-        <h3 className="min-w-[10rem] text-center text-[15px] font-medium text-ink" data-testid="cal-month">
-          {month.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
+        <h3 className="min-w-[6.5rem] text-center text-[15px] font-medium text-ink" data-testid="cal-month">
+          {month.toLocaleDateString(undefined, { month: 'long' })}
         </h3>
+        {/* The same month, in another year — without clicking through every month between. */}
+        <select data-testid="cal-year" aria-label="Year" value={month.getFullYear()}
+                className={`${inputClass.replace('w-full', 'w-auto')} py-1`}
+                onChange={(e) => setMonth(new Date(Number(e.target.value), month.getMonth(), 1))}>
+          {years.map((y) => <option key={y} value={y}>{y}</option>)}
+        </select>
         <Button data-testid="cal-next" onClick={() => setMonth(new Date(month.getFullYear(), month.getMonth() + 1, 1))}>
           ›</Button>
         <Button onClick={() => {

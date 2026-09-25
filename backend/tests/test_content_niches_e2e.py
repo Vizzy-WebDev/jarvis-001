@@ -208,3 +208,64 @@ def test_jarvis_and_an_agent_naming_a_new_niche_make_its_folder_on_the_open_scre
     expect(page.locator("[data-testid=stage-active]")).to_have_attribute("data-count", "2", timeout=10000)
     expect(page.locator("[data-testid=content-card][data-name='Memento mori']")).to_have_attribute(
         "data-niche", "Stoicism")
+
+
+def _published(name: str, niche: str, at: str | None = None) -> str:
+    """A text post handed in, approved and posted on X — published at `at` (the
+    lifecycle's own clock, set for the moment, as `content_seed` does) or now."""
+    from jarvis.content_manager import lifecycle
+
+    item = lifecycle.submit(name=name, content_type="text_post", niche=niche, producer="Writer",
+                            fields={"body": name})
+    lifecycle.approve(item["id"])
+    placement = lifecycle.add_placement(item["id"], platform="x")
+    real = lifecycle.now_iso
+    if at:
+        lifecycle.now_iso = lambda: at
+    try:
+        lifecycle.mark_posted(placement["id"], url=f"https://x.example/{item['id']}")
+    finally:
+        lifecycle.now_iso = real
+    return item["id"]
+
+
+def test_the_calendar_jumps_straight_to_another_year(browser_page):
+    from datetime import date
+
+    page, base = browser_page
+    old = _published("Spring 2024 recap", "Psychology", at="2024-03-14T10:00:00.000Z")
+    visit(page, f"{base}/#/content/niche/Psychology")
+    page.click("[data-testid=stage-scheduling]")
+    page.click("[data-testid=mode-calendar]")
+    this_year, this_month = date.today().year, date.today().month
+    expect(page.locator("[data-testid=cal-year]")).to_have_value(str(this_year))
+
+    # From this year straight to 2024 — same month — then a few months back to March.
+    page.select_option("[data-testid=cal-year]", "2024")
+    expect(page.locator("[data-testid=cal-year]")).to_have_value("2024")
+    for _ in range(this_month - 3):
+        page.click("[data-testid=cal-prev]")
+    expect(page.locator("[data-testid=cal-day][data-date='2024-03-14']")).to_be_visible()
+    expect(page.locator(f"[data-testid=cal-entry][data-item-id='{old}']")).to_be_visible()
+
+    # "Today" comes back; the arrows still carry across a new year, and the year follows.
+    page.get_by_role("button", name="Today").click()
+    expect(page.locator("[data-testid=cal-year]")).to_have_value(str(this_year))
+    for _ in range(13 - this_month):
+        page.click("[data-testid=cal-next]")
+    expect(page.locator("[data-testid=cal-year]")).to_have_value(str(this_year + 1))
+    expect(page.locator("[data-testid=cal-month]")).to_contain_text("January")
+
+
+def test_no_niche_calendar_and_analytics_show_only_no_niche_posts(browser_page):
+    page, base = browser_page
+    mine = _published("Loose post", "")
+    other = _published("Psychology post", "Psychology")
+    visit(page, f"{base}/#/content/none")
+    page.click("[data-testid=stage-scheduling]")
+    page.click("[data-testid=mode-calendar]")
+    expect(page.locator(f"[data-testid=cal-entry][data-item-id='{mine}']")).to_be_visible()
+    expect(page.locator(f"[data-testid=cal-entry][data-item-id='{other}']")).to_have_count(0)
+    page.click("[data-testid=stage-analytics]")
+    expect(page.locator("[data-testid=analytics-row]", has_text="Loose post")).to_have_count(1)
+    expect(page.locator("[data-testid=analytics-row]", has_text="Psychology post")).to_have_count(0)

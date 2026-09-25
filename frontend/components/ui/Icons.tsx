@@ -254,10 +254,20 @@ export const ContentIcon = (p: IconProps) => (
   </Svg>
 );
 
+/** A stacked file with a folded corner: the Artifacts section. */
+export const FileStackIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M8 3.5h6.5l4 4v10.5a1.5 1.5 0 0 1-1.5 1.5H8A1.5 1.5 0 0 1 6.5 18V5A1.5 1.5 0 0 1 8 3.5z" />
+    <path d="M14.5 3.5v4h4" />
+    <path d="M3.5 7.5v12a1.5 1.5 0 0 0 1.5 1.5h9" />
+  </Svg>
+);
+
 const SECTION_ICONS: Record<string, (p: IconProps) => JSX.Element> = {
   home: SparkIcon,
   notifications: BellIcon,
   'chat-history': HistoryIcon,
+  artifacts: FileStackIcon,
   models: ChipIcon,
   skills: BookIcon,
   'app-control': GridIcon,

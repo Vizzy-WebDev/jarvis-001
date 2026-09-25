@@ -111,3 +111,10 @@ body {
   border: 3px solid transparent;
   background-clip: content-box;
 }
+
+/* Open in Chat lands on a file's card: a short, visible "this one". */
+.artifact-card[data-focused='true'] {
+  border-color: rgb(91 156 255 / 0.7);
+  box-shadow: 0 0 0 3px rgb(91 156 255 / 0.25);
+  transition: box-shadow 200ms ease-out, border-color 200ms ease-out;
+}

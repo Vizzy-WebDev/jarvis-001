@@ -11,6 +11,7 @@ export type SectionId =
   | 'home'
   | 'notifications'
   | 'chat-history'
+  | 'artifacts'
   | 'models'
   | 'skills'
   | 'agents'
@@ -43,6 +44,8 @@ export const SECTIONS: Section[] = [
     blurb: 'Everything Jarvis has told you, including while you were away.' },
   { id: 'chat-history', label: 'Chat History', group: 'Assistant', ready: true,
     blurb: 'Every past conversation, searchable.' },
+  { id: 'artifacts', label: 'Artifacts', group: 'Assistant', ready: true, wide: true,
+    blurb: 'Every file Jarvis has made for you — open it, download it, go back to the chat it came from, or delete it.' },
   { id: 'models', label: 'Model Settings', group: 'Brain', ready: true,
     blurb: 'The providers Jarvis connects to, and the models it can think with.' },
   { id: 'skills', label: 'Skills', group: 'Abilities', ready: true,

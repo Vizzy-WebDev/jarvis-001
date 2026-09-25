@@ -75,10 +75,12 @@ export function ArtifactFacts({ artifact }: { artifact: Artifact }) {
 }
 
 /** Download, Copy (when it is text), and a way to the Artifacts page. */
-export function ArtifactActions({ artifact, onLeave, showInArtifacts = true }: {
+export function ArtifactActions({ artifact, onLeave, showInArtifacts = true, quietDownload = false }: {
   artifact: Artifact;
   onLeave?: () => void;
   showInArtifacts?: boolean;
+  /** When something else on screen is the primary action (Open in Chat). */
+  quietDownload?: boolean;
 }) {
   const [copied, setCopied] = useState<'idle' | 'done' | 'failed'>('idle');
   const textual = ['markdown', 'code', 'text', 'data', 'web'].includes(artifact.kind)
@@ -98,7 +100,9 @@ export function ArtifactActions({ artifact, onLeave, showInArtifacts = true }: {
   return (
     <>
       <a href={api.artifacts.fileUrl(artifact.id)} download={artifact.name} data-testid="artifact-download"
-         className="inline-flex items-center gap-2 rounded-pill border border-accent/25 bg-accent/15 px-3.5 py-1.5 text-[13px] font-medium text-accent hover:bg-accent/25">
+         className={`inline-flex items-center gap-2 rounded-pill border px-3.5 py-1.5 text-[13px] font-medium ${quietDownload
+           ? 'border-surface-border bg-white/[0.04] text-ink-muted hover:bg-white/[0.08] hover:text-ink'
+           : 'border-accent/25 bg-accent/15 text-accent hover:bg-accent/25'}`}>
         Download
       </a>
       {textual && (

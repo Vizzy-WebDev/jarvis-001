@@ -18,6 +18,7 @@ SECTIONS = {
     "home": "the assistant",
     "notifications": "Notifications",
     "chat-history": "Chat History",
+    "artifacts": "Artifacts",
     "models": "Model Settings",
     "skills": "Skills",
     "agents": "Specialists",

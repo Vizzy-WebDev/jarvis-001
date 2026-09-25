@@ -196,7 +196,7 @@ def test_every_section_is_reachable_from_the_hamburger(page):
     page.click("[data-testid=menu]")
     page.wait_for_selector("[data-testid=drawer][data-open=true]")
     entries = page.locator("[data-testid=drawer] button[data-testid^=nav-]")
-    assert entries.count() == 14  # Specialists joined Abilities; Content Management has its own group
+    assert entries.count() == 15  # Specialists joined Abilities; Content Management has its own group; Artifacts joined Assistant
 
     page.click("[data-testid=nav-models]")
     page.wait_for_url("**#/models")

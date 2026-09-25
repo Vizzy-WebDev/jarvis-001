@@ -10,6 +10,7 @@ import { AppControlScreen } from '@/components/screens/AppControlScreen';
 import { BriefingScreen } from '@/components/screens/BriefingScreen';
 import { ChatHistoryScreen } from '@/components/screens/ChatHistoryScreen';
 import { ContentScreen } from '@/components/screens/ContentScreen';
+import { ArtifactsScreen } from '@/components/screens/ArtifactsScreen';
 import { GenericScreen, NotPortedYet } from '@/components/screens/GenericScreen';
 import { ImprovementScreen } from '@/components/screens/ImprovementScreen';
 import { JobsScreen } from '@/components/screens/JobsScreen';
@@ -461,6 +462,37 @@ export default function Home() {
    * re-fetching and repainting `turns`, the panel would keep showing whatever
    * was already there, which reads as the resume having silently done nothing.
    */
+  /** Open in Chat, from the Artifacts page: the conversation that MADE the
+   *  file, then its card — scrolled to and briefly highlighted, so it is clear
+   *  which reply it came from. */
+  const [focusArtifact, setFocusArtifact] = useState<string | null>(null);
+  async function openArtifactInChat(conversationId: string, artifactId: string) {
+    await resumeConversation(conversationId);
+    go('home');
+    setFocusArtifact(artifactId);
+  }
+  useEffect(() => {
+    if (!focusArtifact || section.id !== 'home') return;
+    let tries = 0;
+    // Polled briefly rather than found once: the transcript renders after the
+    // conversation loads, and pins itself to the bottom as it does.
+    const timer = setInterval(() => {
+      tries += 1;
+      const card = document.querySelector<HTMLElement>(
+        `[data-testid=transcript] [data-artifact-id="${CSS.escape(focusArtifact)}"]`);
+      if (card) {
+        card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        card.setAttribute('data-focused', 'true');
+        setTimeout(() => card.removeAttribute('data-focused'), 2600);
+      }
+      if (card || tries > 30) {
+        clearInterval(timer);
+        setFocusArtifact(null);
+      }
+    }, 100);
+    return () => clearInterval(timer);
+  }, [focusArtifact, section.id, turns]);
+
   async function resumeConversation(id: string) {
     running.current?.cancel();
     try {
@@ -620,7 +652,8 @@ export default function Home() {
       <main className="h-screen">
         <Drawer open={drawerOpen} current={section} onClose={() => setDrawerOpen(false)} onNavigate={go} />
         <GenericScreen section={section} onMenu={() => setDrawerOpen(true)}>
-          {screenFor(section.id, go, startChatWith, (id) => void resumeConversation(id))
+          {screenFor(section.id, go, startChatWith, (id) => void resumeConversation(id),
+                     (conversationId, artifactId) => void openArtifactInChat(conversationId, artifactId))
             ?? <NotPortedYet section={section} />}
         </GenericScreen>
       </main>
@@ -893,7 +926,9 @@ function screenFor(
   go: (id: string) => void,
   startChatWith: (draft: string) => void,
   resumeConversation: (id: string) => void,
+  openArtifactInChat: (conversationId: string, artifactId: string) => void,
 ): React.ReactNode {
+  if (id === 'artifacts') return <ArtifactsScreen onNavigate={go} onOpenInChat={openArtifactInChat} />;
   if (id === 'notifications') return <NotificationsScreen onNavigate={go} />;
   if (id === 'models') return <ModelsScreen />;
   if (id === 'tasks') return <TasksScreen onNavigate={go} />;

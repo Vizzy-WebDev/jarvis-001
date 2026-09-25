@@ -17,5 +17,5 @@
     "jsx": "preserve",
     "skipLibCheck": true
   },
-  "include": ["lib/voice/**/*.ts"]
+  "include": ["lib/voice/**/*.ts", "lib/markdown.ts", "lib/artifacts.ts"]
 }

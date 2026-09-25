@@ -1041,3 +1041,46 @@ export interface ContentFilters {
   platform?: string;
   q?: string;
 }
+
+// --- Artifacts (routes/artifacts.py) ------------------------------------------
+
+/** One category per file: what the viewer does with it and what the page filters by. */
+export type ArtifactKind =
+  | 'document' | 'spreadsheet' | 'presentation' | 'pdf' | 'markdown' | 'web' | 'image'
+  | 'audio' | 'data' | 'code' | 'text' | 'other';
+
+export interface ArtifactConversation {
+  id: string;
+  /** Null when the chat is gone for good. */
+  title: string | null;
+  /** `trashed`: in Chat History's recycle bin. `gone`: permanently deleted. */
+  state: 'live' | 'trashed' | 'gone';
+}
+
+export interface Artifact {
+  id: string;
+  name: string;
+  /** Its own title if it was given one, else the filename. */
+  title: string;
+  kind: ArtifactKind;
+  mimeType: string;
+  size: number;
+  /** True: re-opened and checked. False never reaches here (it is deleted). Null: not checkable. */
+  verified: boolean | null;
+  createdAt: string;
+  conversationId: string | null;
+  url: string;
+  note?: string;
+  /** Null when no chat made it (a background job). */
+  conversation?: ArtifactConversation | null;
+}
+
+export interface ArtifactPage {
+  artifacts: Artifact[];
+  /** Present only when there is more to load. */
+  nextBefore?: string;
+}
+
+export type ArtifactPreview =
+  | { format: 'markdown'; markdown: string; note?: string }
+  | { format: 'sheets'; sheets: { name: string; rows: string[][] }[]; note?: string };

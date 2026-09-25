@@ -6,6 +6,9 @@
 
 import type {
   AddConnectionResult,
+  Artifact,
+  ArtifactPage,
+  ArtifactPreview,
   Agent,
   AgentAbilities,
   AgentDraft,
@@ -755,6 +758,26 @@ export const api = {
     retryJarvis: (id: string) =>
       request<{ ok: boolean; item: ContentItemDetail | null }>(
         `/content-change-requests/${encodeURIComponent(id)}/start-jarvis`, { method: 'POST' }),
+  },
+
+  artifacts: {
+    list: (options?: { before?: string; q?: string; kind?: string; limit?: number }) => {
+      const params = new URLSearchParams();
+      if (options?.before) params.set('before', options.before);
+      if (options?.q) params.set('q', options.q);
+      if (options?.kind) params.set('kind', options.kind);
+      if (options?.limit) params.set('limit', String(options.limit));
+      const query = params.toString();
+      return request<ArtifactPage>(`/artifacts${query ? `?${query}` : ''}`);
+    },
+    info: (id: string) =>
+      request<{ artifact: Artifact; exists: boolean }>(`/artifacts/${encodeURIComponent(id)}/info`),
+    /** Word, Excel and PowerPoint only: their text and cells, as JSON. */
+    preview: (id: string) => request<ArtifactPreview>(`/artifacts/${encodeURIComponent(id)}/preview`),
+    remove: (id: string) =>
+      request<{ ok: true }>(`/artifacts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    /** The file itself. Always served as a download; the viewer fetches it. */
+    fileUrl: (id: string) => `/api/artifacts/${encodeURIComponent(id)}`,
   },
 
   uploads: {

@@ -28,6 +28,7 @@ import { MicIcon } from '@/components/ui/Icons';
 import { IconButton } from '@/components/ui/IconButton';
 import { api, ApiRequestError } from '@/lib/api';
 import type { Message as StoredMessage, Monitor } from '@/lib/api-types';
+import { cardsFromToolResult, type FileCard } from '@/lib/artifacts';
 import { streamTurn, type RunningTurn } from '@/lib/chat';
 import { DuplexEngine } from '@/lib/voice/duplex-engine';
 import type { VoiceEngine } from '@/lib/voice/engine';
@@ -161,7 +162,7 @@ export default function Home() {
         if (active) {
           const detail = await api.conversations.open(active.id);
           if (cancelled) return;
-          setTurns(detail.messages.filter(isShown).map(toTurn));
+          setTurns(turnsFrom(detail.messages));
           setActiveConversationId(active.id);
         }
       } catch {
@@ -411,14 +412,23 @@ export default function Home() {
   }, [busy, send]);
 
   const decide = useCallback(async (approvalId: string, decision: 'allow' | 'deny') => {
+    let made: FileCard[] = [];
     try {
-      await api.approvals.decide(approvalId, decision);
+      const answered = await api.approvals.decide(approvalId, decision);
+      made = answered.attachments ?? [];
     } catch (err) {
       if (err instanceof ApiRequestError) setStatus(err.message);
       return;
     }
-    setTurns((current) =>
-      current.map((turn) => (turn.approvalId === approvalId ? { ...turn, decided: decision } : turn)));
+    setTurns((current) => current.flatMap((turn) => {
+      if (turn.approvalId !== approvalId) return [turn];
+      const decided = { ...turn, decided: decision };
+      // What the allowed action made shows up right under the question, the
+      // same card a reload rebuilds from the saved conversation.
+      return made.length
+        ? [decided, { id: `${approvalId}-files`, role: 'assistant' as const, text: '', files: made }]
+        : [decided];
+    }));
   }, []);
 
   async function newChat() {
@@ -456,7 +466,7 @@ export default function Home() {
     try {
       await api.conversations.activate(id);
       const detail = await api.conversations.open(id);
-      setTurns(detail.messages.filter(isShown).map(toTurn));
+      setTurns(turnsFrom(detail.messages));
       setActiveConversationId(id);
     } catch (err) {
       setStatus(err instanceof ApiRequestError ? err.message : 'Could not open that conversation.');
@@ -900,6 +910,46 @@ function screenFor(
   }
   if (id === 'app-control') return <AppControlScreen />;
   return null;
+}
+
+/**
+ * A saved conversation as the transcript shows it: what was said, plus the files
+ * the tools made along the way. Tool traffic itself is not shown, but a file a
+ * tool made is — it is attached to the reply it belongs to, exactly as it
+ * appeared live, so reopening a chat never loses its cards. A file made by an
+ * action the person allowed later (its turn ended at the question) gets a
+ * reply of its own.
+ */
+function turnsFrom(messages: StoredMessage[]): Turn[] {
+  const turns: Turn[] = [];
+  let pending: FileCard[] = [];
+  let pendingFrom = '';
+  const flush = () => {
+    if (!pending.length) return;
+    turns.push({ id: `${pendingFrom}-files`, role: 'assistant', text: '', files: pending });
+    pending = [];
+  };
+  for (const message of messages) {
+    if (message.role === 'tool') {
+      for (const entry of message.toolResults ?? []) {
+        for (const card of cardsFromToolResult(entry.result)) {
+          if (!pending.some((p) => p.url === card.url)) pending.push(card);
+        }
+      }
+      pendingFrom = message.id;
+      continue;
+    }
+    if (!isShown(message)) continue;
+    if (message.role === 'assistant' && pending.length) {
+      turns.push({ ...toTurn(message), files: pending });
+      pending = [];
+      continue;
+    }
+    flush();
+    turns.push(toTurn(message));
+  }
+  flush();
+  return turns;
 }
 
 /** Tool traffic is not conversation. The transcript shows what was said. */

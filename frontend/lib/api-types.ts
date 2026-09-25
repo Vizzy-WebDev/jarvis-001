@@ -232,6 +232,11 @@ export interface TurnAttachment {
   mimeType: string;
   /** A file's own name — shown on a download, where a picture needs none. */
   name?: string;
+  /** Set when it is a saved artifact: which one, so the card can open it. */
+  artifactId?: string;
+  title?: string;
+  artifactKind?: string;
+  size?: number;
 }
 
 export type TurnEvent =

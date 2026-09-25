@@ -6,6 +6,7 @@
 
 import type {
   AddConnectionResult,
+  TurnAttachment,
   Artifact,
   ArtifactPage,
   ArtifactPreview,
@@ -655,7 +656,9 @@ export const api = {
     /** The run is genuinely waiting on this, which is why the transcript's
      *  prompt is a real control rather than a note about one. */
     decide: (id: string, decision: 'allow' | 'deny' | 'cancel') =>
-      request<{ approval: Approval; ran: boolean }>(`/approvals/${encodeURIComponent(id)}`, {
+      request<{ approval: Approval; ran: boolean;
+                /** Files the approved action made, for the turn that asked. */
+                attachments?: TurnAttachment[] }>(`/approvals/${encodeURIComponent(id)}`, {
         method: 'POST',
         ...json({ decision }),
       }),

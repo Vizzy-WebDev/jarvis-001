@@ -6,12 +6,18 @@ import { Button } from '@/components/ui/Button';
 import { CheckIcon, CloseIcon, CopyIcon, EditIcon, RetryIcon } from '@/components/ui/Icons';
 import { IconButton } from '@/components/ui/IconButton';
 import { isTopmost, popOverlay, pushOverlay } from '@/components/ui/overlay-stack';
+import { ArtifactCard } from '@/components/artifacts/ArtifactCard';
 import type { TurnEvent } from '@/lib/api-types';
+import { artifactIdFromUrl } from '@/lib/artifacts';
 
 // `mimeType` is optional: a tool-result attachment always carries one, but a
 // USER-sent attachment's Turn is built from the composer's own upload
 // response, which has no reason to know it — nothing here actually reads it.
-type Attachment = { kind: string; url: string; mimeType?: string; name?: string };
+type Attachment = {
+  kind: string; url: string; mimeType?: string; name?: string;
+  /** A saved artifact: the card opens it in the viewer instead of only downloading. */
+  artifactId?: string; title?: string; artifactKind?: string; size?: number;
+};
 
 export type Turn = {
   id: string;
@@ -47,19 +53,26 @@ export type Turn = {
 
 export function attachmentOf(event: TurnEvent): Turn['attachment'] {
   if (event.type !== 'tool_result' || !event.attachment) return null;
-  const { kind, url, mimeType, name } = event.attachment;
-  return { kind, url, mimeType, name };
+  return pick(event.attachment);
+}
+
+function pick({ kind, url, mimeType, name, artifactId, title, artifactKind, size }: Attachment): Attachment {
+  return { kind, url, mimeType, name, artifactId, title, artifactKind, size };
 }
 
 /** Every attachment a tool result carried, one or several. */
 export function attachmentsOf(event: TurnEvent): Attachment[] {
   if (event.type !== 'tool_result') return [];
   const all = event.attachments ?? (event.attachment ? [event.attachment] : []);
-  return all.map(({ kind, url, mimeType, name }) => ({ kind, url, mimeType, name }));
+  return all.map(pick);
 }
 
 /** A voice-over to play, or a file to open — the things a picture tile is not. */
 function FileTile({ attachment }: { attachment: Attachment }) {
+  const artifactId = attachment.artifactId ?? artifactIdFromUrl(attachment.url);
+  if (artifactId && attachment.kind !== 'audio') {
+    return <ArtifactCard card={{ ...attachment, artifactId }} />;
+  }
   const name = attachment.name || 'file';
   return (
     <div className="mb-2 rounded border border-surface-border bg-surface-base/40 px-2.5 py-2"
@@ -351,7 +364,7 @@ export function Message({
               </Button>
             </div>
           </div>
-        ) : (
+        ) : (turn.text || turn.streaming || !shown.length) && (
           <p className="whitespace-pre-wrap break-words">
             {turn.text}
             {turn.streaming && <span className="ml-0.5 inline-block animate-pulse text-accent">▍</span>}
@@ -361,7 +374,7 @@ export function Message({
           <p className="mt-1 text-[11px] italic text-ink-faint">interrupted</p>
         )}
       </div>
-      {!editing && !turn.streaming && (
+      {!editing && !turn.streaming && (turn.text || mine) && (
         <div className="mt-1 flex gap-0.5 px-1">
           <ActionButton label="Copy" testId="copy-message" onClick={copyText}>
             {copied ? <CheckIcon className="h-3.5 w-3.5" /> : <CopyIcon className="h-3.5 w-3.5" />}

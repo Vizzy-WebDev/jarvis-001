@@ -542,4 +542,20 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
         CREATE INDEX IF NOT EXISTS idx_cm_items_niche ON cm_items(niche COLLATE NOCASE);
         """
     ],
+    # 34: An artifact belongs to the conversation that made it. `session_id` is the
+    # session the making turn ran in, which is NOT always a conversation: a
+    # specialist runs under `agent:<id>:<conversation>`, a background job under its
+    # own id. `conversation_id` is the chat "Open in Chat" goes back to, or NULL when
+    # there is none. `title` is an optional display name; the filename is the
+    # fallback. Rows already present only ever carried a NULL session, but any that
+    # name a real conversation are linked to it.
+    34: [
+        """
+        ALTER TABLE artifacts ADD COLUMN conversation_id TEXT;
+        ALTER TABLE artifacts ADD COLUMN title TEXT;
+        UPDATE artifacts SET conversation_id = session_id
+          WHERE session_id IN (SELECT id FROM conversations);
+        CREATE INDEX IF NOT EXISTS idx_artifacts_conversation ON artifacts(conversation_id);
+        """
+    ],
 }

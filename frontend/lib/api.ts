@@ -26,6 +26,10 @@ import type {
   Connector,
   ConnectorConnectOutcome,
   ConnectorTool,
+  ApiOperation,
+  CliCommand,
+  ConnectionCheck,
+  ConnectorSetup,
   Conversation,
   ExternalService,
   ConversationDetail,
@@ -269,9 +273,33 @@ export const api = {
   connectors: {
     list: () => request<{ connectors: Connector[] }>('/connectors'),
     open: (id: string) =>
-      request<{ ok: true; connector: Connector; tools: ConnectorTool[] }>(
+      request<{ ok: true; connector: Connector; tools: ConnectorTool[]; setup: ConnectorSetup }>(
         `/connectors/${encodeURIComponent(id)}`,
       ),
+    /** API connectors: save (or replace) the key, then check it for real. */
+    saveKey: (id: string, apiKey: string) =>
+      request<ConnectionCheck>(`/connectors/${encodeURIComponent(id)}/key`,
+        { method: 'POST', ...json({ apiKey }) }),
+    /** API and CLI connectors: check the connection now and record the result. */
+    test: (id: string) =>
+      request<ConnectionCheck>(`/connectors/${encodeURIComponent(id)}/test`, { method: 'POST' }),
+    /** CLI connectors: start the program's own browser sign-in. */
+    login: (id: string) =>
+      request<{ ok: true }>(`/connectors/${encodeURIComponent(id)}/login`, { method: 'POST' }),
+    /** API connectors: read an OpenAPI document and PROPOSE endpoints (saves nothing). */
+    importOpenapi: (id: string, specUrl: string) =>
+      request<{ ok: true; baseUrl: string | null; auth: ConnectorSetup['auth'] | null;
+                operations: ApiOperation[] }>(
+        `/connectors/${encodeURIComponent(id)}/import-openapi`,
+        { method: 'POST', ...json({ specUrl }) }),
+    /** CLI connectors: read the program's --help and PROPOSE commands (saves nothing). */
+    discoverCommands: (id: string) =>
+      request<{ ok: true; proposed: CliCommand[]; helpText: string }>(
+        `/connectors/${encodeURIComponent(id)}/discover-commands`, { method: 'POST' }),
+    /** CLI connectors: give this one program a key as an environment variable. */
+    envSecret: (id: string, name: string, value: string) =>
+      request<ConnectionCheck>(`/connectors/${encodeURIComponent(id)}/env-secret`,
+        { method: 'POST', ...json({ name, value }) }),
     /** Creates a Custom Connector — the one place a mechanism (mcp/api/cli)
      *  is picked directly, since a custom connector's mechanism can't be
      *  inferred the way a catalogue entry's can. */

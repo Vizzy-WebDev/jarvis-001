@@ -347,6 +347,51 @@ export interface Connector {
 
 export type ToolPermission = 'allow' | 'ask' | 'deny';
 
+/** An API connector's operation, or a CLI connector's command template — the
+ *  editable definitions behind its tools. */
+export interface ApiOperation {
+  name: string;
+  description?: string;
+  method: string;
+  path: string;
+  parameters?: { type: 'object'; properties: Record<string, unknown>; required?: string[] };
+  wait?: Record<string, unknown>;
+}
+
+export interface CliCommand {
+  name: string;
+  description?: string;
+  argv: string[];
+  args?: { name: string; description?: string; required?: boolean }[];
+  timeoutS?: number;
+}
+
+/** What the connector screen needs to set up an API or CLI connector — named,
+ *  non-secret fields only (a saved key is reported as `hasSecret`, never sent). */
+export interface ConnectorSetup {
+  // api
+  baseUrl?: string | null;
+  hasSecret?: boolean;
+  auth?: { kind: string; name?: string | null; prefix?: string | null };
+  keyLabel?: string;
+  keyHint?: string | null;
+  hasTest?: boolean;
+  operations?: ApiOperation[];
+  // cli
+  command?: string | null;
+  install?: string | null;
+  canSignIn?: boolean;
+  envNames?: string[];
+  commands?: CliCommand[];
+}
+
+export interface ConnectionCheck {
+  ok: true;
+  connected: boolean;
+  detail: string | null;
+  connector: Connector;
+}
+
 export interface ConnectorTool {
   /** The capability name permissions are keyed on (`label__tool`). */
   name: string;
@@ -376,7 +421,10 @@ export interface CatalogEntry {
   label: string;
   icon: string;
   description: string;
-  connectFlow: ConnectFlow;
+  /** Absent for an MCP server (every entry predating the other two types). */
+  type?: 'mcp' | 'api' | 'cli';
+  /** MCP entries only. */
+  connectFlow?: ConnectFlow;
   /** Filled in only once the user has actually clicked into this entry at
    *  least once. */
   connectorId: string | null;

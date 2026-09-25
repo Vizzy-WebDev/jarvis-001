@@ -104,15 +104,54 @@ confirmation, a false "safe" sends the email). Pure: no I/O, no state.
   must go through `streamable_http_client(url, http_client=create_mcp_http_client(headers=...))`** —
   `Client(url)` alone has no way to carry a header, and the bearer token was once built and silently
   never sent (every signed-in server answered 401; the tests only checked the token was looked up).
-- **`api_client.py`** (`api`) — an HTTP API as tools. Operations come from an OpenAPI document
-  (`discover_from_spec()`) or are added by hand. **The key never reaches the model**: it is a secret
-  reference read at call time, and a declaration carries only name, description and parameters.
-- **`cli_client.py`** (`cli`) — a local program as tools. Every command is a SAVED TEMPLATE: a fixed
-  program and argv list where only marked placeholders are filled from the model's arguments, so the
-  model chooses VALUES and never the command or a flag. No shell — the program is executed directly with
-  an argument list, so quoting, globbing and `;` mean nothing — and the child gets
-  `jarvis/childenv.py`'s scrubbed environment, so a program in a template cannot read the user's model
-  API keys.
+### API Key and CLI are generic connector TYPES, not integrations with particular services
+
+A connector is one outside service; its type is how Jarvis reaches it. Same pipeline as MCP:
+connection → tools → the person's per-tool Allow/Ask/Blocked (default Ask, final) → registry →
+executor. **Nothing branches on a service's name.** What differs per service is DATA: an Official
+entry's definition in `catalog.json` (`type: "api"|"cli"` with an `api`/`cli` block, turned into a
+connector config by `catalog.config_for()`), or what the person builds as a custom connector. Kept
+entirely apart from the model/provider system and speech-service keys: a connector's key lives under
+its own `conn_<id>` ref and nothing else reads it.
+
+- **`api_client.py`** (`api`) — an outside service's HTTP API, reached with that service's own key.
+  **The key never reaches the model**: a secret reference read at call time; declarations carry only
+  name, description and parameters, and replies are `redact_text`-ed.
+  - Tools (`operations`) come from the definition, an OpenAPI import (`discover_from_spec()`: JSON or
+    YAML, real parameter types, real request-body fields with local `$ref`s resolved and a size cap,
+    the auth scheme read from `securitySchemes` — PROPOSED via `/import-openapi`, saved only once the
+    person ticks them), or `validate_operations()` for one added by hand (path `{placeholders}` become
+    required parameters by themselves).
+  - `check()` runs the connector's `test` (`{method, path, okStatus}`) — one cheap call a service
+    answers differently for a good key and a bad one (Higgsfield: an unknown request id is 404 with a
+    valid key, 401 without). No test set → it says it wasn't checked, never claims success.
+  - `responseCheck` (`{field, ok, message}`) is for services that answer HTTP 200 and put the verdict
+    in the body (Kie.ai: `{"code": 401, "msg": ...}` with status 200). Without it such a failure
+    reads as success.
+  - An operation's `wait` block (`idFrom`, `path`/`query` with `{id}`, `statusField`, `done`,
+    `failed`, `intervalS`, `timeoutS`) follows a background job until it finishes; past the limit it
+    hands back the job id as `pending` — never "done" when it isn't. `capabilities._timeout_for()`
+    gives such a tool a long enough executor timeout.
+- **`cli_client.py`** (`cli`) — a program on this computer, using ITS OWN sign-in (`login` argv,
+  started by `/login`; the CLI opens the browser and keeps its credential where it always does) or one
+  key given to it alone (`env`: variable name → secret ref, via `/env-secret`). Every command is a
+  SAVED TEMPLATE: a fixed argv where only `{placeholders}` are filled, so the model chooses VALUES and
+  never the command or a flag; each argv entry is one word (`validate_commands()`). No shell, and the
+  child gets `jarvis/childenv.py`'s scrubbed environment plus only its own `env`.
+  - **Programs are started by full path** (`resolve_program()`): an npm-installed CLI is a `.cmd`
+    script on Windows and failed by bare name with `[WinError 2]`. A `.cmd`/`.bat` target is started
+    through cmd.exe, which re-reads arguments, so a model-supplied value containing `& | < > ^ % ! "`
+    or a newline is refused for such a target (the "BatBadBut" class of bug).
+  - `check()`: installed (with the definition's `install` command when not), then its `test` argv
+    (e.g. an account status — what proves a signed-in CLI is signed in), else `--version`.
+  - `discover_commands()` reads the real `--help`, asks the selected model ONCE (via `ai.ask`) to
+    propose templates, and drops any whose first word the help text never mentions — proposed only.
+- **`secretRef` and `env` can never be set from a request body** (`routes/connectors.py`
+  `_clean_config`): they name which saved secret is SENT, so a request could otherwise aim an API
+  connector at a model provider's key and ship it to any address.
+- **"working" means the same for all three types** — `capabilities.test_connection()` records it for
+  API and CLI (after a key is saved, after create, on Test / Sign in), so the status dot, Jarvis's
+  connected-apps list and the Scheduled Task / Briefing pickers agree.
 
 ## `oauth.py` — OAuth 2.1 + PKCE for remote MCP connectors
 
@@ -155,7 +194,9 @@ silently refreshing an expiring one.
 - `catalog.json` / `catalog.py` — the bundled directory. **An entry is only listed once its real
   endpoint has been verified live**, not recalled from documentation; that is why it is short. Each
   `connectFlow` drops straight into a connector's config, so connecting from the catalogue runs the same
-  flow a custom connector does. There is no "ready" versus "needs setup" badge.
+  flow a custom connector does. There is no "ready" versus "needs setup" badge. An entry with no `type`
+  is MCP; API/CLI entries carry `type` and a definition block, and only they get `type` in the listing
+  (so the recorded MCP entries stay byte-identical — `test_contract.py`'s `ADDED_CATALOG_TYPES`).
 - `icons.py` — real, current logos, fetched and cached (`data/connector-icons.json`), refreshed every
   `REFRESH_AFTER_S` (14 days), with a background resolver gated by `JARVIS_CONNECTOR_ICONS`. **No
   address a user or config supplied is ever fetched**: a connector's host is only a LOOKUP KEY against

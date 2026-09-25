@@ -14,8 +14,10 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
 
+from ..connectors import api_client as connector_api
 from ..connectors import capabilities as connector_capabilities
 from ..connectors import catalog, catalog_credentials, icons, oauth, store
+from ..connectors import cli_client as connector_cli
 from ..jscompat import now_iso
 
 logger = logging.getLogger(__name__)
@@ -53,6 +55,44 @@ def _discover_in_background(connector_id: str) -> None:
 
     threading.Thread(target=work, name=f"connector-discover-{connector_id}",
                      daemon=True).start()
+
+
+def _test_in_background(connector_id: str) -> None:
+    """Check an API or CLI connection without making the screen wait for it."""
+    def work() -> None:
+        try:
+            connector_capabilities.test_connection(connector_id)
+            _sync()
+        except Exception as err:  # noqa: BLE001 — a failed check is recorded, never raised
+            logger.warning("connector %s: connection test failed: %s", connector_id, err)
+
+    threading.Thread(target=work, name=f"connector-test-{connector_id}", daemon=True).start()
+
+
+def _setup(connector: dict) -> dict:
+    """What the connector screen needs to set up and edit an API or CLI connector.
+
+    Deliberately separate from `_public()` and never the raw config: named, non-
+    secret fields only — a stored key is reported as `hasSecret`, never returned.
+    """
+    config = connector.get("config") or {}
+    kind = connector.get("type")
+    if kind == "api":
+        auth = config.get("auth") or {}
+        return {"baseUrl": config.get("baseUrl"), "hasSecret": bool(config.get("secretRef")),
+                "auth": {"kind": auth.get("kind") or "bearer", "name": auth.get("name"),
+                         "prefix": auth.get("prefix")},
+                "keyLabel": config.get("keyLabel") or "API key",
+                "keyHint": config.get("keyHint"),
+                "hasTest": bool((config.get("test") or {}).get("path")),
+                "responseCheck": config.get("responseCheck"),
+                "operations": config.get("operations") or []}
+    if kind == "cli":
+        return {"command": config.get("command"), "install": config.get("install"),
+                "canSignIn": bool(config.get("login")), "test": config.get("test"),
+                "envNames": sorted((config.get("env") or {}).keys()),
+                "commands": config.get("commands") or []}
+    return {}
 
 
 def _public(connector: dict) -> dict:
@@ -111,7 +151,7 @@ async def listed():
 def _connector_for_catalog_entry(catalog_entry_id: str) -> dict | None:
     """The connector record already backing a given catalog entry, if the
     user has ever clicked into it before — `None` for a never-touched entry."""
-    for connector in store.list_connectors(kind="mcp"):
+    for connector in store.list_connectors():
         source = connector.get("source") or {}
         if source.get("type") == "catalog" and source.get("id") == catalog_entry_id:
             return connector
@@ -128,6 +168,19 @@ async def catalog_listed():
     entries = []
     for entry in catalog.list_catalog():
         existing = _connector_for_catalog_entry(entry["id"])
+        kind = catalog.entry_type(entry)
+        if kind != "mcp":
+            # An API or CLI entry: no OAuth flow to describe. `type` is sent only
+            # here, so every MCP entry stays exactly as it always was.
+            address = (entry.get("api") or {}).get("baseUrl") or ""
+            entries.append({
+                "id": entry["id"], "label": entry.get("label"), "icon": entry.get("icon"),
+                "description": entry.get("description"), "type": kind,
+                "connectorId": existing["id"] if existing else None,
+                "status": (existing.get("status") or {}).get("state") if existing else None,
+                "iconDataUri": icons.icon_for(address, curated_key=entry["id"], refresh=False),
+            })
+            continue
         flow = entry.get("connectFlow") or {}
         entries.append({
             "id": entry["id"], "label": entry.get("label"), "icon": entry.get("icon"),
@@ -160,6 +213,19 @@ async def catalog_ensure(catalog_id: str):
         return JSONResponse({"ok": False, "error": "Jarvis doesn't have that connector yet."},
                             status_code=404)
     connector = _connector_for_catalog_entry(entry["id"])
+    kind = catalog.entry_type(entry)
+    if connector is None and kind != "mcp":
+        # An API or CLI entry becomes an ordinary connector of that type, pre-
+        # filled from its definition. A CLI is checked straight away (is it
+        # installed, is it signed in?); an API waits for its key.
+        connector = store.add_connector(type=kind, label=entry.get("label") or entry["id"],
+                                        config=catalog.config_for(entry))
+        store.update_connector(connector["id"], {
+            "description": entry.get("description"),
+            "source": {"type": "catalog", "id": entry["id"]}})
+        _sync()
+        if kind == "cli":
+            _test_in_background(connector["id"])
     if connector is None:
         connect_flow = dict(entry.get("connectFlow") or {})
         registered = catalog_credentials.get_catalog_client(entry["id"])
@@ -307,17 +373,38 @@ async def detail(connector_id: str):
     if connector is None:
         return JSONResponse({"ok": False, "error": "Unknown connector."}, status_code=404)
     return {"ok": True, "connector": _public(connector),
-            "tools": connector_capabilities.tool_rows(connector)}
+            "tools": connector_capabilities.tool_rows(connector),
+            "setup": _setup(connector)}
+
+
+#: Config keys that name which saved SECRET a connector sends, and so may only
+#: ever be set by the routes that store that secret themselves. Accepted from a
+#: request body, `secretRef` could point an API connector at another connector's
+#: key — or a model provider's — and send it to an address of the caller's choice.
+_SECRET_KEYS = ("secretRef", "env")
+
+
+def _clean_config(kind: str, config: dict) -> dict:
+    """A config from a request, stripped of secret references and validated."""
+    clean = {k: v for k, v in (config or {}).items() if k not in _SECRET_KEYS}
+    if kind == "api" and "operations" in clean:
+        clean["operations"] = connector_api.validate_operations(clean["operations"])
+    if kind == "cli" and "commands" in clean:
+        clean["commands"] = connector_cli.validate_commands(clean["commands"])
+    return clean
 
 
 @router.post("")
 async def create(body: dict):
+    kind = str(body.get("type") or "")
     try:
-        connector = store.add_connector(type=str(body.get("type") or ""),
-                                        label=str(body.get("label") or ""),
-                                        config=body.get("config") or {})
+        connector = store.add_connector(type=kind, label=str(body.get("label") or ""),
+                                        config=_clean_config(kind, body.get("config") or {}))
     except ValueError as err:
         return JSONResponse({"ok": False, "error": str(err)}, status_code=400)
+    if body.get("description"):
+        connector = store.update_connector(connector["id"],
+                                           {"description": str(body["description"])[:500]})
 
     # An API connector's key, saved server-side under a fresh ref immediately
     # — it never sits in config as plain JSON, and it's never echoed back
@@ -333,6 +420,8 @@ async def create(body: dict):
         connector = store.update_connector(connector["id"], {"config": {"secretRef": ref}})
 
     _sync()
+    if kind in ("api", "cli"):
+        _test_in_background(connector["id"])
     return {"ok": True, "connector": _public(connector)}
 
 
@@ -351,7 +440,11 @@ async def update(connector_id: str, body: dict):
     # deep (store.py's update_connector), so this never has to resend a
     # stored secretRef or an already-cached tool list alongside it.
     if isinstance(body.get("config"), dict):
-        patch["config"] = body["config"]
+        try:
+            patch["config"] = _clean_config(store.get_connector(connector_id)["type"],
+                                            body["config"])
+        except ValueError as err:
+            return JSONResponse({"ok": False, "error": str(err)}, status_code=400)
     if patch:
         store.update_connector(connector_id, patch)
 
@@ -363,6 +456,127 @@ async def update(connector_id: str, body: dict):
                 return JSONResponse({"ok": False, "error": str(err)}, status_code=400)
     _sync()
     return {"ok": True, "connector": _public(store.get_connector(connector_id))}
+
+
+def _api_or_cli(connector_id: str, kind: str | None = None) -> dict | JSONResponse:
+    connector = store.get_connector(connector_id)
+    if connector is None or connector.get("type") not in ("api", "cli") \
+            or (kind and connector.get("type") != kind):
+        return JSONResponse({"ok": False, "error": "Unknown connector."}, status_code=404)
+    return connector
+
+
+@router.post("/{connector_id}/key")
+async def save_key(connector_id: str, body: dict):
+    """Save (or replace) an API connector's key, then check it for real.
+
+    The key goes straight to `.env` under this connector's own name and is never
+    returned — the answer only says whether the service accepted it.
+    """
+    connector = _api_or_cli(connector_id, "api")
+    if isinstance(connector, JSONResponse):
+        return connector
+    key = str((body or {}).get("apiKey") or "").strip()
+    if not key:
+        return JSONResponse({"ok": False, "error": "Paste the key first."}, status_code=400)
+    from ..config import save_secret
+
+    ref = f"conn_{connector_id}"
+    save_secret(ref, key)
+    store.update_connector(connector_id, {"config": {"secretRef": ref}})
+    result = await run_in_threadpool(connector_capabilities.test_connection, connector_id)
+    _sync()
+    return {"ok": True, "connected": result["ok"], "detail": result["detail"],
+            "connector": _public(result["connector"])}
+
+
+@router.post("/{connector_id}/test")
+async def test(connector_id: str):
+    connector = _api_or_cli(connector_id)
+    if isinstance(connector, JSONResponse):
+        return connector
+    result = await run_in_threadpool(connector_capabilities.test_connection, connector_id)
+    _sync()
+    return {"ok": True, "connected": result["ok"], "detail": result["detail"],
+            "connector": _public(result["connector"])}
+
+
+@router.post("/{connector_id}/login")
+async def cli_login(connector_id: str):
+    """Start a CLI's own sign-in; it opens the browser itself. The screen then
+    checks back with /test until the CLI reports it is signed in."""
+    connector = _api_or_cli(connector_id, "cli")
+    if isinstance(connector, JSONResponse):
+        return connector
+    try:
+        await run_in_threadpool(connector_cli.start_login, connector.get("config") or {})
+    except (ValueError, FileNotFoundError, OSError) as err:
+        return JSONResponse({"ok": False, "error": str(err)}, status_code=400)
+    return {"ok": True}
+
+
+@router.post("/{connector_id}/import-openapi")
+async def import_openapi(connector_id: str, body: dict):
+    """Read an OpenAPI document and PROPOSE its endpoints — nothing is saved until
+    the person ticks what to keep and saves the chosen list."""
+    connector = _api_or_cli(connector_id, "api")
+    if isinstance(connector, JSONResponse):
+        return connector
+    spec_url = str((body or {}).get("specUrl") or "").strip()
+    if not spec_url.startswith(("http://", "https://")):
+        return JSONResponse({"ok": False, "error": "That needs to be a web address."},
+                            status_code=400)
+    try:
+        found = await run_in_threadpool(connector_api.discover_from_spec, spec_url)
+    except ValueError as err:
+        return JSONResponse({"ok": False, "error": str(err)}, status_code=400)
+    return {"ok": True, **found}
+
+
+@router.post("/{connector_id}/discover-commands")
+async def discover_commands(connector_id: str):
+    """Read a CLI's own --help and PROPOSE command templates (one model call).
+    Nothing is saved until the person reviews and saves the chosen ones."""
+    connector = _api_or_cli(connector_id, "cli")
+    if isinstance(connector, JSONResponse):
+        return connector
+    from ..ai import NoModelAvailable
+
+    try:
+        found = await run_in_threadpool(connector_cli.discover_commands,
+                                        connector.get("config") or {})
+    except (ValueError, FileNotFoundError, NoModelAvailable) as err:
+        return JSONResponse({"ok": False, "error": str(err)}, status_code=400)
+    return {"ok": True, **found}
+
+
+@router.post("/{connector_id}/env-secret")
+async def cli_env_secret(connector_id: str, body: dict):
+    """Give ONE CLI one key, as the environment variable it reads — saved to
+    `.env` and passed to that program alone. An empty value removes it."""
+    connector = _api_or_cli(connector_id, "cli")
+    if isinstance(connector, JSONResponse):
+        return connector
+    import re as _re
+
+    name = str((body or {}).get("name") or "").strip()
+    if not _re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name):
+        return JSONResponse({"ok": False, "error": "That isn't a valid variable name."},
+                            status_code=400)
+    env = dict((connector.get("config") or {}).get("env") or {})
+    value = str((body or {}).get("value") or "").strip()
+    if value:
+        from ..config import save_secret
+
+        ref = f"conncli_{connector_id}_{name.lower()}"
+        save_secret(ref, value)
+        env[name] = ref
+    else:
+        env.pop(name, None)
+    store.update_connector(connector_id, {"config": {"env": env}})
+    result = await run_in_threadpool(connector_capabilities.test_connection, connector_id)
+    return {"ok": True, "connected": result["ok"], "detail": result["detail"],
+            "connector": _public(result["connector"])}
 
 
 @router.post("/{connector_id}/refresh")

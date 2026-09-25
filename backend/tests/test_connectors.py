@@ -216,7 +216,7 @@ def test_something_that_is_not_a_spec_says_so_plainly():
     with pytest.raises(ValueError) as raised:
         api_client.discover_from_spec("https://example.test/x",
                                       fetch=lambda url: _Response(payload=None, text="<html>"))
-    assert "YAML spec isn't supported" in str(raised.value)
+    assert "doesn't look like an OpenAPI document (JSON or YAML)" in str(raised.value)
 
 
 def test_a_document_with_no_endpoints_is_refused():

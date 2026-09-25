@@ -45,3 +45,30 @@ def list_catalog() -> list[dict[str, Any]]:
 
 def get_entry(entry_id: str) -> dict[str, Any] | None:
     return next((entry for entry in _ENTRIES if entry.get("id") == entry_id), None)
+
+
+def entry_type(entry: dict[str, Any]) -> str:
+    """`mcp`, `api` or `cli`. An entry with no `type` is an MCP server — every
+    entry written before the other two types existed is one."""
+    kind = str(entry.get("type") or "mcp")
+    return kind if kind in ("mcp", "api", "cli") else "mcp"
+
+
+def config_for(entry: dict[str, Any]) -> dict[str, Any]:
+    """A new connector's config, straight from its entry's definition.
+
+    The same shape a custom connector of that type has, so an Official entry is
+    only ever a pre-filled custom one: nothing downstream knows or asks which
+    service it came from. API: address, how the key is sent, the connection test,
+    any body-level success check, and its operations. CLI: the program, how to
+    install it, its own sign-in and test commands, and its command templates.
+    """
+    kind = entry_type(entry)
+    if kind == "mcp":
+        return {"connectFlow": dict(entry.get("connectFlow") or {})}
+    block = dict(entry.get(kind) or {})
+    if kind == "api":
+        keep = ("baseUrl", "auth", "keyLabel", "keyHint", "test", "responseCheck", "operations")
+    else:
+        keep = ("command", "install", "login", "test", "commands", "env")
+    return {key: block[key] for key in keep if key in block}

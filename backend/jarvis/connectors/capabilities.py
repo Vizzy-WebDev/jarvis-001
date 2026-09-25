@@ -115,6 +115,26 @@ def _dispatch(connector_id: str, kind: str, tool_name: str, permission_name: str
     return {"ok": False, "error": f"{tool_name} is not something that connection can do."}
 
 
+def _timeout_for(kind: str, tool_name: str, connector: dict[str, Any]) -> float:
+    """How long the executor waits for one call.
+
+    An API operation that follows a background job, or a CLI command that waits
+    for one itself (a video generation, say), legitimately takes minutes — cut
+    off at the usual minute, it would be reported as failed while still running.
+    """
+    config = connector.get("config") or {}
+    if kind == "api":
+        operation = next((o for o in config.get("operations") or []
+                          if o.get("name") == tool_name), {})
+        wait = operation.get("wait") or {}
+        return max(60.0, float(wait.get("timeoutS") or 0) + 60.0) if wait else 60.0
+    if kind == "cli":
+        command = next((c for c in config.get("commands") or []
+                        if c.get("name") == tool_name), {})
+        return max(60.0, float(command.get("timeoutS") or 0) + 15.0)
+    return 120.0 if kind == "mcp" else 60.0
+
+
 def _risk_for(permission: str, classified: str, *, user_connector: bool) -> Risk:
     """For an app the user added, their permission is the final word.
 
@@ -185,7 +205,7 @@ def connector_specs(connector: dict[str, Any]) -> list[CapabilitySpec]:
             handler=(lambda _cid=connector["id"], _kind=kind, _tool=tool["name"], _perm=name, **args:
                      _dispatch(_cid, _kind, _tool, _perm, args)),
             kind=CapabilityKind.CONNECTOR,
-            timeout_s=120.0 if kind == "mcp" else 60.0,
+            timeout_s=_timeout_for(kind, tool["name"], connector),
             tags=frozenset({"core"}) if kind in ("files", "browser") else frozenset(),
             summarize=(lambda args, _label=connector.get("label"), _tool=tool["name"]:
                        f'Use "{_tool}" on {_label}?'),
@@ -253,3 +273,30 @@ def refresh_tools(connector_id: str) -> dict[str, Any]:
         "config": config,
         "status": {"state": "working", "checkedAt": None, "detail": f"{found} tools"}})
     return {"ok": True, "connector": updated, "tools": found}
+
+
+def test_connection(connector_id: str) -> dict[str, Any]:
+    """Check an API or CLI connection for real and record the answer as its status.
+
+    "working" means the same thing it means for MCP — Jarvis can use it now — so
+    the status dot, Jarvis's list of connected apps and the task/briefing pickers
+    all agree. Reaches the network or starts a program, so never per turn.
+    """
+    connector = store.get_connector(connector_id)
+    if connector is None:
+        raise KeyError("That connector no longer exists.")
+    kind = connector.get("type")
+    config = connector.get("config") or {}
+    if kind == "api":
+        result = api_client.check(config)
+    elif kind == "cli":
+        result = cli_client.check(config)
+    else:
+        raise ValueError("Only API and CLI connectors are tested this way.")
+    from ..jscompat import now_iso
+
+    updated = store.update_connector(connector_id, {"status": {
+        "state": "working" if result.get("ok") else "error",
+        "checkedAt": now_iso(), "detail": result.get("detail")}})
+    return {"ok": bool(result.get("ok")), "detail": result.get("detail"),
+            "connector": updated}

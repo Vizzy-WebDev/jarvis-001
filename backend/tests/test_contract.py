@@ -58,6 +58,13 @@ DEFERRED_ROUTES: dict[tuple[str, str], str] = {
 #: the last entry here, and it landed with the desktop work.
 ABSENT_CONNECTOR_TYPES: set[str] = set()
 
+#: Catalogue entries of connector types the recording predates. The catalogue's
+#: Official list then held MCP servers only; API-key and CLI connectors now have
+#: entries of their own (marked with a `type`). They are dropped from the live
+#: answer before comparing, so every recorded MCP entry is still compared exactly
+#: — this can hide an added entry of these types by name, never a changed one.
+ADDED_CATALOG_TYPES: set[str] = {"api", "cli"}
+
 #: A fixture recorded against an instance that was NOT empty. The recording is
 #: still the contract — what it pins is the SHAPE of a row — so rather than
 #: waving the comparison away, the same content is put into this build's own
@@ -240,6 +247,11 @@ def test_route_matches_recorded_node_response(client, fixture_path):
         want["body"] = {**want["body"], "connectors": [
             c for c in want["body"].get("connectors", [])
             if c.get("type") not in ABSENT_CONNECTOR_TYPES]}
+
+    if req["path"] == "/api/connectors/catalog" and isinstance(got["body"], dict):
+        got["body"] = {**got["body"], "catalog": [
+            e for e in got["body"].get("catalog", [])
+            if e.get("type") not in ADDED_CATALOG_TYPES]}
 
     route = (req["method"].upper(), req["path"])
     added = ADDED_KEYS.get(route, set())

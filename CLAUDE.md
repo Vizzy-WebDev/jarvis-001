@@ -185,7 +185,10 @@ code route back to a built-in. This has regressed before despite being called ou
 caller can omit. A stored-XSS finding in `GET /api/artifacts/:id` is why: an `.svg`
 holding a `<script>` executed in-app when rendered inline. Also `X-Content-Type-Options:
 nosniff`, a sandboxing CSP, and CR/LF stripped from the filename before it reaches a
-header value.
+header value. Showing such content IN the app is the front end's job and never an inline
+route: it fetches the bytes and renders them as text, through `<img>`, or — a web page — in
+a sandboxed frame without `allow-same-origin`, backed by `jarvis/request_guard.py`, which
+refuses any `/api` request a browser labels `Origin: null` or `Sec-Fetch-Site: cross-site`.
 
 **Approval floors never move for convenience.** A memory candidate that conflicts with
 an existing memory always requires approval at every trust level. Only Jarvis's own
@@ -280,6 +283,18 @@ model system, tool system or memory for them. Tools/connectors are capabilities 
 be given; agents are split by responsibility, never by tool. Approval floors are unchanged
 inside a specialist, and a slow specialist is detached, never cut off, with its result
 delivered when it lands.
+
+## Artifacts — `jarvis/artifacts/` (see its own `CLAUDE.md`)
+
+Real files Jarvis makes: any format (Word, Excel, PowerPoint, PDF, and any text format —
+Markdown, HTML, SVG, CSV, JSON, code). **Asked for → made at once, with no confirmation**
+(`create_artifact` is `Risk.LOW` and `core`: the file stays in `data/artifacts/` and the person
+can delete it); **not asked but clearly useful → offered in one sentence, made only after a
+yes** (`prompt.py`'s `MAKING_ARTIFACTS`). Every artifact records the conversation that made it
+(`conversation_id`, resolved from the session — a specialist's work belongs to the chat it was
+asked in, a job's to none), so the chat shows it as a card that survives a reload and opens a
+viewer, and the Artifacts page (`#/artifacts`) lists everything with Open in Chat (THAT chat,
+landing on its card), Download, Copy and Delete. Only the person deletes.
 
 ## Content Management — `jarvis/content_manager/` (see its own `CLAUDE.md`)
 

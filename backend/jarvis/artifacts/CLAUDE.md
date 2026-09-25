@@ -1,75 +1,87 @@
-# Output/Artifact generation — `jarvis/artifacts/`
+# Artifacts — `jarvis/artifacts/`
 
-See the root `CLAUDE.md`'s "Operational Awareness" section for the decisions that matter
-beyond this file (Output/Artifact generation and its relationship to Verification). This is
-the module-by-module breakdown.
+Real files Jarvis makes for the person: made when they ask, shown in the chat that asked,
+kept on the Artifacts page, opened back in that chat, deleted by them. The format is open —
+Word, Excel, PowerPoint, PDF, and any text format (Markdown, HTML, SVG, CSV, JSON, code in
+any language). Rendering is the front end's job (`frontend/components/artifacts/`); this
+package stores, verifies and describes.
+
+## The behaviour (decided with the person who owns this app)
+
+- **Asked for a file → made at once, no confirmation step.** `create_artifact` is `Risk.LOW`:
+  the file lands only in `data/artifacts/`, nothing outside changes, and the person can
+  delete it. It is tagged `core`, so it is declared on every turn — behind `find_capability`
+  a keyword search had to match, and "an HTML page", "a CSV", "a diagram" all missed.
+- **Not asked, but clearly useful → offer in one sentence, make nothing until "yes".**
+  That judgement is `prompt.py`'s `MAKING_ARTIFACTS` block (Jarvis's stable instruction, and
+  a specialist's when the person talks to it directly). It is about the conversation, not
+  about the call's safety, so it is not a policy gate.
+- **Otherwise → just answer.**
 
 ## `store.py`
 
-The id IS the file's on-disk name (`art_<random>`, so it cannot collide and needs no
-in-memory index). The user sees `Artifact.name`; the filesystem holds the id, so the two
-cannot be made to disagree in a way that escapes `data/artifacts/`. Structured metadata
-(mime type, size, session, whether it was mechanically verified) lives in the `artifacts`
-table.
+The id IS the file's on-disk name (`art_<random>`); the user sees `name`/`title`. The path is
+always derived from the id, never from a name, so nothing a model writes can steer where a
+file lands.
 
-`keep(source, name, session_id)` is the one write path: it **verifies first**, then keeps or
-deletes. A file that fails to re-open is deleted immediately and a `ValueError` is raised,
-so a broken file is never left behind pretending to be a deliverable. `verify()` returns
-`(True|False|None, why)`; `None` means "not checkable" (anything outside `.docx`/`.xlsx`/
-`.pptx`) and is never recorded as verified. Also: `get()`, `recent()`, `safe_name()`,
-`mime_for()`.
+- `keep(source, *, name, session_id, conversation_id, title)` — the ONE write path. It
+  **verifies first**: a `.docx/.xlsx/.pptx/.pdf` is re-opened with an independently written
+  reader (`documents/reader.py`), and one that fails is deleted and `ValueError` raised, never
+  recorded. Anything else is `verified=None` ("not checkable"), never `True`. It removes the
+  staging folder afterwards (`staging_path()` / `discard_staging()`).
+- **The conversation link.** `session_id` is the session the making turn ran in;
+  `conversation_id` is the chat Open in Chat goes back to. They differ on purpose: a
+  specialist runs under `agent:<id>:<conversation>`, a background job under its own id.
+  `conversation_for(session_id)` resolves it once, at creation — a real `conversations` row or
+  nothing. Tools pass `ctx.session_id` (`wants_context=True`); **a tool that saves a file
+  without it produces an artifact no chat can find** — that was the original bug.
+- `list_page(limit, before, q, kind)` pages newest-first by a `<created_at>|<id>` cursor (a
+  millisecond tie cannot drop or repeat a row). `kind_for(name)` is the one category table
+  (document, spreadsheet, presentation, pdf, markdown, web, image, audio, data, code, text,
+  other) the page filters by and the viewer switches on. `conversations_of(artifacts)` gives
+  each chat's title and state (`live` / `trashed` / `gone`) in one query.
+- `delete(id)` removes file then row. Only the person deletes — no capability calls it (the
+  same rule as Content Management).
 
-## `office.py`
+## Writers — `office.py`, `pdf.py`
 
-Minimal, real writers: `write_docx` (a paragraph list), `write_xlsx` (one sheet of
-`inlineStr` cells, no shared-strings table) and `write_pptx` (title-and-bullets slides on
-one fixed layout, one theme, widescreen, constant master/layout/theme boilerplate). They are
-deliberately not layout libraries, and accept no styling argument that would silently do
-nothing.
+`write_docx` / `write_xlsx` / `write_pptx`: minimal, real writers. **Every ZIP entry name is a
+hand-built forward-slash string**, never from a filesystem path — Office requires forward
+slashes, and a Windows-walked name yields a file that will not open in Word. `entry_names()`
+reads them back for tests.
 
-**Every ZIP entry name is a hand-built forward-slash string**, never derived from a
-filesystem path. Office formats follow the Open Packaging Conventions, which require forward
-slashes; a name picked up from walking a directory carries the OS separator, and on Windows
-that yields a file that looks fine, has the right signature, and will not open in Word.
-`entry_names()` reads the stored names back so a test checks a real generated file rather
-than trusting it.
+`write_pdf`: a dependency-free text PDF — headings, paragraphs, bullets, code blocks, wrapped
+and paginated on A4, in the standard fonts (nothing embedded). Those fonts carry only
+Windows-1252, so a character outside it shows as "?" and the count is returned; the tool
+reports it as a `warning` rather than handing over a PDF that quietly lost text. Verified by
+`documents/reader.py::read_pdf` (cross-reference offsets land on their objects, pages exist,
+text reads back).
 
-**Writers are verified by round-tripping through an independent reader**,
-`documents/reader.py` (`read_docx`/`read_xlsx`/`read_pptx`) — reading a file back through the
-code that wrote it proves nothing. `read_pptx()` walks the whole master/layout/theme chain
-and raises on a broken hop, so it checks the deck as a whole and not just one slide's XML.
+## `tools/create_artifact.py`
 
-## `tools/create_artifact.py` — the write path
+The extension decides: `.docx/.xlsx/.pptx/.pdf` through their writers (with plain-text
+fallbacks for `content`), anything else written exactly as given. Refused, in plain words:
+Windows programs and scripts a double-click would run (`RUNNABLE`), raster images (there is
+no image generation — SVG is the honest alternative), media (→ `narrate_to_file`), and binary
+formats this cannot produce truthfully. No retry on a failed check: the writers are
+deterministic. The result's `ui_action` (`attachment_action()`) carries `artifactId`, `title`,
+`artifactKind` and `size` so the chat card can open it — `run_code` and `narrate_to_file` use
+the same shape. Not `meta`: a background job must be able to make a report.
 
-Not `meta` (a background job strips meta tools, so a job asked to produce a report could not
-produce one) and no confirm gate of its own: an explicit request creates directly, while an
-unprompted proposal waits for a yes — that judgment lives in `prompt.py`'s instructions. The
-file extension in `filename` decides everything: `.docx` / `.xlsx` / `.pptx` go through
-their writers (with plain-text fallbacks: blank-line-separated paragraphs, CSV, and
-blank-line-separated slides), and `.txt .md .csv .json .html .svg` are written exactly as
-given. `keep()` verifies on the spot. There is deliberately NO retry on a failed check: the
-writers are deterministic, so a failure is a real bug that would fail identically again.
+## Serving and viewing (`routes/artifacts.py`)
 
-**One capability ceiling, stated in the tool's own description:** no raster/photographic
-image generation exists (no image library is a dependency). SVG
-diagrams and charts are real vector markup.
+`GET /api/artifacts` (paged, `q`, `kind`; `nextBefore` only when there is more, so the
+recorded empty response is unchanged), `GET /:id/info`, `GET /:id/preview` (Word/PowerPoint
+as Markdown text, Excel as rows — JSON, never the file), `GET /:id` (the file), `DELETE /:id`.
 
-## `tools/run_code.py`
+**The file route's `Content-Disposition: attachment` is UNCONDITIONAL** (plus `nosniff`, a
+sandboxing CSP, CR/LF stripped from the filename). An inline `.svg`/`.html` in the app's own
+origin was a stored-XSS path. Re-confirm against a live request whenever the route changes.
 
-Files a sandboxed script produces (`sandbox/runner.py`'s `SandboxResult.files`, up to
-`MAX_OUTPUT_FILES`) each go through the same `keep()` path, so there is one verification
-discipline, not two. A produced file that fails verification is reported in the result with
-its error rather than dropped, because "it made a file" and "it made a file that opens" are
-different claims.
-
-## Serving (`routes/artifacts.py`)
-
-`GET /api/artifacts` lists; `GET /api/artifacts/:id` serves the file.
-
-**Security: `Content-Disposition: attachment` is UNCONDITIONAL, never behind a query
-parameter.** An artifact's content comes from a model, and an `.svg` or `.html` executes an
-embedded `<script>` when rendered inline, so an inline render was a stored-XSS path in the
-app's own origin. The route also sets `X-Content-Type-Options: nosniff` and a sandboxing CSP
-as defence in depth, and strips CR/LF from the filename before it goes into a header value,
-since an unsanitised name could inject response headers. Re-confirm this against a live
-request whenever the route changes.
+**Viewing never goes through an inline route.** The front end fetches the bytes and renders
+them itself: text as text nodes, images (SVG included) through `<img>`, a web page in
+`<iframe sandbox="allow-scripts">` (opaque origin) with a strict CSP placed first in its
+document. What a sealed page can still do — navigate its own frame to a URL — is closed by
+`jarvis/request_guard.py`, which refuses any `/api` request a browser labels `Origin: null`
+or `Sec-Fetch-Site: cross-site`. **Do not add `allow-same-origin` to that frame, and do not
+remove the guard**: together they are what makes running a model-written page safe.

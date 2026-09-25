@@ -71,7 +71,11 @@ When approval is needed, `policy/approvals.py` records an `approvals` row storin
 arguments described (so approving executes what was shown, and the model cannot alter them
 between asking and running) and the tool result asks the person via `summarize()`. The user
 answers through `routes/approvals.py`, which resolves the row and runs
-`execute_approved()`. **A confirmation may only be resolved by a LATER turn than the one that
+`execute_approved()`, then replaces the stored "needs your go-ahead" result of that call in
+the saved conversation with what really ran (`conversation.settle_tool_result`), so later
+turns do not believe it never happened; the response carries any files it made. The card the
+person sees shows the capability's own `summarize()` text (`ExecutionResult.ask`), not the
+policy's reason. **A confirmation may only be resolved by a LATER turn than the one that
 asked**: `resolve()` raises `SameTurnRefused` otherwise, which is structural — a model told to
 "skip asking" cannot mint and answer its own question. A call outside the per-turn system
 always carries a fresh `CallContext`; `session_id` and `turn_id` are required so this cannot
@@ -96,7 +100,10 @@ mechanism. `orchestrator/pipeline.py` reads it in exactly two shapes:
 `{type: 'navigate', section}` (`open_section.py`) and `{type: 'attachment', kind: 'image' |
 'video' | ..., url, mimeType}` (`take_screenshot.py`, `screen_recording.py`). The `url` must be
 a real, already-servable route such as `/api/control/screenshots/:file`, never a data URI. To
-hand the user a downloadable file, use an artifact (`jarvis/artifacts/CLAUDE.md`).
+hand the user a file, use an artifact (`jarvis/artifacts/CLAUDE.md`): save it with `keep()`
+passing `ctx.session_id` (`wants_context=True`) so it belongs to the chat that asked, and return
+`create_artifact.attachment_action(result)` — its `artifactId` is what lets the chat card open
+the viewer, and a reopened chat rebuilds the card from this stored result.
 
 ## Gotchas
 

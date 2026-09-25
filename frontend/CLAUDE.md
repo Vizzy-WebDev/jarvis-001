@@ -269,3 +269,22 @@ already-set attachment (React reconciles from state, it doesn't mutate a text no
 place), and there is no bespoke "is this bubble empty" check to keep in sync with what
 counts as content — a turn with an attachment and a turn with text are just two fields
 on the same object, checked directly rather than inferred from a DOM query.
+
+## Artifacts (`components/artifacts/`, `components/screens/ArtifactsScreen.tsx`)
+
+One viewer, `ArtifactViewer`, for every kind of file Jarvis makes — used by the chat's file
+card (`ArtifactCard` → `ArtifactPanel`, a Modal portalled into `document.body` for the same
+`backdrop-filter` reason as `Popover`) and by the Artifacts page. **It never asks the server to
+serve anything inline**: it fetches the bytes and renders them itself — text and code as text
+nodes, Markdown through `markdown.tsx` (an in-repo renderer that never produces HTML; the parser
+is `lib/markdown.ts`), SVG and images through `<img>`, PDF in the browser's viewer from a blob,
+Word/Excel/PowerPoint from the JSON `/preview` route, and a web page in
+`<iframe sandbox="allow-scripts">` with `lib/artifacts.ts::lockedDocument()` putting a strict
+content policy first in its document. Never add `allow-same-origin` to that frame; the backend's
+`request_guard.py` is the other half of keeping a model-written page away from Jarvis.
+
+A reopened chat rebuilds its cards from the saved tool results (`app/page.tsx::turnsFrom`,
+`lib/artifacts.ts::cardsFromToolResult` — the same reading the server does live). Open in Chat
+on the Artifacts page reopens the conversation that MADE the file and highlights its card
+(`[data-artifact-id]`, `data-focused`). The pure pieces are unit-tested in
+`test/artifacts.test.mjs`.

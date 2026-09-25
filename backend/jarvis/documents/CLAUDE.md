@@ -14,7 +14,7 @@ small tree-walking parser, not a spec implementation) is all it takes.
   composition exactly like a plain text document — every model can read an Office
   document, no capability gate.
 - **`reader.py`** — a second, deliberately minimal, independently-written reader
-  (`read_docx()`, `read_xlsx()`, `read_pptx()`, `read_document()`). Its only job is
+  (`read_docx()`, `read_xlsx()`, `read_pptx()`, `read_pdf()`, `read_document()`). Its only job is
   being the thing the artifact WRITERS (`artifacts/office.py`'s `write_docx()`/
   `write_xlsx()`/`write_pptx()`) are verified against — round-tripping a written file
   back through the same reader that wrote it proves nothing, so this file exists
@@ -24,7 +24,11 @@ small tree-walking parser, not a spec implementation) is all it takes.
   OWN relationships to its layout and theme, raising the moment any hop points at
   something missing or unparseable — a slide's text looking fine is no evidence the
   deck as a whole will open cleanly. `read_docx()`/`read_xlsx()` don't need this: a `.docx`/`.xlsx` has one
-  content part, not a chain of parts that can independently disagree.
+  content part, not a chain of parts that can independently disagree. `read_pdf()` checks that
+  a PDF's cross-reference offsets land on the objects they name and that it has pages, then
+  reads each content stream's text back — what `artifacts/pdf.py`'s writer is verified
+  against. It is lenient only about what it cannot follow (another program's compressed
+  cross-reference streams), never about a broken table.
 
 `office.py`'s `xlsx_to_markdown()` places every cell by its own `r=` reference
 rather than by iteration order (a real workbook's blank cells are usually absent

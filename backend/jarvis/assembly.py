@@ -1,0 +1,171 @@
+"""The composition root: where the parts are wired into one working assistant.
+
+Everything else in this package is constructed with its collaborators passed in,
+which is what makes each piece testable in isolation. Something still has to make
+the real object graph, and doing that inside a route handler is how a second,
+subtly different assembly gets built the next time a route needs one — the exact
+shape of several disagreeing model-call paths.
+
+So it happens here, once, lazily, and `reset_for_tests()` tears it down.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+
+from .capabilities import CapabilityRegistry
+from .events import bus
+from .models.client import JarvisModelClient
+from .observers import start_observers
+from .orchestrator import Orchestrator
+from .tools import load_tools
+from .voice import ConversationMode, WakeDetector
+
+logger = logging.getLogger(__name__)
+
+_lock = threading.RLock()
+_registry: CapabilityRegistry | None = None
+_orchestrator: Orchestrator | None = None
+_wake: WakeDetector | None = None
+_conversation_mode: ConversationMode | None = None
+
+
+def get_registry() -> CapabilityRegistry:
+    global _registry
+    with _lock:
+        if _registry is None:
+            registry = CapabilityRegistry()
+            names = load_tools(registry)
+            # Folder Skills are registered AFTER the tools, so one can never take
+            # a name a built-in already has — and re-synced whenever a Skill is
+            # installed or removed, since Skills are not fixed at startup the way
+            # built-in tools are.
+            from .skills.capabilities import sync as sync_skills
+
+            skills = sync_skills(registry)
+            if skills:
+                logger.info("[assembly] %d folder skill(s) available: %s",
+                            len(skills), ", ".join(skills))
+
+            # Connector tools last: they are the most numerous and the least
+            # trusted, and registering them after the rest means one can never
+            # take a name a built-in or a Skill already answers to.
+            from .connectors.capabilities import sync as sync_connectors
+            from .connectors.store import get_or_create_singleton
+
+            # Jarvis's own two: the file allowlist (empty until a folder is
+            # allowed) and the browser it drives. Both exist as soon as the app
+            # does, because "no row at all" and "nothing allowed yet" mean the
+            # same thing and only one of them can be shown to anybody.
+            for singleton in ("files", "browser"):
+                get_or_create_singleton(singleton)
+
+            connected = sync_connectors(registry)
+            if connected:
+                logger.info("[assembly] %d connector tool(s) available", len(connected))
+            # Specialist agents after everything they might use: `ask_specialist`
+            # names the current roster, so it is re-synced whenever an agent
+            # changes (`routes/agents.py`), the same way Skills are. A run still
+            # marked running from before this process started has nothing
+            # running it any more.
+            from .agents.capabilities import close_orphaned_runs, sync as sync_agents
+
+            closed = close_orphaned_runs()
+            if closed:
+                logger.info("[assembly] %d unfinished agent run(s) closed off", closed)
+            sync_agents(registry)
+            # Subscribed here rather than called from the turn loop: what a
+            # capability did is already published, and a recorder that has to be
+            # invoked is a dependency the loop should not carry.
+            start_observers(bus)
+            # Logged at startup on purpose: whether every tool file actually
+            # loaded is otherwise invisible until something tries to call one.
+            logger.info("[assembly] %d capabilities available", len(names))
+            _registry = registry
+        return _registry
+
+
+def get_orchestrator() -> Orchestrator:
+    global _orchestrator
+    with _lock:
+        if _orchestrator is None:
+            # The client answers on whichever model the person has selected, and
+            # reads that selection on every call — so choosing another model takes
+            # effect on the next message, with nothing here to rebuild. When there
+            # is nothing runnable it fails the turn with the reason, never a guess.
+            _orchestrator = Orchestrator(
+                JarvisModelClient(),
+                registry=get_registry(),
+                event_bus=bus,
+            )
+        return _orchestrator
+
+
+def get_wake_detector() -> WakeDetector:
+    """One detector for the process. It holds a loaded model and an audio
+    buffer, so a second one would score a different, half-length signal."""
+    global _wake
+    with _lock:
+        if _wake is None:
+            _wake = WakeDetector()
+        return _wake
+
+
+def get_conversation_mode() -> ConversationMode:
+    global _conversation_mode
+    with _lock:
+        if _conversation_mode is None:
+            _conversation_mode = ConversationMode()
+        return _conversation_mode
+
+
+def start_background_work() -> dict[str, bool]:
+    """Switch on the things that run on their own clock.
+
+    ONE place, so "what starts itself" is answerable by reading a single
+    function. Every piece here is behind its own environment interlock, off by
+    default — `main()` (the real launch path) is what turns them on, so a
+    test's own `create_app()` never starts a real background thread unasked.
+    """
+    from . import chat_store, notifications
+    from .connectors import icons as connector_icons
+    from .cost import balances, prices
+    from .heartbeat import engine as heartbeat
+    from .heartbeat.triggers import start_triggers
+    from .improvement import cadence as improvement_cadence
+    from .jobs import orchestrator as job_supervisor
+    from .monitor import engine as monitor_engine
+    from .ops.environment import sampler
+    from .scheduler import engine as scheduler_engine
+
+    started = {"balances": False, "prices": False, "sampler": False, "heartbeat": False,
+              "scheduler": False, "monitor": False, "job_supervisor": False,
+              "improvement_cadence": False, "notification_trash_purge": False,
+              "connector_icons": False, "chat_trash_purge": False}
+
+    started["prices"] = prices.start_price_maintenance()
+    started["balances"] = balances.start()
+    started["sampler"] = sampler.start()
+    started["heartbeat"] = heartbeat.start(event_bus=bus)
+    if started["heartbeat"]:
+        # Only alongside the tick: the trigger feeds the same pipeline, so
+        # arming it while the tick is off would half-start the heartbeat.
+        start_triggers(bus)
+    started["scheduler"] = scheduler_engine.start()
+    started["monitor"] = monitor_engine.start(event_bus=bus)
+    started["job_supervisor"] = job_supervisor.start(event_bus=bus)
+    started["improvement_cadence"] = improvement_cadence.start()
+    started["notification_trash_purge"] = notifications.start_trash_purge()
+    started["connector_icons"] = connector_icons.start()
+    started["chat_trash_purge"] = chat_store.start_trash_purge()
+    return started
+
+
+def reset_for_tests() -> None:
+    global _registry, _orchestrator, _wake, _conversation_mode
+    with _lock:
+        _registry = None
+        _orchestrator = None
+        _wake = None
+        _conversation_mode = None

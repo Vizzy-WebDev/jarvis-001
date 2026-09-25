@@ -1,0 +1,45 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/sandbox/status",
+    "query": "",
+    "headers": {
+      "host": "127.0.0.1:39118",
+      "connection": "keep-alive",
+      "accept": "*/*",
+      "accept-language": "*",
+      "sec-fetch-mode": "cors",
+      "user-agent": "node",
+      "accept-encoding": "gzip, deflate"
+    },
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "contentType": "application/json; charset=utf-8",
+    "headers": {
+      "x-powered-by": "Express",
+      "content-type": "application/json; charset=utf-8",
+      "content-length": "465",
+      "etag": "W/\"1d1-XYquEZwDNFWhpFT6VTFbGa51Vnc\"",
+      "date": "Fri, 04 Sep 2026 15:34:20 GMT",
+      "connection": "keep-alive",
+      "keep-alive": "timeout=5"
+    },
+    "kind": "json",
+    "body": {
+      "backend": "restricted",
+      "isolation": "weak",
+      "distro": null,
+      "detectedWindowsSandbox": false,
+      "setupSteps": [
+        "Open Command Prompt or PowerShell as Administrator.",
+        "Type: wsl --install",
+        "Restart your computer when it asks.",
+        "After restarting, a window will open to finish setup — pick a username and password for it (this is separate from your Windows login, and you won't need to remember it often).",
+        "That's it — Jarvis will automatically start using it next time."
+      ]
+    }
+  },
+  "recordedAt": "2026-09-04T15:34:20.123Z"
+}

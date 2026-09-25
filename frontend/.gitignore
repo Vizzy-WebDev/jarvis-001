@@ -1,0 +1,10 @@
+node_modules/
+.next/
+# `out/` is deliberately NOT ignored: it is the built front end FastAPI serves,
+# and committing it is what lets this app run with only Python installed. It is
+# a build artifact — regenerate it with `npm run build` whenever the front end
+# changes, and commit the result alongside the source change. That is a
+# developer step; nobody running Jarvis ever builds anything.
+next-env.d.ts
+*.tsbuildinfo
+.test-build/

@@ -1,0 +1,651 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/skills",
+    "query": "",
+    "headers": {
+      "host": "127.0.0.1:39118",
+      "connection": "keep-alive",
+      "accept": "*/*",
+      "accept-language": "*",
+      "sec-fetch-mode": "cors",
+      "user-agent": "node",
+      "accept-encoding": "gzip, deflate"
+    },
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "contentType": "application/json; charset=utf-8",
+    "headers": {
+      "x-powered-by": "Express",
+      "content-type": "application/json; charset=utf-8",
+      "content-length": "17707",
+      "etag": "W/\"452b-hvkCDgBkPae0P0/xXBfAxfrjY3A\"",
+      "date": "Fri, 04 Sep 2026 15:34:20 GMT",
+      "connection": "keep-alive",
+      "keep-alive": "timeout=5"
+    },
+    "kind": "json",
+    "body": {
+      "skills": [
+        {
+          "name": "analyze_spreadsheet",
+          "description": "Answers a question against the FULL contents of an Excel workbook someone attached — use this when a spreadsheet was too large to read in full in the conversation (the attachment note says so and gives a reference id) and the question needs an exact answer covering every row, not just a sample. Not for a small workbook that already read in fully — answer those directly from what is already in the conversation.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "uploadId": {
+                "type": "string",
+                "description": "The reference id from the attachment note (NOT a filename)."
+              },
+              "question": {
+                "type": "string",
+                "description": "The user's question about the data, in their own words."
+              },
+              "sheetName": {
+                "type": "string",
+                "description": "Which sheet to analyse, if the workbook has more than one and it matters. Leave out to use the first sheet."
+              }
+            },
+            "required": [
+              "uploadId",
+              "question"
+            ]
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "check_claim",
+          "description": "Check whether a specific claim is actually true, or whether something described is realistic rather than exaggerated. Looks the claim up independently before judging it, and answers with one of: checks out, partly true, misleading, false, or \"can't tell\". Use it for a claim from something the user shared, something they heard elsewhere, or anything where being wrong would matter. Prefer this over answering from your own knowledge whenever the truth of a specific claim is the actual question.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "claim": {
+                "type": "string",
+                "description": "The single claim to check, stated plainly and on its own — for example \"you can make $12,000 in your first month dropshipping\", not \"is that video right\". Quote figures and timescales exactly as they were given; they are what gets looked up."
+              },
+              "realism": {
+                "type": "boolean",
+                "description": "True when the question is \"is this realistic / typical / just hype\" rather than \"is this factually true\". Changes what gets researched: what actually happens for most people who try it, rather than whether the statement is literally accurate."
+              },
+              "context": {
+                "type": "string",
+                "description": "Optional. Where the claim came from and anything that frames it — the video it was in, what the user is trying to decide. Helps the verdict speak to what they actually care about."
+              }
+            },
+            "required": [
+              "claim"
+            ]
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "control_computer",
+          "description": "Take control of the user's mouse, keyboard, and screen to actually carry out a task on their computer — opening apps, clicking, typing or pasting text into a window (Notepad, a form, an editor, any app), and checking the result. Use this whenever the user wants something actually written, typed, or pasted INTO an app or window, not just the app opened — opening alone has its own simpler tool, but writing into it once open needs this one. Also use this for any other on-computer task not covered by a simpler built-in ability (opening a website or an app by name have their own tools). Always confirms a short plan first.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "goal": {
+                "type": "string",
+                "description": "A clear, specific description of what to accomplish on the computer, e.g. \"open Notepad, type a shopping list, and save it to the Desktop as list.txt\"."
+              }
+            },
+            "required": [
+              "goal"
+            ]
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "find_capability",
+          "description": "Look up one of your less common abilities by what the user wants — things like scheduling a reminder, controlling the computer, reading a spreadsheet, checking a claim, or anything connected through Notion or another app. Only use this when something the user asked for clearly needs an ability beyond the everyday ones already available to you (time, weather, opening things, searching, remembering). Describe what's needed in a few plain words; matching abilities become callable right away, in this same turn.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "intent": {
+                "type": "string",
+                "description": "A few words describing the ability needed, e.g. \"schedule a reminder\" or \"read a spreadsheet\"."
+              }
+            },
+            "required": [
+              "intent"
+            ]
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "get_headlines",
+          "description": "Get a few current top news headlines. Use this when the user asks what's in the news, or for a news update.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "topic": {
+                "type": "string",
+                "description": "Optional topic to focus on, e.g. \"technology\" or \"sports\". Leave out for general top headlines."
+              },
+              "count": {
+                "type": "number",
+                "description": "How many headlines to return. Default 5."
+              }
+            },
+            "required": []
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "get_time",
+          "description": "Get the current date and/or time on the user's computer. Use this for any question about what time it is, what day/date it is, etc.",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "get_weather",
+          "description": "Get the current weather for a place. Use this when the user asks about the weather, temperature, or whether it's raining/snowing somewhere.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "place": {
+                "type": "string",
+                "description": "City or place name, e.g. \"Lagos\" or \"Boston, MA\". If unclear, ask the user which place they mean."
+              }
+            },
+            "required": [
+              "place"
+            ]
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "look_at_screen",
+          "description": "Look at what is currently visible on the screen and describe or evaluate it, without taking any action or controlling anything. Use this for requests like \"look at my screen and tell me what you think\", \"what does this say\", or \"is this window showing X\" — never for a task where the user wants something actually done (use control_computer for that).",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "question": {
+                "type": "string",
+                "description": "What the user wants to know or have evaluated about what's on screen. If they just said \"look at my screen\", describe generally."
+              },
+              "target": {
+                "type": "string",
+                "description": "Optional — which window to look at, by app name or part of its title (e.g. \"chrome\", \"notepad\"). Leave out to use whichever window is currently in front."
+              }
+            },
+            "required": []
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "look_it_up",
+          "description": "Look something up on the web and give a plain, sourced answer — how something works, what a tool or Skill actually does, typical costs, background on something, current information you would not reliably know from memory. Use this whenever the user wants information found, not a claim judged true or false — for that, use check_claim instead.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "question": {
+                "type": "string",
+                "description": "What to look up, as a clear, self-contained question."
+              }
+            },
+            "required": [
+              "question"
+            ]
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "open_app",
+          "description": "Launch a program installed on the user's Windows computer — anything in their Start Menu, not just a fixed list. Only use this for actual desktop apps, not websites.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "app": {
+                "type": "string",
+                "description": "The name of the app to open, e.g. \"notepad\", \"calculator\", or \"Visual Studio Code\"."
+              }
+            },
+            "required": [
+              "app"
+            ]
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "open_website",
+          "description": "Open a website in the user's default browser. Accepts either a well-known site name (e.g. \"youtube\", \"gmail\", \"github\") or a URL/domain the user mentions.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "site": {
+                "type": "string",
+                "description": "The site name, domain, or URL to open, e.g. \"youtube\" or \"example.com\"."
+              }
+            },
+            "required": [
+              "site"
+            ]
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "read_skill_file",
+          "description": "Read a supporting file from inside one of your installed Skills' own folder — a reference document, template, or example it points you to. Use the exact path given in that Skill's instructions or file list. This only reads text; it never runs anything.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "skill": {
+                "type": "string",
+                "description": "The Skill this file belongs to (its tool name)."
+              },
+              "path": {
+                "type": "string",
+                "description": "The file's path relative to that Skill's folder, e.g. \"reference/rules.md\"."
+              }
+            },
+            "required": [
+              "skill",
+              "path"
+            ]
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "read_web_page",
+          "description": "Fetch a web page and read its text content, so you can summarize it or answer questions about it. Use this when the user gives you a URL, or after web_search if they want to know what a result actually says.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string",
+                "description": "The full URL to read, e.g. \"https://example.com/article\"."
+              }
+            },
+            "required": [
+              "url"
+            ]
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "run_code",
+          "description": "Run a short piece of JavaScript or Python code in an isolated sandbox and get back its output — use this for real computation (math, parsing, data transforms, checking an algorithm) rather than working it out yourself. Not for opening apps or controlling the desktop (use control_computer for that) and not a general shell — no network and no file access beyond what the user has already allowed.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "language": {
+                "type": "string",
+                "enum": [
+                  "javascript",
+                  "python"
+                ],
+                "description": "Which language the code is written in."
+              },
+              "code": {
+                "type": "string",
+                "description": "The code to run."
+              },
+              "needsNetwork": {
+                "type": "boolean",
+                "description": "True only if this code genuinely needs to reach the internet (e.g. an HTTP request). Defaults to false — no network."
+              },
+              "folder": {
+                "type": "string",
+                "description": "An absolute folder path the code needs to read or write, if any. Must already be allowed (see allow_folder) — leave out if the code only needs its own temporary workspace."
+              }
+            },
+            "required": [
+              "language",
+              "code"
+            ]
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "run_skill_script",
+          "description": "Run one of an installed Skill's own helper scripts (from its folder) through Jarvis's sandbox and get back its output. Only use a script path a Skill's own instructions actually pointed you to — never guess one. The first use for a given Skill needs the user's one-time approval; later runs of that same Skill's scripts don't ask again.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "skill": {
+                "type": "string",
+                "description": "The Skill this script belongs to (its tool name)."
+              },
+              "path": {
+                "type": "string",
+                "description": "The script's path relative to that Skill's folder, e.g. \"scripts/build.py\"."
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Optional arguments the script expects, if its instructions mention any."
+              }
+            },
+            "required": [
+              "skill",
+              "path"
+            ]
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "share_screen",
+          "description": "Turn on Screen Sharing — a persistent mode where the user can ask about what's on their screen at any point without saying \"look at my screen\" first each time. Use this when the user says something like \"share my screen with me\" or \"keep an eye on my screen while I work\" with no specific condition attached. If they want you to watch for one specific thing and act when it happens, use watch_for instead.",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "start_screen_recording",
+          "description": "Start recording the whole screen as a real video, right now. Use this when the user asks to record their screen, capture a video of something happening, or record while a task is performed. Stays running until stop_screen_recording is called — including through a computer-control task, if one is asked for next.",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "stop_screen_recording",
+          "description": "Stop the currently running screen recording and show the user the finished video. Use this when the user asks to stop recording or says they're done.",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "stop_sharing_screen",
+          "description": "Turn off Screen Sharing. Use this when the user says something like \"stop sharing my screen\" or \"you can stop watching now.\"",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "suggest_improvement",
+          "description": "Propose a genuine improvement to how you work — a behaviour rule, a Skill idea, or a code change — when you've noticed a real, specific opportunity, not a vague feeling. This never applies itself; it always waits for the user's own review on the Self-Improvement screen. Use rarely, only for something concrete worth their attention.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "rule",
+                  "setting",
+                  "skill",
+                  "code",
+                  "idea"
+                ],
+                "description": "\"rule\" for a behaviour rule you could follow yourself; \"setting\" for a tunable dial; \"skill\" or \"code\" for something that needs building; \"idea\" for anything looser."
+              },
+              "title": {
+                "type": "string",
+                "description": "A short, plain-language title."
+              },
+              "rationale": {
+                "type": "string",
+                "description": "Why, in a sentence or two — what you actually noticed."
+              },
+              "helps_jarvis": {
+                "type": "string",
+                "description": "How this would help Jarvis specifically."
+              },
+              "helps_user": {
+                "type": "string",
+                "description": "How this would help the user specifically."
+              },
+              "rule_text": {
+                "type": "string",
+                "description": "Only for kind \"rule\" — the exact instruction, phrased directly."
+              },
+              "setting_key": {
+                "type": "string",
+                "description": "Only for kind \"setting\" — which dial."
+              },
+              "setting_value": {
+                "type": "string",
+                "description": "Only for kind \"setting\" — the new value."
+              }
+            },
+            "required": [
+              "kind",
+              "title",
+              "rationale"
+            ]
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "take_screenshot",
+          "description": "Take a screenshot right now and show it to the user directly in the chat, as an actual picture — not a description of it. Use this when the user asks to see, share, send, or save a screenshot (\"take a screenshot\", \"send me a screenshot of this\", \"grab a picture of my screen\"). For answering a QUESTION about what's on screen instead, use look_at_screen.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "target": {
+                "type": "string",
+                "description": "Optional — which window to capture, by app name or part of its title (e.g. \"chrome\", \"notepad\"). Leave out to capture whichever window is currently in front."
+              }
+            },
+            "required": []
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "undo_improvement",
+          "description": "Undo one specific self-improvement change, by its id (from review_improvements or the Self-Improvement screen). If it refuses because the value changed since, explain that plainly and ask whether to undo anyway before calling this again with force:true.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "change_id": {
+                "type": "string",
+                "description": "The change's id."
+              },
+              "force": {
+                "type": "boolean",
+                "description": "Only after the user confirms they want it undone despite it having changed since."
+              }
+            },
+            "required": [
+              "change_id"
+            ]
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "web_search",
+          "description": "Search the web for something and show the user the results. Use this when the user asks you to look something up or search for something online, rather than answering from your own knowledge.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "query": {
+                "type": "string",
+                "description": "What to search for, e.g. \"weather in Lagos\"."
+              }
+            },
+            "required": [
+              "query"
+            ]
+          },
+          "meta": false,
+          "kind": "builtin"
+        },
+        {
+          "name": "list_files",
+          "description": "List the files and folders inside one of the user's allowed folders.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          },
+          "meta": false,
+          "kind": "connector"
+        },
+        {
+          "name": "read_file",
+          "description": "Read the text contents of a file inside one of the allowed folders.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          },
+          "meta": false,
+          "kind": "connector"
+        },
+        {
+          "name": "write_file",
+          "description": "Write (creating or overwriting) a text file inside one of the allowed folders.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ]
+          },
+          "meta": false,
+          "kind": "connector"
+        },
+        {
+          "name": "move_file",
+          "description": "Move or rename a file, as long as both the source and destination are inside allowed folders.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "from",
+              "to"
+            ]
+          },
+          "meta": false,
+          "kind": "connector"
+        },
+        {
+          "name": "browser_navigate",
+          "description": "Opens a URL in a REAL, VISIBLE browser window on the user's screen (Jarvis's own separate, isolated browser — never the user's real Chrome). Only use this when the task genuinely needs clicking, typing, or filling something in on a real page, or the user explicitly asked to browse/open a site to look at. For a plain information lookup, use read_web_page instead — it works invisibly in the background with no window popping up.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "url"
+            ]
+          },
+          "meta": false,
+          "kind": "connector"
+        },
+        {
+          "name": "browser_read_page",
+          "description": "Read the current page's title, URL, and visible text, from the visible browser window opened by browser_navigate.",
+          "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          },
+          "meta": false,
+          "kind": "connector"
+        },
+        {
+          "name": "browser_click",
+          "description": "Click an element on the current page in the visible browser window, given a CSS selector.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "selector": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "selector"
+            ]
+          },
+          "meta": false,
+          "kind": "connector"
+        },
+        {
+          "name": "browser_type",
+          "description": "Type text into an element on the current page in the visible browser window, given a CSS selector.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "selector": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "selector",
+              "text"
+            ]
+          },
+          "meta": false,
+          "kind": "connector"
+        }
+      ]
+    }
+  },
+  "recordedAt": "2026-09-04T15:34:20.095Z"
+}

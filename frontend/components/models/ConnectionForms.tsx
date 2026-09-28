@@ -6,7 +6,16 @@ import { Button } from '@/components/ui/Button';
 import { Field, inputClass } from '@/components/ui/Field';
 import { Modal } from '@/components/ui/Modal';
 import { api, ApiRequestError } from '@/lib/api';
-import type { AddConnectionResult, ProviderConnection, ProviderFormat, ProviderKind } from '@/lib/api-types';
+import type {
+  AddConnectionResult, GatewayKind, ProviderConnection, ProviderFormat, ProviderKind,
+} from '@/lib/api-types';
+
+/** The gateways Jarvis knows how to read — offered only for the chat format they speak. */
+const GATEWAYS: { id: GatewayKind | ''; label: string }[] = [
+  { id: '', label: 'None — a plain server' },
+  { id: 'openrouter', label: 'OpenRouter' },
+  { id: 'omniroute', label: 'OmniRoute' },
+];
 
 /**
  * Connect a provider: only the fields that kind actually needs.
@@ -128,12 +137,16 @@ export function EditModal({
   const [name, setName] = useState('');
   const [address, setAddress] = useState('');
   const [key, setKey] = useState('');
+  const [gateway, setGateway] = useState<GatewayKind | ''>('');
+  const [preferRouters, setPreferRouters] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
 
   useEffect(() => {
     setName(connection?.label ?? '');
     setAddress(connection?.address ?? '');
+    setGateway(connection?.gatewayKind ?? '');
+    setPreferRouters(connection?.preferRouters ?? false);
     setKey('');
     setError(null);
     setWorking(false);
@@ -146,8 +159,12 @@ export function EditModal({
     setError(null);
     setWorking(true);
     try {
-      const body: { label?: string; address?: string; apiKey?: string } = { label: name };
+      const body: Parameters<typeof api.models.edit>[1] = { label: name };
       if (connection.addressEditable) body.address = address;
+      if (connection.format === 'openai-chat') {
+        body.gatewayKind = gateway || null;
+        body.preferRouters = gateway !== '' && preferRouters;
+      }
       if (key.trim()) body.apiKey = key.trim();
       const saved = await api.models.edit(connection.id, body);
       onSaved(saved.connection);
@@ -188,6 +205,26 @@ export function EditModal({
           <input type="password" className={inputClass} value={key} data-testid="edit-key"
                  autoComplete="off" onChange={(event) => setKey(event.target.value)} />
         </Field>
+      )}
+      {connection.format === 'openai-chat' && (
+        <Field
+          label="Gateway"
+          hint="If this address is a gateway, Jarvis reads what it says about its models — prices, pictures, tools."
+        >
+          <select className={inputClass} value={gateway} data-testid="edit-gateway"
+                  onChange={(event) => setGateway(event.target.value as GatewayKind | '')}>
+            {GATEWAYS.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}
+          </select>
+        </Field>
+      )}
+      {connection.format === 'openai-chat' && gateway !== '' && (
+        <label className="flex items-start gap-2 py-1 text-[13px] text-ink">
+          <input type="checkbox" className="mt-0.5" checked={preferRouters} data-testid="edit-prefer-routers"
+                 onChange={(event) => setPreferRouters(event.target.checked)} />
+          <span>
+            Under Auto, use this gateway&apos;s own routing models instead of trying its models one by one.
+          </span>
+        </label>
       )}
       <p className="pt-1 text-[12px] text-ink-faint">
         Changing the address or key clears the last connection test — test it again to check the change.

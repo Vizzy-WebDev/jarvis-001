@@ -24,6 +24,7 @@ import type {
   ModelAvailability,
   ModelSelection,
   ModelsOverview,
+  GatewayKind,
   ProviderConnection,
   ProviderFormat,
   ProviderKind,
@@ -228,7 +229,9 @@ export const api = {
     overview: () => request<ModelsOverview>('/models'),
     add: (body: { kind: string; label?: string; address?: string; format?: string; apiKey?: string }) =>
       request<AddConnectionResult>('/models', { method: 'POST', ...json(body) }),
-    edit: (id: string, body: { label?: string; address?: string; apiKey?: string }) =>
+    edit: (id: string, body: {
+      label?: string; address?: string; apiKey?: string; gatewayKind?: GatewayKind | null; preferRouters?: boolean;
+    }) =>
       request<{ ok: true; connection: ProviderConnection }>(
         `/models/${encodeURIComponent(id)}`, { method: 'PATCH', ...json(body) }),
     test: (id: string) =>

@@ -781,22 +781,25 @@ def test_the_composer_picker_offers_effort_only_for_a_model_whose_provider_repor
     page.wait_for_selector("[data-testid=effort-section]")
     # Where a person can actually see and reach it — see `assert_really_visible`.
     assert_really_visible(page, "[data-testid=popover]")
-    assert_really_visible(page, "[data-testid=effort-low]")
+    assert_really_visible(page, "[data-testid=effort-minimal]")
     levels = page.eval_on_selector_all(
         "[data-testid^=effort-]:not([data-testid=effort-section])",
         "els => els.map(e => e.dataset.testid.replace('effort-', ''))")
-    assert levels == ["low", "medium", "high", "max"]  # exactly what the provider reported — no xhigh
-    assert "Default" in page.inner_text("[data-testid=effort-high]")
-    page.click("[data-testid=effort-low]")
+    # What the provider reported, in the neutral names (its low/medium/high/max) — no xhigh.
+    assert levels == ["minimal", "balanced", "thorough", "maximum"]
+    assert "Default" in page.inner_text("[data-testid=effort-thorough]")
+    page.click("[data-testid=effort-minimal]")
     page.wait_for_function(
-        "() => document.querySelector('[data-testid=effort-low]').getAttribute('aria-pressed') === 'true'")
+        "() => document.querySelector('[data-testid=effort-minimal]').getAttribute('aria-pressed') === 'true'")
     assert backend_models(live_server)["selection"] == {
-        "auto": False, "providerId": backend_models(live_server)["connections"][0]["id"], "modelId": "opus-x", "effort": "low"}
+        "auto": False, "providerId": backend_models(live_server)["connections"][0]["id"], "modelId": "opus-x",
+        "effort": "minimal"}
 
     page.keyboard.press("Escape")
     say(page, "think about this")
     page.wait_for_function("() => document.body.innerText.includes('Thought about it.')", timeout=90_000)
-    assert stub.last_body()["output_config"] == {"effort": "low"}  # it really reached the provider
+    # It really reached the provider, as Anthropic's own name for "minimal".
+    assert stub.last_body()["output_config"] == {"effort": "low"}
 
     # A model with no reported levels: no effort section at all, and nothing sent.
     page.click("[data-testid=model-picker]")
@@ -838,6 +841,28 @@ def test_deleting_the_selected_connection_warns_and_never_switches_to_another(
     page.evaluate("location.hash = '#/'")
     assert_jarvis_cannot_answer_yet(page)
     assert beta.posts() == [] and alpha.posts() == []
+
+
+def test_a_connection_is_declared_a_gateway_on_its_edit_form_and_it_really_saves(
+        page, live_server, serve_provider):
+    """The gateway a chat-format connection is (and whether Auto prefers its routers) is
+    set on the connection's own Edit form — and the choice really reaches the server."""
+    stub = serve_provider("openai-chat", models=[{"id": "auto/best", "owned_by": "combo"}, {"id": "plain"}])
+    connection = connect(live_server, stub, gatewayKind="")
+    assert connection["gatewayKind"] is None and connection["preferRouters"] is False
+    page.reload(wait_until="load")
+    open_models_screen(page)
+    page.click("[data-testid=edit-connection]")
+    assert_really_visible(page, "[data-testid=edit-gateway]")
+    assert page.locator("[data-testid=edit-prefer-routers]").count() == 0  # only offered for a gateway
+    page.select_option("[data-testid=edit-gateway]", "omniroute")
+    assert_really_visible(page, "[data-testid=edit-prefer-routers]")
+    page.check("[data-testid=edit-prefer-routers]")
+    page.click("[data-testid=edit-submit]")
+    page.wait_for_function(
+        "() => !document.querySelector('[data-testid=edit-gateway]')")  # the dialog closed on success
+    saved = backend_models(live_server)["connections"][0]
+    assert saved["gatewayKind"] == "omniroute" and saved["preferRouters"] is True
 
 
 def test_how_jarvis_spends_a_turn_is_saved_and_is_apart_from_the_model_and_effort(page, live_server):

@@ -158,8 +158,17 @@ export interface ProviderConnection {
   detail: string | null;
   checkedAt: string | null;
   discoveredAt: string | null;
+  /**
+   * The gateway this connection says it is, whose own listing fields (prices, what a
+   * model takes in, its router entries) Jarvis then reads. Null: a plain server.
+   */
+  gatewayKind: GatewayKind | null;
+  /** Under Auto, try this connection's own router models rather than each model in turn. */
+  preferRouters: boolean;
   models: ProviderModel[];
 }
+
+export type GatewayKind = 'openrouter' | 'omniroute';
 
 export interface ModelSelection {
   /** True when the person chose Auto: Jarvis picks per message, and no model is named. */

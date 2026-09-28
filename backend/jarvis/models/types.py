@@ -8,8 +8,8 @@ would pull the whole turn loop in behind it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Mapping
 
 
 @dataclass(frozen=True)
@@ -27,17 +27,42 @@ class Discovered:
     `facts` is the little the PROVIDER reported that a request to this model
     needs, and nothing else: `{"maxOutput": int}` where a request must state an
     output ceiling and the ceiling differs per model, and
-    `{"effort": {"levels": [...], "default": ...}}` where it reported which
-    reasoning-effort levels the model accepts. A gateway that describes its models
-    may also give `{"chat": False}` (not a text model), `{"tools": bool}` and
-    `{"image": bool}` — only ever as reported, and read only by Auto. It is never filled in from a table
-    of what we believe a model can do — a key that is absent means the provider
-    did not say, and nothing is offered or assumed on its behalf.
+    `{"reasoning": {"supported": bool, "levels": [...], "default": ...}}` where it
+    reported whether the model reasons and at which levels (in the neutral names of
+    `request.REASONING_LEVELS`, never a provider's own). A gateway that describes its
+    models may also give `{"chat": False}` (not a text model), `{"tools": bool}`,
+    `{"image": bool}`, `{"free": bool}` and `{"router": bool}` — only ever as reported,
+    and read only by Auto. It is never filled in from a table of what we believe a
+    model can do — a key that is absent means the provider did not say, and nothing
+    is offered or assumed on its behalf. `False` is different from absent: it means the
+    provider SAID no, which is what lets a later report correct an earlier one.
+
+    `raw` is the provider's own listing row, handed on so a gateway's own fields can
+    be read by that gateway's module (`models/gateways/`) rather than by the generic
+    one. It is never stored.
     """
 
     model_id: str
     label: str | None = None
     facts: dict[str, Any] | None = None
+    raw: dict[str, Any] | None = field(default=None, compare=False, repr=False)
+
+
+@dataclass(frozen=True)
+class RawError:
+    """A provider's failure exactly as it arrived, before anyone has judged it: what a
+    provider module's `normalize_error` reads.
+
+    `status` is None for a failure reported INSIDE an otherwise-successful stream.
+    `body` is the parsed JSON when it was JSON, else None; `words` is the provider's
+    own message as short, redacted plain text, ready to show.
+    """
+
+    status: int | None
+    headers: Mapping[str, str] = field(default_factory=dict)
+    body: Any = None
+    words: str = ""
+    url: str = ""
 
 
 @dataclass(frozen=True)

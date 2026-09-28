@@ -16,15 +16,11 @@ from __future__ import annotations
 
 from typing import Any, Iterator
 
+from ..conversation import to_chat_request
 from ..orchestrator.model_port import ModelEvent, ModelSwitched, StepComplete, TextChunk, ToolCall
 from ..orchestrator.model_port import Usage as PortUsage
 from . import attempt, runtime, selection
-from .providers import _wire as wire
 from .types import TextDelta
-
-
-def _has_pictures(messages: list[dict[str, Any]]) -> bool:
-    return any(kind == "image" for m in messages for kind, _, _ in wire.media_of(m))
 
 
 class JarvisModelClient:
@@ -42,10 +38,11 @@ class JarvisModelClient:
         """`role` says what kind of turn this is and changes nothing about which
         model runs it: the person's one choice — a named model, or Auto — covers
         every kind of turn."""
-        plan = selection.plan(model_id, needs_images=_has_pictures(messages))
+        request = to_chat_request(messages, system=system, tools=tools)
+        plan = selection.plan(model_id, needs_images=request.has_images())
         selection.check_needs(need)
 
-        run = attempt.run(plan, messages=messages, system=system, tools=tools, named=model_id is None)
+        run = attempt.run(plan, request=request, named=model_id is None)
         while True:
             try:
                 event = next(run)
@@ -59,7 +56,7 @@ class JarvisModelClient:
                                     reason=event.reason)
         resolved, finished = result.resolved, result.finished
 
-        if not runtime.same_model(resolved.model.model_id, finished.model_id):
+        if not runtime.same_model(resolved.model.model_id, finished.model_id, resolved.connection.gateway_kind):
             yield ModelSwitched(
                 to_model_id=finished.model_id or "",
                 from_model_id=resolved.model.model_id,

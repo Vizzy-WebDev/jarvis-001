@@ -6,18 +6,17 @@ that is honoured exactly: this module is not consulted for it at all.
 When Auto is chosen, Jarvis picks per turn from the models that are set up now,
 by rules that are written down here and never involve chance:
 
-1. **Who can be picked.** Every model on a connection that can be used (it has its
-   key, where one is needed), except one the PROVIDER has itself said cannot take
-   a Jarvis turn — a video model, one that doesn't produce text, one that says tool
-   calling doesn't work — and, when the turn carries a picture, one that said it
-   doesn't accept images. Nothing is excluded on a guess from its name: a provider
-   that reports nothing about a model leaves it in. When a connection's models
-   include ones the provider itself marked as its own router (`facts["router"]` —
-   reported, e.g. OmniRoute's `owned_by: "combo"`, never guessed from an id), only
-   those are candidates on that connection: a router already picks and falls back
-   across the rest of that connection's models on its own, so Auto does not also
-   walk them individually — that would be trying to do the router's job worse, with
-   less information than the router itself has.
+1. **Who can be picked.** Every model on the person's list, on a connection that can
+   be used (it has its key, where one is needed), except one the PROVIDER has itself
+   said cannot take a Jarvis turn — a video model, one that doesn't produce text, one
+   that says tool calling doesn't work — and, when the turn carries a picture, one
+   that said it doesn't accept images; when the request asks for reasoning, one not
+   reported to reason. Nothing is excluded on a guess from its name: a provider that
+   reports nothing about a model leaves it in. On a connection set to prefer its
+   routers (`prefer_routers`), when some of its models are the gateway's own routers
+   (`facts["router"]`, as that gateway's module read it), only those are candidates
+   there: a router already picks and falls back across the rest of that connection's
+   models on its own, so Auto does not also walk them individually.
 2. **Who is preferred.** Models that have answered here before come first — from the
    outcomes recorded, or from the replies already saved in the conversation. Among
    them, quicker ones first (in coarse classes, so Auto stays steady rather than
@@ -26,15 +25,13 @@ by rules that are written down here and never involve chance:
    in the order they were connected and listed. **Speed is only ever a preference:**
    a slow model is never excluded, never counted as failing for being slow, and is
    used whenever the quicker ones aren't available.
-3. **Who is steered around.** A model that just failed waits behind the others, for
-   5 minutes after its first failure in a row and twice as long for each further one
-   (capped at 2 hours); any answer clears it. One rule for every kind of failure, so a
-   model with a good record isn't shelved for long over a single blip. Some failures
-   are about the whole connection rather than one model — the key is refused, the
-   host can't be reached — and those hold back every model on it; a provider saying
-   the account needs credit (402) holds back the models it lists as paid, and not the
-   ones it lists as free. Moved down, never removed: if nothing else is left it is
-   still tried.
+3. **Who is steered around.** Anything a recent failure is holding back
+   (`health.py`): the one model, its whole credential or its whole connection — as far
+   as the provider module that read the failure said it reached — for as long as the
+   provider said to wait, or 5 minutes doubling per failure in a row (capped at 2
+   hours). Any answer lifts it. A "needs credit" hold passes over models the provider
+   lists as free. Moved down, never removed: if nothing else is left it is still tried.
+   Nothing here decides what a failure means — that was decided where it was read.
 
 What Auto does with that list is in `attempt.py`: try the first and, only if it
 FAILS before saying anything, the next — never because a model is merely slow.
@@ -43,18 +40,11 @@ FAILS before saying anything, the next — never because a model is merely slow.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from .. import config
-from . import kinds, store
+from . import health, kinds, store
 
-#: How long a model waits behind the others after its first failure in a row. It
-#: doubles with each further consecutive failure, up to the cap; an answer resets it.
-BASE_COOLDOWN = timedelta(minutes=5)
-MAX_COOLDOWN = timedelta(hours=2)
-
-#: Failures that say something about the WHOLE connection, not one model on it.
-CONNECTION_WIDE = {"auth", "unreachable"}
 #: Models that may fail on one connection in one step before it is left alone for that step.
 STRIKES_PER_CONNECTION = 2
 #: Once this long has passed in a step, after a failure, Auto stops STARTING models it has
@@ -82,12 +72,17 @@ def lacks_key(connection: store.Connection) -> bool:
                 and not (connection.secret_ref and config.get_secret(connection.secret_ref)))
 
 
-def fits(model: store.Model, *, needs_images: bool = False) -> bool:
-    """Can this model take a turn, going only by what its provider said about it?"""
+def fits(model: store.Model, *, needs_images: bool = False, needs_reasoning: bool = False) -> bool:
+    """Can this model take a turn, going only by what its provider said about it?
+
+    Reasoning is the one thing that must be REPORTED rather than merely not denied:
+    a request that asks for it goes only to a model whose provider said it reasons."""
     facts = model.facts or {}
     if facts.get("chat") is False or facts.get("tools") is False:
         return False
     if needs_images and facts.get("image") is False:
+        return False
+    if needs_reasoning and (facts.get("reasoning") or {}).get("supported") is not True:
         return False
     return True
 
@@ -101,26 +96,6 @@ def _moment(text: str | None) -> datetime | None:
         return None
 
 
-def cooldown(outcome: store.Outcome) -> timedelta:
-    """How long this model waits after its latest failure: 5 minutes, doubling with each
-    further failure in a row, capped."""
-    streak = max(1, outcome.fail_streak)
-    return min(BASE_COOLDOWN * (2 ** min(streak - 1, 8)), MAX_COOLDOWN)
-
-
-def waiting(outcome: store.Outcome | None, now: datetime) -> bool:
-    """Did this model fail recently enough that the others should go first?"""
-    if not outcome or not outcome.last_fail_at:
-        return False
-    failed = _moment(outcome.last_fail_at)
-    if failed is None:
-        return False
-    worked = _moment(outcome.last_ok_at)
-    if worked is not None and worked >= failed:
-        return False  # it answered after that failure — the failure is history
-    return now - failed < cooldown(outcome)
-
-
 def speed_class(ttft_ms: int | None) -> int:
     """0 quick, 1 middling (or not measured), 2 slow. Coarse on purpose."""
     if ttft_ms is None:
@@ -128,41 +103,19 @@ def speed_class(ttft_ms: int | None) -> int:
     return 0 if ttft_ms <= FAST_MS else 1 if ttft_ms <= OK_MS else 2
 
 
-def _holds(outcomes: dict[tuple[str, str], store.Outcome],
-           now: datetime) -> tuple[dict[str, datetime], dict[str, datetime]]:
-    """`(whole, paid)`: for each connection, when it last failed in a way that holds back
-    ALL its models (key refused, host unreachable) or only its PAID ones (needs credit) —
-    for as long as that failure is still fresh."""
-    whole: dict[str, datetime] = {}
-    paid: dict[str, datetime] = {}
-    last_ok: dict[str, datetime] = {}
-    for (connection_id, _), o in outcomes.items():
-        ok = _moment(o.last_ok_at)
-        if ok and (connection_id not in last_ok or ok > last_ok[connection_id]):
-            last_ok[connection_id] = ok
-        failed = _moment(o.last_fail_at)
-        if not failed or now - failed >= cooldown(o):
-            continue
-        held = whole if o.fail_kind in CONNECTION_WIDE else paid if o.fail_kind == "billing" else None
-        if held is not None and (connection_id not in held or failed > held[connection_id]):
-            held[connection_id] = failed
-    # Anything on the connection answering since the failure means the connection is fine again.
-    for connection_id in [c for c, failed in whole.items() if last_ok.get(c, failed) > failed]:
-        del whole[connection_id]
-    return whole, paid
-
-
-def candidates(*, needs_images: bool = False, now: datetime | None = None) -> list[Candidate]:
+def candidates(*, needs_images: bool = False, needs_reasoning: bool = False,
+               now: datetime | None = None) -> list[Candidate]:
     """Everything Auto may pick, best first. Deterministic: the same models, the same
-    outcomes and the same clock always give the same order."""
+    outcomes, the same holds and the same clock always give the same order."""
     now = now or datetime.now(timezone.utc)
     outcomes = store.list_outcomes()
-    whole, paid = _holds(outcomes, now)
     answered = store.recent_answers()
+    listed = store.list_models()  # the catalog with the person's own decisions laid over it
+    holds = health.Holds.load(now, listed)
 
     by_connection: dict[str, list[store.Model]] = {}
     copies: dict[str, int] = {}
-    for model in store.list_models():
+    for model in listed:
         by_connection.setdefault(model.provider_id, []).append(model)
         copies[model.model_id] = copies.get(model.model_id, 0) + 1
 
@@ -171,9 +124,10 @@ def candidates(*, needs_images: bool = False, now: datetime | None = None) -> li
         if lacks_key(connection):
             continue
         connection_models = by_connection.get(connection.id, [])
-        routers = [m for m in connection_models if (m.facts or {}).get("router")]
+        routers = ([m for m in connection_models if (m.facts or {}).get("router") is True]
+                   if connection.prefer_routers else [])
         for model in (routers or connection_models):
-            if not fits(model, needs_images=needs_images):
+            if not fits(model, needs_images=needs_images, needs_reasoning=needs_reasoning):
                 continue
             outcome = outcomes.get((connection.id, model.model_id))
             worked = _moment(outcome.last_ok_at) if outcome else None
@@ -182,16 +136,16 @@ def candidates(*, needs_images: bool = False, now: datetime | None = None) -> li
             # so the credit can't land on the wrong one.
             if worked is None and copies.get(model.model_id) == 1:
                 worked = _moment(answered.get(model.model_id))
-            held = connection.id in whole or (
-                connection.id in paid and (model.facts or {}).get("free") is False
-                and not (worked and worked > paid[connection.id]))
+            held = holds.blocking(connection, model) is not None
             key = (
-                1 if (held or waiting(outcome, now)) else 0,                       # steered around last
+                1 if held else 0,                                                  # steered around last
                 0 if worked else 1,                                                # proven before untried
                 speed_class(outcome.ttft_ms if outcome else None) if worked else 1,  # quicker first
                 -(worked.timestamp()) if worked else 0.0,                          # most recent success
                 0 if (model.facts or {}).get("tools") is True else 1,             # reported tool-capable
-                connection.created_at, model.added_at, model.model_id,            # then set-up order
+                connection.created_at,                                             # then set-up order:
+                model.user_order if model.user_order is not None else float("inf"),  # the person's own,
+                model.added_at, model.model_id,                                    # else as listed
             )
             ranked.append((key, Candidate(connection, model, proven=worked is not None)))
     ranked.sort(key=lambda pair: pair[0])

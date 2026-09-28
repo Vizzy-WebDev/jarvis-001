@@ -2,7 +2,19 @@
 
 A leaf on purpose: it imports the database and the clock and nothing else, so
 anything can read it without a cycle. What the rows *mean* — whether a selection
-is available, what a provider can do — is worked out elsewhere.
+is available, what a provider can do, how long a failure holds a model back — is
+worked out elsewhere.
+
+Three kinds of fact about a model, kept in three places (migration 35):
+
+* the **catalog** (`provider_catalog`) — what the provider reported. Only a refresh
+  or a hand-added id writes it;
+* the **policy** (`provider_policy`) — what the person decided (removed, their own
+  label). A refresh never touches it;
+* the **runtime** — how calls went (`model_outcomes`) and what is being held back
+  for now (`model_holds`).
+
+A model is listed when it is in the catalog and the person hasn't removed it.
 
 Credentials are never in here. A connection holds only the *name* of its secret
 (`secret_ref`); the key itself lives in `.env` through `config.save_secret`.
@@ -54,6 +66,15 @@ class Connection:
     #: about whether the connection itself is good.
     state: str
     detail: str | None
+    #: The credential (key/account) this connection's requests go out on. One key per
+    #: connection today, so it is the connection's own id unless stated otherwise — but
+    #: a failure that is about the credential is held against THIS, not the connection.
+    credential_id: str = ""
+    #: The gateway this connection says it is ('openrouter', 'omniroute'), whose own
+    #: listing fields are then read by `models/gateways/`. None: a plain server.
+    gateway_kind: str | None = None
+    #: Auto prefers this connection's router models over walking its others one by one.
+    prefer_routers: bool = False
 
 
 @dataclass(frozen=True)
@@ -71,6 +92,8 @@ class Model:
     #: `discovered_at` means the provider has stopped listing it — which is a
     #: note, not a verdict: the model stays selectable.
     last_seen_at: str | None
+    #: The person's own ordering, where they gave one (policy). Nothing sets it yet.
+    user_order: int | None = None
 
 
 def _connection(row: Any) -> Connection:
@@ -79,17 +102,32 @@ def _connection(row: Any) -> Connection:
         base_url=row["base_url"], secret_ref=row["secret_ref"], created_at=row["created_at"],
         checked_at=row["checked_at"], discovered_at=row["discovered_at"],
         state=row["state"], detail=row["detail"],
+        credential_id=row["credential_id"] or row["id"], gateway_kind=row["gateway_kind"] or None,
+        prefer_routers=bool(row["prefer_routers"]),
     )
 
 
-def _model(row: Any) -> Model:
+def _facts(text: str | None) -> dict[str, Any] | None:
     try:
-        facts = json.loads(row["facts_json"]) if row["facts_json"] else None
+        facts = json.loads(text) if text else None
     except ValueError:
         facts = None
+    return facts if isinstance(facts, dict) else None
+
+
+def _model(row: Any) -> Model:
     return Model(provider_id=row["provider_id"], model_id=row["model_id"], label=row["label"],
-                 source=row["source"], facts=facts if isinstance(facts, dict) else None,
-                 added_at=row["added_at"], last_seen_at=row["last_seen_at"])
+                 source=row["source"], facts=_facts(row["facts_json"]),
+                 added_at=row["added_at"], last_seen_at=row["last_seen_at"], user_order=row["user_order"])
+
+
+#: A model as the person sees it: the catalog row, with the person's own decisions
+#: laid over it. No policy row means nothing was decided — listed, and enabled.
+_LISTED = ("SELECT c.provider_id, c.model_id, COALESCE(p.user_label, c.label) AS label, c.source, "
+           "c.facts_json, c.added_at, c.last_seen_at, p.user_order AS user_order "
+           "FROM provider_catalog c LEFT JOIN provider_policy p "
+           "ON p.provider_id = c.provider_id AND p.model_id = c.model_id "
+           "WHERE COALESCE(p.excluded, 0) = 0 AND COALESCE(p.enabled, 1) = 1")
 
 
 # --- connections ---------------------------------------------------------------------
@@ -112,11 +150,13 @@ def new_id() -> str:
 
 @_locked
 def add_connection(*, connection_id: str, kind: str, format: str, label: str,
-                   base_url: str | None, secret_ref: str | None) -> Connection:
+                   base_url: str | None, secret_ref: str | None, gateway_kind: str | None = None,
+                   prefer_routers: bool = False) -> Connection:
     get_db().execute(
-        "INSERT INTO model_providers (id, kind, format, label, base_url, secret_ref, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (connection_id, kind, format, label, base_url, secret_ref, now_iso()),
+        "INSERT INTO model_providers (id, kind, format, label, base_url, secret_ref, created_at, "
+        "gateway_kind, prefer_routers) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (connection_id, kind, format, label, base_url, secret_ref, now_iso(), gateway_kind,
+         1 if prefer_routers else 0),
     )
     found = get_connection(connection_id)
     assert found is not None
@@ -125,7 +165,7 @@ def add_connection(*, connection_id: str, kind: str, format: str, label: str,
 
 #: The only fields an edit may change. The kind and the format are what the
 #: connection IS; changing them is deleting it and adding another.
-_EDITABLE = {"label", "base_url", "secret_ref"}
+_EDITABLE = {"label", "base_url", "secret_ref", "gateway_kind", "prefer_routers"}
 
 
 @_locked
@@ -133,6 +173,8 @@ def update_connection(connection_id: str, **fields: Any) -> Connection | None:
     unknown = set(fields) - _EDITABLE
     if unknown:
         raise ValueError(f"a connection's {', '.join(sorted(unknown))} cannot be edited")
+    if "prefer_routers" in fields:
+        fields["prefer_routers"] = 1 if fields["prefer_routers"] else 0
     if fields:
         columns = ", ".join(f"{name} = ?" for name in fields)
         get_db().execute(f"UPDATE model_providers SET {columns} WHERE id = ?",
@@ -161,56 +203,89 @@ def delete_connection(connection_id: str) -> bool:
 
 @_locked
 def list_models(connection_id: str | None = None) -> list[Model]:
+    """Every model the person has on their lists (not removed, not disabled)."""
     if connection_id is None:
-        rows = get_db().execute("SELECT * FROM provider_models ORDER BY provider_id, added_at, model_id").fetchall()
+        rows = get_db().execute(_LISTED + " ORDER BY c.provider_id, c.added_at, c.model_id").fetchall()
     else:
-        rows = get_db().execute(
-            "SELECT * FROM provider_models WHERE provider_id = ? ORDER BY added_at, model_id",
-            (connection_id,)).fetchall()
+        rows = get_db().execute(_LISTED + " AND c.provider_id = ? ORDER BY c.added_at, c.model_id",
+                                (connection_id,)).fetchall()
     return [_model(r) for r in rows]
 
 
 @_locked
 def get_model(connection_id: str, model_id: str) -> Model | None:
-    row = get_db().execute(
-        "SELECT * FROM provider_models WHERE provider_id = ? AND model_id = ?",
-        (connection_id, model_id)).fetchone()
+    """A listed model, or None — including for one the person removed."""
+    row = get_db().execute(_LISTED + " AND c.provider_id = ? AND c.model_id = ?",
+                           (connection_id, model_id)).fetchone()
     return _model(row) if row else None
+
+
+def _in_catalog(connection_id: str, model_id: str) -> Any:
+    return get_db().execute(
+        "SELECT facts_json FROM provider_catalog WHERE provider_id = ? AND model_id = ?",
+        (connection_id, model_id)).fetchone()
+
+
+def _set_policy(connection_id: str, model_id: str, **fields: Any) -> None:
+    columns = ", ".join(fields)
+    marks = ", ".join("?" for _ in fields)
+    updates = ", ".join(f"{name} = excluded.{name}" for name in fields)
+    get_db().execute(
+        f"INSERT INTO provider_policy (provider_id, model_id, {columns}) VALUES (?, ?, {marks}) "
+        f"ON CONFLICT(provider_id, model_id) DO UPDATE SET {updates}",
+        (connection_id, model_id, *fields.values()))
 
 
 @_locked
 def add_manual_model(connection_id: str, model_id: str, label: str | None = None) -> Model:
     """A model typed in by hand. Already listed is fine — it is returned as it is,
-    so adding the same id twice, or one discovery already found, changes nothing."""
+    so adding the same id twice, or one discovery already found, changes nothing.
+
+    One the person had REMOVED comes back: adding it is their own decision, made
+    again, and the only thing that ever lifts a removal."""
     existing = get_model(connection_id, model_id)
     if existing:
         return existing
-    get_db().execute(
-        "INSERT INTO provider_models (provider_id, model_id, label, source, facts_json, added_at, last_seen_at) "
-        "VALUES (?, ?, ?, 'manual', NULL, ?, NULL)",
-        (connection_id, model_id, label, now_iso()),
-    )
+    if not _in_catalog(connection_id, model_id):
+        get_db().execute(
+            "INSERT INTO provider_catalog (provider_id, model_id, label, source, facts_json, added_at, last_seen_at) "
+            "VALUES (?, ?, NULL, 'manual', NULL, ?, NULL)",
+            (connection_id, model_id, now_iso()),
+        )
+    _set_policy(connection_id, model_id, excluded=0, **({"user_label": label} if label else {}))
     found = get_model(connection_id, model_id)
     assert found is not None
     return found
 
 
 @_locked
-def remove_model(connection_id: str, model_id: str) -> bool:
-    cursor = get_db().execute(
-        "DELETE FROM provider_models WHERE provider_id = ? AND model_id = ?", (connection_id, model_id))
-    return cursor.rowcount > 0
+def exclude_model(connection_id: str, model_id: str) -> bool:
+    """Take a model off the person's list, for good: a refresh that lists it again
+    does not bring it back (it writes only the catalog). False if it wasn't listed."""
+    if get_model(connection_id, model_id) is None:
+        return False
+    _set_policy(connection_id, model_id, excluded=1)
+    return True
+
+
+def _merged(old: str | None, new: dict[str, Any] | None) -> str | None:
+    """Facts after a refresh: every key the provider reported this time replaces its
+    old value, and a key it did not mention is KEPT — a thinner answer is not a
+    retraction. (A provider retracts by reporting the key as False.)"""
+    facts = {**(_facts(old) or {}), **(new or {})}
+    return json.dumps(facts) if facts else None
 
 
 @_locked
 def record_discovery(connection_id: str, discovered: list[Any]) -> dict[str, int]:
-    """Fold a successful discovery into the list.
+    """Fold a successful discovery into the CATALOG — and nothing else.
 
     Adds what is new, refreshes what is listed again, and REMOVES NOTHING: a model
     the provider no longer lists keeps its row and stays usable. A provider's list
     is not the last word on what it will run — it omits unreleased and private
     models and reorganises its catalogue — so its silence is not grounds to take a
-    model away from someone who chose it.
+    model away from someone who chose it. The person's own decisions (policy) are
+    never touched, so a model they removed stays removed.
     """
     db = get_db()
     now = now_iso()
@@ -218,18 +293,18 @@ def record_discovery(connection_id: str, discovered: list[Any]) -> dict[str, int
     db.execute("BEGIN")
     try:
         for item in discovered:
-            facts = json.dumps(item.facts) if item.facts else None
-            if get_model(connection_id, item.model_id):
+            row = _in_catalog(connection_id, item.model_id)
+            if row:
                 db.execute(
-                    "UPDATE provider_models SET label = COALESCE(?, label), facts_json = ?, "
+                    "UPDATE provider_catalog SET label = COALESCE(?, label), facts_json = ?, "
                     "source = 'discovered', last_seen_at = ? WHERE provider_id = ? AND model_id = ?",
-                    (item.label, facts, now, connection_id, item.model_id))
+                    (item.label, _merged(row["facts_json"], item.facts), now, connection_id, item.model_id))
                 updated += 1
             else:
                 db.execute(
-                    "INSERT INTO provider_models (provider_id, model_id, label, source, facts_json, added_at, last_seen_at) "
-                    "VALUES (?, ?, ?, 'discovered', ?, ?, ?)",
-                    (connection_id, item.model_id, item.label, facts, now, now))
+                    "INSERT INTO provider_catalog (provider_id, model_id, label, source, facts_json, added_at, "
+                    "last_seen_at) VALUES (?, ?, ?, 'discovered', ?, ?, ?)",
+                    (connection_id, item.model_id, item.label, _merged(None, item.facts), now, now))
                 added += 1
         db.execute("UPDATE model_providers SET discovered_at = ? WHERE id = ?", (now, connection_id))
         db.execute("COMMIT")
@@ -303,3 +378,67 @@ def recent_answers(limit: int = 300) -> dict[str, str]:
         "    ORDER BY id DESC LIMIT ?)) "
         "WHERE m IS NOT NULL GROUP BY m", (limit,)).fetchall()
     return {r["m"]: r["t"] for r in rows}
+
+
+# --- holds ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Hold:
+    """A failure that is holding something back until `until`. What it holds is
+    `scope` + `hold_key`: one model on one credential, a credential, or a whole
+    provider connection. What that MEANS for choosing a model is `health.py`'s."""
+
+    scope: str
+    hold_key: str
+    connection_id: str
+    credential_id: str
+    model_id: str | None
+    kind: str | None
+    status: int | None
+    message: str | None
+    failed_at: str
+    until: str
+    streak: int
+    retry_after_s: float | None
+
+
+def _hold(row: Any) -> Hold:
+    return Hold(scope=row["scope"], hold_key=row["hold_key"], connection_id=row["connection_id"],
+                credential_id=row["credential_id"], model_id=row["model_id"], kind=row["kind"],
+                status=row["status"], message=row["message"], failed_at=row["failed_at"], until=row["until"],
+                streak=row["streak"], retry_after_s=row["retry_after_s"])
+
+
+@_locked
+def get_hold(scope: str, hold_key: str) -> Hold | None:
+    row = get_db().execute("SELECT * FROM model_holds WHERE scope = ? AND hold_key = ?",
+                           (scope, hold_key)).fetchone()
+    return _hold(row) if row else None
+
+
+@_locked
+def put_hold(hold: Hold) -> None:
+    get_db().execute(
+        "INSERT OR REPLACE INTO model_holds (scope, hold_key, connection_id, credential_id, model_id, kind, "
+        "status, message, failed_at, until, streak, retry_after_s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (hold.scope, hold.hold_key, hold.connection_id, hold.credential_id, hold.model_id, hold.kind,
+         hold.status, (hold.message or "")[:400], hold.failed_at, hold.until, hold.streak, hold.retry_after_s))
+
+
+@_locked
+def list_holds() -> list[Hold]:
+    return [_hold(r) for r in get_db().execute("SELECT * FROM model_holds").fetchall()]
+
+
+@_locked
+def delete_holds(pairs: list[tuple[str, str]]) -> None:
+    """Lift the holds named `(scope, hold_key)`."""
+    for scope, key in pairs:
+        get_db().execute("DELETE FROM model_holds WHERE scope = ? AND hold_key = ?", (scope, key))
+
+
+@_locked
+def delete_connection_holds(connection_id: str, scopes: tuple[str, ...]) -> None:
+    marks = ", ".join("?" for _ in scopes)
+    get_db().execute(f"DELETE FROM model_holds WHERE connection_id = ? AND scope IN ({marks})",
+                     (connection_id, *scopes))

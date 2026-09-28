@@ -15,6 +15,9 @@ A neutral message:
 round-tripping (Gemini's thought_signature). `media` (user messages only) carries
 images/video alongside text.
 
+No provider module reads these dicts: `to_chat_request` turns a transcript into the
+typed `models.request.ChatRequest` they are all handed.
+
 This in-memory dict is the trimmed 60-message working window a model actually
 sees. A "bound" session ADDITIONALLY persists every message to chat_store.py,
 which keeps the FULL transcript forever — the 60-entry cap here is a
@@ -28,6 +31,8 @@ from typing import Any
 
 from . import chat_store
 from .jscompat import now_iso
+from .models.request import (ChatRequest, GenerationOptions, ImagePart, MediaPart, Message, TextPart,
+                             ToolCallPart, ToolResultPart, ToolSpec)
 
 MAX_HISTORY_ENTRIES = 60
 
@@ -160,6 +165,64 @@ def assistant_text_of(message: dict[str, Any]) -> str:
     if message.get("interrupted"):
         return message.get("spokenText") or ""
     return message.get("text") or ""
+
+
+def _is_error_result(result: Any) -> bool:
+    """A tool result the executor produced as a failure (`{"error": ...}`)."""
+    return isinstance(result, dict) and bool(result.get("error"))
+
+
+def _typed(message: dict[str, Any]) -> Message | None:
+    """One stored message as the typed `Message` every provider module reads, or None
+    for a role no model is sent."""
+    role = message.get("role")
+    parts: list[Any] = []
+    replay = None
+    if role == "user":
+        if message.get("text"):
+            parts.append(TextPart(message["text"]))
+        for item in message.get("media") or []:
+            data = item.get("dataBase64") if isinstance(item, dict) else None
+            if not data:
+                continue  # only bytes on hand can be sent
+            kind, mime = str(item.get("kind") or "image"), str(item.get("mimeType") or "")
+            parts.append(ImagePart(mime, data) if kind == "image" else MediaPart(kind, mime, data))
+    elif role == "assistant":
+        text = assistant_text_of(message)
+        if text:
+            parts.append(TextPart(text))
+        parts.extend(ToolCallPart(id=c["id"], name=c["name"], args=c.get("args") or {})
+                     for c in message.get("toolCalls") or [])
+        # A reply cut off part-way is NOT replayed verbatim: what the person heard is
+        # what the model is told it said, and the provider's own record says more.
+        raw = message.get("raw")
+        if isinstance(raw, dict) and not message.get("interrupted"):
+            replay = raw
+    elif role == "tool":
+        parts.extend(ToolResultPart(call_id=r["id"], name=r.get("name") or "", result=r.get("result"),
+                                    is_error=_is_error_result(r.get("result")))
+                     for r in message.get("toolResults") or [])
+    else:
+        return None
+    return Message(role=role, parts=tuple(parts), replay=replay)
+
+
+def to_chat_request(messages: list[dict[str, Any]], *, system: str | None = None,
+                    tools: list[dict[str, Any]] | None = None, model_id: str = "",
+                    options: GenerationOptions | None = None) -> ChatRequest:
+    """The stored transcript as one typed `models.request.ChatRequest`.
+
+    The one place Jarvis's own message shape is read on the way to a model: every
+    provider module is handed the typed request this returns, and none of them reads a
+    stored message dict — so how the history is kept can change without touching any
+    of them, and none can quietly read a field another ignores.
+    """
+    typed = tuple(m for m in (_typed(message) for message in messages) if m is not None)
+    specs = tuple(ToolSpec(name=t["name"], description=t.get("description", "") or "",
+                           parameters=t.get("parameters") or {"type": "object", "properties": {}})
+                  for t in tools or [])
+    return ChatRequest(messages=typed, system=system, tools=specs,
+                       options=options or GenerationOptions(), model_id=model_id)
 
 
 def push_user_text(session_id: str, text: str, media: Any = None) -> dict[str, Any]:

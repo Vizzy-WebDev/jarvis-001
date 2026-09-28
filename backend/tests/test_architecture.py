@@ -257,8 +257,10 @@ def test_the_model_rows_are_a_leaf_over_the_database():
 def test_a_provider_module_knows_its_own_wire_and_nothing_else_of_jarvis():
     """One module per format, and each speaks only its own. A provider that reached
     into the store, the selection or another provider would be a gateway."""
+    # The typed request is what every provider is handed, and the Protocol is the shape
+    # they all have (the registry names it). Neither knows a store, a selection or a turn.
     allowed = ("jarvis.models.errors", "jarvis.models.types", "jarvis.models.providers",
-               "jarvis.conversation", "jarvis.prompt_format", "jarvis.redact")
+               "jarvis.models.request", "jarvis.models.adapter", "jarvis.prompt_format", "jarvis.redact")
     for path in files_under("models", "providers"):
         stray = [n for n in imports_of(path) if not n.startswith(allowed)]
         assert stray == [], f"{path.name} reaches for {stray}"
@@ -268,6 +270,20 @@ def test_a_provider_module_knows_its_own_wire_and_nothing_else_of_jarvis():
             if other != path:
                 assert f"jarvis.models.providers.{other.stem}" not in imports_of(path), \
                     f"{path.name} imports {other.name}"
+
+
+def test_a_gateway_reader_knows_only_the_neutral_shapes():
+    """A gateway module reads its own listing fields into neutral facts, and nothing
+    else: never a provider module (it would become a second chat adapter), never the
+    store or the router (what a gateway SAYS is not what Jarvis DOES about it)."""
+    allowed = ("jarvis.models.types", "jarvis.models.request", "jarvis.models.gateways")
+    for path in files_under("models", "gateways"):
+        stray = [n for n in imports_of(path) if not n.startswith(allowed)]
+        assert stray == [], f"{path.name} reaches for {stray}"
+
+
+def test_the_typed_request_is_a_leaf():
+    assert imports_of(PACKAGE / "models" / "request.py") == set()
 
 
 def test_no_provider_name_is_compared_in_the_shared_layers():

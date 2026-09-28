@@ -28,6 +28,7 @@ from typing import Any
 from .. import config, prefs
 from ..ai import NoModelAvailable
 from . import auto, kinds, store
+from .request import REASONING_LEVELS
 from .types import Target
 
 #: The one thing a plain connection cannot do at all, and so the one thing to
@@ -37,13 +38,21 @@ _UNSUPPORTED_NEEDS = {
                  "so it wasn't done.",
 }
 
+#: Effort levels saved before reasoning levels were neutral (they were Anthropic's own
+#: names), read as the neutral level they now are — so an upgrade doesn't quietly drop
+#: a choice the person made.
+_SAVED_BEFORE = {"low": "minimal", "medium": "balanced", "high": "thorough", "max": "maximum",
+                 "xhigh": "maximum"}
+
 
 @dataclass(frozen=True)
 class Resolved:
     connection: store.Connection
     model: store.Model
     target: Target
-    effort: str | None
+    #: The neutral reasoning level to ask for (`request.REASONING_LEVELS`) — only ever one
+    #: this model's provider reported it accepts. Never set under Auto.
+    reasoning: str | None
     #: Auto only: this model has answered here before (recorded, or in the saved chat).
     proven: bool = False
 
@@ -67,14 +76,18 @@ class Availability:
 def chosen() -> tuple[str | None, str | None, str | None]:
     """The stored selection, exactly as the person left it."""
     saved = prefs.get_prefs()
-    return saved.get("selectedProviderId"), saved.get("selectedModelId"), saved.get("selectedEffort")
+    effort = saved.get("selectedEffort")
+    return (saved.get("selectedProviderId"), saved.get("selectedModelId"),
+            _SAVED_BEFORE.get(effort, effort) if isinstance(effort, str) else None)
 
 
 def effort_levels(model: store.Model | None) -> list[str]:
-    """The levels the PROVIDER reported for this model — empty when it reported none."""
-    if not model:
+    """The reasoning levels the PROVIDER reported for this model, in neutral names —
+    empty when it reported none, or reported that the model doesn't reason."""
+    reported = ((model.facts or {}).get("reasoning") if model else None) or {}
+    if reported.get("supported") is not True:
         return []
-    return list(((model.facts or {}).get("effort") or {}).get("levels") or [])
+    return [level for level in (reported.get("levels") or []) if level in REASONING_LEVELS]
 
 
 def target_for(connection: store.Connection) -> Target:
@@ -158,18 +171,19 @@ def resolve(pin: str | None = None) -> Resolved:
     # the selected one, so the selected model's effort is not carried over to it.
     if effort not in effort_levels(model):
         effort = None
-    return Resolved(connection=connection, model=model, target=target_for(connection), effort=effort)
+    return Resolved(connection=connection, model=model, target=target_for(connection), reasoning=effort)
 
 
-def plan(pin: str | None = None, *, needs_images: bool = False) -> Plan:
+def plan(pin: str | None = None, *, needs_images: bool = False, needs_reasoning: bool = False) -> Plan:
     """The models a call may run on, in the order to try them.
 
     A named model — the person's selection, or a pin — is a plan of exactly one and
-    is refused, in words, if it can't be run. Only Auto yields several.
+    is refused, in words, if it can't be run. Only Auto yields several; when the call
+    needs reasoning, only from models reported to reason.
     """
     if pin or not is_auto():
         return Plan(auto=False, attempts=[resolve(pin)])
-    picks = auto.candidates(needs_images=needs_images)
+    picks = auto.candidates(needs_images=needs_images, needs_reasoning=needs_reasoning)
     if not picks:
         raise NoModelAvailable(
             "Auto has no model to choose from" + (" for a message with a picture in it" if needs_images else "")
@@ -182,7 +196,7 @@ def plan(pin: str | None = None, *, needs_images: bool = False) -> Plan:
         if c.connection.id not in targets:
             targets[c.connection.id] = target_for(c.connection)
     return Plan(auto=True, attempts=[
-        Resolved(connection=c.connection, model=c.model, target=targets[c.connection.id], effort=None,
+        Resolved(connection=c.connection, model=c.model, target=targets[c.connection.id], reasoning=None,
                  proven=c.proven)
         for c in picks])
 

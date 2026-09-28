@@ -12,6 +12,7 @@ import re
 from typing import Any
 
 from ..ai import Answer
+from ..conversation import to_chat_request
 from . import attempt, runtime, selection
 
 _JSON_NOTE = ("\n\nReply with a single JSON object and nothing else — no commentary and no code fence.")
@@ -46,11 +47,11 @@ def ask(prompt: str, *, system: str = "", want_json: bool = False,
     message: dict[str, Any] = {"role": "user", "text": prompt}
     if media:
         message["media"] = media
+    request = to_chat_request([message], system=(system or "") + (_JSON_NOTE if want_json else ""))
     plan = selection.plan(model_id, needs_images=any(m.get("kind", "image") == "image" for m in media or []))
     selection.check_needs(need)
 
-    run = attempt.run(plan, messages=[message], system=(system or "") + (_JSON_NOTE if want_json else ""),
-                      tools=[], named=model_id is None)
+    run = attempt.run(plan, request=request, named=model_id is None)
     while True:  # nobody is watching this one speak; only how it ended matters
         try:
             next(run)

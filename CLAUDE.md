@@ -208,53 +208,77 @@ the model detail screens) was deleted in full and its `ai_*` tables dropped by m
 recreate any of it under another name.** What replaced it is deliberately small: a **provider
 connection**, the **models listed under it**, and **one selected model**. That is the whole idea.
 
-- **Connections and models** are two tables (migration 27: `model_providers`, `provider_models`).
-  Keys live in `.env` via `save_secret`, named by `secret_ref` — never in a row, never in a response
-  (`hasKey: bool` only). A model row is the provider's own id verbatim plus only what the provider
-  reported that a request needs (`facts_json`: an output ceiling; the effort levels it accepts).
+- **Connections and models** (migration 27; split by migration 35). Keys live in `.env` via
+  `save_secret`, named by `secret_ref` — never in a row, never in a response (`hasKey: bool` only).
+  Three kinds of fact, three places: the **catalog** (`provider_catalog`: what the provider reported —
+  its own id verbatim plus `facts_json`; only a refresh or a hand-added id writes it, and a refresh
+  MERGES facts: a key it didn't mention is kept, a provider retracts by reporting `False`), the
+  **policy** (`provider_policy`: what the person decided — `excluded` when they removed a model, which
+  no refresh ever undoes; `enabled`/`user_order` exist but nothing sets them), and the **runtime**
+  (`model_outcomes`, `model_holds`). `store.list_models` is catalog LEFT JOIN policy.
 - **Six kinds, four wire formats** (`models/kinds.py`): OpenAI (`openai-responses`), Anthropic
   (`anthropic-messages`), Gemini (`gemini-generatecontent`), Ollama and LM Studio (both
   `openai-chat`), and Custom (the person picks the format). One module per format in
-  `models/providers/`, each with the same three functions — `check`, `discover`, `stream` — and
-  **nothing else in common**: no base class, no registry. OpenAI is NOT a gateway others go through.
-  Raw `httpx` throughout; the provider SDKs in the venv are undeclared leftovers and are not used.
+  `models/providers/`, each with the same four functions — `check`, `discover`,
+  `stream(target, request, *, facts)`, `normalize_error(raw)` — written down as the `models/adapter.py`
+  Protocol and asserted by `tests/conformance/`, and **nothing else in common**: no base class, no
+  registry. OpenAI is NOT a gateway others go through. Raw `httpx` throughout; the provider SDKs in
+  the venv are undeclared leftovers and are not used. A provider module takes the TYPED request
+  (`models/request.py`, built once by `conversation.to_chat_request`) and never reads a stored message
+  dict; `Message.replay` carries a reply verbatim for the formats that must get it back.
+- **Every failure's meaning is decided by the provider module that read it** (`normalize_error`, from
+  the provider's own error body first, its status only as a fallback): `kind`, `scope`
+  (`request`/`model`/`credential`/`provider`/`unknown`), `retryable_elsewhere`, and `retry_after_s`
+  (Retry-After, OpenAI's reset headers, Gemini's `retryDelay`). Nothing outside `providers/` and
+  `gateways/` may name a provider status code or error field — `tests/conformance/` scans for it.
+  `health.py` holds back exactly what the scope reached — `(credential_id, model)`, a credential, or a
+  connection — for the provider's stated wait, else 5 min x 2^(streak-1) capped at 2h; any answer, a
+  new key or a passing Test lifts it. A `request`-scope failure goes nowhere else and holds nothing.
+- **Gateways** (`models/gateways/`): a connection may declare `gateway_kind` (`openrouter`,
+  `omniroute`); only then are that gateway's own listing fields (prices, modalities, routers) read,
+  by that gateway's module. The generic chat module reads ids only. Auto's routers-only rule is the
+  connection's `prefer_routers` setting, off by default.
 - **Testing, discovering and running are three separate questions.** Only a connection *test* sets
   its status. A failed *discovery* changes nothing and never blocks adding a model by hand.
 - **Selected / available / executed are kept apart** (`models/selection.py`). The selection is the
   person's and only they change it. An unavailable one (connection deleted, key gone, model removed)
   is *reported*, by name, and stays selected. **A model the person NAMED is never replaced** — no
   fallback, ever; a failure is reported in the provider's own words plus a line saying Jarvis stayed
-  on it and Auto exists. The only retry is the SAME model, twice, when the provider answered 5xx.
-  `StepComplete.model_id` is what the provider *said* answered.
+  on it and Auto exists. The only retry is the SAME model, twice, when its provider module said a
+  later attempt could work — waiting its stated wait when that is short, never a long one. A named
+  model is refused up front ("cooling down, next attempt in Xs") only while the provider's own stated
+  wait runs or its whole credential/connection is held — never over Jarvis's own backoff guess.
+  `StepComplete.model_id` is what the provider *said* answered; `runtime.same_model` accepts only an
+  exact id, the same id without a namespace, a dated-snapshot tail, or a gateway's listed alias.
 - **There is no "use"/enable step.** A discovered or added model is available; the composer picker
   (or Auto) is the only place a model is chosen. Do not re-add a per-model activation control.
 - **Auto** (`models/auto.py`, `models/attempt.py`, pref `selectedAuto`) is the person's *other*
   choice, and the only thing that lets Jarvis pick. Deterministic, no chance. Candidates are models
   on usable connections minus those the PROVIDER reported as not chat/tool/image-capable (`facts`
-  `chat`/`tools`/`image`/`free`, recorded by `openai_chat._facts` only from what a gateway reported —
+  `chat`/`tools`/`image`/`free`, recorded by a declared gateway's module only from what it reported —
   never guessed from names). Ranked: proven first (from `model_outcomes` or replies saved in the chat),
   then quicker speed class (<=3s / <=8s / slower; unknown = middle; a PREFERENCE only), then most
-  recent success, then reported-tool-capable, then set-up order. A failed model waits behind the rest
-  for 5 min x 2^(failures in a row - 1), capped at 2h, reset by any answer — one rule for every error
-  kind. `auth`/`unreachable` failures hold back the whole connection; 402 (`billing`) holds back only
-  models listed as paid.
+  recent success, then reported-tool-capable, then set-up order. Whatever a hold (`health.py`)
+  reaches waits behind the rest; a "needs credit" hold passes over models listed as free.
   **Auto moves on ONLY when something actually failed — never because a model is slow.** There is no
   first-token timeout and no attempt-count cap. An accepted request is left to finish however long it
   thinks: the wire layer has only `SILENCE_CEILING_S` (600s of *total silence*, an inactivity limit
   that restarts on every byte) and TCP keep-alive (a live-but-busy server answers probes, a dead
   connection fails in ~60s). Attempts are bounded by evidence: 2 failed models on a connection and it
-  is left alone for that step, one `auth`/`unreachable` failure leaves it at once, and after a failure
+  is left alone for that step, a `credential`/`provider`-scope failure leaves all it reached at once,
+  a `request`-scope failure ends the step at once, and after a failure
   `FIND_BUDGET_S` (30s) stops STARTING models that have never worked — it never touches a request in
   progress. No retry of a busy model while another candidate waits (going elsewhere beats asking
-  again); the last candidate and a named model keep the 2 x 5xx retry. It never switches once a word
+  again); the last candidate and a named model keep the same-model retry. It never switches once a word
   has been spoken, announces every move as `ModelSwitched`, and names every failed model if all fail.
   `Resolved.proven`/`plan()` build one `Target` per connection (a per-candidate `.env` read cost
-  seconds). Effort is not offered under Auto. Named models and pins bypass all of it.
-- Facts about a model (`facts_json`) are still only what the provider reported: `maxOutput`, `effort`,
-  and for gateways `chat`/`tools`/`image`. Existing rows get them on the next "Refresh models".
-- **Effort is not a model and not a model property we know.** It is offered only for a model whose
-  own provider reported levels (today, Anthropic's list API) and is sent only if that model was
-  reported to accept it. `prefs.balance` (fast/balanced/quality) is a different thing — how much
+  seconds). Effort is not offered under Auto. Named models and pins bypass the ranking.
+- Facts about a model (`facts_json`) are still only what the provider reported: `maxOutput`,
+  `reasoning`, and for gateways `chat`/`tools`/`image`/`free`/`router`.
+- **Effort is not a model and not a model property we know.** It is the neutral `reasoning` level
+  (`minimal`/`balanced`/`thorough`/`maximum`), offered only for a model whose own provider reported
+  support (Anthropic's list, Gemini's `thinking` flag, OpenRouter's `supported_parameters`) and sent
+  only if that model was reported to accept it — each provider module maps it to its own API. `prefs.balance` (fast/balanced/quality) is a different thing — how much
   work *Jarvis* does around any model (tool-round ceiling, the answer check) — stored apart.
 - **Wiring**: `assembly.get_orchestrator()` builds `models/client.py`'s `JarvisModelClient` (the
   orchestrator's port). `ai.ask()` runs on `models/oneshot.py`. **Only `client.py` imports the

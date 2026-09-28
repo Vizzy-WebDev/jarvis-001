@@ -20,7 +20,7 @@ from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 
 from .. import config
-from ..models import kinds, providers, selection, store
+from ..models import discovery, gateways, health, kinds, providers, selection, store
 from ..models.errors import ProviderError, Unsupported
 from ..models.types import CheckResult
 
@@ -32,7 +32,8 @@ def _fail(message: str, status: int, **extra: Any) -> JSONResponse:
 
 
 def _model_view(model: store.Model, connection: store.Connection) -> dict[str, Any]:
-    effort = (model.facts or {}).get("effort")
+    levels = selection.effort_levels(model)
+    default = ((model.facts or {}).get("reasoning") or {}).get("default")
     # Listed unless a discovery that succeeded AFTER this model was last seen no longer named it.
     dropped = bool(model.source == "discovered" and connection.discovered_at and model.last_seen_at
                    and model.last_seen_at < connection.discovered_at)
@@ -41,7 +42,8 @@ def _model_view(model: store.Model, connection: store.Connection) -> dict[str, A
         "label": model.label or model.model_id,
         "source": model.source,
         "stillListed": not dropped,
-        "effort": {"levels": effort.get("levels") or [], "default": effort.get("default")} if effort else None,
+        # Reasoning levels in their neutral names, exactly as the provider reported support.
+        "effort": {"levels": levels, "default": default if default in levels else None} if levels else None,
     }
 
 
@@ -62,6 +64,8 @@ def _view(connection: store.Connection) -> dict[str, Any]:
         "detail": connection.detail,
         "checkedAt": connection.checked_at,
         "discoveredAt": connection.discovered_at,
+        "gatewayKind": connection.gateway_kind,
+        "preferRouters": connection.prefer_routers,
         "models": [_model_view(m, connection) for m in store.list_models(connection.id)],
     }
 
@@ -83,13 +87,15 @@ def _run_check(connection: store.Connection) -> CheckResult:
     except ProviderError as err:
         result = CheckResult(False, str(err))
     store.record_check(connection.id, "ok" if result.ok else "error", result.message)
+    if result.ok:
+        health.clear_connection(connection.id)  # proven working: nothing held against it stands
     return result
 
 
 def _run_discovery(connection: store.Connection) -> dict[str, Any]:
     """Ask the provider what it offers. Reports; never changes the status."""
     try:
-        found = providers.for_format(connection.format).discover(selection.target_for(connection))
+        found = discovery.discover(connection)
     except Unsupported as err:
         return {"ok": False, "unsupported": True, "message": str(err)}
     except ProviderError as err:
@@ -99,9 +105,9 @@ def _run_discovery(connection: store.Connection) -> dict[str, Any]:
     # note in THIS response, never in the connection's status: discovery doesn't own that
     # (see the module docstring). Auto itself degrades safely either way; this is only so
     # the person isn't left assuming routing is still happening when it silently stopped.
-    had_routers = any((m.facts or {}).get("router") for m in store.list_models(connection.id))
+    had_routers = any((m.facts or {}).get("router") is True for m in store.list_models(connection.id))
     result = store.record_discovery(connection.id, found)
-    has_routers = any((item.facts or {}).get("router") for item in found)
+    has_routers = any((item.facts or {}).get("router") is True for item in found)
     note = ("This connection used to report models that route and fall back on their own; the "
             "latest check no longer sees any, so Jarvis will try its models individually again."
             ) if had_routers and not has_routers else None
@@ -121,6 +127,19 @@ def _learn_what_providers_say() -> None:
 
 def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+class _BadGateway(ValueError):
+    pass
+
+
+def _gateway(body: dict[str, Any]) -> str | None:
+    """The gateway a connection says it is: one Jarvis has a reader for, or none."""
+    value = _text(body.get("gatewayKind"))
+    if value and value not in gateways.KINDS:
+        raise _BadGateway(f"Jarvis doesn't know a gateway called “{value}”. "
+                          f"Choose one of: {', '.join(gateways.KINDS)} — or none.")
+    return value or None
 
 
 # --- the picker's contents (registered before /{id} so 'kinds' is not read as one) ----
@@ -176,6 +195,12 @@ def add(body: dict[str, Any] = Body(default_factory=dict)):
     key = _text(body.get("apiKey"))
     if kind.key == "required" and not key:
         return _fail(f"{kind.label} needs an API key.", 400)
+    try:
+        gateway = _gateway(body)
+    except _BadGateway as err:
+        return _fail(str(err), 400)
+    if "gatewayKind" not in body and format_id == "openai-chat":
+        gateway = gateways.default_for(kinds.base_url_for(kind.id, address))
 
     connection_id = store.new_id()
     secret_ref = None
@@ -184,7 +209,8 @@ def add(body: dict[str, Any] = Body(default_factory=dict)):
         config.save_secret(secret_ref, key)
     connection = store.add_connection(
         connection_id=connection_id, kind=kind.id, format=format_id,
-        label=_text(body.get("label")) or kind.label, base_url=address, secret_ref=secret_ref)
+        label=_text(body.get("label")) or kind.label, base_url=address, secret_ref=secret_ref,
+        gateway_kind=gateway, prefer_routers=body.get("preferRouters") is True)
 
     tested = _run_check(connection)
     discovery = _run_discovery(connection) if tested.ok else None
@@ -208,6 +234,13 @@ def edit(connection_id: str, body: dict[str, Any] = Body(default_factory=dict)):
             changes["base_url"] = kinds.normalize_base_url(connection.kind, _text(body.get("address")))
         except kinds.InvalidAddress as err:
             return _fail(str(err), 400)
+    if "gatewayKind" in body:
+        try:
+            changes["gateway_kind"] = _gateway(body)
+        except _BadGateway as err:
+            return _fail(str(err), 400)
+    if "preferRouters" in body:
+        changes["prefer_routers"] = body.get("preferRouters") is True
     key = _text(body.get("apiKey"))
     if key:
         ref = connection.secret_ref or f"model_{connection.id}"
@@ -215,8 +248,10 @@ def edit(connection_id: str, body: dict[str, Any] = Body(default_factory=dict)):
         changes["secret_ref"] = ref
     updated = store.update_connection(connection_id, **changes) if changes else connection
     if key or "base_url" in changes:
-        # What was last tested no longer describes this connection.
+        # What was last tested no longer describes this connection — nor does anything
+        # held against its old key or address.
         store.record_check(connection_id, "untested", None)
+        health.clear_connection(connection_id)
         updated = store.get_connection(connection_id)
     return {"ok": True, "connection": _view(updated)}
 
@@ -262,11 +297,12 @@ def add_model(connection_id: str, body: dict[str, Any] = Body(default_factory=di
 
 @router.delete("/{connection_id}/models/{model_id:path}")
 def remove_model(connection_id: str, model_id: str):
-    """Takes a row off the list — a mistyped ID, or clutter. It is not an off switch:
-    a model the provider still lists comes straight back the next time it is asked."""
+    """Takes a model off the list — a mistyped ID, or clutter — and it stays off: a
+    refresh that lists it again does not bring it back. Adding the same ID by hand
+    does, since that is the person deciding again."""
     if store.get_connection(connection_id) is None:
         return _fail("That connection doesn't exist.", 404)
-    if not store.remove_model(connection_id, model_id):
+    if not store.exclude_model(connection_id, model_id):
         return _fail("That model isn't on the list.", 404)
     return {"ok": True, "connection": _view(store.get_connection(connection_id))}
 

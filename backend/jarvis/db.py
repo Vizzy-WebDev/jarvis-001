@@ -170,10 +170,59 @@ def _migration_10(conn: sqlite3.Connection) -> None:
         write_json("models", data)
 
 
+#: Anthropic's own effort names, as the neutral reasoning levels migration 35 stores.
+_EFFORT_TO_REASONING = {"low": "minimal", "medium": "balanced", "high": "thorough", "max": "maximum"}
+
+
+def _migration_35(conn: sqlite3.Connection) -> None:
+    """Carry existing connections and model facts into migration 35's shape, so
+    nothing about how Jarvis treats them today changes on the upgrade:
+
+    * facts stored as `effort: {levels, default}` (Anthropic's names) become the
+      neutral `reasoning: {supported, levels, default}`;
+    * a connection whose models the old generic code flagged as routers keeps
+      preferring them (`prefer_routers`), now as a setting on the connection;
+    * a connection on OpenRouter's address is declared an `openrouter` gateway, and
+      any other chat-format connection that reported routers an `omniroute` one —
+      so the gateway's own fields keep being read on the next refresh.
+    """
+    routers: set[str] = set()
+    for provider_id, model_id, text in conn.execute(
+            "SELECT provider_id, model_id, facts_json FROM provider_catalog WHERE facts_json IS NOT NULL").fetchall():
+        try:
+            facts = json.loads(text)
+        except ValueError:
+            continue
+        if not isinstance(facts, dict):
+            continue
+        if facts.get("router") is True:
+            routers.add(provider_id)
+        effort = facts.pop("effort", None)
+        if effort is None:
+            continue
+        levels = [_EFFORT_TO_REASONING[level] for level in (effort or {}).get("levels") or []
+                  if level in _EFFORT_TO_REASONING] if isinstance(effort, dict) else []
+        default = _EFFORT_TO_REASONING.get((effort or {}).get("default")) if isinstance(effort, dict) else None
+        facts["reasoning"] = ({"supported": True, "levels": levels, "default": default if default in levels else None}
+                              if levels else {"supported": False})
+        conn.execute("UPDATE provider_catalog SET facts_json = ? WHERE provider_id = ? AND model_id = ?",
+                     (json.dumps(facts), provider_id, model_id))
+    for connection_id, format_id, base_url in conn.execute(
+            "SELECT id, format, base_url FROM model_providers").fetchall():
+        gateway = None
+        if format_id == "openai-chat" and "openrouter.ai" in (base_url or "").lower():
+            gateway = "openrouter"
+        elif format_id == "openai-chat" and connection_id in routers:
+            gateway = "omniroute"
+        conn.execute("UPDATE model_providers SET gateway_kind = ?, prefer_routers = ? WHERE id = ?",
+                     (gateway, 1 if connection_id in routers else 0, connection_id))
+
+
 _EXTRA_STEPS: dict[int, Callable[[sqlite3.Connection], None]] = {
     2: _migration_2_extra,
     6: _migration_6,
     10: _migration_10,
+    35: _migration_35,
 }
 
 # The original schema steps plus the later ones. Kept as one ordered mapping so

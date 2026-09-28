@@ -39,7 +39,7 @@ def client(scratch, monkeypatch):
     from jarvis.main import create_app
     from jarvis.models import attempt
 
-    monkeypatch.setattr(attempt, "_BUSY_WAITS_S", (0.0, 0.0))  # the retry is real; its pause need not be
+    monkeypatch.setattr(attempt, "_RETRY_WAITS_S", (0.0, 0.0))  # the retry is real; its pause need not be
     assembly.reset_for_tests()
     conversation.reset_for_tests()
     yield TestClient(create_app())
@@ -290,12 +290,15 @@ def test_a_restricted_openai_key_that_cannot_list_models_still_connects(client, 
     assert added["discovery"]["unsupported"] is True
 
 
-def test_removing_a_model_takes_a_row_off_the_list_and_discovery_puts_it_back(client, serve):
+def test_removing_a_model_takes_it_off_the_list_and_a_refresh_does_not_bring_it_back(client, serve):
     stub = serve("openai-chat")
     connection_id = add(client, stub)["connection"]["id"]
     assert client.delete(f"/api/models/{connection_id}/models/stub-model-a").json()["ok"] is True
     assert [m.model_id for m in store.list_models(connection_id)] == ["stub-model-b"]
     client.post(f"/api/models/{connection_id}/discover")
+    assert [m.model_id for m in store.list_models(connection_id)] == ["stub-model-b"]  # removed stays removed
+    # Adding it by hand is the person deciding again, and does bring it back.
+    client.post(f"/api/models/{connection_id}/models", json={"modelId": "stub-model-a"})
     assert {m.model_id for m in store.list_models(connection_id)} == {"stub-model-a", "stub-model-b"}
     assert client.delete(f"/api/models/{connection_id}/models/never-there").status_code == 404
 
@@ -329,7 +332,8 @@ def test_gemini_discovery_lists_only_what_google_says_can_generate(client, serve
 def test_anthropic_discovery_keeps_only_what_the_provider_reported(client, serve):
     stub = serve("anthropic-messages", models=[ANTHROPIC_OPUS, ANTHROPIC_PLAIN])
     models = {m["id"]: m for m in add(client, stub)["connection"]["models"]}
-    assert models["opus-x"]["effort"] == {"levels": ["low", "medium", "high", "max"], "default": "high"}
+    assert models["opus-x"]["effort"] == {"levels": ["minimal", "balanced", "thorough", "maximum"],
+                                          "default": "thorough"}
     assert models["plain-x"]["effort"] is None  # not reported, so not offered and not assumed
     assert store.get_model(add_id(client), "opus-x").facts["maxOutput"] == 128000
 
@@ -405,10 +409,10 @@ def add_first_model(connection_id: str) -> str:
 def test_effort_is_kept_only_for_a_model_the_provider_reported_levels_for(client, serve):
     stub = serve("anthropic-messages", models=[ANTHROPIC_OPUS, ANTHROPIC_PLAIN])
     connection_id = add(client, stub)["connection"]["id"]
-    assert select(client, connection_id, "opus-x", "low").json()["selection"]["effort"] == "low"
+    assert select(client, connection_id, "opus-x", "minimal").json()["selection"]["effort"] == "minimal"
     assert select(client, connection_id, "opus-x", "extreme").json()["selection"]["effort"] is None
     # Moving to a model with no levels drops the effort rather than carrying it over.
-    assert select(client, connection_id, "plain-x", "low").json()["selection"]["effort"] is None
+    assert select(client, connection_id, "plain-x", "minimal").json()["selection"]["effort"] is None
 
 
 def test_a_pinned_model_that_cannot_be_found_is_an_error_not_a_reason_to_pick_another(client, serve):
@@ -540,7 +544,7 @@ def test_effort_reaches_anthropic_only_for_a_model_reported_to_accept_it(client,
     stub = serve("anthropic-messages", models=[ANTHROPIC_OPUS, ANTHROPIC_PLAIN])
     connection_id = add(client, stub)["connection"]["id"]
 
-    select(client, connection_id, "opus-x", "low")
+    select(client, connection_id, "opus-x", "minimal")
     run_step()
     body = stub.last_body()
     assert body["output_config"] == {"effort": "low"} and "thinking" not in body  # alone; nothing forced on
@@ -550,7 +554,7 @@ def test_effort_reaches_anthropic_only_for_a_model_reported_to_accept_it(client,
     run_step()
     assert "output_config" not in stub.last_body()
 
-    select(client, connection_id, "plain-x", "low")
+    select(client, connection_id, "plain-x", "minimal")
     run_step()
     body = stub.last_body()
     assert "output_config" not in body and body["max_tokens"] == 8192  # the model's own ceiling, not a guess
@@ -792,7 +796,7 @@ def test_connections_models_and_the_selection_survive_a_restart(client, serve, s
 
     stub = serve("anthropic-messages", key=SECRET, models=[ANTHROPIC_OPUS, ANTHROPIC_PLAIN])
     connection_id = add(client, stub, key=SECRET)["connection"]["id"]
-    select(client, connection_id, "opus-x", "max")
+    select(client, connection_id, "opus-x", "maximum")
     before = client.get("/api/models").json()
 
     db.reset_for_tests()          # the database is closed and reopened from disk,
@@ -800,7 +804,8 @@ def test_connections_models_and_the_selection_survive_a_restart(client, serve, s
     fresh = TestClient(create_app())
     after = fresh.get("/api/models").json()
     assert after == before
-    assert after["selection"] == {"auto": False, "providerId": connection_id, "modelId": "opus-x", "effort": "max"}
+    assert after["selection"] == {"auto": False, "providerId": connection_id, "modelId": "opus-x",
+                                  "effort": "maximum"}
     assert config.get_secret(f"model_{connection_id}") == SECRET
     # ...and it still works, with the same key and the same model, without being told again.
     events, error = run_step()
@@ -878,16 +883,19 @@ def test_the_anthropic_provider_itself_will_not_send_an_effort_it_was_not_told_t
     """Not only the layers above it: the provider is the last thing between a
     remembered setting and a model that would refuse it."""
     from jarvis.models.providers import anthropic_messages
+    from jarvis.models.request import GenerationOptions
     from jarvis.models.types import Target
 
     stub = serve("anthropic-messages")
     target = Target(stub.base_url, "k")
-    ask = {"model_id": "m", "messages": [{"role": "user", "text": "hi"}], "system": "", "tools": []}
-    list(anthropic_messages.stream(target, effort="low", facts=None, **ask))
+    ask = conversation.to_chat_request([{"role": "user", "text": "hi"}], model_id="m",
+                                       options=GenerationOptions(reasoning="minimal"))
+    list(anthropic_messages.stream(target, ask, facts=None))
     assert "output_config" not in stub.last_body()
-    list(anthropic_messages.stream(target, effort="low", facts={"effort": {"levels": ["medium"]}}, **ask))
+    list(anthropic_messages.stream(target, ask, facts={"reasoning": {"supported": True, "levels": ["balanced"]}}))
     assert "output_config" not in stub.last_body()  # a level it was not reported to accept
-    list(anthropic_messages.stream(target, effort="low", facts={"effort": {"levels": ["low", "high"]}}, **ask))
+    list(anthropic_messages.stream(target, ask, facts={"reasoning": {"supported": True,
+                                                                     "levels": ["minimal", "thorough"]}}))
     assert stub.last_body()["output_config"] == {"effort": "low"}
 
 
@@ -1205,7 +1213,7 @@ def test_a_model_the_provider_says_is_not_for_chat_is_never_chosen(client, serve
         {"id": "good", "capabilities": {"tool_calling": True}},
         {"id": "silent"},
     ])
-    connection_id = add(client, stub)["connection"]["id"]
+    connection_id = add(client, stub, gatewayKind="openrouter")["connection"]["id"]
     assert store.get_model(connection_id, "clip").facts == {"chat": False}
     assert store.get_model(connection_id, "no-tools").facts == {"tools": False}
     assert store.get_model(connection_id, "silent").facts is None  # it said nothing, so nothing is claimed
@@ -1223,7 +1231,7 @@ def test_a_message_with_a_picture_only_goes_to_a_model_that_did_not_say_it_canno
 
     stub = serve("openai-chat", models=[{"id": "blind", "input_modalities": ["text"]},
                                         {"id": "sighted", "input_modalities": ["text", "image"]}])
-    add(client, stub)
+    add(client, stub, gatewayKind="openrouter")
     choose_auto(client)
     assert [c.model.model_id for c in auto.candidates(needs_images=True)] == ["sighted"]
     run_step()
@@ -1309,9 +1317,10 @@ def test_a_gateways_reported_price_is_kept_and_a_402_is_its_own_kind_of_failure(
         {"id": "free-one", "pricing": {"prompt": "0", "completion": "0"}},
         {"id": "unpriced"},
     ])
-    cid = add(client, stub)["connection"]["id"]
-    assert store.get_model(cid, "paid").facts == {"free": False}
-    assert store.get_model(cid, "free-one").facts == {"free": True}
+    cid = add(client, stub, gatewayKind="openrouter")["connection"]["id"]
+    # (OpenRouter's reader also says "not a router" wherever it saw a price — see P6.)
+    assert store.get_model(cid, "paid").facts == {"free": False, "router": False}
+    assert store.get_model(cid, "free-one").facts == {"free": True, "router": False}
     assert store.get_model(cid, "unpriced").facts is None
     from jarvis.models.providers import _wire
 
@@ -1330,13 +1339,18 @@ def test_when_the_account_is_out_of_credit_paid_models_wait_and_free_ones_carry_
         {"id": "c-free", "pricing": {"prompt": "0", "completion": "0"}},
         {"id": "d-unpriced"},
     ])
-    cid = add(client, stub)["connection"]["id"]
+    cid = add(client, stub, gatewayKind="openrouter")["connection"]["id"]
 
     def ids(now=None):
         return [c.model.model_id for c in auto.candidates(now=now)]
 
     assert ids() == ["a-paid", "b-paid", "c-free", "d-unpriced"]
-    store.record_failure(cid, "a-paid", kind="billing", status=402, message="Insufficient credits")
+    # What the chat module makes of a 402: about money, reaching the whole credential.
+    from jarvis.models import health
+    from jarvis.models.errors import ProviderError
+
+    health.record(store.get_connection(cid), "a-paid",
+                  ProviderError("Insufficient credits", kind="billing", scope="credential", status=402))
     assert ids() == ["c-free", "d-unpriced", "a-paid", "b-paid"]  # b-paid was never tried, and still waits
     later = datetime.now(timezone.utc) + timedelta(minutes=45)
     assert ids(later) == ["a-paid", "b-paid", "c-free", "d-unpriced"]  # credit may have been added by now
@@ -1359,11 +1373,11 @@ def test_auto_starts_from_a_model_that_already_answered_in_the_saved_conversatio
 
 def test_choosing_auto_asks_each_connection_once_more_for_what_it_says_about_its_models(client, serve):
     stub = serve("openai-chat", models=[{"id": "clip", "type": "video"}, {"id": "chat-ok"}])
-    cid = add(client, stub)["connection"]["id"]
+    cid = add(client, stub, gatewayKind="openrouter")["connection"]["id"]
     # Listed before facts were recorded: as if from an earlier version.
     from jarvis.db import get_db
 
-    get_db().execute("UPDATE provider_models SET facts_json = NULL WHERE provider_id = ?", (cid,))
+    get_db().execute("UPDATE provider_catalog SET facts_json = NULL WHERE provider_id = ?", (cid,))
     assert store.get_model(cid, "clip").facts is None
     choose_auto(client)
     assert store.get_model(cid, "clip").facts == {"chat": False}
@@ -1380,7 +1394,7 @@ def test_a_402_mid_step_skips_the_paid_models_on_that_connection_but_not_the_fre
     stub = serve("openai-chat", chat_status=None, models=[
         {"id": "a-paid", "pricing": paid}, {"id": "b-paid", "pricing": paid},
         {"id": "c-paid", "pricing": paid}, {"id": "d-free", "pricing": free}])
-    add(client, stub, label="Gateway")
+    add(client, stub, label="Gateway", gatewayKind="openrouter")
     choose_auto(client)
 
     seen = []
@@ -1389,11 +1403,11 @@ def test_a_402_mid_step_skips_the_paid_models_on_that_connection_but_not_the_fre
     from jarvis.models.types import Finished
     from types import SimpleNamespace
 
-    def fake(target, **kwargs):
-        seen.append(kwargs["model_id"])
-        if kwargs["model_id"].endswith("paid"):
-            raise ProviderError("Insufficient credits.", kind="billing", status=402)
-        yield Finished(text="ok", model_id=kwargs["model_id"])
+    def fake(target, request, **kwargs):
+        seen.append(request.model_id)
+        if request.model_id.endswith("paid"):
+            raise ProviderError("Insufficient credits.", kind="billing", scope="credential", status=402)
+        yield Finished(text="ok", model_id=request.model_id)
 
     import pytest as _pytest
 
@@ -1546,7 +1560,10 @@ def test_after_the_find_budget_auto_stops_starting_unknown_models_but_still_trie
     stub = serve("openai-chat", models=[{"id": "zp"}, {"id": "u1"}, {"id": "u2"}, {"id": "u3"}])
     cid = add(client, stub)["connection"]["id"]
     store.record_success(cid, "zp")
-    store.record_failure(cid, "zp", kind="server", status=503, message="busy")  # proven, but waiting its turn
+    from jarvis.models import health
+
+    health.record(store.get_connection(cid), "zp",  # proven, but waiting its turn
+                  ProviderError("busy", kind="server", scope="model", status=503))
     choose_auto(client)
     assert [c.model.model_id for c in auto.candidates()] == ["u1", "u2", "u3", "zp"]
 
@@ -1554,12 +1571,12 @@ def test_after_the_find_budget_auto_stops_starting_unknown_models_but_still_trie
     seen: list[str] = []
     monkeypatch.setattr(attempt, "_clock", lambda: clock[0])
 
-    def fake(target, **kwargs):
-        seen.append(kwargs["model_id"])
-        if kwargs["model_id"].startswith("u"):
+    def fake(target, request, **kwargs):
+        seen.append(request.model_id)
+        if request.model_id.startswith("u"):
             clock[0] += 31.0  # this failure took a long time
-            raise ProviderError("no such model", kind="model", status=404)
-        yield Finished(text="ok", model_id=kwargs["model_id"])
+            raise ProviderError("no such model", kind="model", scope="model", status=404)
+        yield Finished(text="ok", model_id=request.model_id)
 
     monkeypatch.setattr(attempt.providers, "for_format", lambda _f: SimpleNamespace(stream=fake))
     events, error = run_step()
@@ -1572,6 +1589,7 @@ def test_after_the_find_budget_auto_stops_starting_unknown_models_but_still_trie
     from jarvis.db import get_db
 
     get_db().execute("DELETE FROM model_outcomes WHERE provider_id = ?", (cid,))
+    get_db().execute("DELETE FROM model_holds WHERE connection_id = ?", (cid,))
     monkeypatch.setattr(store, "recent_answers", lambda limit=300: {})
     events, error = run_step()
     assert error is not None and seen == ["u1"] and "Auto tried 1 model" in str(error)
@@ -1588,13 +1606,19 @@ def test_how_quickly_a_model_answers_is_a_moving_average_and_failures_are_counte
     store.record_success(cid, "a", None)  # an unmeasured answer leaves the average alone
     assert store.list_outcomes()[(cid, "a")].ttft_ms == 1400
 
+    from jarvis.models import health
+    from jarvis.models.errors import ProviderError
+
+    gone = ProviderError("no", kind="model", scope="model", status=404)
     for _ in range(3):
         store.record_failure(cid, "a", kind="model", status=404, message="no")
+        hold = health.record(store.get_connection(cid), "a", gone)
     outcome = store.list_outcomes()[(cid, "a")]
-    assert outcome.fail_streak == 3 and auto.cooldown(outcome).total_seconds() == 20 * 60  # 5 -> 10 -> 20 min
+    assert outcome.fail_streak == 3 and hold.streak == 3
+    assert health.cooldown_for(hold.streak).total_seconds() == 20 * 60  # 5 -> 10 -> 20 min
     for _ in range(30):
-        store.record_failure(cid, "a", kind="model", status=404, message="no")
-    assert auto.cooldown(store.list_outcomes()[(cid, "a")]) == auto.MAX_COOLDOWN  # capped
+        hold = health.record(store.get_connection(cid), "a", gone)
+    assert health.cooldown_for(hold.streak) == health.MAX_COOLDOWN  # capped
     store.record_success(cid, "a", 1500)
     assert store.list_outcomes()[(cid, "a")].fail_streak == 0  # any answer clears it
 
@@ -1608,7 +1632,12 @@ def test_one_blip_after_a_good_record_is_a_short_wait_whatever_the_error(client,
     cid = add(client, stub)["connection"]["id"]
     for _ in range(16):
         store.record_success(cid, "a", 900)
-    store.record_failure(cid, "a", kind="request", status=400, message="Provider returned error")
+    from jarvis.models import health
+    from jarvis.models.errors import ProviderError
+
+    # A gateway's opaque 400: the chat module can't tell whose fault it is (scope unknown).
+    health.record(store.get_connection(cid), "a",
+                  ProviderError("Provider returned error", kind="request", scope="unknown", status=400))
     now = datetime.now(timezone.utc)
     assert [c.model.model_id for c in auto.candidates(now=now)] == ["b", "a"]  # steered around, briefly
     assert [c.model.model_id for c in auto.candidates(now=now + timedelta(minutes=6))] == ["a", "b"]  # not 30 min
@@ -1689,10 +1718,11 @@ def test_a_gateways_router_models_are_flagged_and_its_pinned_ones_are_not(client
         {"id": "claude/claude-opus-5", "owned_by": "claude"},
         {"id": "aug/gpt5", "owned_by": "auggie"},
     ])
-    cid = add(client, stub)["connection"]["id"]
+    cid = add(client, stub, gatewayKind="omniroute")["connection"]["id"]
     assert store.get_model(cid, "auto/best-coding").facts == {"router": True}
-    assert store.get_model(cid, "claude/claude-opus-5").facts is None
-    assert store.get_model(cid, "aug/gpt5").facts is None
+    # Any other owner is OmniRoute SAYING "not a router" — kept as said (P5/P6).
+    assert store.get_model(cid, "claude/claude-opus-5").facts == {"router": False}
+    assert store.get_model(cid, "aug/gpt5").facts == {"router": False}
 
 
 def test_a_gateway_that_marks_its_routers_by_unpriceable_cost_is_also_flagged(client, serve):
@@ -1707,13 +1737,14 @@ def test_a_gateway_that_marks_its_routers_by_unpriceable_cost_is_also_flagged(cl
         {"id": "~anthropic/claude-sonnet-latest", "pricing": {"prompt": "0.000003", "completion": "0.000015"}},
         {"id": "anthropic/claude-opus-4.5", "pricing": {"prompt": "0.000005", "completion": "0.000025"}},
     ])
-    cid = add(client, stub)["connection"]["id"]
+    cid = add(client, stub, gatewayKind="openrouter")["connection"]["id"]
     # -1 also fails the existing "free" check (it isn't 0), so a router is correctly recorded as
     # not-guaranteed-free too — the safer default when its real price isn't known in advance.
     assert store.get_model(cid, "openrouter/auto").facts == {"router": True, "free": False}
-    assert store.get_model(cid, "openrouter/free").facts == {"free": True}  # not flagged — the disclosed gap
-    assert store.get_model(cid, "~anthropic/claude-sonnet-latest").facts == {"free": False}
-    assert store.get_model(cid, "anthropic/claude-opus-4.5").facts == {"free": False}
+    # Not flagged — the disclosed gap. A real price is OpenRouter saying "not a router".
+    assert store.get_model(cid, "openrouter/free").facts == {"free": True, "router": False}
+    assert store.get_model(cid, "~anthropic/claude-sonnet-latest").facts == {"free": False, "router": False}
+    assert store.get_model(cid, "anthropic/claude-opus-4.5").facts == {"free": False, "router": False}
 
 
 def test_auto_only_considers_a_connections_router_models_when_it_has_any(client, serve):
@@ -1724,7 +1755,7 @@ def test_auto_only_considers_a_connections_router_models_when_it_has_any(client,
         {"id": "auto/best-coding", "owned_by": "combo"},
         {"id": "auto/best-chat", "owned_by": "combo"},
     ])
-    add(client, stub)
+    add(client, stub, gatewayKind="omniroute", preferRouters=True)
     choose_auto(client)
     assert sorted(c.model.model_id for c in auto.candidates()) == ["auto/best-chat", "auto/best-coding"]
 
@@ -1748,7 +1779,7 @@ def test_a_routers_internal_hops_are_never_counted_as_separate_successes(client,
     an outcome for it."""
     stub = serve("openai-chat", models=[{"id": "auto/best-coding", "owned_by": "combo"}],
                  preamble_frames=6)
-    add(client, stub)
+    add(client, stub, gatewayKind="omniroute", preferRouters=True)
     choose_auto(client)
     calls: list = []
     real = store.record_success
@@ -1762,7 +1793,7 @@ def test_a_router_that_finally_fails_after_its_filler_frames_is_still_one_strike
     filler frames and then genuinely fails still records exactly one failed attempt."""
     stub = serve("openai-chat", models=[{"id": "auto/best-coding", "owned_by": "combo"}],
                  preamble_frames=6, stream_error={"message": "upstream unavailable"})
-    add(client, stub)
+    add(client, stub, gatewayKind="omniroute", preferRouters=True)
     choose_auto(client)
     calls: list = []
     real = store.record_failure
@@ -1782,7 +1813,7 @@ def test_auto_exhausts_a_gateways_routers_without_ever_trying_its_pinned_models(
         {"id": "auto/best-chat", "owned_by": "combo"},
         {"id": "claude/claude-opus-5", "owned_by": "claude"},  # would answer too, if ever tried
     ])
-    add(client, gateway, label="Gateway")
+    add(client, gateway, label="Gateway", gatewayKind="omniroute", preferRouters=True)
     choose_auto(client)
     events, error = run_step()
     assert error is not None and "Auto tried 2 models and none could answer" in str(error)
@@ -1802,7 +1833,7 @@ def test_auto_reaches_a_working_connection_after_a_gateways_router_fails_without
         {"id": "claude/claude-opus-5", "owned_by": "claude"},  # would answer too, if ever tried
     ])
     fallback = serve("openai-chat", models=[{"id": "fine"}])
-    add(client, gateway, label="Gateway")
+    add(client, gateway, label="Gateway", gatewayKind="omniroute", preferRouters=True)
     add(client, fallback, label="Fallback")
     choose_auto(client)
     events, error = run_step()
@@ -1855,7 +1886,7 @@ def test_discovery_notes_when_a_connection_stops_reporting_router_models(client,
         {"id": "auto/best-coding", "owned_by": "combo"},
         {"id": "claude/claude-opus-5", "owned_by": "claude"},
     ])
-    cid = add(client, stub)["connection"]["id"]
+    cid = add(client, stub, gatewayKind="omniroute", preferRouters=True)["connection"]["id"]
     assert store.get_model(cid, "auto/best-coding").facts == {"router": True}
 
     # Still listed, but no longer marked as a router — the signal this depends on is gone,
@@ -1865,7 +1896,9 @@ def test_discovery_notes_when_a_connection_stops_reporting_router_models(client,
     reply = client.post(f"/api/models/{cid}/discover")
     assert reply.status_code == 200
     assert "no longer sees any" in reply.json().get("note", "")
-    assert store.get_model(cid, "auto/best-coding").facts is None  # the stale flag was cleared, not kept
+    # The stale flag was corrected, not kept: OmniRoute now SAYS "not a router" (an explicit
+    # False replaces the old True under the facts merge; a key merely left out would be kept).
+    assert store.get_model(cid, "auto/best-coding").facts == {"router": False}
 
     choose_auto(client)
     assert sorted(c.model.model_id for c in auto.candidates()) == ["auto/best-coding", "claude/claude-opus-5"]

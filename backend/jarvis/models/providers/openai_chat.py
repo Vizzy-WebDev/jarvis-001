@@ -4,19 +4,22 @@ says it is OpenAI-compatible.
 
 This is NOT OpenAI's own integration (`openai_responses.py`). It exists for the
 servers that copied the older, simpler chat format, and it stays honest about
-what that means: no reasoning controls, and no model-capability data of its own — a
-plain server of this kind lists its models by name and says nothing more about them.
-(A gateway that does describe its models is read in `_facts`, and only as it says.)
+what that means: it reads nothing from a model list but the ids. What a GATEWAY
+says about its models beyond that (OpenRouter's pricing and modalities, OmniRoute's
+router entries) is read by that gateway's own module in `models/gateways/`, for a
+connection that declares it — never here. Each listing row is handed on untouched
+(`Discovered.raw`) for exactly that.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
 from ..errors import ProviderError, Unsupported
-from ..types import CheckResult, Discovered, Finished, TextDelta, ToolUse, Usage, Target
+from ..request import ChatRequest, ImagePart, MediaPart, Message, ToolCallPart, ToolResultPart
+from ..types import CheckResult, Discovered, Finished, RawError, TextDelta, ToolUse, Usage, Target
 from . import _wire as wire
 
 FORMAT = "openai-chat"
@@ -24,17 +27,80 @@ FORMAT = "openai-chat"
 _FINISH = {"stop": "stop", "tool_calls": "tool_calls", "function_call": "tool_calls",
            "length": "length", "content_filter": "content_filter"}
 
+#: The neutral reasoning levels in the `reasoning_effort` names the reasoning models
+#: served this way (GLM, Kimi, DeepSeek) accept. Only ever sent to a model its
+#: gateway reported as reasoning-capable.
+_REASONING = {"minimal": "low", "balanced": "low", "thorough": "high", "maximum": "max"}
+
+#: Words that make a 429 about money, not about pace — never a reason to wait a
+#: minute and try the same account again.
+_MONEY = re.compile(r"quota|billing|credit|insufficient|payment", re.IGNORECASE)
+
 
 def _auth(target: Target) -> dict[str, str]:
     return {"Authorization": f"Bearer {target.api_key}"} if target.api_key else {}
 
 
+# --- failures ---------------------------------------------------------------------------
+
+def _error_object(body: Any) -> dict[str, Any]:
+    err = body.get("error") if isinstance(body, dict) else None
+    return err if isinstance(err, dict) else {}
+
+
+def normalize_error(raw: RawError) -> ProviderError:
+    """What this server's failure means, from its body where it said.
+
+    The body is OpenAI's shape where the server copied it (`error.code`, `error.type`);
+    a gateway such as OpenRouter also puts the HTTP status in `error.code`. What a
+    gateway's upstream did is not guessed at: a server that answers a failure with a
+    structured error of its own is speaking about THIS request to THIS model, while
+    one that answers with something unparseable (a proxy's HTML page) is broken as a
+    whole — which is the only distinction drawn for a 5xx."""
+    err = _error_object(raw.body)
+    code = err.get("code")
+    status = raw.status if raw.status is not None else (
+        code if isinstance(code, int) and not isinstance(code, bool) else None)
+    name = str(code or "").lower() if not isinstance(code, int) else ""
+    kind_name = str(err.get("type") or "").lower()
+    said = f"{name} {kind_name} {raw.words}"
+    retry = wire.retry_after_s(raw.headers) or wire.reset_headers_s(raw.headers)
+    raw = RawError(status=status, headers=raw.headers, body=raw.body, words=raw.words, url=raw.url)
+
+    if "insufficient_quota" in (name, kind_name):
+        return wire.make(raw, kind="billing", scope="provider")
+    if "context_length_exceeded" in (name, kind_name):
+        # Too long for THIS model's window — a model with a larger one may still take it.
+        return wire.make(raw, kind="request", scope="model")
+    if status == 429 and _MONEY.search(said):
+        return wire.make(raw, kind="billing", scope="credential")
+    if name == "rate_limit_exceeded" or status == 429 or "rate_limit" in kind_name:
+        return wire.make(raw, kind="rate", scope="model", retryable=True, retry_after_s=retry)
+    if status == 401 or name == "invalid_api_key":
+        return wire.make(raw, kind="auth", scope="credential")
+    if status is None:
+        return wire.make(raw, kind="server", scope="model",
+                         message=f"{wire.host_of(raw.url)} stopped the reply: {raw.words or 'it reported an error.'}")
+    if status >= 500:
+        structured = bool(err) or (isinstance(raw.body, dict) and bool(raw.body))
+        return wire.make(raw, kind="server", scope="model" if structured else "provider",
+                         retryable=True, retry_after_s=retry)
+    if status in (400, 422):
+        # Opaque: a server of this kind (a gateway especially) answers 400 for things
+        # that are about one upstream model as often as about the request itself.
+        return wire.make(raw, kind="request", scope="unknown")
+    return wire.fallback(raw)
+
+
+# --- the model list -----------------------------------------------------------------------
+
 def _listing(target: Target) -> list[dict[str, Any]]:
-    body = wire.get_json(wire.join_url(target.base_url, "models"), headers=_auth(target), missing="address")
+    body = wire.get_json(wire.join_url(target.base_url, "models"), headers=_auth(target), missing="address",
+                         normalize=normalize_error)
     rows = body.get("data") if isinstance(body, dict) else body
     if not isinstance(rows, list):
         raise ProviderError(f"{wire.host_of(target.base_url)} answered, but not with a list of models.",
-                            kind="request")
+                            kind="request", scope="provider")
     return [r for r in rows if isinstance(r, dict) and r.get("id")]
 
 
@@ -47,125 +113,70 @@ def check(target: Target) -> CheckResult:
         if err.status != 404:
             raise
         # No model list here. Is this still a chat server, or a wrong address?
-        status, words = wire.probe_post(wire.join_url(target.base_url, "chat/completions"),
-                                        headers=_auth(target), body={})
-        if status in (401, 403, 404) or status >= 500:
-            raise wire.error_for(status, words, target.base_url, missing="address")
+        raw = wire.probe_post(wire.join_url(target.base_url, "chat/completions"), headers=_auth(target), body={})
+        if raw.status in (401, 403, 404) or (raw.status or 0) >= 500:
+            raise wire.fallback(raw, missing="address")
         return CheckResult(True, "Reached the server. It doesn't offer a list of its models, so the "
                                  "key and the model can't be checked until you use it — add a model ID by hand.")
     return CheckResult(True, f"Connected. {count} model{'s' if count != 1 else ''} available.")
 
 
 def discover(target: Target) -> list[Discovered]:
+    """The ids, and nothing claimed about them. Each row goes along as `raw` so a
+    connection that declared a gateway can have that gateway's module read it."""
     try:
         rows = _listing(target)
     except ProviderError as err:
         if err.status == 404:
             raise Unsupported("This server doesn't offer a list of its models — add the model ID by hand.") from err
         raise
-    return [Discovered(model_id=str(r["id"]), facts=_facts(r)) for r in rows]
-
-
-#: Kinds of model a gateway can list that never take a chat turn.
-_NOT_CHAT_TYPES = {"video", "image", "audio", "speech", "tts", "stt", "transcription",
-                   "embedding", "embeddings", "rerank", "moderation"}
-
-
-def _facts(row: dict[str, Any]) -> dict[str, Any] | None:
-    """What a gateway said about this model, and only that.
-
-    Plain OpenAI-style servers say nothing beyond the name, and get nothing here.
-    Gateways such as OmniRoute and OpenRouter do say more — a `type`, the
-    modalities in and out, whether tool calling works — and those are kept as
-    reported. A key that is absent means the provider did not say.
-    """
-    facts: dict[str, Any] = {}
-    # OmniRoute marks its own routing/combo entries this way — confirmed live, not
-    # documented. It is the only signal this kind of gateway reports anywhere Jarvis can
-    # reach that tells a router apart from a model pinned to one upstream provider. Read
-    # as reported, same as everything here — never guessed from the model id itself.
-    if row.get("owned_by") == "combo":
-        facts["router"] = True
-    arch = row.get("architecture") if isinstance(row.get("architecture"), dict) else {}
-    outputs = row.get("output_modalities") or arch.get("output_modalities")
-    inputs = row.get("input_modalities") or arch.get("input_modalities")
-    kind = row.get("type")
-    if (isinstance(kind, str) and kind.lower() in _NOT_CHAT_TYPES) or (
-            isinstance(outputs, list) and outputs and "text" not in outputs):
-        facts["chat"] = False
-    caps = row.get("capabilities") if isinstance(row.get("capabilities"), dict) else {}
-    supported = row.get("supported_parameters")
-    if isinstance(caps.get("tool_calling"), bool):
-        facts["tools"] = caps["tool_calling"]
-    elif isinstance(supported, list) and supported:
-        facts["tools"] = "tools" in supported
-    if isinstance(inputs, list) and inputs:
-        facts["image"] = "image" in inputs
-    # A price, where the gateway states one. Kept because "needs credit" is a fact about
-    # paid models only; a model it lists as free keeps working on an account with none.
-    pricing = row.get("pricing") if isinstance(row.get("pricing"), dict) else {}
-    # OpenRouter's own router products (Auto Router, Pareto Router, Fusion, Body Builder) mark
-    # themselves this way — confirmed live, not documented either. What they cost depends on
-    # which underlying model answers, so the listing can't quote one; a plain rolling alias to
-    # one current model (e.g. "~anthropic/claude-sonnet-latest") still prices normally and is
-    # correctly left alone. `openrouter/free` prices at a real 0, not -1, so it isn't caught
-    # here — disclosed, not missed: it behaves as an ordinary model when tried.
-    if pricing.get("prompt") == "-1":
-        facts["router"] = True
-    try:
-        prices = [float(pricing[k]) for k in ("prompt", "completion") if k in pricing]
-    except (TypeError, ValueError):
-        prices = []
-    if prices:
-        facts["free"] = all(p == 0 for p in prices)
-    return facts or None
+    return [Discovered(model_id=str(r["id"]), raw=r) for r in rows]
 
 
 # --- the conversation, in this format ------------------------------------------------
 
-def _user(message: dict[str, Any]) -> dict[str, Any] | None:
-    text = message.get("text") or ""
-    media = wire.media_of(message)
-    if not media:
+def _user(message: Message) -> dict[str, Any] | None:
+    text = message.text()
+    media = message.of(MediaPart)
+    if media:
+        raise ProviderError(f"This kind of connection can take images, but not {media[0].kind} attachments.",
+                            kind="request", scope="model")
+    images = message.of(ImagePart)
+    if not images:
         return {"role": "user", "content": text} if text else None
     parts: list[dict[str, Any]] = [{"type": "text", "text": text}] if text else []
-    for kind, mime, data in media:
-        if kind != "image":
-            raise ProviderError(f"This kind of connection can take images, but not {kind} attachments.",
-                                kind="request")
-        parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
+    parts.extend({"type": "image_url", "image_url": {"url": f"data:{i.mime_type};base64,{i.data_base64}"}}
+                 for i in images)
     return {"role": "user", "content": parts}
 
 
-def _assistant(message: dict[str, Any]) -> dict[str, Any] | None:
-    text = wire.assistant_text(message)
-    calls = message.get("toolCalls") or []
+def _assistant(message: Message) -> dict[str, Any] | None:
+    text = message.text()
+    calls = message.of(ToolCallPart)
     if not text and not calls:
         return None
     entry: dict[str, Any] = {"role": "assistant", "content": text or None}
     if calls:
         entry["tool_calls"] = [
-            {"id": c["id"], "type": "function",
-             "function": {"name": c["name"], "arguments": wire.dumps(c.get("args") or {})}}
+            {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": wire.dumps(c.args)}}
             for c in calls
         ]
     return entry
 
 
-def _messages(system: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _messages(system: str | None, messages: tuple[Message, ...]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     flat = wire.flatten_system(system)
     if flat:
         out.append({"role": "system", "content": flat})
     for message in messages:
-        role = message.get("role")
-        if role == "user":
+        if message.role == "user":
             entry = _user(message)
-        elif role == "assistant":
+        elif message.role == "assistant":
             entry = _assistant(message)
-        elif role == "tool":
-            out.extend({"role": "tool", "tool_call_id": r["id"], "content": wire.dumps(r.get("result"))}
-                       for r in message.get("toolResults") or [])
+        elif message.role == "tool":
+            out.extend({"role": "tool", "tool_call_id": r.call_id, "content": wire.dumps(r.result)}
+                       for r in message.of(ToolResultPart))
             continue
         else:
             continue
@@ -174,16 +185,12 @@ def _messages(system: str, messages: list[dict[str, Any]]) -> list[dict[str, Any
     return out
 
 
-def _count(value: Any) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
 def _usage(raw: dict[str, Any]) -> Usage:
     return Usage(
-        tokens_in=_count(raw.get("prompt_tokens")),
-        tokens_out=_count(raw.get("completion_tokens")),
-        tokens_reasoning=_count((raw.get("completion_tokens_details") or {}).get("reasoning_tokens")),
-        cached_in=_count((raw.get("prompt_tokens_details") or {}).get("cached_tokens")),
+        tokens_in=wire.count(raw.get("prompt_tokens")),
+        tokens_out=wire.count(raw.get("completion_tokens")),
+        tokens_reasoning=wire.count((raw.get("completion_tokens_details") or {}).get("reasoning_tokens")),
+        cached_in=wire.count((raw.get("prompt_tokens_details") or {}).get("cached_tokens")),
     )
 
 
@@ -200,7 +207,7 @@ def _could_be_error_envelope(text: str) -> bool:
     return bool(_ERROR_START.match(text)) or _ERROR_PREFIX.startswith(compact)
 
 
-def _error_in_text(text: str, host: str) -> ProviderError | None:
+def _error_in_text(text: str, url: str) -> ProviderError | None:
     """The failure a whole reply's text actually is, or None when it is a real answer.
 
     Narrow on purpose: only a reply that is, in its entirety, one JSON object whose
@@ -215,28 +222,43 @@ def _error_in_text(text: str, host: str) -> ProviderError | None:
     message = err.get("message") if isinstance(err, dict) else None
     if not isinstance(message, str) or not message.strip():
         return None
-    kind = "rate" if "rate" in str(err.get("type") or err.get("code") or "") else "server"
-    return ProviderError(f"{host} sent back an error instead of a reply: {message.strip()}",
-                         kind=kind)
+    judged = normalize_error(wire.in_band(body, url))
+    return ProviderError(f"{wire.host_of(url)} sent back an error instead of a reply: {message.strip()}",
+                         kind=judged.kind, scope=judged.scope, retryable_elsewhere=judged.retryable_elsewhere,
+                         retry_after_s=judged.retry_after_s, status=judged.status)
 
 
-def stream(target: Target, *, model_id: str, messages: list[dict[str, Any]], system: str,
-           tools: list[dict[str, Any]], effort: str | None = None,
-           facts: dict[str, Any] | None = None) -> Iterator[Any]:
-    """Nothing is done with `effort`: this format has no reasoning control, so a
-    server of this kind is never sent one."""
-    host = wire.host_of(target.base_url)
+def _body(request: ChatRequest, facts: Mapping[str, Any] | None) -> dict[str, Any]:
     body: dict[str, Any] = {
-        "model": model_id,
-        "messages": _messages(system, messages),
+        "model": request.model_id,
+        "messages": _messages(request.system, request.messages),
         "stream": True,
         "stream_options": {"include_usage": True},
     }
-    if tools:
+    if request.tools:
         body["tools"] = [{"type": "function",
-                          "function": {"name": t["name"], "description": t.get("description", ""),
-                                       "parameters": t.get("parameters") or {"type": "object", "properties": {}}}}
-                         for t in tools]
+                          "function": {"name": t.name, "description": t.description, "parameters": t.parameters}}
+                         for t in request.tools]
+        if request.options.tool_choice:
+            body["tool_choice"] = request.options.tool_choice
+    options = request.options
+    if options.temperature is not None:
+        body["temperature"] = options.temperature
+    if options.max_output_tokens:
+        body["max_tokens"] = options.max_output_tokens
+    if options.response_format == "json":
+        body["response_format"] = {"type": "json_object"}
+    level = wire.reasoning_level(request, facts)
+    if level:
+        body["reasoning_effort"] = _REASONING[level]
+    return body
+
+
+def stream(target: Target, request: ChatRequest, *,
+           facts: Mapping[str, Any] | None = None) -> Iterator[Any]:
+    url = wire.join_url(target.base_url, "chat/completions")
+    host = wire.host_of(target.base_url)
+    body = _body(request, facts)
 
     text: list[str] = []
     calls: dict[int, dict[str, str | None]] = {}
@@ -248,8 +270,7 @@ def stream(target: Target, *, model_id: str, messages: list[dict[str, Any]], sys
     held: list[str] = []
     holding = True
 
-    with wire.post_stream(wire.join_url(target.base_url, "chat/completions"),
-                          headers=_auth(target), body=body) as response:
+    with wire.post_stream(url, headers=_auth(target), body=body, normalize=normalize_error) as response:
         for _, data in wire.iter_sse(response):
             if data.strip() == "[DONE]":
                 finished_cleanly = True
@@ -258,9 +279,7 @@ def stream(target: Target, *, model_id: str, messages: list[dict[str, Any]], sys
             if not isinstance(chunk, dict):
                 continue
             if chunk.get("error"):
-                err = chunk["error"]
-                raise ProviderError(f"{host} stopped the reply: "
-                                    f"{err.get('message') if isinstance(err, dict) else err}", kind="server")
+                raise normalize_error(wire.in_band(chunk, url))
             reported = chunk.get("model") or reported
             if isinstance(chunk.get("usage"), dict):
                 usage = _usage(chunk["usage"])
@@ -289,7 +308,7 @@ def stream(target: Target, *, model_id: str, messages: list[dict[str, Any]], sys
                     finish = choice["finish_reason"]
 
     if holding and held:
-        failure = _error_in_text("".join(held), host)
+        failure = _error_in_text("".join(held), url)
         if failure is not None:
             raise failure
         yield TextDelta("".join(held))
@@ -297,14 +316,14 @@ def stream(target: Target, *, model_id: str, messages: list[dict[str, Any]], sys
     if finish is None and not finished_cleanly:
         # A reply that just stops is not a finished reply. Saying so is the
         # difference between "it broke" and a confident half-answer.
-        raise ProviderError(f"The reply from {host} stopped part-way.", kind="reply")
+        raise ProviderError(f"The reply from {host} stopped part-way.", kind="reply", scope="model")
 
     tool_calls = []
     for index in sorted(calls):
         slot = calls[index]
         if not slot["name"]:
             raise ProviderError("The model asked to use a tool without naming it, so nothing was run.",
-                                kind="reply")
+                                kind="reply", scope="model")
         tool_calls.append(ToolUse(id=slot["id"] or f"call_{index}", name=slot["name"],
                                   args=wire.parse_arguments(slot["args"], slot["name"])))
 

@@ -558,4 +558,53 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
         CREATE INDEX IF NOT EXISTS idx_artifacts_conversation ON artifacts(conversation_id);
         """
     ],
+    # 35: The model system's three kinds of fact kept apart.
+    # * CATALOG — what a provider reported (`provider_catalog`, the old `provider_models`
+    #   renamed, rows intact). A refresh writes here and nowhere else, merging facts.
+    # * POLICY — what the PERSON decided about a model (`provider_policy`): removed
+    #   (`excluded`), their own label. A refresh never touches it, so a model someone
+    #   removed stays removed however often the provider lists it again. `enabled` and
+    #   `user_order` are read but nothing writes them: there is deliberately no per-model
+    #   on/off control (see CLAUDE.md).
+    # * RUNTIME — how calls went (`model_outcomes`, unchanged) and what is being held back
+    #   for now (`model_holds`): one row per hold, keyed by how far the failure reached —
+    #   one model on one credential, a whole credential, or a whole provider connection —
+    #   and lasting as long as the provider said to wait, or an exponential backoff.
+    # A connection also gains the name of its credential (NULL = its own id: one key per
+    # connection today), the gateway it declares itself to be, if any, and whether Auto
+    # should prefer that gateway's own router models. `_migration_35` (db.py) fills those
+    # in for existing connections and converts stored effort facts to neutral reasoning.
+    35: [
+        """
+        ALTER TABLE provider_models RENAME TO provider_catalog;
+        CREATE TABLE IF NOT EXISTS provider_policy (
+          provider_id TEXT NOT NULL REFERENCES model_providers(id) ON DELETE CASCADE,
+          model_id    TEXT NOT NULL,
+          enabled     INTEGER NOT NULL DEFAULT 1,
+          user_label  TEXT,
+          user_order  INTEGER,
+          excluded    INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (provider_id, model_id)
+        );
+        ALTER TABLE model_providers ADD COLUMN credential_id TEXT;
+        ALTER TABLE model_providers ADD COLUMN gateway_kind TEXT;
+        ALTER TABLE model_providers ADD COLUMN prefer_routers INTEGER NOT NULL DEFAULT 0;
+        CREATE TABLE IF NOT EXISTS model_holds (
+          scope         TEXT NOT NULL,
+          hold_key      TEXT NOT NULL,
+          connection_id TEXT NOT NULL REFERENCES model_providers(id) ON DELETE CASCADE,
+          credential_id TEXT NOT NULL,
+          model_id      TEXT,
+          kind          TEXT,
+          status        INTEGER,
+          message       TEXT,
+          failed_at     TEXT NOT NULL,
+          until         TEXT NOT NULL,
+          streak        INTEGER NOT NULL DEFAULT 1,
+          retry_after_s REAL,
+          PRIMARY KEY (scope, hold_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_model_holds_connection ON model_holds(connection_id);
+        """
+    ],
 }

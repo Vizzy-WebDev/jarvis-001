@@ -42,7 +42,8 @@ class StubProvider:
                  answers_as: str | None = None, unknown_model: str | None = None,
                  truncate: bool = False, chat_status: int | None = None,
                  first_token_delay: float = 0.0, stream_error: dict[str, Any] | None = None,
-                 stream_error_then_continues: bool = False, preamble_frames: int = 0) -> None:
+                 stream_error_then_continues: bool = False, preamble_frames: int = 0,
+                 fail_with: tuple[int, Any, dict[str, str]] | None = None) -> None:
         assert format in FORMATS
         self.format = format
         self.key = key
@@ -66,6 +67,11 @@ class StubProvider:
         #: openai-chat only: this many empty-delta filler chunks before any real content —
         #: the shape a gateway's own "still routing/falling back internally" keepalive uses.
         self.preamble_frames = preamble_frames
+        #: `(status, body, headers)`: answer every generation request with exactly this —
+        #: a provider's own error body (a dict is sent as JSON, a str as-is, e.g. a proxy's
+        #: HTML page) and its own headers (Retry-After, x-ratelimit-*). What a real
+        #: provider's failure looks like on the wire, byte for byte.
+        self.fail_with = fail_with
         #: Every request received: {method, path, query, headers, body}.
         self.requests: list[dict[str, Any]] = []
         self.base_url = ""
@@ -156,6 +162,18 @@ class StubProvider:
                     return self._error(400, "you must provide a model parameter")
                 if stub.chat_status:
                     return self._error(stub.chat_status, "the provider is having a bad day")
+                if stub.fail_with is not None:
+                    status, payload, headers = stub.fail_with
+                    data = (json.dumps(payload) if not isinstance(payload, str) else payload).encode()
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json" if not isinstance(payload, str)
+                                     else "text/html")
+                    for name, value in (headers or {}).items():
+                        self.send_header(name, value)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
                 model = stub._requested_model(body, path)
                 if stub.unknown_model and model == stub.unknown_model:
                     return self._error(404, f"The model `{model}` does not exist or you do not have access to it.")
@@ -238,6 +256,9 @@ class StubProvider:
 
     def _responses(self, body: dict[str, Any], model: str) -> list[str]:
         out: list[str] = []
+        if self.stream_error is not None:  # OpenAI's own in-stream failure event
+            return [self._sse({"type": "response.failed", "response": {"id": "resp_1", "status": "failed",
+                                                                       "error": self.stream_error}})]
         usage = {"input_tokens": 12, "output_tokens": 7, "input_tokens_details": {"cached_tokens": 4},
                  "output_tokens_details": {"reasoning_tokens": 2}}
         if self._wants_tool(body):
@@ -285,6 +306,10 @@ class StubProvider:
 
     def _anthropic(self, body: dict[str, Any], model: str) -> list[str]:
         e = self._sse
+        if self.stream_error is not None:  # Anthropic's own in-stream `error` event
+            return [e({"type": "message_start", "message": {"id": "msg_1", "model": model, "usage": {}}},
+                      "message_start"),
+                    e({"type": "error", "error": self.stream_error}, "error")]
         out = [e({"type": "message_start", "message": {"id": "msg_1", "model": model, "usage": {
             "input_tokens": 12, "cache_read_input_tokens": 4, "cache_creation_input_tokens": 0,
             "output_tokens": 1}}}, "message_start"),

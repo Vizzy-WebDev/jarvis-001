@@ -58,6 +58,9 @@ _ERRORS = {
 }
 #: How Anthropic says a prompt didn't fit THIS model's context window.
 _TOO_LONG = re.compile(r"prompt is too long|context window|maximum context", re.IGNORECASE)
+#: How Anthropic says the ACCOUNT is out of credit — sent as an `invalid_request_error`
+#: (400), which would otherwise read as a bad request and stop Auto rather than move on.
+_NO_CREDIT = re.compile(r"credit balance|billing|purchase credits", re.IGNORECASE)
 
 _STOP = {"end_turn": "stop", "stop_sequence": "stop", "pause_turn": "stop", "tool_use": "tool_calls",
          "max_tokens": "length", "model_context_window_exceeded": "length", "refusal": "content_filter"}
@@ -79,6 +82,8 @@ def normalize_error(raw: RawError) -> ProviderError:
     retry = wire.retry_after_s(raw.headers)
     in_stream = raw.status is None
     message = f"Anthropic stopped the reply. {raw.words}".strip() if in_stream else None
+    if kind_name == "invalid_request_error" and _NO_CREDIT.search(raw.words):
+        return wire.make(raw, kind="billing", scope="credential", message=message)
     if kind_name == "invalid_request_error":
         # Too long for THIS model's window is about the model; anything else is the request.
         scope = "model" if _TOO_LONG.search(raw.words) else "request"

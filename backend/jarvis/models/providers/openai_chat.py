@@ -67,7 +67,7 @@ def normalize_error(raw: RawError) -> ProviderError:
     retry = wire.retry_after_s(raw.headers) or wire.reset_headers_s(raw.headers)
     raw = RawError(status=status, headers=raw.headers, body=raw.body, words=raw.words, url=raw.url)
 
-    if "insufficient_quota" in (name, kind_name):
+    if {"insufficient_quota", "billing_hard_limit_reached", "billing_not_active"} & {name, kind_name}:
         return wire.make(raw, kind="billing", scope="provider")
     if "context_length_exceeded" in (name, kind_name):
         # Too long for THIS model's window — a model with a larger one may still take it.

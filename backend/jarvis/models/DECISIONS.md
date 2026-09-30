@@ -54,3 +54,28 @@ it was deliberately corrected.
 - **`jsonschema` and `pyyaml` are declared dependencies.** Both were already in the
   venv (jsonschema through `mcp`); relying on a transitive install is how a fresh
   install breaks.
+- **Config is YAML** (`data/models.yaml`, merged over the shipped
+  `jarvis/models/data/defaults.yaml`). TOML was ruled out because the standard
+  library can read it but not write it, and the settings screen writes this file.
+  Saving from the screen rewrites the file, so comments typed into it by hand are
+  lost on the next save; the file's header says so.
+- **Every config problem is reported at once, each naming where it is**
+  (`connections.box.trust: should be one of …`). Nothing invalid is ever written:
+  an edit is parsed before it replaces the file. A key-looking entry
+  (`api_key`, `Authorization`, …) anywhere in `default_params` is refused — keys
+  belong in `.env`.
+- **A pin becomes an alias named exactly what the pin says.** Specialists and
+  scheduled tasks store a model id as their pin; the migration makes an alias with
+  that same name, so those stored values keep working without rewriting any other
+  table, and the Specialists screen still shows what the person typed.
+- **The migrations (35: move and drop, 36: traces) are registered in the last
+  stage of the build**, together with the boundary switch. The person's running
+  app loads this working tree on restart; an earlier migration that dropped the
+  old tables would have broken the old layer that was still serving them.
+- **OpenRouter's preset sets `provider: {allow_fallbacks: false}`** as a default
+  param: model and host choice is this layer's job, and a gateway silently
+  answering from somewhere else is what "the model that actually answered is
+  always recorded" exists to catch.
+- **Trust on migration is `local` for Ollama and LM Studio, `standard` for all
+  else.** Nothing is ever guessed to be zero-retention; that is the person's claim
+  to make in config.

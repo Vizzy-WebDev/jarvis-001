@@ -50,6 +50,9 @@ dev = ["pytest>=8", "playwright>=1.40"]
 [project.scripts]
 jarvis = "jarvis.main:main"
 
+[tool.setuptools.package-data]
+"jarvis.models" = ["data/*.yaml"]
+
 [tool.setuptools.packages.find]
 include = ["jarvis*"]
 

@@ -25,6 +25,16 @@ from ..types import (Finish, SealedEvent, TextDelta, ToolArgsDelta, ToolCall, To
 
 NAME = "fake"
 
+
+class _AnyFlag(frozenset):
+    """A test driver understands whatever wire flag a test gives it."""
+
+    def __contains__(self, item: object) -> bool:
+        return True
+
+
+QUIRKS = _AnyFlag()
+
 DEFAULT_CAPABILITIES: dict[str, Any] = {"text_in": True, "streaming": True}
 
 _lock = threading.Lock()

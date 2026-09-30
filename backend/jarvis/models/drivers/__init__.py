@@ -15,9 +15,9 @@ from __future__ import annotations
 
 from types import ModuleType
 
-from . import fake
+from . import anthropic_messages, fake, gemini_generate, openai_chat, openai_responses
 
-DRIVERS: dict[str, ModuleType] = {m.NAME: m for m in (fake,)}
+DRIVERS: dict[str, ModuleType] = {m.NAME: m for m in (fake, openai_chat, openai_responses, anthropic_messages, gemini_generate)}
 
 
 def get(name: str) -> ModuleType:

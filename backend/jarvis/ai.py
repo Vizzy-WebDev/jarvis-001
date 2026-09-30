@@ -61,7 +61,7 @@ def ask(prompt: str, *, system: str = "", want_json: bool = False,
     can import: the one-shot path reaches the providers and the selection, and
     nothing that reaches back into the turn loop.
     """
-    from .models.oneshot import ask as _ask
+    from .models.legacy.oneshot import ask as _ask
 
     return _ask(prompt, system=system, want_json=want_json, media=media, need=need,
                 model_id=model_id, only=only, role=role, background=background)

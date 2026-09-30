@@ -41,7 +41,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Generator
 
-from ..ai import NoModelAvailable
+from ...ai import NoModelAvailable
 from . import auto, providers, runtime
 from .errors import ProviderError
 from .selection import Plan, Resolved

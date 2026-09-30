@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import logging
 
-from ..ai import NoModelAvailable
-from ..events import EventType, bus
+from ...ai import NoModelAvailable
+from ...events import EventType, bus
 from .errors import ProviderError
 from .selection import Resolved
 from .types import Usage

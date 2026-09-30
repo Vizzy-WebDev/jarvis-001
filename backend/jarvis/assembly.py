@@ -16,7 +16,7 @@ import threading
 
 from .capabilities import CapabilityRegistry
 from .events import bus
-from .models.client import JarvisModelClient
+from .models.legacy.client import JarvisModelClient
 from .observers import start_observers
 from .orchestrator import Orchestrator
 from .tools import load_tools

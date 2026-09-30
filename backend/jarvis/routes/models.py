@@ -20,9 +20,9 @@ from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 
 from .. import config
-from ..models import kinds, providers, selection, store
-from ..models.errors import ProviderError, Unsupported
-from ..models.types import CheckResult
+from ..models.legacy import kinds, providers, selection, store
+from ..models.legacy.errors import ProviderError, Unsupported
+from ..models.legacy.types import CheckResult
 
 router = APIRouter(prefix="/api/models")
 

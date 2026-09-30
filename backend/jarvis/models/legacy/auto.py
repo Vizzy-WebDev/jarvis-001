@@ -45,7 +45,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from .. import config
+from ... import config
 from . import kinds, store
 
 #: How long a model waits behind the others after its first failure in a row. It

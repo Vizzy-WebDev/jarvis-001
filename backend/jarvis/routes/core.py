@@ -22,7 +22,7 @@ def status() -> dict[str, Any]:
     """Whether the model the person selected can actually be run — what the
     first-run flow checks. Not "is anything connected": a selection whose
     connection was removed, or whose key is gone, is not usable, and this says so."""
-    from ..models import selection
+    from ..models.legacy import selection
 
     usable = selection.availability().state == "ok"
     # Exactly the recorded shape, deliberately: the contract harness only catches

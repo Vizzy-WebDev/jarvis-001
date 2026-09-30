@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any, Iterator
 
-from ...prompt_format import CACHE_BREAK
+from ....prompt_format import CACHE_BREAK
 from ..errors import ProviderError
 from ..types import CheckResult, Discovered, Finished, TextDelta, ToolUse, Usage, Target
 from . import _wire as wire

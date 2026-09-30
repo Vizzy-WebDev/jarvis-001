@@ -25,8 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .. import config, prefs
-from ..ai import NoModelAvailable
+from ... import config, prefs
+from ...ai import NoModelAvailable
 from . import auto, kinds, store
 from .types import Target
 

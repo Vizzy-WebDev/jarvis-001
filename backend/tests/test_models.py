@@ -24,7 +24,7 @@ from starlette.testclient import TestClient
 from jarvis import ai, config, conversation
 from jarvis.ai import NoModelAvailable
 from jarvis.events import EventType, bus
-from jarvis.models import kinds, selection, store
+from jarvis.models.legacy import kinds, selection, store
 from jarvis.prompt_format import CACHE_BREAK
 from stub_provider_server import FORMATS, StubProvider
 
@@ -37,7 +37,7 @@ TOOLS = [{"name": "get_time", "description": "What time is it.",
 def client(scratch, monkeypatch):
     from jarvis import assembly
     from jarvis.main import create_app
-    from jarvis.models import attempt
+    from jarvis.models.legacy import attempt
 
     monkeypatch.setattr(attempt, "_BUSY_WAITS_S", (0.0, 0.0))  # the retry is real; its pause need not be
     assembly.reset_for_tests()
@@ -89,7 +89,7 @@ def connect_and_select(client, serve, format: str, *, key: str | None = None, mo
 
 def run_step(messages=None, *, system="", tools=None, model_id=None, need=None, role=None):
     """One step through the turn loop's own client. Returns (events, error)."""
-    from jarvis.models.client import JarvisModelClient
+    from jarvis.models.legacy.client import JarvisModelClient
 
     events, error = [], None
     try:
@@ -130,7 +130,7 @@ def test_a_fresh_install_has_nothing_connected_and_says_so(client):
 
 def test_every_kind_offered_in_the_interface_has_a_real_implementation():
     """The correspondence rule: nothing is listed that the backend cannot run."""
-    from jarvis.models import providers
+    from jarvis.models.legacy import providers
 
     for kind in kinds.KINDS.values():
         if kind.format:
@@ -877,8 +877,8 @@ def test_a_key_that_stops_working_never_appears_in_the_turns_error(client, serve
 def test_the_anthropic_provider_itself_will_not_send_an_effort_it_was_not_told_the_model_accepts(serve):
     """Not only the layers above it: the provider is the last thing between a
     remembered setting and a model that would refuse it."""
-    from jarvis.models.providers import anthropic_messages
-    from jarvis.models.types import Target
+    from jarvis.models.legacy.providers import anthropic_messages
+    from jarvis.models.legacy.types import Target
 
     stub = serve("anthropic-messages")
     target = Target(stub.base_url, "k")
@@ -986,7 +986,7 @@ def test_every_tool_the_app_really_declares_is_acceptable_to_gemini(scratch):
     own `check_myself` tool declared two. Found by asking the real API, after eleven
     turns in a row came back unanswered."""
     from jarvis import assembly
-    from jarvis.models.providers import gemini_generate
+    from jarvis.models.legacy.providers import gemini_generate
 
     assembly.reset_for_tests()
     try:
@@ -1018,7 +1018,7 @@ def test_every_tool_the_app_really_declares_is_acceptable_to_gemini(scratch):
      {"type": "string", "nullable": True}),
 ])
 def test_a_tool_schema_is_narrowed_to_what_gemini_accepts(given, expected):
-    from jarvis.models.providers import gemini_generate
+    from jarvis.models.legacy.providers import gemini_generate
 
     assert gemini_generate._schema(given) == expected
 
@@ -1094,7 +1094,7 @@ def test_auto_answers_from_a_connected_model_and_says_nothing_about_switching(cl
 
 
 def test_auto_never_involves_chance(client, serve):
-    from jarvis.models import auto
+    from jarvis.models.legacy import auto
 
     two_connections(client, serve)
     choose_auto(client)
@@ -1196,7 +1196,7 @@ def test_when_every_model_fails_auto_names_each_one_and_why(client, serve):
 
 
 def test_a_model_the_provider_says_is_not_for_chat_is_never_chosen(client, serve):
-    from jarvis.models import auto
+    from jarvis.models.legacy import auto
 
     stub = serve("openai-chat", models=[
         {"id": "clip", "type": "video"},
@@ -1219,7 +1219,7 @@ def test_a_model_the_provider_says_is_not_for_chat_is_never_chosen(client, serve
 
 
 def test_a_message_with_a_picture_only_goes_to_a_model_that_did_not_say_it_cannot_see(client, serve):
-    from jarvis.models import auto
+    from jarvis.models.legacy import auto
 
     stub = serve("openai-chat", models=[{"id": "blind", "input_modalities": ["text"]},
                                         {"id": "sighted", "input_modalities": ["text", "image"]}])
@@ -1265,7 +1265,7 @@ def test_what_really_happened_is_recorded_for_auto_to_read(client, serve):
 def test_a_reply_a_provider_module_cannot_read_is_a_plain_error_and_not_a_crash(client, serve, monkeypatch):
     from types import SimpleNamespace
 
-    from jarvis.models import attempt
+    from jarvis.models.legacy import attempt
 
     connect_and_select(client, serve, "openai-chat")
 
@@ -1313,7 +1313,7 @@ def test_a_gateways_reported_price_is_kept_and_a_402_is_its_own_kind_of_failure(
     assert store.get_model(cid, "paid").facts == {"free": False}
     assert store.get_model(cid, "free-one").facts == {"free": True}
     assert store.get_model(cid, "unpriced").facts is None
-    from jarvis.models.providers import _wire
+    from jarvis.models.legacy.providers import _wire
 
     err = _wire.error_for(402, "Insufficient credits.", "https://x/v1")
     assert err.kind == "billing" and err.status == 402 and "credit" in str(err)
@@ -1322,7 +1322,7 @@ def test_a_gateways_reported_price_is_kept_and_a_402_is_its_own_kind_of_failure(
 def test_when_the_account_is_out_of_credit_paid_models_wait_and_free_ones_carry_on(client, serve):
     from datetime import datetime, timedelta, timezone
 
-    from jarvis.models import auto
+    from jarvis.models.legacy import auto
 
     stub = serve("openai-chat", models=[
         {"id": "a-paid", "pricing": {"prompt": "1", "completion": "1"}},
@@ -1344,7 +1344,7 @@ def test_when_the_account_is_out_of_credit_paid_models_wait_and_free_ones_carry_
 
 def test_auto_starts_from_a_model_that_already_answered_in_the_saved_conversation(client, serve):
     from jarvis.db import get_db
-    from jarvis.models import auto
+    from jarvis.models.legacy import auto
 
     stub = serve("openai-chat", models=[{"id": "aaa"}, {"id": "zzz-worked"}])
     add(client, stub)
@@ -1367,13 +1367,13 @@ def test_choosing_auto_asks_each_connection_once_more_for_what_it_says_about_its
     assert store.get_model(cid, "clip").facts is None
     choose_auto(client)
     assert store.get_model(cid, "clip").facts == {"chat": False}
-    from jarvis.models import auto
+    from jarvis.models.legacy import auto
 
     assert [c.model.model_id for c in auto.candidates()] == ["chat-ok"]
 
 
 def test_a_402_mid_step_skips_the_paid_models_on_that_connection_but_not_the_free_ones(client, serve):
-    from jarvis.models import auto
+    from jarvis.models.legacy import auto
 
     paid = {"prompt": "1", "completion": "1"}
     free = {"prompt": "0", "completion": "0"}
@@ -1384,9 +1384,9 @@ def test_a_402_mid_step_skips_the_paid_models_on_that_connection_but_not_the_fre
     choose_auto(client)
 
     seen = []
-    from jarvis.models import attempt
-    from jarvis.models.errors import ProviderError
-    from jarvis.models.types import Finished
+    from jarvis.models.legacy import attempt
+    from jarvis.models.legacy.errors import ProviderError
+    from jarvis.models.legacy.types import Finished
     from types import SimpleNamespace
 
     def fake(target, **kwargs):
@@ -1431,8 +1431,8 @@ def test_auto_leaves_a_connection_after_two_failed_models_and_there_is_no_fixed_
 
 
 def test_the_moved_on_note_names_a_few_and_counts_the_rest():
-    from jarvis.models import attempt
-    from jarvis.models.errors import ProviderError
+    from jarvis.models.legacy import attempt
+    from jarvis.models.legacy.errors import ProviderError
 
     class Fake:
         def __init__(self, label, model):
@@ -1457,7 +1457,7 @@ def test_a_slow_first_word_is_never_a_reason_to_move_on(client, serve):
 
 
 def test_only_the_silence_ceiling_ends_an_accepted_request_and_it_is_an_ordinary_failure(client, serve, monkeypatch):
-    from jarvis.models.providers import _wire
+    from jarvis.models.legacy.providers import _wire
 
     assert _wire.SILENCE_CEILING_S >= 600  # generous by default: a reasoning model may think for minutes
     monkeypatch.setattr(_wire, "SILENCE_CEILING_S", 1.0)
@@ -1476,7 +1476,7 @@ def test_only_the_silence_ceiling_ends_an_accepted_request_and_it_is_an_ordinary
 def test_streams_carry_tcp_keepalive_and_a_configured_proxy_is_still_respected(monkeypatch):
     import socket
 
-    from jarvis.models.providers import _wire
+    from jarvis.models.legacy.providers import _wire
 
     options = _wire._keepalive()
     assert (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1) in options
@@ -1499,7 +1499,7 @@ def test_streams_carry_tcp_keepalive_and_a_configured_proxy_is_still_respected(m
 
 
 def test_a_host_that_cannot_be_reached_is_its_own_failure_and_leaves_the_whole_connection(client, serve):
-    from jarvis.models import auto
+    from jarvis.models.legacy import auto
 
     gone = serve("openai-chat")
     address = gone.base_url
@@ -1520,7 +1520,7 @@ def test_a_host_that_cannot_be_reached_is_its_own_failure_and_leaves_the_whole_c
 
 
 def test_a_refused_key_leaves_the_whole_connection_at_once(client, serve):
-    from jarvis.models import auto
+    from jarvis.models.legacy import auto
 
     one = serve("openai-chat", key=SECRET, models=[{"id": "one-a"}, {"id": "one-b"}])
     two = serve("openai-chat", models=[{"id": "two-a"}])
@@ -1538,9 +1538,9 @@ def test_after_the_find_budget_auto_stops_starting_unknown_models_but_still_trie
         client, serve, monkeypatch):
     from types import SimpleNamespace
 
-    from jarvis.models import attempt, auto
-    from jarvis.models.errors import ProviderError
-    from jarvis.models.types import Finished
+    from jarvis.models.legacy import attempt, auto
+    from jarvis.models.legacy.errors import ProviderError
+    from jarvis.models.legacy.types import Finished
 
     monkeypatch.setattr(auto, "STRIKES_PER_CONNECTION", 99)  # isolate the budget from the strike rule
     stub = serve("openai-chat", models=[{"id": "zp"}, {"id": "u1"}, {"id": "u2"}, {"id": "u3"}])
@@ -1578,7 +1578,7 @@ def test_after_the_find_budget_auto_stops_starting_unknown_models_but_still_trie
 
 
 def test_how_quickly_a_model_answers_is_a_moving_average_and_failures_are_counted_in_a_row(client, serve):
-    from jarvis.models import auto
+    from jarvis.models.legacy import auto
 
     stub = serve("openai-chat", models=[{"id": "a"}])
     cid = add(client, stub)["connection"]["id"]
@@ -1602,7 +1602,7 @@ def test_how_quickly_a_model_answers_is_a_moving_average_and_failures_are_counte
 def test_one_blip_after_a_good_record_is_a_short_wait_whatever_the_error(client, serve):
     from datetime import datetime, timedelta, timezone
 
-    from jarvis.models import auto
+    from jarvis.models.legacy import auto
 
     stub = serve("openai-chat", models=[{"id": "a"}, {"id": "b"}])
     cid = add(client, stub)["connection"]["id"]
@@ -1662,7 +1662,7 @@ def test_the_last_model_auto_has_left_is_retried_when_busy(client, serve):
 
 
 def test_a_gateways_own_prefix_on_a_model_id_is_not_a_different_model():
-    from jarvis.models import runtime
+    from jarvis.models.legacy import runtime
 
     # Asked for through a gateway's namespace, answered under the model's own name: the same model.
     assert runtime.same_model("no-think/cc/claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001")
@@ -1717,7 +1717,7 @@ def test_a_gateway_that_marks_its_routers_by_unpriceable_cost_is_also_flagged(cl
 
 
 def test_auto_only_considers_a_connections_router_models_when_it_has_any(client, serve):
-    from jarvis.models import auto
+    from jarvis.models.legacy import auto
 
     stub = serve("openai-chat", models=[
         {"id": "aug/gpt5", "owned_by": "auggie"},  # sorts before "auto/" alphabetically
@@ -1732,7 +1732,7 @@ def test_auto_only_considers_a_connections_router_models_when_it_has_any(client,
 def test_auto_is_unaffected_on_a_connection_with_no_router_models(client, serve):
     """The regression guard: an ordinary connection — nothing reports `owned_by: "combo"` —
     ranks exactly as it did before router-awareness existed."""
-    from jarvis.models import auto
+    from jarvis.models.legacy import auto
 
     two_connections(client, serve)
     choose_auto(client)
@@ -1849,7 +1849,7 @@ def test_a_named_routers_failure_is_reported_honestly_and_never_substituted(clie
 
 
 def test_discovery_notes_when_a_connection_stops_reporting_router_models(client, serve):
-    from jarvis.models import auto
+    from jarvis.models.legacy import auto
 
     stub = serve("openai-chat", models=[
         {"id": "auto/best-coding", "owned_by": "combo"},

@@ -17,9 +17,9 @@ from urllib.parse import urlparse
 
 import httpx
 
-from ...conversation import assistant_text_of
-from ...prompt_format import CACHE_BREAK
-from ...redact import redact_text
+from ....conversation import assistant_text_of
+from ....prompt_format import CACHE_BREAK
+from ....redact import redact_text
 from ..errors import ProviderError
 
 CONNECT_TIMEOUT_S = 10.0

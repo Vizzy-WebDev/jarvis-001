@@ -11,7 +11,7 @@ import json
 import re
 from typing import Any
 
-from ..ai import Answer
+from ...ai import Answer
 from . import attempt, runtime, selection
 
 _JSON_NOTE = ("\n\nReply with a single JSON object and nothing else — no commentary and no code fence.")

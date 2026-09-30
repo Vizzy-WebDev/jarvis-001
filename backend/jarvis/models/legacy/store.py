@@ -17,8 +17,8 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from ..db import get_db
-from ..jscompat import now_iso
+from ...db import get_db
+from ...jscompat import now_iso
 
 #: Every read and write here goes through the ONE shared database connection, and
 #: uvicorn runs sync routes on a pool of threads. Two of them in this module at once

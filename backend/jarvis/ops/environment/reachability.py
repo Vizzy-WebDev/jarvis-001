@@ -16,7 +16,7 @@ def models() -> dict[str, Any]:
     Read from the selection and what is stored about it — no provider is called.
     A model that is merely selected is not reported usable: 'usable' means the
     selection resolves to a connection with what it needs."""
-    from ...models import selection
+    from ...models.legacy import selection
 
     state = selection.availability()
     provider_id, model_id, _ = selection.chosen()

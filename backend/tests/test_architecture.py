@@ -250,30 +250,30 @@ def test_the_turn_loop_knows_no_provider_and_no_connection():
 
 def test_the_model_rows_are_a_leaf_over_the_database():
     allowed = ("jarvis.db", "jarvis.jscompat")
-    assert [n for n in imports_of(PACKAGE / "models" / "store.py")
+    assert [n for n in imports_of(PACKAGE / "models" / "legacy" / "store.py")
             if not n.startswith(allowed)] == []
 
 
 def test_a_provider_module_knows_its_own_wire_and_nothing_else_of_jarvis():
     """One module per format, and each speaks only its own. A provider that reached
     into the store, the selection or another provider would be a gateway."""
-    allowed = ("jarvis.models.errors", "jarvis.models.types", "jarvis.models.providers",
+    allowed = ("jarvis.models.legacy.errors", "jarvis.models.legacy.types", "jarvis.models.legacy.providers",
                "jarvis.conversation", "jarvis.prompt_format", "jarvis.redact")
-    for path in files_under("models", "providers"):
+    for path in files_under("models", "legacy", "providers"):
         stray = [n for n in imports_of(path) if not n.startswith(allowed)]
         assert stray == [], f"{path.name} reaches for {stray}"
-    formats = [p for p in files_under("models", "providers") if p.name not in ("__init__.py", "_wire.py")]
+    formats = [p for p in files_under("models", "legacy", "providers") if p.name not in ("__init__.py", "_wire.py")]
     for path in formats:
         for other in formats:
             if other != path:
-                assert f"jarvis.models.providers.{other.stem}" not in imports_of(path), \
+                assert f"jarvis.models.legacy.providers.{other.stem}" not in imports_of(path), \
                     f"{path.name} imports {other.name}"
 
 
 def test_no_provider_name_is_compared_in_the_shared_layers():
     """Provider-specific behaviour lives in that provider's module. The selection,
     the client and the routes never branch on which company it is."""
-    shared = [PACKAGE / "models" / n for n in ("selection.py", "client.py", "runtime.py", "oneshot.py")]
+    shared = [PACKAGE / "models" / "legacy" / n for n in ("selection.py", "client.py", "runtime.py", "oneshot.py")]
     shared.append(PACKAGE / "routes" / "models.py")
     for path in shared:
         source = path.read_text(encoding="utf-8")

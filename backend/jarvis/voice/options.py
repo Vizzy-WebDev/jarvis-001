@@ -28,7 +28,7 @@ def _ready_models() -> list[Any]:
     """The model that would answer — the selected one, when it can be run — as a
     list of one, or an empty list. Voice uses whichever model text uses, so this
     is the same question `/api/status` asks."""
-    from ..models import selection
+    from ..models.legacy import selection
 
     return [c.model for c in selection.ready()[:1]]
 

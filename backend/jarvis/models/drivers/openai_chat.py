@@ -47,11 +47,13 @@ def _auth(conn: ConnInfo) -> dict[str, str]:
 # --- schemas ---------------------------------------------------------------------------------
 
 def translate_schema(schema: Any, quirks: Any = None) -> Any:
-    """Plain JSON Schema is this format's own language: nothing to translate. A
-    schema that isn't an object at the top can't be a function's parameters."""
+    """Plain JSON Schema is this format's own language. The one rewrite: local `$ref`s
+    are written out in place (the same schema) — found live, a compatible server
+    refused the whole request over a connector tool's `$ref`. A schema that isn't an
+    object at the top can't be a function's parameters."""
     if not isinstance(schema, dict):
         raise Unexpressible("a tool's parameters must be a JSON object schema")
-    return schema
+    return _wire.inline_refs(schema)
 
 
 # --- the request -----------------------------------------------------------------------------

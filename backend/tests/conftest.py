@@ -18,6 +18,19 @@ BACKEND_ROOT = REPO_ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
+# A floor under every test, set before anything is imported: a throwaway data
+# directory and `.env` for the whole session. The `scratch` fixture still gives each
+# test its own; this catches a test that doesn't use it. Found the hard way: a test
+# without `scratch` opened the real data/jarvis.db, the cached connection outlived it,
+# and later tests wrote model traces into the person's real database (and ran
+# migrations there). Anything that reaches `get_db()` now lands here instead.
+import tempfile  # noqa: E402
+
+_SESSION_ROOT = Path(tempfile.mkdtemp(prefix="jarvis-tests-"))
+(_SESSION_ROOT / "data").mkdir(exist_ok=True)
+os.environ["JARVIS_DATA_DIR"] = str(_SESSION_ROOT / "data")
+os.environ["JARVIS_ENV_PATH"] = str(_SESSION_ROOT / ".env")
+
 
 @pytest.fixture
 def scratch(tmp_path, monkeypatch):

@@ -114,3 +114,44 @@ def test_the_stable_prefix_is_marked_only_up_to_its_section(layer):
                         hints=Hints(stable_prefix_until="b")))
     prepared = fake.calls("c")[0].prepared
     assert [s.stable for s in prepared.system] == [True, True, False] and prepared.cache
+
+
+@pytest.mark.parametrize("reply", [
+    '<think>Let me work it out.</think>\n{"answer": 4}',
+    'Here is the JSON you asked for:\n{"answer": 4}\nHope that helps.',
+    '```json\n{"answer": 4}\n```',
+    '<thinking>hmm</thinking>```json\n{"answer": 4}\n```',
+])
+def test_json_is_found_past_a_thinking_preamble_or_prose_and_the_reply_is_kept(reply):
+    from jarvis.models import finish
+
+    ok, value = finish.parse_json(reply)
+    assert ok and value == {"answer": 4}
+
+
+def test_a_local_ref_is_written_out_for_servers_that_refuse_it_and_a_loop_is_ineligible():
+    from jarvis.models.drivers import gemini_generate, openai_chat
+    from jarvis.models.prepared import Unexpressible
+
+    schema = {"type": "object", "properties": {"when": {"$ref": "#/$defs/Date"}},
+              "$defs": {"Date": {"type": "string", "format": "date"}}}
+    for driver in (openai_chat, gemini_generate):
+        assert driver.translate_schema(schema) == {"type": "object",
+                                                   "properties": {"when": {"type": "string", "format": "date"}}}
+    loop = {"type": "object", "properties": {"child": {"$ref": "#/$defs/Node"}},
+            "$defs": {"Node": {"type": "object", "properties": {"child": {"$ref": "#/$defs/Node"}}}}}
+    with pytest.raises(Unexpressible):
+        openai_chat.translate_schema(loop)
+    plain = {"type": "object", "properties": {"q": {"type": "string"}}}
+    assert openai_chat.translate_schema(plain) is plain  # nothing to write out: untouched
+
+
+def test_a_json_pointer_ref_into_the_schema_itself_is_written_out_too():
+    """Found live: a connector's tool pointed at `#/anyOf/0/properties/title`."""
+    from jarvis.models.drivers import openai_chat
+
+    schema = {"anyOf": [{"type": "object", "properties": {"title": {"type": "string", "maxLength": 80},
+                                                          "subtitle": {"$ref": "#/anyOf/0/properties/title"}}}]}
+    written = openai_chat.translate_schema(schema)
+    assert written["anyOf"][0]["properties"]["subtitle"] == {"type": "string", "maxLength": 80}
+    assert "$ref" not in str(written)

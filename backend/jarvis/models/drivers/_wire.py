@@ -318,3 +318,47 @@ def loads_event(data: str, url: str) -> Any:
         return json.loads(data)
     except ValueError as err:
         raise errors.Unavailable(f"{host_of(url)} sent part of its reply in a form Jarvis couldn't read.") from err
+
+
+# --- schemas -------------------------------------------------------------------------------
+
+def inline_refs(schema: Any) -> Any:
+    """A schema with its local references (`#/$defs/X`, `#/definitions/X`, or any
+    JSON pointer into the schema such as `#/anyOf/0/properties/title`) written out in
+    place — the same schema, spelled without `$ref`, for servers that refuse the
+    keyword. A reference that loops back on itself, or points outside the schema,
+    can't be written out; that raises `Unexpressible`."""
+    from ..prepared import Unexpressible
+
+    if not isinstance(schema, dict) or "$ref" not in dumps(schema):
+        return schema
+
+    def target(ref: str) -> Any:
+        if not ref.startswith("#"):
+            raise Unexpressible(f"the schema refers to {ref}, outside itself, which can't be written out here")
+        node: Any = schema
+        for raw in [p for p in ref[1:].split("/") if p]:
+            key = raw.replace("~1", "/").replace("~0", "~")
+            if isinstance(node, dict) and key in node:
+                node = node[key]
+            elif isinstance(node, list) and key.isdigit() and int(key) < len(node):
+                node = node[int(key)]
+            else:
+                raise Unexpressible(f"the schema refers to {ref}, which isn't in it")
+        return node
+
+    def resolve(node: Any, seen: tuple[str, ...]) -> Any:
+        if isinstance(node, list):
+            return [resolve(v, seen) for v in node]
+        if not isinstance(node, dict):
+            return node
+        ref = node.get("$ref")
+        if isinstance(ref, str):
+            if ref in seen:
+                raise Unexpressible(f"the schema's {ref} refers to itself, which can't be written out here")
+            written = resolve(target(ref), seen + (ref,))
+            rest = {k: resolve(v, seen) for k, v in node.items() if k != "$ref"}
+            return {**written, **rest} if isinstance(written, dict) else written
+        return {k: resolve(v, seen) for k, v in node.items() if k not in ("$defs", "definitions")}
+
+    return resolve(schema, ())

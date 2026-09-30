@@ -65,7 +65,7 @@ def _open_items(node: Any) -> Any:
 def translate_schema(schema: Any, quirks: Any = None) -> Any:
     if not isinstance(schema, dict):
         raise Unexpressible("a function's parameters must be a JSON object schema")
-    return _open_items(schema)
+    return _open_items(_wire.inline_refs(schema))
 
 
 # --- the request -----------------------------------------------------------------------------

@@ -51,13 +51,27 @@ class Assembled:
         return "".join(i.text for i in self.items if isinstance(i, Message)) + "".join(self._text)
 
 
+_THINKING = re.compile(r"^\s*<think(?:ing)?>.*?</think(?:ing)?>\s*", re.DOTALL | re.IGNORECASE)
+
+
 def parse_json(text: str) -> tuple[bool, Any]:
-    """(ok, value). Reads the reply as JSON; a code fence around it is looked past
-    for PARSING only — the reply itself is not altered."""
+    """(ok, value). Reads the reply as JSON, looking past — for PARSING only, the reply
+    itself is never altered — a code fence, a thinking preamble some models write
+    before it, or a line of prose around one JSON object. Found live: structured calls to
+    reasoning models through a gateway kept failing as "not valid JSON" even after two
+    corrections — the strict parse had dropped the tolerance the old layer had."""
+    text = text or ""
     candidates = [text]
-    fenced = _FENCE.match(text or "")
-    if fenced:
-        candidates.append(fenced.group(1))
+    unthought = _THINKING.sub("", text)
+    candidates.append(unthought)
+    for source in (text, unthought):
+        fenced = _FENCE.match(source)
+        if fenced:
+            candidates.append(fenced.group(1))
+    for open_, close in (("{", "}"), ("[", "]")):
+        start, end = unthought.find(open_), unthought.rfind(close)
+        if 0 <= start < end:
+            candidates.append(unthought[start:end + 1])
     for candidate in candidates:
         try:
             return True, json.loads(candidate)

@@ -170,3 +170,18 @@ it was deliberately corrected.
 - **A pin becomes an alias on first use**, not only at migration: the Specialists
   screen still saves a model id, and the boundary makes the alias the first time
   that pin is used (found or refused, never approximated).
+- **Local `$ref`s are written out in place** (Chat Completions and Gemini drivers):
+  any JSON pointer into the schema, `#/$defs/…` included. Found live — a compatible
+  gateway refused the whole request over one connector tool's `$ref`
+  (`#/anyOf/0/properties/title`). The rewrite is lossless; a reference that loops
+  back on itself can't be written out and makes the endpoint ineligible.
+- **JSON is looked for past a thinking preamble, a fence or surrounding prose** —
+  for parsing only; the reply item is never changed. Found live: structured calls
+  to reasoning models through a gateway failed as "not valid JSON" after two
+  corrections, where the old layer's tolerant parse had worked.
+- **The test session defaults to a throwaway data directory.** Found the hard way:
+  a test without the `scratch` fixture opened the real `data/jarvis.db`, the cached
+  connection outlived it, and later tests wrote a few model traces (empty-catalog
+  memory reviews) into the person's real database and ran migration 36 there.
+  `tests/conftest.py` now points `JARVIS_DATA_DIR`/`JARVIS_ENV_PATH` at a temp
+  directory before anything is imported.

@@ -170,8 +170,8 @@ def connection_view(name: str) -> dict[str, Any]:
             "id": e.model_id,
             "label": e.label or e.model_id,
             "source": "manual" if e.configured and not e.listed else "discovered",
-            # Listed unless a discovery that succeeded no longer names it.
-            "stillListed": e.listed or not discovered_before,
+            # A model the person set up stays theirs whatever a listing says.
+            "stillListed": e.listed or e.configured or not discovered_before,
             "effort": {"levels": effort_levels(e), "default": None} if effort_levels(e) else None,
         } for e in endpoints],
     }

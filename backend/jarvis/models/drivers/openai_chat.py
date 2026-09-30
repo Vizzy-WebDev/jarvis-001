@@ -346,7 +346,9 @@ def _from_show(found: Discovered, shown: dict[str, Any]) -> Discovered:
 
 
 def discover(conn: ConnInfo) -> list[Discovered]:
-    body = _wire.get_json(_wire.join_url(conn.base_url, "models"), headers=_auth(conn))
+    body = _wire.get_json(_wire.join_url(conn.base_url, "models"), headers=_auth(conn),
+                          not_found="Reached the server. It doesn't offer a list of its models, so add the model "
+                                    "ID by hand.")
     rows = body.get("data") if isinstance(body, dict) else body
     if not isinstance(rows, list):
         raise errors.InvalidRequest(f"{_wire.host_of(conn.base_url)} answered, but not with a list of models.")

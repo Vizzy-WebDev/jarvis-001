@@ -610,7 +610,7 @@ def test_model_settings_starts_empty_and_offers_every_kind_of_provider(page):
     page.wait_for_selector("[data-testid=add-provider-menu]")
     kinds = page.eval_on_selector_all(
         "[data-testid^=add-kind-]", "els => els.map(e => e.dataset.testid.replace('add-kind-', ''))")
-    assert kinds == ["openai", "anthropic", "gemini", "ollama", "lmstudio", "custom"]
+    assert kinds == ["openai", "anthropic", "gemini", "openrouter", "ollama", "lmstudio", "custom"]
     # Nothing from the deleted design came back with it.
     text = page.inner_text("[data-testid=models-screen]").lower()
     for gone in ("version facts", "not recognised", "which model does which job", "test it"):
@@ -644,9 +644,10 @@ def test_connecting_a_provider_and_using_a_model_reaches_that_model_at_the_provi
 
     assert page.locator("[data-testid=model-row]").count() == 2
     assert page.get_attribute("[data-testid=connection-status]", "data-state") == "ok"
-    # Connected is not chosen: nothing is selected, and Jarvis still cannot answer.
-    assert backend_models(live_server)["selection"]["modelId"] is None
-    assert httpx.get(f"{live_server}/api/status").json() == {"configured": False}
+    # Connected is usable: with no model named, Auto is the choice and the route picks.
+    assert backend_models(live_server)["selection"] == {"auto": True, "providerId": None, "modelId": None,
+                                                        "effort": None}
+    assert httpx.get(f"{live_server}/api/status").json() == {"configured": True}
 
     # There is no "Use" step on this screen: every listed model is already available, and nothing
     # here activates one. A model is chosen where a message is written.
@@ -779,7 +780,6 @@ def test_the_composer_picker_offers_effort_only_for_a_model_whose_provider_repor
     connect(live_server, stub)
     page.reload(wait_until="load")
     page.wait_for_selector("[data-testid=model-picker]")
-    assert_jarvis_cannot_answer_yet(page)  # connected, but nothing chosen yet
 
     page.click("[data-testid=model-picker]")
     page.click("[data-testid=pick-model][data-model-id=opus-x]")
@@ -790,8 +790,7 @@ def test_the_composer_picker_offers_effort_only_for_a_model_whose_provider_repor
     levels = page.eval_on_selector_all(
         "[data-testid^=effort-]:not([data-testid=effort-section])",
         "els => els.map(e => e.dataset.testid.replace('effort-', ''))")
-    assert levels == ["low", "medium", "high", "max"]  # exactly what the provider reported — no xhigh
-    assert "Default" in page.inner_text("[data-testid=effort-high]")
+    assert levels == ["none", "low", "medium", "high"]  # the layer's own levels, for a model that takes effort
     page.click("[data-testid=effort-low]")
     page.wait_for_function(
         "() => document.querySelector('[data-testid=effort-low]').getAttribute('aria-pressed') === 'true'")

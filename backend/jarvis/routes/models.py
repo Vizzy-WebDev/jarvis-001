@@ -137,7 +137,7 @@ def add(body: dict[str, Any] = Body(default_factory=dict)):
     except config.ConfigError as err:
         return _fail(str(err), 400)
     found = _refresh(name)
-    return {"ok": True, "tested": {"ok": found["ok"], "message": found["message"]},
+    return {"ok": True, "tested": {"ok": found["ok"] or bool(found.get("reachable")), "message": found["message"]},
             "discovery": {"ok": True, "added": found["added"], "updated": 0} if found["ok"] else None,
             "connection": settings.connection_view(name)}
 
@@ -181,7 +181,8 @@ def test(connection_id: str):
     if connection_id not in config.current().connections:
         return _fail("That connection doesn't exist.", 404)
     found = _refresh(connection_id)
-    return {"ok": found["ok"], "message": found["message"], "connection": settings.connection_view(connection_id)}
+    return {"ok": found["ok"] or bool(found.get("reachable")), "message": found["message"],
+            "connection": settings.connection_view(connection_id)}
 
 
 @router.post("/{connection_id}/discover")
@@ -191,7 +192,7 @@ def discover(connection_id: str):
     found = _refresh(connection_id)
     if not found["ok"]:
         # Not-offered and failed are different answers; neither blocks adding a model by hand.
-        unsupported = found.get("error") == "invalid_request"
+        unsupported = bool(found.get("unsupported"))
         return _fail(found["message"], 501 if unsupported else 502, unsupported=unsupported,
                      connection=settings.connection_view(connection_id))
     return {"ok": True, "added": found["added"], "updated": found["updated"],

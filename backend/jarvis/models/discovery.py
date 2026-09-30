@@ -37,6 +37,11 @@ def refresh_one(name: str, cfg: config.Config | None = None) -> dict[str, Any]:
     try:
         found = drivers.get(conn.driver).discover(conn_info(conn, cfg))
     except ModelError as err:
+        if err.detail.get("no_listing"):
+            # Reachable, just without a list: models are added by hand, and it's working.
+            state.record_discovery(name, [])
+            state.mark_connection_up(name)
+            return {"ok": False, "reachable": True, "unsupported": True, "message": str(err), "error": err.type}
         state.record_discovery(name, None, str(err))
         if err.type in _UNREACHABLE:
             state.mark_connection_down(name, str(err), cfg.settings.unreachable_rest_s)

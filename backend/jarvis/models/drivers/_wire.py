@@ -197,7 +197,7 @@ def _read_json(response: httpx.Response, url: str) -> Any:
 
 
 def get_json(url: str, *, headers: Mapping[str, str] | None = None, params: Mapping[str, Any] | None = None,
-             timeout: float = LIST_TIMEOUT_S) -> Any:
+             timeout: float = LIST_TIMEOUT_S, not_found: str | None = None) -> Any:
     """A GET answered in JSON, or a canonical error. Redirects are NOT followed: a
     custom header carrying a key isn't stripped on a cross-host redirect."""
     try:
@@ -205,6 +205,10 @@ def get_json(url: str, *, headers: Mapping[str, str] | None = None, params: Mapp
             response = client.get(url, headers=_headers(headers), params=params)
     except httpx.HTTPError as err:
         raise network_error(err, url) from err
+    if response.status_code == 404 and not_found:
+        # Something answered at this address; it just has nothing here. The caller
+        # knows what that means (a server with no model list) and says so.
+        raise errors.InvalidRequest(not_found, detail={"no_listing": True})
     if response.status_code >= 300:
         body = _safe_json(response)
         raise error_for(response.status_code, provider_words(body, response.text), url,

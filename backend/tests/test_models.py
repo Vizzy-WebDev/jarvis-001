@@ -170,7 +170,8 @@ def test_a_server_with_no_model_list_is_usable_by_naming_the_model(client, serve
     stub = serve("openai_chat", list_status=404)
     added = add(client, stub)
     connection_id = added["connection"]["id"]
-    assert not added["tested"]["ok"] and added["connection"]["models"] == []
+    assert added["tested"]["ok"] and "doesn't offer a list" in added["tested"]["message"]
+    assert added["connection"]["models"] == [] and added["connection"]["state"] == "ok"
     refreshed = client.post(f"/api/models/{connection_id}/discover")
     assert refreshed.status_code == 501 and refreshed.json()["unsupported"]
     client.post(f"/api/models/{connection_id}/models", json={"modelId": "my/model:tag"})

@@ -259,7 +259,7 @@ def test_nothing_connected_fails_the_turn_plainly_and_writes_no_reply(client):
 
     events = list(assembly.get_orchestrator().run_turn(TurnRequest(text="hello", session_id="s-none")))
     failures = [e for e in events if isinstance(e, Failed)]
-    assert len(failures) == 1 and failures[0].code == "no_model" and "No AI model is connected" in failures[0].error
+    assert len(failures) == 1 and failures[0].code == "no_model" and "No model is connected" in failures[0].error
     assert not [m for m in conversation.get_messages("s-none") if m["role"] == "assistant"]
 
 
@@ -343,7 +343,7 @@ def test_ask_answers_parses_json_and_passes_pictures_along(client, serve):
 
 def test_ask_model_reports_nothing_connected_as_a_value(client):
     reply = ai.ask_model("hi", data_class="personal", task_class="judge", background=True)
-    assert reply.ok is False and "No AI model is connected" in reply.error
+    assert reply.ok is False and "No model is connected" in reply.error
 
 
 def test_a_configured_privacy_restriction_holds_for_ask_too(client, serve):

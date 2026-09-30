@@ -61,7 +61,7 @@ def nothing_eligible(request: Request, rejected: list[Rejection], cat: Catalog) 
             f"The model this asked for (“{pin}”) isn't set up. Choose one on the Model Settings screen.",
             rejections=tuple(rejected))
     if not cat.endpoints:
-        return NoEligibleEndpoint("No AI model is connected yet. Connect one on the Model Settings screen.",
+        return NoEligibleEndpoint("No model is connected yet. Connect one on the Model Settings screen.",
                                   rejections=tuple(rejected))
     relevant = [r for r in rejected if r.reason != "not_pinned"]
     if pin is not None and relevant:

@@ -13,6 +13,9 @@ from jarvis.models.router import DefaultRouter
 from jarvis.models.types import Message, Request, TextPart
 
 
+CHAT = {"text_in": True, "tools": True}
+
+
 @pytest.fixture
 def layer(scratch):
     config.forget()
@@ -27,7 +30,7 @@ def layer(scratch):
 
 def fake_conn(name: str, *, trust: str = "local", models: dict[str, Any] | None = None, **kw: Any) -> dict[str, Any]:
     return {"name": name, "driver": "fake", "base_url": f"http://{name}.test", "trust": trust,
-            "models": models if models is not None else {"m": {}}, **kw}
+            "models": models if models is not None else {"m": {"capabilities": CHAT}}, **kw}
 
 
 def configure(scratch, connections: list[dict[str, Any]], **sections: Any) -> config.Config:
@@ -43,4 +46,3 @@ def ask(text: str = "hello", **kw: Any) -> Request:
     return Request(items=(Message("user", (TextPart(text),)),), **kw)
 
 
-CHAT = {"text_in": True, "tools": True}

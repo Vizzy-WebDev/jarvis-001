@@ -79,3 +79,22 @@ it was deliberately corrected.
 - **Trust on migration is `local` for Ollama and LM Studio, `standard` for all
   else.** Nothing is ever guessed to be zero-retention; that is the person's claim
   to make in config.
+- **A server asking for a long wait is not waited for.** A 429 whose Retry-After is
+  over 10 seconds (a free tier's daily quota, typically) moves straight on to the
+  next endpoint rather than sleeping; the connection rests for as long as the
+  server asked, so other calls skip it too. Shorter waits are honoured.
+- **The breaker counts `unavailable`, `timeout` and `auth`**, per endpoint;
+  `rate_limited` rests the whole connection instead. Request-shaped errors
+  (`invalid_request`, `context_too_long`, `content_refused`) say nothing about the
+  endpoint's health and are not counted.
+- **"Upstream" defaults to the connection** when config doesn't name one, so
+  "prefer a different upstream" means "try another connection first" unless the
+  person has said which vendor really serves a gateway's models.
+- **`allow_family_change: false` needs both families known.** An endpoint with no
+  family can't be shown to be the same family, so it is skipped.
+- **`generate()` may fall back after a failed attempt produced partial output**,
+  because none of it reached the caller; only `stream()` has a first event to
+  protect.
+- **Under `optimize: quality`, endpoints outside the route keep config order**; only
+  an alias naming a family (which has no order of its own) is ordered by cost,
+  then speed.

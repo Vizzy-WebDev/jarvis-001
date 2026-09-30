@@ -7,7 +7,7 @@ The whole public interface:
 
     generate(request)            -> Response
     stream(request)              -> Iterator[Event]   (ends with Done or ErrorEvent)
-    embed(space, inputs)         -> Embeddings
+    embed(space, inputs, data_class=...) -> Embeddings
     explain_route(request)       -> Explanation       (no model is called)
     list_endpoints()             -> list[Endpoint]
     refresh_catalog(connection?) -> {connection: status}
@@ -52,7 +52,7 @@ def refresh_catalog(connection: str | None = None) -> dict[str, Any]:
     return refresh(connection)
 
 
-def embed(space: str, inputs: list[str]) -> Any:
-    from .embed import embed as _embed
+def embed(space: str, inputs: list[str], *, data_class: str) -> Any:
+    from .embeddings import embed as _embed
 
-    return _embed(space, inputs)
+    return _embed(space, inputs, data_class=data_class)

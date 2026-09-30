@@ -347,3 +347,13 @@ def stream(request: Request) -> Iterator[Event]:
             yield ErrorEvent(err)
             return
         yield event
+
+
+def _install_tracing() -> None:
+    from . import trace
+
+    if trace.write not in observers:
+        observers.append(trace.write)
+
+
+_install_tracing()

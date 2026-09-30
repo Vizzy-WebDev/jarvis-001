@@ -130,3 +130,10 @@ it was deliberately corrected.
   `no_encrypted_reasoning` quirk for an Open Responses server that refuses it. The
   server's own `call_id` and item id travel in the Sealed `ids` item and go back
   only to that endpoint.
+- **`embed()` takes a required `data_class`**, beyond the spec's two arguments:
+  "data policy applies" needs to know what the data is. A vector of the wrong
+  dimension is refused rather than returned — a different model answering under
+  the space's name is exactly the substitution a space exists to prevent.
+- **Traces keep no picture bytes even with content switched on** — an image is
+  recorded as its type and size. Everything else of the request and response is
+  kept when `settings.trace_content` is on.

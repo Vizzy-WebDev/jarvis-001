@@ -165,7 +165,9 @@ def build(connections: Mapping[str, Connection], aliases: Mapping[str, Alias], *
                                     probed=probed.get(eid), where=eid)
             endpoints[eid] = Endpoint(
                 id=eid, connection=conn.name, model_id=model_id, capabilities=merged,
-                pricing=entry.pricing or (found.pricing if found else None),
+                # Running on the person's own machine costs nothing per token.
+                pricing=entry.pricing or (found.pricing if found else None) or (
+                    Pricing(0.0, 0.0) if conn.trust == "local" else None),
                 family=entry.family or (found.family if found else None),
                 upstream=entry.upstream or (found.upstream if found else None),
                 label=entry.label or (found.label if found else None),

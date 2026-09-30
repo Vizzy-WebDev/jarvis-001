@@ -28,7 +28,7 @@ def test_every_rejection_reason_is_recorded(layer, monkeypatch):
         fake_conn("notools", models={"m": {"capabilities": {"text_in": True}}}),
         fake_conn("tiny", models={"m": {"capabilities": CHAT, "context": 10}}),
         fake_conn("paid", models={"m": {"capabilities": CHAT, "pricing": {"input": 5, "output": 5}}}),
-        fake_conn("unpriced", models={"m": {"capabilities": CHAT}}),
+        fake_conn("unpriced", trust="zero_retention", models={"m": {"capabilities": CHAT}}),
         fake_conn("strict", models={"m": {"capabilities": {**CHAT, "structured_output_strict": True}}}),
         fake_conn("odd", models={"m": {"capabilities": CHAT}}),
     ], policies={"data_classes": {"sensitive": ["local"]}})

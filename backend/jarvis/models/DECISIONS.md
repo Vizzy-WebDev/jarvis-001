@@ -98,3 +98,18 @@ it was deliberately corrected.
 - **Under `optimize: quality`, endpoints outside the route keep config order**; only
   an alias naming a family (which has no order of its own) is ordered by cost,
   then speed.
+- **An endpoint on a `local` connection is priced at zero** unless config says
+  otherwise: nothing is paid per token on the person's own machine, and it keeps
+  local models usable once a monthly budget is spent.
+- **Discovery failures are split by kind.** Unreachable/timeout rests the
+  connection (`settings.unreachable_rest_s`) so calls skip it; anything else (a key
+  refused, a server with no model list) is recorded as the last discovery's error
+  and changes nothing else. Either way the last good listing stays.
+- **Probing is a CLI command** (`python -m jarvis.models.probe`) that talks to the
+  driver directly, bypassing routing — it exists to find out what the catalog
+  doesn't know yet, so the catalog can't be allowed to filter it. A case that
+  fails for an account reason (auth, rate limit, unreachable) records nothing
+  about the capability.
+- **A new stub server (`tests/stub_wire.py`) replaces the old one for the
+  conformance suite**: the old one couldn't send parallel tool calls, missing ids,
+  reasoning items, in-band errors, `/api/show` or embeddings.

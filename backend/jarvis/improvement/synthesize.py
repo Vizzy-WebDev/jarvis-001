@@ -73,7 +73,7 @@ def synthesize(force: bool = False) -> dict[str, Any]:
             return {"ran": False, "reason": "today's budget for this is spent"}
 
     try:
-        answer = ask(_prompt(lessons), system=SYSTEM, want_json=True)
+        answer = ask(_prompt(lessons), system=SYSTEM, want_json=True, data_class="personal", task_class="reflection")
     except NoModelAvailable as err:
         logger.info("synthesis skipped — no model available: %s", err)
         return {"ran": False, "reason": "no model available"}

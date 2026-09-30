@@ -201,74 +201,87 @@ explicit direct/playful/devil's-advocate requests) shape delivery only; they're 
 from a turn with nobody listening (`background=True` — a scheduled task's or a job
 worker's own turn), matching `prompt.py`'s `has_audience` gate on `stable_instruction()`.
 
-## The provider and model system — `jarvis/models/`
+## The model layer — `jarvis/models/` (see its `README.md` and `DECISIONS.md`)
 
-The old one (`jarvis/model_system/` — a catalog, a router, fallback chains, per-task assignments,
-the model detail screens) was deleted in full and its `ai_*` tables dropped by migration 26. **Do not
-recreate any of it under another name.** What replaced it is deliberately small: a **provider
-connection**, the **models listed under it**, and **one selected model**. That is the whole idea.
+**Callers ask for what they need; the layer picks the model.** A `Request` states a task class, the
+content (canonical items), the output it wants (text, or JSON with `required`/`best_effort`), hard
+requirements, a **data class** (`public`/`personal`/`sensitive` — required, no default) and what to
+optimize. Callers never name a model or provider; to steer they use **aliases** from config. The old
+Kind table, Auto ranking, "proven" models, per-connection strikes, billing holds, `FIND_BUDGET_S`,
+`same_model`, `CACHE_BREAK`, JSON-by-prompt and empty-reply-as-failure are gone — **do not recreate them.**
 
-- **Connections and models** are two tables (migration 27: `model_providers`, `provider_models`).
-  Keys live in `.env` via `save_secret`, named by `secret_ref` — never in a row, never in a response
-  (`hasKey: bool` only). A model row is the provider's own id verbatim plus only what the provider
-  reported that a request needs (`facts_json`: an output ceiling; the effort levels it accepts).
-- **Six kinds, four wire formats** (`models/kinds.py`): OpenAI (`openai-responses`), Anthropic
-  (`anthropic-messages`), Gemini (`gemini-generatecontent`), Ollama and LM Studio (both
-  `openai-chat`), and Custom (the person picks the format). One module per format in
-  `models/providers/`, each with the same three functions — `check`, `discover`, `stream` — and
-  **nothing else in common**: no base class, no registry. OpenAI is NOT a gateway others go through.
-  Raw `httpx` throughout; the provider SDKs in the venv are undeclared leftovers and are not used.
-- **Testing, discovering and running are three separate questions.** Only a connection *test* sets
-  its status. A failed *discovery* changes nothing and never blocks adding a model by hand.
-- **Selected / available / executed are kept apart** (`models/selection.py`). The selection is the
-  person's and only they change it. An unavailable one (connection deleted, key gone, model removed)
-  is *reported*, by name, and stays selected. **A model the person NAMED is never replaced** — no
-  fallback, ever; a failure is reported in the provider's own words plus a line saying Jarvis stayed
-  on it and Auto exists. The only retry is the SAME model, twice, when the provider answered 5xx.
-  `StepComplete.model_id` is what the provider *said* answered.
-- **There is no "use"/enable step.** A discovered or added model is available; the composer picker
-  (or Auto) is the only place a model is chosen. Do not re-add a per-model activation control.
-- **Auto** (`models/auto.py`, `models/attempt.py`, pref `selectedAuto`) is the person's *other*
-  choice, and the only thing that lets Jarvis pick. Deterministic, no chance. Candidates are models
-  on usable connections minus those the PROVIDER reported as not chat/tool/image-capable (`facts`
-  `chat`/`tools`/`image`/`free`, recorded by `openai_chat._facts` only from what a gateway reported —
-  never guessed from names). Ranked: proven first (from `model_outcomes` or replies saved in the chat),
-  then quicker speed class (<=3s / <=8s / slower; unknown = middle; a PREFERENCE only), then most
-  recent success, then reported-tool-capable, then set-up order. A failed model waits behind the rest
-  for 5 min x 2^(failures in a row - 1), capped at 2h, reset by any answer — one rule for every error
-  kind. `auth`/`unreachable` failures hold back the whole connection; 402 (`billing`) holds back only
-  models listed as paid.
-  **Auto moves on ONLY when something actually failed — never because a model is slow.** There is no
-  first-token timeout and no attempt-count cap. An accepted request is left to finish however long it
-  thinks: the wire layer has only `SILENCE_CEILING_S` (600s of *total silence*, an inactivity limit
-  that restarts on every byte) and TCP keep-alive (a live-but-busy server answers probes, a dead
-  connection fails in ~60s). Attempts are bounded by evidence: 2 failed models on a connection and it
-  is left alone for that step, one `auth`/`unreachable` failure leaves it at once, and after a failure
-  `FIND_BUDGET_S` (30s) stops STARTING models that have never worked — it never touches a request in
-  progress. No retry of a busy model while another candidate waits (going elsewhere beats asking
-  again); the last candidate and a named model keep the 2 x 5xx retry. It never switches once a word
-  has been spoken, announces every move as `ModelSwitched`, and names every failed model if all fail.
-  `Resolved.proven`/`plan()` build one `Target` per connection (a per-candidate `.env` read cost
-  seconds). Effort is not offered under Auto. Named models and pins bypass all of it.
-- Facts about a model (`facts_json`) are still only what the provider reported: `maxOutput`, `effort`,
-  and for gateways `chat`/`tools`/`image`. Existing rows get them on the next "Refresh models".
-- **Effort is not a model and not a model property we know.** It is offered only for a model whose
-  own provider reported levels (today, Anthropic's list API) and is sent only if that model was
-  reported to accept it. `prefs.balance` (fast/balanced/quality) is a different thing — how much
-  work *Jarvis* does around any model (tool-round ceiling, the answer check) — stored apart.
-- **Wiring**: `assembly.get_orchestrator()` builds `models/client.py`'s `JarvisModelClient` (the
-  orchestrator's port). `ai.ask()` runs on `models/oneshot.py`. **Only `client.py` imports the
-  orchestrator** — `tests/test_architecture.py` enforces it, so a tool asking a question is never led
-  into the turn loop. The cost ledger is fed by `runtime.publish_completed` (provider + usage, as
-  reported).
-- **Not implemented, and never claimed**: a provider's own speech-to-speech session (`/api/live` and
-  `voice/options.realtime_models()` stay empty), web search through a model (refused, not answered
-  from memory), and video/audio/PDF examination through a model.
+- **Public interface** (`jarvis/models/__init__.py`): `generate`, `stream` (canonical events; ends with
+  `Done` or one `ErrorEvent`), `embed(space, inputs, data_class=)`, `explain_route` (ranked endpoints +
+  every rejection reason, no call made — the same code path `generate` uses), `list_endpoints`,
+  `refresh_catalog`.
+- **Config is one YAML file**, `data/models.yaml` (in the data dir), merged over the shipped
+  `jarvis/models/data/defaults.yaml`: connections (driver, base URL, `secret_ref`, trust class
+  `local`/`zero_retention`/`standard`, limits, quirk profile, `default_params`, discovery, per-model
+  overrides), aliases, routes per task class (+ `default`), policies, embedding spaces, quirk profiles,
+  prompt profiles, settings. Validated on load; every problem reported at once, naming where it is.
+  Keys are only ever in `.env` (`save_secret`); a key-looking field in config is refused. Saving from the
+  settings screen rewrites the file (hand-typed comments aren't kept).
+- **State is a separate file**, `data/models_state.json`: last discovery per connection (kept when a
+  later one fails), probe results, latency, the per-endpoint circuit breaker, connection rests, month
+  spend. **Traces** are the `model_traces` table (migration 36): one row per call, metadata only unless
+  `settings.trace_content`; spend queries by connection / task class / day are GROUP BYs over it.
+- **Endpoint** = one model on one connection, `connection/model-id`. **Capabilities** are a fixed,
+  versioned vocabulary (`capabilities.py`), each value declared (driver default, quirk profile, config),
+  discovered or probed — probed beats discovered beats declared. An unknown capability counts as absent.
+- **Drivers** (`drivers/`): `openai_chat` (Chat Completions — OpenRouter, vLLM, LM Studio, Ollama,
+  LiteLLM; server differences are quirk-profile **data**), `openai_responses` (stateless, `store:false`,
+  encrypted reasoning), `anthropic_messages`, `gemini_generate`, and `fake` (scripted, for tests). Plain
+  httpx via `drivers/_wire.py`; **status codes appear only in drivers**. A driver translates — never
+  routes, retries or applies policy — and imports nothing of the app but `redact`
+  (`tests/test_architecture.py` enforces it).
+- **A request's path**: resolve (reject with a recorded reason: pin, health, key, **data policy**,
+  capabilities, context estimate chars÷3+10% + per-image tokens, budget, max cost, schema) → route
+  (`prefer` aliases, then the task class's route, then others only if `allow_others`; ordered by
+  `optimize`; affinity key's last endpoint first) → adapt (prompt profile per family, foreign sealed
+  items dropped **and reported**, canonical cache/effort hints — native encoding is the driver's) →
+  execute → finish (structured output validated; emulated output repaired and buffered when streamed;
+  usage + cost; provenance; feature report of native/emulated/dropped).
+- **Execute**: retryable errors (`rate_limited`, `unavailable`, `timeout`) retry with backoff, then fall
+  back **only within the filtered list**, preferring a different upstream; a server asking to wait >10s
+  moves straight on. **Every other error ends the call** — including `auth` (billing/quota refusals map
+  to it) and `context_too_long`. `allow_family_change: false` is honoured. **No fallback after the first
+  streamed content event.** Per-connection concurrency/rpm limits, a 429 rests the connection, the
+  breaker rests an endpoint after repeated failures (5 min doubling to 2h).
+- **`data_class` is descriptive, not restrictive by default.** The shipped policy allows every data class
+  on every trust class. A restriction exists only when `policies.data_classes` lists one — then it holds
+  on every call: a pin never overrides it, fallback never relaxes it, and no allowed endpoint fails in
+  plain language. Approved classes: the monitor's screen check is `sensitive`; CLI `--help` extraction
+  and the public-YouTube fallback are `public`; everything else (every turn-loop role, `look_at_screen`,
+  memory review, jobs, spreadsheets, skills, control) is `personal`.
+- **Conversation state is the caller's.** Provider state (thinking blocks + signatures, encrypted
+  reasoning, thought signatures, a server's own tool-call ids) travels as `Sealed` items tagged with the
+  endpoint that made it and goes back only to that endpoint. **Tool-call ids are canonical** (made by the
+  layer); the conversation store keeps each assistant message's output items in `raw` (`{"layer": 1,
+  "items": [...]}`) so the next request carries them back unchanged.
+- **Discovery** runs at startup (`JARVIS_MODEL_DISCOVERY`, in `main()`'s interlocks) and on
+  `refresh_catalog()` — never on the request path. **Probing** is a CLI command
+  (`python -m jarvis.models.probe`), cases as data, writes only to state, asks before a paid endpoint.
+- **Embeddings** are named spaces (primary + declared identical backups + dimension); never a
+  different model.
+- **The boundary is two modules**: `client.py` (the turn loop's port — the only module that imports the
+  orchestrator; maps each role to a task class and data class, the session to the affinity key, the
+  selection to a pin, effort to a hint; maps fallbacks to `ModelSwitched` and usage to the cost-ledger
+  event) and `oneshot.py` (behind `ai.ask`, whose callers must pass `data_class` and `task_class`).
+  `settings.py` serves the Model Settings routes. **The person's chosen model is the alias `selected`
+  (pinned); Auto is no `selected` alias**, so the task class's route applies. Effort is the
+  `selectedEffort` preference, sent per request. A specialist's or scheduled task's model pin becomes an
+  alias of the same name on first use (found or refused, never approximated).
+- `prompt.py` produces an `Instructions` (`prompt_format.py`): labelled sections + the label of the last
+  stable one — a `str` subclass, so text-only callers keep working.
+- **Migrations**: 35 moves the old `model_providers`/`provider_models`/`model_outcomes` into config and
+  state and drops them only after the export is read back and verified (a failure leaves them, tells the
+  person, and startup retries); 36 is `model_traces`.
+- **Not implemented, and never claimed**: web search through a model (refused plainly), provider-hosted
+  tools, emulated tool calling, speech-to-speech, video/audio/PDF input, learned routing.
 
-The Model Settings screen (`components/screens/ModelsScreen.tsx`) and the composer's model picker
-(`components/composer/ModelPicker.tsx`) share one hook (`lib/useModels.ts`); a change anywhere fires
-`jarvis:models-changed` and every reader refetches. Speech-service keys (`external-services`) are a
-separate system in the Settings panel and must not be disturbed.
+The Model Settings screen and the composer's model picker share `lib/useModels.ts`; the routes keep the
+same JSON shapes (connection id = connection name, format = driver name). Speech-service keys
+(`external-services`) are a separate system and must not be disturbed.
 
 Nothing under `jarvis/tools/` may import the orchestrator; `ai.py` is the seam a tool may use.
 
@@ -370,7 +383,7 @@ plays when it fires.
   statement object: errors ("another row available", "bad parameter or other API misuse")
   and — worse, because silent — rows handed to the WRONG caller. Measured: hundreds of
   errors and dozens of wrong rows per run with the cache on, none with it off. A store over
-  that connection also takes a module `RLock` (`models/store.py`, `scheduler/task_store.py`).
+  that connection also takes a module `RLock` (`models/trace.py`, `scheduler/task_store.py`).
   `tests/test_db.py::test_the_same_query_from_many_threads...` fails every run if the
   setting is removed. `store.write_json` retries `os.replace` briefly on Windows
   `PermissionError` (another thread reading the file at that instant).
@@ -378,4 +391,4 @@ plays when it fires.
   `array` with no `items` — and refuses the whole request, so every turn that declares the
   tool, which for a core tool is every turn. Declare what an array holds
   (`test_every_tool_the_app_really_declares_is_acceptable_to_gemini` walks the real
-  registry); `gemini_generate._schema` also narrows whatever a connector declares.
+  registry); `gemini_generate.translate_schema` spells an open array `items: {}` (lossless).

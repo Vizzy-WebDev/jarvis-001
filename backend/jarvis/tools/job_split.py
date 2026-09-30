@@ -67,7 +67,7 @@ def _judge(job: dict[str, Any], reason: str, pieces: list[dict[str, str]]) -> tu
         f"Reason given for splitting: {reason or '(none given)'}\n"
         f"Proposed pieces:\n{listed}\n\n"
         'Answer with JSON only: {"approved": true or false, "reason": "one sentence"}.',
-        system=JUDGE_SYSTEM, want_json=True, background=True)
+        system=JUDGE_SYSTEM, want_json=True, background=True, data_class="personal", task_class="judge")
     if not reply.ok or not isinstance(reply.data, dict):
         # Silence is not consent. A judgment that could not be made is a denial.
         return False, "I couldn't judge whether splitting this up is worth it, so I kept going."

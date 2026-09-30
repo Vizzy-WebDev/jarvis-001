@@ -1,7 +1,9 @@
 """The one-time move of the old model tables into the config and state files.
 
 Run by migration 35 with the migration's own database connection (never
-`get_db()`, which is still opening). It exports, reads both files back and checks
+`get_db()`, which is still opening) — and again at every startup while the old
+connections table still exists (`retry_if_pending`), which also covers a database
+whose migration 35 was another branch's and so never ran this one. It exports, reads both files back and checks
 every connection and model arrived, and only then lets the migration drop
 `model_providers`, `provider_models` and `model_outcomes`. If anything goes wrong
 the tables are left alone, the person is told in plain words, and the export is
@@ -29,7 +31,10 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from . import config as layer_config
 from . import state
@@ -39,32 +44,41 @@ from .prepared import Discovered
 logger = logging.getLogger(__name__)
 
 TABLES = ("model_outcomes", "provider_models", "model_providers")
+#: Where an old connection's models may be: this build's own table, or the same table
+#: under the name another branch's migration renamed it to.
+MODEL_TABLES = ("provider_models", "provider_catalog")
 
-_DRIVER_FOR_FORMAT = {
-    "openai-responses": "openai_responses",
-    "openai-chat": "openai_chat",
-    "anthropic-messages": "anthropic_messages",
-    "gemini-generatecontent": "gemini_generate",
-}
-#: The old Kind table's default addresses — used here once, for rows that stored none.
-_OLD_DEFAULT_ADDRESS = {
-    "openai": "https://api.openai.com/v1",
-    "anthropic": "https://api.anthropic.com/v1",
-    "gemini": "https://generativelanguage.googleapis.com/v1beta",
-    "ollama": "http://127.0.0.1:11434/v1",
-    "lmstudio": "http://127.0.0.1:1234/v1",
-}
-_LOCAL_KINDS = {"ollama": "ollama", "lmstudio": "lmstudio"}
+LEGACY_PATH = Path(__file__).resolve().parent / "data" / "legacy_import.yaml"
+
+
+def _driver_for_format() -> dict[str, str]:
+    return dict((yaml.safe_load(LEGACY_PATH.read_text(encoding="utf-8")) or {}).get("formats") or {})
+
+
+def _presets() -> dict[str, Any]:
+    """The old kinds are today's preset ids: their default addresses, trust and quirks."""
+    return {p["id"]: p for p in layer_config.load_defaults().get("presets") or []}
 
 
 class ExportFailed(RuntimeError):
     pass
 
 
+def _table_names(conn: sqlite3.Connection) -> set[str]:
+    return {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+
 def _tables_present(conn: sqlite3.Connection) -> bool:
-    rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?)",
-                        TABLES).fetchall()
-    return len(rows) == len(TABLES)
+    """Is there anything left to move? The connections table is what matters: the
+    others may be missing, renamed or empty (a database that ran another branch's
+    migrations has its models table under another name)."""
+    return "model_providers" in _table_names(conn)
+
+
+def _rows(conn: sqlite3.Connection, table: str, order: str) -> list[dict[str, Any]]:
+    if table not in _table_names(conn):
+        return []
+    return [dict(r) for r in conn.execute(f"SELECT * FROM {table} ORDER BY {order}")]
 
 
 def _facts(row: dict[str, Any]) -> dict[str, Any]:
@@ -124,39 +138,58 @@ def _selection() -> tuple[bool, str | None, str | None]:
 def export(conn: sqlite3.Connection) -> list[str]:
     """Move everything; return the plain-language notes the person should see.
     Raises ExportFailed (tables untouched) if the result can't be verified."""
-    conn_rows = [dict(r) for r in conn.execute("SELECT * FROM model_providers ORDER BY created_at, id")]
-    model_rows = [dict(r) for r in conn.execute("SELECT * FROM provider_models ORDER BY provider_id, added_at")]
-    outcome_rows = [dict(r) for r in conn.execute("SELECT * FROM model_outcomes")]
+    conn_rows = _rows(conn, "model_providers", "created_at, id")
+    model_table = next((t for t in MODEL_TABLES if t in _table_names(conn)), None)
+    model_rows = _rows(conn, model_table, "provider_id, added_at") if model_table else []
+    outcome_rows = _rows(conn, "model_outcomes", "provider_id")
     notes: list[str] = []
 
+    drivers_for = _driver_for_format()
+    presets = _presets()
     data = layer_config.raw()
     existing = {c.get("name") for c in data.get("connections") or [] if isinstance(c, dict)}
     taken = set(existing)
-    name_for: dict[str, str] = {}
+    name_for: dict[str, str] = {}  # every old connection -> the config connection that now serves it
+    created: dict[str, str] = {}  # only the ones this move added
     entries: list[dict[str, Any]] = []
     for row in conn_rows:
-        driver = _DRIVER_FOR_FORMAT.get(row["format"])
+        driver = drivers_for.get(row["format"])
         if driver is None:
             notes.append(f"Your connection “{row['label']}” used a format Jarvis no longer knows "
                          f"({row['format']}), so it wasn't moved.")
             continue
+        preset = presets.get(row["kind"]) or {}
+        base_url = row["base_url"] or preset.get("base_url") or ""
+        already = next((c for c in data.get("connections") or [] if isinstance(c, dict)
+                        and c.get("driver") == driver and c.get("base_url") == base_url), None)
+        if already is not None:
+            # The same service is already set up — moved by an earlier attempt, or added
+            # again by the person meanwhile. Not duplicated; its key stays saved.
+            name_for[row["id"]] = already["name"]
+            if already.get("secret_ref") != (row["secret_ref"] or None):
+                notes.append(f"Your earlier connection “{row['label']}” wasn't added again, because "
+                             f"“{already.get('label') or already['name']}” already connects to the same address. "
+                             "Its key is still saved, if you need it.")
+            continue
         name = layer_config.unique_name(row["label"] or row["kind"], taken)
         taken.add(name)
         name_for[row["id"]] = name
+        created[row["id"]] = name
         mine = [m for m in model_rows if m["provider_id"] == row["id"]]
         has_rich_listing = any(any(k in _facts(m) for k in ("chat", "tools", "image", "free", "router"))
                                for m in mine)
+        local = preset.get("trust") == "local"
         entry: dict[str, Any] = {
             "name": name,
             "label": row["label"],
             "preset": row["kind"],
             "driver": driver,
-            "base_url": row["base_url"] or _OLD_DEFAULT_ADDRESS.get(row["kind"], ""),
-            "trust": "local" if row["kind"] in _LOCAL_KINDS else "standard",
+            "base_url": base_url,
+            "trust": "local" if local else "standard",
         }
         if row["secret_ref"]:
             entry["secret_ref"] = row["secret_ref"]
-        quirks = _LOCAL_KINDS.get(row["kind"]) or ("gateway" if driver == "openai_chat" and has_rich_listing else None)
+        quirks = preset.get("quirks") or ("gateway" if driver == "openai_chat" and has_rich_listing else None)
         if quirks:
             entry["quirks"] = quirks
         manual = {m["model_id"]: ({"label": m["label"]} if m["label"] else {})
@@ -174,8 +207,10 @@ def export(conn: sqlite3.Connection) -> list[str]:
             model_ids_by_conn[name_for[m["provider_id"]]].add(m["model_id"])
 
     def keep_in_config(conn_name: str, model_id: str) -> None:
-        entry = next(e for e in entries if e["name"] == conn_name)
-        entry.setdefault("models", {}).setdefault(model_id, {})
+        entry = next(e for e in data["connections"] if isinstance(e, dict) and e.get("name") == conn_name)
+        entry.setdefault("models", {})
+        entry["models"] = entry["models"] or {}
+        entry["models"].setdefault(model_id, {})
 
     aliases = data.setdefault("aliases", {}) or {}
     data["aliases"] = aliases
@@ -198,8 +233,9 @@ def export(conn: sqlite3.Connection) -> list[str]:
             continue
         chosen = selected_conn if selected_conn in matches else matches[0]
         if len(matches) > 1:
-            label = next(e["label"] for e in entries if e["name"] == chosen)
-            others = ", ".join(next(e["label"] for e in entries if e["name"] == c) for c in matches if c != chosen)
+            labels = {e.get("name"): e.get("label") or e.get("name") for e in data["connections"] if isinstance(e, dict)}
+            label = labels[chosen]
+            others = ", ".join(labels[c] for c in matches if c != chosen)
             notes.append(f"The model “{pin}” that a specialist or scheduled task asks for is set up on more than one "
                          f"connection. Jarvis matched it to “{label}” (not {others}). You can change this in "
                          "models.yaml.")
@@ -211,8 +247,9 @@ def export(conn: sqlite3.Connection) -> list[str]:
     except layer_config.ConfigError as err:
         raise ExportFailed(str(err)) from err
 
-    # The last listing of every connection, and what calls taught us.
-    for old_id, name in name_for.items():
+    # The last listing of every connection this move added, and what calls taught us.
+    # A connection already in config keeps its own, newer listing.
+    for old_id, name in created.items():
         listed = []
         for m in model_rows:
             if m["provider_id"] != old_id or m["source"] != "discovered":
@@ -222,7 +259,7 @@ def export(conn: sqlite3.Connection) -> list[str]:
         if listed:
             state.record_discovery(name, listed)
     for o in outcome_rows:
-        name = name_for.get(o["provider_id"])
+        name = created.get(o["provider_id"])
         if not name:
             continue
         eid = endpoint_id(name, o["model_id"])
@@ -234,7 +271,7 @@ def export(conn: sqlite3.Connection) -> list[str]:
             state.restore_streak(eid, int(o["fail_streak"]), o.get("fail_message") or "")
     state.flush()
 
-    _verify(entries, model_rows, name_for)
+    _verify(entries, model_rows, created)
     return notes
 
 
@@ -296,5 +333,25 @@ def run(conn: sqlite3.Connection) -> bool:
 
 
 def drop_tables(conn: sqlite3.Connection) -> None:
-    for table in TABLES:
+    for table in ("model_outcomes", *MODEL_TABLES, "model_providers"):
         conn.execute(f"DROP TABLE IF EXISTS {table}")
+
+
+def retry_if_pending() -> bool:
+    """At startup: if an earlier move failed and left the old tables, try again —
+    and drop them once it works. True when a move happened now."""
+    from ..db import get_db
+
+    db = get_db()
+    if not _tables_present(db):
+        return False
+    if not run(db):
+        return False
+    db.execute("BEGIN")
+    try:
+        drop_tables(db)
+        db.execute("COMMIT")
+    except Exception:
+        db.execute("ROLLBACK")
+        raise
+    return True

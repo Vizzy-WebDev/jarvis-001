@@ -22,9 +22,9 @@ def status() -> dict[str, Any]:
     """Whether the model the person selected can actually be run — what the
     first-run flow checks. Not "is anything connected": a selection whose
     connection was removed, or whose key is gone, is not usable, and this says so."""
-    from ..models.legacy import selection
+    from ..models import settings
 
-    usable = selection.availability().state == "ok"
+    usable = settings.availability().state == "ok"
     # Exactly the recorded shape, deliberately: the contract harness only catches
     # unintended divergence if the intended response stays byte-identical too.
     # The reason a selection isn't usable belongs on `/api/models`, which the

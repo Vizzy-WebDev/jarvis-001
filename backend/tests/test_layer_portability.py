@@ -151,10 +151,14 @@ def test_responses_is_stateless_and_asks_for_encrypted_reasoning(layer, monkeypa
         stub.stop()
 
 
-def test_gemini_refuses_an_array_without_items_by_being_ineligible(servers):
+def test_gemini_gets_an_open_array_spelled_losslessly_and_a_non_object_schema_is_ineligible(servers):
     loose = (Tool("tag", "", {"type": "object", "properties": {"tags": {"type": "array"}}}),)
-    explanation = models.explain_route(ask(tools=loose))
+    servers["gemini_generate"].queue(Turn(text="ok"))
+    models.generate(on(ask(tools=loose), "gemini"))
+    sent = servers["gemini_generate"].last_body()["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"]
+    assert sent == {"type": "object", "properties": {"tags": {"type": "array", "items": {}}}}
+
+    odd = (Tool("t", "", ["not", "an", "object"]),)  # type: ignore[arg-type]
+    explanation = models.explain_route(ask(tools=odd))
     rejected = {r.endpoint_id: r.reason for r in explanation.rejected}
-    assert rejected == {"gemini/m": "schema_not_expressible"}
-    assert "gemini/m" not in explanation.ranked and "anthropic/m" in explanation.ranked
-    assert "responses/m" in explanation.ranked
+    assert rejected["gemini/m"] == "schema_not_expressible"

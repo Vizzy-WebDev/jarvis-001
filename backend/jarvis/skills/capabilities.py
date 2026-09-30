@@ -175,7 +175,7 @@ def _step_asker():
     def ask(prompt: str) -> str:
         from ..ai import ask_model
 
-        reply = ask_model(prompt)
+        reply = ask_model(prompt, data_class="personal", task_class="skill_step")
         if not reply.ok:
             raise RuntimeError(reply.error or "no model was available")
         return reply.text

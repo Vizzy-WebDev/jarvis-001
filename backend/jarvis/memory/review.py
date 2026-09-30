@@ -118,7 +118,7 @@ def extract_and_file(transcript: str, *, conversation_id: str | None = None,
         answer = ask(
             _prompt(transcript, memories, categories, pending_before),
             system=SYSTEM, want_json=True,
-        )
+        data_class="personal", task_class="memory_review")
     except NoModelAvailable as err:
         # Losing the material silently is the failure mode that matters here: the
         # checkpoint pointer is NOT advanced by this function, so the same

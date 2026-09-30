@@ -180,7 +180,7 @@ def compose_briefing(now: datetime | None = None) -> Briefing:
 
     if not tools:
         try:
-            answer = ask(prompt, system=NARRATOR)
+            answer = ask(prompt, system=NARRATOR, data_class="personal", task_class="briefing")
         except NoModelAvailable as err:
             return Briefing(ok=False, facts=facts, error=str(err))
         return Briefing(ok=True, text=answer.text.strip(), facts=facts,

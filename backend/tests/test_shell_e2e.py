@@ -34,6 +34,10 @@ import httpx
 from stub_oauth_server import StubOAuthServer
 from stub_provider_server import StubProvider
 
+#: The stub is named by wire format; the app's connections by the driver that speaks it.
+DRIVER_FOR_FORMAT = {"openai-chat": "openai_chat", "openai-responses": "openai_responses",
+                     "anthropic-messages": "anthropic_messages", "gemini-generatecontent": "gemini_generate"}
+
 pytest.importorskip("playwright.sync_api", reason="playwright is not installed")
 
 from playwright.sync_api import Page, sync_playwright  # noqa: E402
@@ -121,7 +125,8 @@ def serve_provider():
 def connect(base: str, stub: StubProvider, **extra) -> dict:
     """Connect `stub` through the app's own API. Returns the connection."""
     reply = httpx.post(f"{base}/api/models", timeout=30,
-                       json={"kind": "custom", "format": stub.format, "address": stub.base_url, **extra})
+                       json={"kind": "custom", "format": DRIVER_FOR_FORMAT[stub.format], "address": stub.base_url,
+                             **extra})
     reply.raise_for_status()
     return reply.json()["connection"]
 
@@ -547,7 +552,7 @@ def connect_through_the_form(page: Page, stub: StubProvider, *, key: str | None 
     page.click("[data-testid=add-provider]")
     page.click("[data-testid=add-kind-custom]")
     page.fill("[data-testid=connect-address]", stub.base_url)
-    page.select_option("[data-testid=connect-format]", stub.format)
+    page.select_option("[data-testid=connect-format]", DRIVER_FOR_FORMAT[stub.format])
     if key:
         page.fill("[data-testid=connect-key]", key)
     page.click("[data-testid=connect-submit]")

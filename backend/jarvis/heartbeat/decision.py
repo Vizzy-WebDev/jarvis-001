@@ -83,7 +83,7 @@ def decide_attention(finding: dict[str, Any], *, now: datetime | None = None) ->
     ])
 
     try:
-        answer = ask(prompt, system=_system(quiet), want_json=True)
+        answer = ask(prompt, system=_system(quiet), want_json=True, data_class="personal", task_class="judge")
     except Exception as err:  # noqa: BLE001 — no model available is the common case
         logger.info("no model could judge a finding: %s", err)
         return _held("No model was available to judge this, so it was only recorded.")

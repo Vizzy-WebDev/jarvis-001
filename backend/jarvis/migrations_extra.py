@@ -558,4 +558,18 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
         CREATE INDEX IF NOT EXISTS idx_artifacts_conversation ON artifacts(conversation_id);
         """
     ],
+
+    # 35: The model layer's connections move out of the database into its config file
+    # (`data/models.yaml`) and what was learned about them into its state file. The
+    # work is Python (`db._migration_35` -> `models/migrate_db.py`): it exports, reads
+    # both files back and checks everything arrived, and only then drops
+    # model_providers, provider_models and model_outcomes. A failed export leaves the
+    # tables and tells the person; startup tries again until it works.
+    35: [],
+
+    # 36: One trace row per model call — which endpoints were eligible and why the
+    # rest weren't, the attempts and fallbacks, what answered, timings, usage, cost
+    # and the feature report. Metadata only unless the person switches content on.
+    # The table's DDL lives with the code that writes it (`models/trace.py`).
+    36: [],
 }

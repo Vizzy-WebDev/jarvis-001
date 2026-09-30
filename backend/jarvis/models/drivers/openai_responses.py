@@ -22,8 +22,10 @@ from . import _turns, _wire
 
 NAME = "openai_responses"
 QUIRKS = frozenset({"no_encrypted_reasoning"})
+#: The model list says nothing per model, so these are what the protocol takes; a
+#: model that can't see is answered by the server's own refusal.
 DEFAULT_CAPABILITIES: dict[str, Any] = {"text_in": True, "tools": True, "parallel_tools": True, "streaming": True,
-                                        "json_mode": True}
+                                        "json_mode": True, "image_in": True}
 
 _INCOMPLETE = {"max_output_tokens": "length", "content_filter": "content_filter"}
 
@@ -117,6 +119,7 @@ def stream(conn: ConnInfo, prepared: Prepared) -> Iterator[Any]:
     calls: dict[str, dict[str, Any]] = {}  # by the server's item id
     mapping: dict[str, dict[str, str]] = {}
     refused = False
+    said = False
     final: dict[str, Any] | None = None
 
     with _wire.post_stream(url, headers=_auth(conn), body=body_for(prepared, dict(conn.quirks))) as response:
@@ -126,6 +129,7 @@ def stream(conn: ConnInfo, prepared: Prepared) -> Iterator[Any]:
                 continue
             kind = payload.get("type") or event
             if kind == "response.output_text.delta" and payload.get("delta"):
+                said = True
                 yield TextDelta(payload["delta"])
             elif kind == "response.refusal.delta" and payload.get("delta"):
                 refused = True
@@ -170,6 +174,25 @@ def stream(conn: ConnInfo, prepared: Prepared) -> Iterator[Any]:
 
     if final is None:
         raise errors.Unavailable(f"The reply from {_wire.host_of(url)} stopped part-way.")
+    # A server that reports some of its output only in the final response (not as
+    # item events) still has it read: tool calls it never announced, and text it
+    # never streamed.
+    announced = {v.get("call_id") for v in mapping.values()}
+    for item in final.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "function_call" and item.get("call_id") not in announced:
+            cid = prepared.mint_id()
+            parsed, bad = _wire.parse_arguments(item.get("arguments") if isinstance(item.get("arguments"), str) else "")
+            mapping[cid] = {k: v for k, v in (("call_id", item.get("call_id")), ("id", item.get("id"))) if v}
+            yield ToolCallStarted(cid, item.get("name") or "")
+            yield ToolCallCompleted(ToolCall(cid, item.get("name") or "", parsed, bad))
+        elif item.get("type") == "message" and not said:
+            text = "".join(part.get("text") or "" for part in item.get("content") or []
+                           if isinstance(part, dict) and part.get("type") == "output_text")
+            if text:
+                said = True
+                yield TextDelta(text)
     if mapping:
         yield SealedEvent("ids", mapping)
     if final.get("status") == "incomplete":

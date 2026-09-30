@@ -57,7 +57,7 @@ def test_every_problem_is_reported_at_once_and_says_where(layer):
     text = str(caught.value)
     for needle in ("connections[0].name", "connections.a.driver", "connections.b.base_url", "connections.b.trust",
                    "Authorization: looks like a secret", "“vision” isn't a capability", "pricing.input",
-                   "aliases.x.endpoint", "aliases.y", "routes.chat.aliases", "routes.chat.optimize",
+                   "aliases.y", "routes.chat.aliases", "routes.chat.optimize",
                    "policies.data_classes.sensitive", "surprise"):
         assert needle in text, needle
 
@@ -159,7 +159,20 @@ def test_spend_rolls_over_with_the_month(layer, monkeypatch):
 
 # --- the move out of the database -----------------------------------------------------------
 
+def _old_tables(db):
+    """The model tables as they were before migration 35 (which drops them on a
+    fresh database), recreated from their original DDL."""
+    from jarvis.db import _split_sql
+    from jarvis.migrations_extra import EXTRA_MIGRATION_SQL
+
+    for version in (27, 28, 29):
+        for script in EXTRA_MIGRATION_SQL[version]:
+            for statement in _split_sql(script):
+                db.execute(statement)
+
+
 def _seed_old_tables(db, *, with_selection=True):
+    _old_tables(db)
     db.execute("INSERT INTO model_providers (id, kind, format, label, base_url, secret_ref, created_at) VALUES "
                "('prov_1', 'ollama', 'openai-chat', 'Ollama', NULL, NULL, '2026-01-01'),"
                "('prov_2', 'custom', 'openai-chat', 'My Gateway', 'http://gw.local/v1', 'model_prov_2', '2026-01-02'),"
@@ -246,5 +259,38 @@ def test_a_failed_export_leaves_the_tables_and_says_so(layer, monkeypatch):
 def test_nothing_to_move_is_not_an_error(layer):
     from jarvis.db import get_db
 
+    _old_tables(get_db())
     assert migrate_db.run(get_db()) is True  # tables exist but are empty
     assert config.current().connections == {}
+
+
+def test_a_database_whose_migration_35_was_another_branchs_is_still_moved_at_startup(layer):
+    """Found on a real install: another branch's migration 35 had renamed
+    provider_models to provider_catalog, so this build's migration 35 never ran.
+    Startup moves whatever is left, from either table name."""
+    from jarvis.db import get_db
+
+    db = get_db()
+    _seed_old_tables(db, with_selection=False)
+    db.execute("ALTER TABLE provider_models RENAME TO provider_catalog")
+    assert migrate_db.retry_if_pending() is True
+    assert set(config.current().connections) == {"ollama", "my-gateway", "anthropic"}
+    assert {d.model_id for d in state.discovered("my-gateway")} == {"shared-model"}
+    assert not migrate_db._tables_present(db)
+    assert migrate_db.retry_if_pending() is False  # nothing left: a no-op from now on
+
+
+def test_a_service_already_set_up_again_is_not_duplicated_and_keeps_its_own_listing(layer):
+    from jarvis.db import get_db
+
+    config.add_connection({"name": "gw-new", "label": "Gateway (re-added)", "driver": "openai_chat",
+                           "base_url": "http://gw.local/v1", "trust": "standard", "secret_ref": "model_gw_new"})
+    state.record_discovery("gw-new", [Discovered("fresh-model")])
+    db = get_db()
+    _seed_old_tables(db, with_selection=False)
+    assert migrate_db.retry_if_pending() is True
+    names = set(config.current().connections)
+    assert "my-gateway" not in names and "gw-new" in names  # not added a second time
+    assert [d.model_id for d in state.discovered("gw-new")] == ["fresh-model"]  # its newer listing kept
+    assert any("“My Gateway” wasn't added again" in n["text"] and "key is still saved" in n["text"]
+               for n in state.notices())

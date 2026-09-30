@@ -24,8 +24,9 @@ from . import _turns, _wire
 
 NAME = "anthropic_messages"
 QUIRKS: frozenset[str] = frozenset()
+#: What the protocol takes; the model list's own `capabilities` override it per model.
 DEFAULT_CAPABILITIES: dict[str, Any] = {"text_in": True, "tools": True, "parallel_tools": True,
-                                        "streaming": True, "prompt_caching": True}
+                                        "streaming": True, "prompt_caching": True, "image_in": True}
 VERSION = "2023-06-01"
 PREFERRED_MAX_TOKENS = 64_000
 FALLBACK_MAX_TOKENS = 16_384

@@ -80,7 +80,7 @@ def reflect(force: bool = False) -> dict[str, Any]:
         return {"ran": False, "reason": "nothing to reflect on"}
 
     try:
-        answer = ask(_prompt(outcomes), system=SYSTEM, want_json=True)
+        answer = ask(_prompt(outcomes), system=SYSTEM, want_json=True, data_class="personal", task_class="reflection")
     except NoModelAvailable as err:
         # The outcomes stay unreviewed on purpose: losing real material because
         # no model was available is exactly the failure this avoids.

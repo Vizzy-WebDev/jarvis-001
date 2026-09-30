@@ -12,6 +12,8 @@ gets found in production instead of here.
 
 from __future__ import annotations
 
+import re
+
 import ast
 from pathlib import Path
 
@@ -248,37 +250,71 @@ def test_the_turn_loop_knows_no_provider_and_no_connection():
     assert offending(files_under("orchestrator"), ("jarvis.models",)) == []
 
 
-def test_the_model_rows_are_a_leaf_over_the_database():
-    allowed = ("jarvis.db", "jarvis.jscompat")
-    assert [n for n in imports_of(PACKAGE / "models" / "legacy" / "store.py")
-            if not n.startswith(allowed)] == []
-
-
-def test_a_provider_module_knows_its_own_wire_and_nothing_else_of_jarvis():
-    """One module per format, and each speaks only its own. A provider that reached
-    into the store, the selection or another provider would be a gateway."""
-    allowed = ("jarvis.models.legacy.errors", "jarvis.models.legacy.types", "jarvis.models.legacy.providers",
-               "jarvis.conversation", "jarvis.prompt_format", "jarvis.redact")
-    for path in files_under("models", "legacy", "providers"):
-        stray = [n for n in imports_of(path) if not n.startswith(allowed)]
+def test_a_driver_knows_its_own_wire_and_nothing_else_of_jarvis():
+    """One module per wire protocol. A driver translates: it never reaches into the
+    config, the state, the router or another driver — that would make it a gateway
+    making routing decisions of its own."""
+    allowed = ("jarvis.models.errors", "jarvis.models.types", "jarvis.models.prepared", "jarvis.models.catalog",
+               "jarvis.models.drivers._wire", "jarvis.models.drivers._turns", "jarvis.redact")
+    drivers = [p for p in files_under("models", "drivers") if p.name != "__init__.py"]
+    for path in drivers:
+        # `from .. import errors` also lists the package itself; the module it names is what counts.
+        stray = [n for n in imports_of(path) if not n.startswith(allowed)
+                 and n not in ("jarvis.models", "jarvis.models.drivers")]
         assert stray == [], f"{path.name} reaches for {stray}"
-    formats = [p for p in files_under("models", "legacy", "providers") if p.name not in ("__init__.py", "_wire.py")]
-    for path in formats:
-        for other in formats:
+    wires = [p for p in drivers if not p.name.startswith("_")]
+    for path in wires:
+        for other in wires:
             if other != path:
-                assert f"jarvis.models.legacy.providers.{other.stem}" not in imports_of(path), \
+                assert f"jarvis.models.drivers.{other.stem}" not in imports_of(path), \
                     f"{path.name} imports {other.name}"
 
 
-def test_no_provider_name_is_compared_in_the_shared_layers():
-    """Provider-specific behaviour lives in that provider's module. The selection,
-    the client and the routes never branch on which company it is."""
-    shared = [PACKAGE / "models" / "legacy" / n for n in ("selection.py", "client.py", "runtime.py", "oneshot.py")]
-    shared.append(PACKAGE / "routes" / "models.py")
+def test_the_layer_core_never_branches_on_a_driver():
+    """Differences are data (capabilities, quirk profiles, prompt profiles) or live in
+    a driver. The routing, execution and adaptation code never imports one by name."""
+    core = [p for p in files_under("models") if "drivers" not in p.parts]
+    for path in core:
+        named = [n for n in imports_of(path) if n.startswith("jarvis.models.drivers.")
+                 and n.rsplit(".", 1)[-1] not in ("_wire", "_turns")]
+        assert named == [], f"{path.name} imports a driver directly: {named}"
+
+
+#: Provider and model names. Allowed in drivers, config and profile data — nowhere
+#: else a model layer's logic could branch on them.
+_NAMES = re.compile(r"\b(openai|anthropic|claude|gemini|google|gpt|ollama|lm ?studio|openrouter|mistral|llama|"
+                    r"qwen|deepseek|grok|xai|cohere|vllm|litellm|omniroute)\b", re.IGNORECASE)
+
+
+def _logic_strings(path: Path) -> list[str]:
+    """Every string literal in a module except docstrings — what code can compare against."""
+    import ast
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                docstrings.add(id(first.value))
+    return [n.value for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docstrings]
+
+
+def test_no_provider_or_model_name_appears_outside_drivers_config_and_profile_data():
+    """Callers ask for what they need; the layer picks. So no provider or model name
+    may sit in any code that routes, adapts, executes or calls — only in a driver
+    (its own wire), in config, and in the shipped data files."""
+    shared = [p for p in files_under("models") if "drivers" not in p.parts]
+    shared += [PACKAGE / "ai.py", PACKAGE / "routes" / "models.py", PACKAGE / "prompt.py",
+               PACKAGE / "prompt_format.py", *files_under("orchestrator")]
+    found = []
     for path in shared:
-        source = path.read_text(encoding="utf-8")
-        for brand in ('"openai"', '"anthropic"', '"gemini"', "'openai'", "'anthropic'", "'gemini'"):
-            assert brand not in source, f"{path.name} compares a provider name ({brand})"
+        for text in _logic_strings(path):
+            hit = _NAMES.search(text)
+            if hit:
+                found.append(f"{path.relative_to(PACKAGE)}: {hit.group(0)!r} in {text[:60]!r}")
+    assert found == []
 
 
 # --- specialist agents ----------------------------------------------------------

@@ -4,10 +4,11 @@
   part next time. Each is carried as a Sealed "thought_signature" item placed just
   before the item it belongs to, and reattached to that item on replay — only to
   the endpoint that made it.
-* Schemas go as JSON Schema (`parametersJsonSchema`, `responseJsonSchema`), so
-  nothing is rewritten. An array with no `items` is one thing Google refuses — and
-  it refuses the whole request — so such a schema makes the endpoint ineligible
-  rather than being quietly given an `items` it didn't have.
+* Schemas go as JSON Schema (`parametersJsonSchema`, `responseJsonSchema`). The one
+  rewrite is lossless: an array that leaves its elements unsaid gets `items: {}`,
+  which means exactly the same, because Google refuses an array with no `items` —
+  and refuses the whole request with it. A schema that isn't an object at the top
+  can't be expressed, and makes the endpoint ineligible.
 * Image input only: no other attachment kind is sent.
 * The key travels in the `x-goog-api-key` header, never in a URL.
 
@@ -46,22 +47,25 @@ def _auth(conn: ConnInfo) -> dict[str, str]:
 
 # --- schemas ---------------------------------------------------------------------------------
 
-def _check(node: Any, where: str) -> None:
-    if isinstance(node, dict):
-        if node.get("type") == "array" and "items" not in node and "prefixItems" not in node:
-            raise Unexpressible(f"{where} is an array that doesn't say what it holds, which Google refuses")
-        for key, value in node.items():
-            _check(value, f"{where}.{key}")
-    elif isinstance(node, list):
-        for index, value in enumerate(node):
-            _check(value, f"{where}[{index}]")
+def _open_items(node: Any) -> Any:
+    """`items: {}` wherever an array leaves it unsaid. In JSON Schema the two mean
+    exactly the same thing (any element), so nothing is changed in meaning — only
+    spelled the way Google requires: it refuses an array with no `items` at all,
+    and with it the whole request."""
+    if isinstance(node, list):
+        return [_open_items(v) for v in node]
+    if not isinstance(node, dict):
+        return node
+    out = {k: _open_items(v) for k, v in node.items()}
+    if out.get("type") == "array" and "items" not in out and "prefixItems" not in out:
+        out["items"] = {}
+    return out
 
 
 def translate_schema(schema: Any, quirks: Any = None) -> Any:
     if not isinstance(schema, dict):
         raise Unexpressible("a function's parameters must be a JSON object schema")
-    _check(schema, "the schema")
-    return schema
+    return _open_items(schema)
 
 
 # --- the request -----------------------------------------------------------------------------

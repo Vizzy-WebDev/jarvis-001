@@ -198,30 +198,22 @@ def _synthesise(question: str, sources: list[Source]) -> tuple[str, str | None]:
         system=("You answer questions from supplied sources. You never assert "
                 "anything the sources do not support, and you say when they are "
                 "silent or disagree."),
-    )
+    data_class="personal", task_class="research")
     return answer.text.strip(), answer.model_id
 
 
 # --- model-native search -----------------------------------------------------
 
 def _model_search(question: str) -> Research:
-    """The escalation: a model that can search for itself.
+    """The escalation that isn't available: searching the web THROUGH a model.
 
-    Not a separate code path so much as a different prompt — it asks for a model that
-    can search (`need={"webSearch": True}`), and if none can, this fails honestly
-    rather than pretending a plain model searched anything.
+    Provider-hosted search is outside what the model layer does, so this says so
+    plainly instead of asking a plain model — which would answer from memory as
+    though it had searched.
     """
-    try:
-        answer = ask(
-            f"Look this up and answer it: {question}",
-            system="You research questions and answer from what you find, citing where.",
-            need={"webSearch": True},
-        )
-    except NoModelAvailable as err:
-        return Research(ok=False, via="model-search", query=question,
-                        error=f"I couldn't look that up: {err}")
-    return Research(ok=True, answer=answer.text.strip(), via="model-search", query=question,
-                    model_id=answer.model_id)
+    return Research(ok=False, via="model-search", query=question,
+                    error="I couldn't look that up: searching the web through the model isn't something "
+                          "this setup can do, so it wasn't done.")
 
 
 # --- the entry point ---------------------------------------------------------

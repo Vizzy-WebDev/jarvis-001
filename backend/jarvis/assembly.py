@@ -16,7 +16,7 @@ import threading
 
 from .capabilities import CapabilityRegistry
 from .events import bus
-from .models.legacy.client import JarvisModelClient
+from .models.client import JarvisModelClient
 from .observers import start_observers
 from .orchestrator import Orchestrator
 from .tools import load_tools
@@ -139,10 +139,17 @@ def start_background_work() -> dict[str, bool]:
     from .ops.environment import sampler
     from .scheduler import engine as scheduler_engine
 
+    from .models import migrate_db
+    from .models import startup as model_startup
+
     started = {"balances": False, "prices": False, "sampler": False, "heartbeat": False,
               "scheduler": False, "monitor": False, "job_supervisor": False,
               "improvement_cadence": False, "notification_trash_purge": False,
-              "connector_icons": False, "chat_trash_purge": False}
+              "connector_icons": False, "chat_trash_purge": False, "model_discovery": False}
+
+    # A move of the old model tables that failed at migration time is tried again
+    # each start until it works. Not a clock: it runs once, here, and only if needed.
+    migrate_db.retry_if_pending()
 
     started["prices"] = prices.start_price_maintenance()
     started["balances"] = balances.start()
@@ -159,6 +166,7 @@ def start_background_work() -> dict[str, bool]:
     started["notification_trash_purge"] = notifications.start_trash_purge()
     started["connector_icons"] = connector_icons.start()
     started["chat_trash_purge"] = chat_store.start_trash_purge()
+    started["model_discovery"] = model_startup.start()
     return started
 
 

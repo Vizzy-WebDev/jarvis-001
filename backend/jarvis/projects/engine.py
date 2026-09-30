@@ -220,7 +220,7 @@ def write_plan(project_id: str, *, event_bus: EventBus | None = None) -> dict[st
 
         _announce(project, event_bus=event_bus, status="working", step="plan")
         try:
-            written = ask(_plan_prompt(project), system=PLAN_SYSTEM)
+            written = ask(_plan_prompt(project), system=PLAN_SYSTEM, data_class="personal", task_class="planning")
         except Exception as err:  # noqa: BLE001 — no model available is the common case
             failed = store.update_project(project_id, {"error": f"I couldn't write the plan. {err}"})
             _push_step(failed, step="plan", ok=False, error=str(err))
@@ -282,7 +282,7 @@ def write_prompts(project_id: str, target: dict[str, Any] | None = None, *,
         _announce(updated, event_bus=event_bus, status="working", step="prompts")
         try:
             written = ask(_prompts_prompt(updated, chosen), system=PROMPTS_SYSTEM,
-                          want_json=True)
+                          want_json=True, data_class="personal", task_class="planning")
         except Exception as err:  # noqa: BLE001
             failed = store.update_project(project_id,
                                           {"error": f"I couldn't write the build prompt. {err}"})

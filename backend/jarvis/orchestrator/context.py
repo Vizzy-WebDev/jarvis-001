@@ -316,7 +316,8 @@ class RelevanceContext:
         answered = _answered_approvals(session_id)
         system = prompt.system_instruction(
             memories=memories_text, low_confidence=low_confidence,
-            extra=[p for p in (rules, answered, notices, floors_text) if p],
+            extra=[p for p in (("learned_rules", rules), ("answered_approvals", answered),
+                               ("waiting_notices", notices), ("style_now", floors_text)) if p[1]],
             has_audience=has_audience)
         remaining = max(0, self.budget_tokens - estimate_tokens(system))
         messages = trim_messages(conversation.get_messages(session_id), remaining)
@@ -359,7 +360,7 @@ class RelevanceContext:
         answered = _answered_approvals(session_id)
         system = prompt.specialist_instruction(
             agent, memories=memories_text, low_confidence=low_confidence,
-            extra=[p for p in (rules, answered) if p] or None)
+            extra=[p for p in (("learned_rules", rules), ("answered_approvals", answered)) if p[1]] or None)
         remaining = max(0, self.budget_tokens - estimate_tokens(system))
         messages = trim_messages(conversation.get_messages(session_id), remaining)
         included = ("specialist_instruction",)

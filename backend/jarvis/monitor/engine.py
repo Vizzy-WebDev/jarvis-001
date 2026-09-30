@@ -174,7 +174,7 @@ def _screen_looks_like(monitor: dict[str, Any], description: str,
             "clearly the case.",
             media=[{"kind": "image", "mimeType": shot.mime_type,
                     "dataBase64": base64.b64encode(shot.data).decode("ascii")}],
-            need={"vision": True}, want_json=True)
+            need={"vision": True}, want_json=True, data_class="sensitive", task_class="screen_check")
     if not reply.ok or not isinstance(reply.data, dict):
         # No model, or an answer that could not be read: not a trigger. A watch
         # that fires because it could not see is worse than one that waits.

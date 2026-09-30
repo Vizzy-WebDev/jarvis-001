@@ -60,7 +60,6 @@ class StepComplete:
     tool_calls: tuple[ToolCall, ...] = ()
     finish_reason: str = "stop"
     usage: Usage | None = None
-    structured_data: Any = None
     model_id: str | None = None
     provider_id: str | None = None
     raw: Mapping[str, Any] | None = None

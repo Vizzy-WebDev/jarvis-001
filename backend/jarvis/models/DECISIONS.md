@@ -118,10 +118,14 @@ it was deliberately corrected.
   the lowest level is the honest nearest. No thinking config is sent at all — each
   model's own default applies — and foreign thinking is dropped, not faked.
 - **Gemini: schemas go as JSON Schema** (`parametersJsonSchema`,
-  `responseJsonSchema`), so nothing is rewritten. The one known refusal — an array
-  with no `items` — makes the endpoint ineligible instead of being "fixed" by
-  injecting an `items` (the old behaviour). Not yet confirmed against the live API
-  in this build; the first real Gemini call is the check.
+  `responseJsonSchema`). The one rewrite is lossless: an array with no `items` gets
+  `items: {}` (identical meaning in JSON Schema), because Google refuses the former
+  and the whole request with it. Making the endpoint ineligible instead was
+  rejected: the app's own tools deliberately leave some nested arrays open (a
+  spreadsheet row's cells), so Gemini would have been out of nearly every chat
+  turn. The old behaviour — inventing `items: {"type": "string"}` — changed the
+  meaning and is gone. Not yet confirmed against the live API in this build; the
+  first real Gemini call is the check.
 - **Gemini: a foreign function call carries Google's documented placeholder
   signature** (`skip_thought_signature_validator`, the `gemini` quirk profile), so
   a conversation can move onto Gemini mid tool loop. Its own signatures are always
@@ -137,3 +141,32 @@ it was deliberately corrected.
 - **Traces keep no picture bytes even with content switched on** — an image is
   recorded as its type and size. Everything else of the request and response is
   kept when `settings.trace_content` is on.
+- **Driver defaults declare what each protocol takes.** Responses and Messages
+  declare `image_in` (and Gemini too): OpenAI's model list reports nothing per
+  model, so without it every picture request on an OpenAI connection would have
+  been refused before being sent. Discovery (Anthropic's and gateways' own
+  listings) and probes override it per model; a model that really can't see is
+  answered by the server's own refusal. A plain Chat Completions server declares
+  no `image_in`: those servers run all kinds of models, so it is left to discovery
+  (Ollama's `/api/show`), a probe or config.
+- **The move out of the database doesn't trust the migration number.** Found on
+  the real install: another branch (`claude/provider-layer-refactor`) has its own
+  migration 35, which renamed `provider_models` to `provider_catalog`; that
+  database had already run it, so this build's migration 35 was skipped as
+  "applied" and only 36 ran. So startup (`migrate_db.retry_if_pending`) moves
+  whatever is left whenever `model_providers` still exists, reading models from
+  either table name, and drops the old tables only after the move is read back.
+  An old connection whose address is already set up in config (the person re-added
+  it meanwhile) isn't duplicated; they are told, and its key stays saved.
+  Rehearsed on a copy of the real data: two old OpenRouter rows became two notices,
+  nothing else changed. **The two branches' migration numbers must be reconciled
+  before either merges** — they are the same numbers for different schemas.
+- **The boundary maps turn roles to task and data classes itself** (`client.py`),
+  so the orchestrator's port didn't change and no test double had to. Every turn
+  role is `personal`, per the approved table.
+- **`ai.ask` requires `data_class` and `task_class`** at every call site (21 of
+  them), and no longer takes a model id: a one-shot call runs on the person's
+  selection (pinned) or, under Auto, the task class's route.
+- **A pin becomes an alias on first use**, not only at migration: the Specialists
+  screen still saves a model id, and the boundary makes the alias the first time
+  that pin is used (found or refused, never approximated).

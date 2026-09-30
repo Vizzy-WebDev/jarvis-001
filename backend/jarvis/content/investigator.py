@@ -224,7 +224,7 @@ def _youtube_fallback(record: dict[str, Any], request: str,
               "\n\nNote: this is only the title and description — you neither watched nor "
               "heard it. Be explicit in the answer about how little you actually have.")
     answered = ask(f"{_context_line(record)}\n\nContent:\n{text}\n\nQuestion: \"{request}\"",
-                   system=TEXT_SYSTEM + caveat)
+                   system=TEXT_SYSTEM + caveat, data_class="public", task_class="content_analysis")
     return {"ok": True, "answer": answered.text, "intake": intake, "sources": [],
             "downgradedReason": last_error}
 
@@ -238,14 +238,14 @@ def _run_examine(record: dict[str, Any], request: str) -> dict[str, Any]:
             return text
         answered = ask(
             f"{_context_line(record)}\n\nContent:\n{text['text']}\n\nQuestion: \"{request}\"",
-            system=TEXT_SYSTEM)
+            system=TEXT_SYSTEM, data_class="personal", task_class="content_analysis")
         return {"ok": True, "answer": answered.text, "intake": text["intake"], "sources": []}
 
     observations = (record.get("material") or {}).get("observations")
     if observations:
         quick = ask(f"{_context_line(record)}\n\nWorking notes from when I looked at this:\n"
                     f"{observations}\n\nNew question: \"{request}\"",
-                    system=CACHED_FOLLOWUP_SYSTEM, want_json=True)
+                    system=CACHED_FOLLOWUP_SYSTEM, want_json=True, data_class="personal", task_class="content_analysis")
         data = quick.data if isinstance(quick.data, dict) else None
         if data and not data.get("needsAnotherLook") and data.get("answer"):
             return {"ok": True, "answer": data["answer"],
@@ -399,7 +399,7 @@ def judge_claim(claim: str, *, context: str | None = None,
         '  "reasoning": "a few sentences in plain language",\n'
         '  "whatsLeftOut": "what is being left out, or null",\n'
         '  "breakdown": "markdown, step by step" or null\n}',
-        system=JUDGE_SYSTEM, want_json=True)
+        system=JUDGE_SYSTEM, want_json=True, data_class="personal", task_class="judge")
 
     data = judged.data if isinstance(judged.data, dict) else {}
     verdict = str(data.get("verdict", "")).lower()

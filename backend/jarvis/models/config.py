@@ -263,7 +263,7 @@ def _connection(raw: Any, index: int, quirks: Mapping[str, QuirkProfile],
     name = raw.get("name")
     if not isinstance(name, str) or not _NAME.match(name):
         problems.append(f"{where}.name: needs a short name of lowercase letters, digits, '.', '_' or '-' "
-                        "(no '/'), like ollama-desk.")
+                        "(no '/'), like home-server.")
         return None
     where = f"connections.{name}"
     for key in sorted(set(raw) - _CONNECTION_KEYS):
@@ -375,9 +375,8 @@ def parse(user: Mapping[str, Any], defaults: Mapping[str, Any] | None = None) ->
             except ValueError as err:
                 problems.append(f"{where}.endpoint: {err}")
                 continue
-            if conn_name not in connections:
-                problems.append(f"{where}.endpoint: there's no connection called “{conn_name}”.")
-                continue
+            # A connection that has since been removed is not an error here: the alias
+            # stays, and whoever uses it is told the model isn't set up any more.
         aliases[str(name)] = Alias(str(name), endpoint=str(endpoint) if endpoint else None,
                                    family=str(family) if family else None)
 

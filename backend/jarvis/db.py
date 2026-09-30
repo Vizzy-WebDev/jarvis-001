@@ -170,10 +170,29 @@ def _migration_10(conn: sqlite3.Connection) -> None:
         write_json("models", data)
 
 
+def _migration_35(conn: sqlite3.Connection) -> None:
+    """Move the model connections into the model layer's config and state files, and
+    drop the old tables only once that move is verified. If it can't be done, the
+    tables stay, the person is told, and startup tries again (never blocking it)."""
+    from .models import migrate_db
+
+    if migrate_db.run(conn):
+        migrate_db.drop_tables(conn)
+
+
+def _migration_36(conn: sqlite3.Connection) -> None:
+    from .models import trace
+
+    for statement in _split_sql(trace.TABLE_SQL):
+        conn.execute(statement)
+
+
 _EXTRA_STEPS: dict[int, Callable[[sqlite3.Connection], None]] = {
     2: _migration_2_extra,
     6: _migration_6,
     10: _migration_10,
+    35: _migration_35,
+    36: _migration_36,
 }
 
 # The original schema steps plus the later ones. Kept as one ordered mapping so

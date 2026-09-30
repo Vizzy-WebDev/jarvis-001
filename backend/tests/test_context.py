@@ -15,7 +15,6 @@ from jarvis.memory import store
 from jarvis.orchestrator.context import (
     ALWAYS_INCLUDE_IMPORTANCE, RelevanceContext, estimate_tokens, select_memories, trim_messages,
 )
-from jarvis.prompt_format import CACHE_BREAK
 
 
 @pytest.fixture(autouse=True)
@@ -115,12 +114,15 @@ def test_the_estimate_says_it_is_an_estimate():
 
 # --- the prompt shape --------------------------------------------------------
 
-def test_per_turn_facts_sit_after_the_cache_breakpoint():
-    """Anthropic's caching keys on an exact prefix, so a per-turn fact on the
-    wrong side of this costs the cache on every single turn."""
+def test_per_turn_facts_sit_after_the_stable_prefix():
+    """Prompt caching keys on an exact prefix, so a per-turn fact on the wrong side
+    of the stable sections costs the cache on every single turn."""
     remember("Drinks tea.")
     system = RelevanceContext().assemble(session_id="s1", text="what do I drink").system
-    stable, _, volatile = system.partition(CACHE_BREAK)
+    labels = [label for label, _ in system.sections]
+    cut = labels.index(system.stable_prefix_until) + 1
+    stable = " ".join(text for _, text in system.sections[:cut])
+    volatile = " ".join(text for _, text in system.sections[cut:])
     assert "You are Jarvis" in stable
     assert "Drinks tea." in volatile
     assert "Right now it is" in volatile

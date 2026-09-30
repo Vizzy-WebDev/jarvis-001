@@ -47,6 +47,7 @@ from ..events.bus import EventBus
 from ..intent import Intent, Route, classify
 from ..policy import Autonomy, CallContext, Surface
 from ..policy.decide import Grant
+from ..prompt_format import with_section
 from .context import AgentBrief, AssembledContext, ContextAssembler, RelevanceContext
 from .model_port import (
     ModelClient, ModelSwitched, ModelUnavailable, StepComplete, TextChunk, ToolCall,
@@ -540,9 +541,9 @@ class Orchestrator:
                 # times". On the last step it is asked to answer, with nothing to
                 # call — the work it already did is still in front of it.
                 tools = []
-                system = f"{system}\n\n{FINAL_STEP_NOTE}"
+                system = with_section(system, "final_step", FINAL_STEP_NOTE)
                 if step > ceiling:
-                    system = f"{system}\n\n{INSIST_NOTE}"
+                    system = with_section(system, "no_tools_now", INSIST_NOTE)
 
             self._bus.publish(
                 EventType.MODEL_CALL_STARTED,

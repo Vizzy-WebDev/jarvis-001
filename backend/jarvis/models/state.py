@@ -139,6 +139,17 @@ def record_discovery(connection: str, models: list[Discovered] | None, error: st
         _touch(force=True)
 
 
+def mark_untested(connection: str) -> None:
+    """Its address or key changed: what was last checked no longer describes it."""
+    with _lock:
+        entry = _state()["discovery"].get(connection)
+        if entry is not None:
+            entry["ok"] = None
+            entry["error"] = None
+        _state()["connections"].pop(connection, None)
+        _touch(force=True)
+
+
 def discovered(connection: str) -> list[Discovered]:
     with _lock:
         rows = (_state()["discovery"].get(connection) or {}).get("models") or []

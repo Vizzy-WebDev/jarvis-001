@@ -100,7 +100,7 @@ def _run(question: str = "", target: str = "") -> dict:
             prompt,
             media=[{"kind": "image", "mimeType": shot.mime_type,
                     "dataBase64": base64.b64encode(shot.data).decode("ascii")}],
-            need={"vision": True})
+            need={"vision": True}, data_class="personal", task_class="vision")
         if reply.ok:
             return {"ok": True, "answer": reply.text, "sawImage": True}
 
@@ -110,7 +110,7 @@ def _run(question: str = "", target: str = "") -> dict:
             text_only = ask_model(prompt.replace(
                 "\n\nThe user asked:",
                 "\n\n(No image is available for this model — answering from the window's "
-                "text alone.)\n\nThe user asked:"))
+                "text alone.)\n\nThe user asked:"), data_class="personal", task_class="screen_text")
             if text_only.ok:
                 return {"ok": True, "answer": text_only.text, "sawImage": False}
         return {"ok": False, "error": reply.error or "No model could look at that."}

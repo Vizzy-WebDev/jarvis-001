@@ -336,7 +336,7 @@ def discover_commands(config: dict[str, Any], *, ask: Callable[..., Any] | None 
 
         ask = ask_model
     answer = ask(f'Here is the real --help output for "{program}":\n\n{help_text[:6000]}',
-                 system=DISCOVERY_SYSTEM, want_json=True)
+                 system=DISCOVERY_SYSTEM, want_json=True, data_class="public", task_class="extract")
     data = getattr(answer, "data", None)
     if data is None:
         data = _json_in(getattr(answer, "text", "") or "")

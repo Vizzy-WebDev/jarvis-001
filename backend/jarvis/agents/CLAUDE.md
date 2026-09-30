@@ -25,7 +25,8 @@ An agent run is an ordinary `Orchestrator.run_turn` with three things set on the
 via `RelevanceContext`), `allowed_names` (its access, enforced by `policy/decide.py`) plus
 `always_declare` (what is declared up front — a broad allowlist stays reachable through
 `find_capability` instead of blowing the 20-tool budget), and `model_id` (the same
-found-or-refused pin a scheduled task uses; null = Jarvis's selection, Auto included).
+found-or-refused pin a scheduled task uses — an alias of that name in the model layer's config,
+made on first use; null = Jarvis's selection, Auto included).
 **The turn loop never imports this package** (`test_architecture.py`).
 
 - Sessions: `agent:<agentId>:<conversationId>` (relay), `job:<id>` (background job),

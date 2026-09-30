@@ -1,11 +1,12 @@
-"""The system instruction — one place, split into a stable half and a volatile one.
+"""The system instruction — one place, as labelled sections: a stable half and a volatile one.
 
-**Why the split.** Anthropic's prompt caching keys on an exact prefix, so anything
-that changes per turn (the wall-clock time, this turn's memories, a low-confidence
-note) must come AFTER the cache breakpoint or the cached prefix misses on every
-single turn. `models/providers/anthropic_messages.py` splits on CACHE_BREAK for
-exactly this; every other provider flattens it to a blank line (`_wire.flatten_system`),
-so the split costs them nothing.
+**Why the split.** Prompt caching keys on an exact prefix, so anything that changes
+per turn (the wall-clock time, this turn's memories, a low-confidence note) must come
+AFTER the stable sections or the cached prefix misses on every single turn. The
+result is an `Instructions` (prompt_format.py): the sections, plus the label of the
+last stable one. The model layer renders the sections for the chosen model's family
+and turns the stable prefix into that provider's own cache marker — this module
+never knows which provider that is.
 
 **What is in here is only what is actually true of this build.** The original's
 instruction describes projects, connectors, computer control, self-improvement and
@@ -19,7 +20,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from .prompt_format import CACHE_BREAK
+from .prompt_format import Instructions
 
 IDENTITY = """You are Jarvis — the user's own personal assistant, present with them day to day on their computer, not a service they have opened a ticket with.
 
@@ -79,7 +80,7 @@ PAST_CONVERSATIONS = """Past conversations — everything the user has said to y
 - Results carry the date they were said. Say WHEN something was said rather than stating an old answer as though it is still true today."""
 
 
-def stable_instruction(*, has_audience: bool = True) -> str:
+def stable_sections(*, has_audience: bool = True) -> list[tuple[str, str]]:
     """The half that does not change between turns, and can therefore be cached.
 
     `has_audience` is `not background`. A turn with nobody listening — a scheduled task's own
@@ -89,15 +90,22 @@ def stable_instruction(*, has_audience: bool = True) -> str:
     """
     from .personality import STYLE_FRAMEWORK
 
-    # Complements HOW_YOU_TALK (brevity, no markdown, no filler) rather than
-    # repeating it — this is the adaptive delivery register: warmth,
-    # directness, playfulness, how hard to push back. See personality.py's own
-    # header for the substance/style invariant this protects.
-    base = "\n\n".join([IDENTITY, HOW_YOU_TALK, HOW_YOU_USE_TOOLS, MAKING_ARTIFACTS,
-                        YOUR_SPECIALISTS, MEMORY_RULES,
-                        LEARNING_ABOUT_ITSELF, SELF_KNOWLEDGE, USING_THE_COMPUTER,
-                        PAST_CONVERSATIONS])
-    return base + STYLE_FRAMEWORK if has_audience else base
+    # STYLE_FRAMEWORK complements HOW_YOU_TALK (brevity, no markdown, no filler) rather
+    # than repeating it — this is the adaptive delivery register: warmth, directness,
+    # playfulness, how hard to push back. See personality.py's own header for the
+    # substance/style invariant this protects.
+    sections = [("identity", IDENTITY), ("how_you_talk", HOW_YOU_TALK), ("using_your_abilities", HOW_YOU_USE_TOOLS),
+                ("making_files", MAKING_ARTIFACTS), ("your_specialists", YOUR_SPECIALISTS),
+                ("memory", MEMORY_RULES), ("learning_about_yourself", LEARNING_ABOUT_ITSELF),
+                ("knowing_yourself", SELF_KNOWLEDGE), ("using_the_computer", USING_THE_COMPUTER),
+                ("past_conversations", PAST_CONVERSATIONS)]
+    if has_audience:
+        sections.append(("delivery", STYLE_FRAMEWORK.strip()))
+    return sections
+
+
+def stable_instruction(*, has_audience: bool = True) -> str:
+    return "\n\n".join(text for _, text in stable_sections(has_audience=has_audience))
 
 
 def situation_section(now: datetime | None = None) -> str:
@@ -324,13 +332,33 @@ def connected_apps_section() -> str:
             "for the user's go-ahead first, as they chose.")
 
 
-def volatile_instruction(*, memories: str = "", low_confidence: bool = False,
-                         now: datetime | None = None, extra: list[str] | None = None) -> str:
-    parts = [situation_section(now), memory_section(memories), sharing_section()]
+def _labelled(extra: list | None) -> list[tuple[str, str]]:
+    """Extra sections as (label, text); a bare string gets a numbered label."""
+    out = []
+    for index, part in enumerate(extra or [], start=1):
+        out.append(part if isinstance(part, tuple) else (f"note_{index}", part))
+    return [(label, text) for label, text in out if text]
+
+
+def volatile_sections(*, memories: str = "", low_confidence: bool = False, now: datetime | None = None,
+                      extra: list | None = None) -> list[tuple[str, str]]:
+    parts = [("situation", situation_section(now)), ("what_you_remember", memory_section(memories)),
+             ("sharing", sharing_section())]
     if low_confidence:
-        parts.append(low_confidence_note())
-    parts += [p for p in (extra or []) if p]
-    return "\n\n".join(p for p in parts if p)
+        parts.append(("low_confidence", low_confidence_note()))
+    parts += _labelled(extra)
+    return [(label, text) for label, text in parts if text]
+
+
+def volatile_instruction(*, memories: str = "", low_confidence: bool = False,
+                         now: datetime | None = None, extra: list | None = None) -> str:
+    return "\n\n".join(text for _, text in volatile_sections(memories=memories, low_confidence=low_confidence,
+                                                              now=now, extra=extra))
+
+
+def _instructions(stable: list[tuple[str, str]], volatile: list[tuple[str, str]]) -> Instructions:
+    stable = [(label, text) for label, text in stable if text]
+    return Instructions(stable + volatile, stable[-1][0] if stable else None)
 
 
 _SPECIALIST_NOTES = """- Work economically. Every step you take is another model call — it costs the operator time and often their limited daily quota. Decide the few steps the task really needs, prefer one call that does a lot (look_it_up searches and reads several sources in one go) over many small ones, and stop as soon as you can deliver the work well.
@@ -361,37 +389,35 @@ def specialist_collaborators_section(collaborators: tuple[tuple[str, str, str], 
 
 
 def specialist_instruction(agent: Any, *, memories: str = "", low_confidence: bool = False,
-                           now: datetime | None = None, extra: list[str] | None = None) -> str:
+                           now: datetime | None = None, extra: list | None = None) -> Instructions:
     """The system instruction for a turn run AS a specialist (`AgentBrief`).
 
     Its identity, mission, doctrine and guardrails take the place of Jarvis's own
     identity and speaking style; the honesty rules about tools are the same ones
     Jarvis works under, because they are about the truth, not about tone.
     """
-    parts = [f"You are {agent.name}, one of Jarvis's specialist agents."]
+    stable = [("identity", f"You are {agent.name}, one of Jarvis's specialist agents.")]
     if agent.mission:
-        parts.append(f"Your mission: {agent.mission}")
-    parts.append(SPECIALIST_DIRECT if agent.direct else SPECIALIST_WORKING)
+        stable.append(("mission", f"Your mission: {agent.mission}"))
+    stable.append(("how_you_work", SPECIALIST_DIRECT if agent.direct else SPECIALIST_WORKING))
     if agent.doctrine:
-        parts.append(f"Your doctrine — how you do this work:\n{agent.doctrine}")
+        stable.append(("doctrine", f"Your doctrine — how you do this work:\n{agent.doctrine}"))
     if agent.guardrails:
-        parts.append(f"Your guardrails — these never bend:\n{agent.guardrails}")
-    parts.append(specialist_collaborators_section(agent.collaborators))
-    parts.append(HOW_YOU_USE_TOOLS)
+        stable.append(("guardrails", f"Your guardrails — these never bend:\n{agent.guardrails}"))
+    stable.append(("collaborators", specialist_collaborators_section(agent.collaborators)))
+    stable.append(("using_your_abilities", HOW_YOU_USE_TOOLS))
     if agent.direct:
         # Talking to the person directly, so the same ask-or-offer rule applies.
         # Working for Jarvis, the brief it was given is the request.
-        parts.append(MAKING_ARTIFACTS)
-    stable = "\n\n".join(p for p in parts if p)
-    volatile = volatile_instruction(memories=memories, low_confidence=low_confidence,
-                                    now=now, extra=extra)
-    return stable + (CACHE_BREAK + volatile if volatile else "")
+        stable.append(("making_files", MAKING_ARTIFACTS))
+    return _instructions(stable, volatile_sections(memories=memories, low_confidence=low_confidence,
+                                                   now=now, extra=extra))
 
 
 def system_instruction(*, memories: str = "", low_confidence: bool = False,
-                       now: datetime | None = None, extra: list[str] | None = None,
-                       has_audience: bool = True) -> str:
-    """Both halves, joined by the cache breakpoint the Anthropic adapter splits on."""
-    volatile = volatile_instruction(memories=memories, low_confidence=low_confidence,
-                                    now=now, extra=[connected_apps_section(), *(extra or [])])
-    return stable_instruction(has_audience=has_audience) + (CACHE_BREAK + volatile if volatile else "")
+                       now: datetime | None = None, extra: list | None = None,
+                       has_audience: bool = True) -> Instructions:
+    """Both halves, as labelled sections; the stable prefix ends at the last stable one."""
+    volatile = volatile_sections(memories=memories, low_confidence=low_confidence, now=now,
+                                 extra=[("connected_apps", connected_apps_section()), *(extra or [])])
+    return _instructions(stable_sections(has_audience=has_audience), volatile)

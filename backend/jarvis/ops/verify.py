@@ -103,7 +103,7 @@ def verify_semantic_match(*, request: str, result_summary: str,
     ]))
 
     try:
-        answer = ask(prompt, system=SYSTEM, want_json=True)
+        answer = ask(prompt, system=SYSTEM, want_json=True, data_class="personal", task_class="judge")
     except Exception as err:  # noqa: BLE001 — no model available is the common case
         logger.info("semantic check could not run: %s", err)
         return Verdict(checked=False, matches=None)

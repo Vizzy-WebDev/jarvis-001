@@ -146,7 +146,9 @@ def check(request: Request, endpoint: Endpoint, cfg: Config, cat: Catalog, *,
                              f"It could cost about ${cost:.4f}, over the limit of ${request.requirements.max_cost}.")
 
     try:
-        tools = tuple(Tool(t.name, t.description, _translate(connection, cfg, dict(t.parameters)))
+        tools = tuple(Tool(t.name, t.description,
+                           _translate(connection, cfg, dict(t.parameters) if isinstance(t.parameters, dict)
+                                      else t.parameters))
                       for t in request.tools)
     except Unexpressible as err:
         return Rejection(endpoint.id, "schema_not_expressible", f"A tool's schema can't be expressed here: {err}")

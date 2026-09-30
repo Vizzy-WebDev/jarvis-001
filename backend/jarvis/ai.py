@@ -1,8 +1,8 @@
 """One prompt, one answer — the narrow seam anything outside the turn loop uses to
 ask a model something.
 
-An ask runs on whichever model the person has selected (`jarvis/models/`). When
-that can't be done — nothing selected, the connection gone, the provider
+An ask runs on whichever model the person has selected, or under Auto on what the
+model layer routes to (`jarvis/models/`). When that can't be done — nothing selected, the connection gone, the provider
 refusing — it ends in `NoModelAvailable` with the reason in it, or in a `Reply`
 with `ok=False` for callers that want a value rather than an exception. Each
 caller already has a plain "no model" branch.
@@ -45,33 +45,32 @@ class Reply:
     error: str | None = None
 
 
-def ask(prompt: str, *, system: str = "", want_json: bool = False,
-        media: list[dict[str, Any]] | None = None,
-        need: dict[str, bool] | None = None,
-        model_id: str | None = None, only: bool = False,
-        role: str = "utility", background: bool = False) -> Answer:
-    """Ask the selected model once.
+def ask(prompt: str, *, data_class: str, task_class: str, system: str = "", want_json: bool = False,
+        schema: dict[str, Any] | None = None, media: list[dict[str, Any]] | None = None,
+        need: dict[str, bool] | None = None, background: bool = False) -> Answer:
+    """Ask once, on the person's selected model — or, under Auto, whichever model the
+    task class's route picks.
 
-    Raises `NoModelAvailable` — with the reason in its message — when nothing is
-    selected, the selection can't be run, or the provider refuses. It never asks a
-    different model than the one selected: `model_id` names a one-off pin, and one
-    that can't be found is an error, not a reason to pick something else.
+    `data_class` ('public' | 'personal' | 'sensitive') says how sensitive what is
+    sent is, and `task_class` what kind of work it is. Both are required: the model
+    layer routes on them and records them.
 
-    Imported here rather than at the top so this module stays a leaf that tools
-    can import: the one-shot path reaches the providers and the selection, and
-    nothing that reaches back into the turn loop.
+    Raises `NoModelAvailable` — with the reason in its message — when nothing can
+    answer. It never asks a different model than the person selected.
+
+    Imported here rather than at the top so this module stays a leaf that tools can
+    import: the one-shot path reaches the model layer, and nothing that reaches
+    back into the turn loop.
     """
-    from .models.legacy.oneshot import ask as _ask
+    from .models.oneshot import ask as _ask
 
-    return _ask(prompt, system=system, want_json=want_json, media=media, need=need,
-                model_id=model_id, only=only, role=role, background=background)
+    return _ask(prompt, data_class=data_class, task_class=task_class, system=system, want_json=want_json,
+                schema=schema, media=media, need=need, background=background)
 
 
-def ask_model(prompt: str, *, system: str = "", want_json: bool = False,
-              media: list[dict[str, Any]] | None = None,
-              need: dict[str, bool] | None = None,
-              model_id: str | None = None, only: bool = False,
-              role: str = "utility", background: bool = False) -> Reply:
+def ask_model(prompt: str, *, data_class: str, task_class: str, system: str = "", want_json: bool = False,
+              schema: dict[str, Any] | None = None, media: list[dict[str, Any]] | None = None,
+              need: dict[str, bool] | None = None, background: bool = False) -> Reply:
     """Ask once. Returns a Reply rather than raising.
 
     A tool's caller is a model mid-turn, and "no model was available" is
@@ -79,9 +78,8 @@ def ask_model(prompt: str, *, system: str = "", want_json: bool = False,
     a failed turn with no explanation.
     """
     try:
-        answer = ask(prompt, system=system, want_json=want_json, media=media,
-                     need=need, model_id=model_id, only=only, role=role,
-                     background=background)
+        answer = ask(prompt, data_class=data_class, task_class=task_class, system=system, want_json=want_json,
+                     schema=schema, media=media, need=need, background=background)
     except Exception as err:  # noqa: BLE001 — every failure reads the same here
         return Reply(ok=False, error=str(err))
     return Reply(ok=True, text=answer.text, data=answer.data, model_id=answer.model_id)

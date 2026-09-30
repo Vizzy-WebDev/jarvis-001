@@ -715,7 +715,7 @@ def prepare_plan(goal: str, *, client: Any = None) -> str:
         "Describe in at most four short steps how you would do it by clicking and typing, "
         "in plain language, as you would explain it to the person watching. No numbered "
         "preamble, no promises, just the steps.",
-        system="You plan short desktop tasks. Be concrete and brief.")
+        system="You plan short desktop tasks. Be concrete and brief.", data_class="personal", task_class="plan")
     return reply.text.strip() if reply.ok else ""
 
 

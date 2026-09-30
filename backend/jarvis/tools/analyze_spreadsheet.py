@@ -59,7 +59,7 @@ def _write_script(*, sheet: str, header: str, sample: list[str], row_count: int,
         "- ends with exactly one print() of a short, plain-language final answer (not JSON, "
         "not the raw data)\n"
         "Reply with ONLY the Python code — no explanation, before or after.")
-    return ask_model(prompt)
+    return ask_model(prompt, data_class="personal", task_class="code")
 
 
 def _run(upload_id: str = "", question: str = "", sheet_name: str = "") -> dict[str, Any]:
@@ -117,7 +117,7 @@ def _run(upload_id: str = "", question: str = "", sheet_name: str = "") -> dict[
     from ..ai import ask_model
 
     fixed = ask_model(f"The script you wrote for this task failed:\n\n{code}\n\nError:\n"
-                      f"{failure}\n\nFix it and reply with ONLY the corrected Python code.")
+                      f"{failure}\n\nFix it and reply with ONLY the corrected Python code.", data_class="personal", task_class="code")
     if not fixed.ok:
         return {"ok": False,
                 "error": f"The analysis script failed and I couldn't fix it: {failure}"}

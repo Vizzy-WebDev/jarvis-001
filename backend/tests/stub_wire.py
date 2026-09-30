@@ -317,8 +317,10 @@ class StubWire:
             "input_tokens": u["input"] - u["cached"], "cache_read_input_tokens": u["cached"],
             "cache_creation_input_tokens": 0, "output_tokens": 1}}}, "message_start")]
         if turn.error_in_200:
-            out.append(e({"type": "error", "error": {"type": "overloaded_error",
-                                                     "message": turn.error_in_200["message"]}}, "error"))
+            kind = {429: "rate_limit_error", 401: "authentication_error", 400: "invalid_request_error"}.get(
+                turn.error_in_200.get("code"), "overloaded_error")
+            out.append(e({"type": "error", "error": {"type": kind, "message": turn.error_in_200["message"]}},
+                         "error"))
             return out
         index = 0
         if turn.reasoning:

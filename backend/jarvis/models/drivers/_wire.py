@@ -148,6 +148,8 @@ def error_in_body(body: Any, url: str) -> errors.ModelError:
     words = provider_words(body)
     code = err.get("code") if isinstance(err, dict) else None
     status = code if isinstance(code, int) and not isinstance(code, bool) else None
+    if status is None and isinstance(code, str) and code.isdigit():
+        status = int(code)
     if status is None and isinstance(err, dict):
         kind = str(err.get("type") or err.get("status") or code or "").lower()
         status = (429 if "rate" in kind or "resource_exhausted" in kind

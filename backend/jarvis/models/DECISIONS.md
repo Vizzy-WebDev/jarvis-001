@@ -113,3 +113,20 @@ it was deliberately corrected.
 - **A new stub server (`tests/stub_wire.py`) replaces the old one for the
   conformance suite**: the old one couldn't send parallel tool calls, missing ids,
   reasoning items, in-band errors, `/api/show` or embeddings.
+- **Anthropic: canonical effort `none` is sent as `low`.** Current Claude models
+  can't switch thinking off (a `disabled` thinking config is a 400 on several), so
+  the lowest level is the honest nearest. No thinking config is sent at all — each
+  model's own default applies — and foreign thinking is dropped, not faked.
+- **Gemini: schemas go as JSON Schema** (`parametersJsonSchema`,
+  `responseJsonSchema`), so nothing is rewritten. The one known refusal — an array
+  with no `items` — makes the endpoint ineligible instead of being "fixed" by
+  injecting an `items` (the old behaviour). Not yet confirmed against the live API
+  in this build; the first real Gemini call is the check.
+- **Gemini: a foreign function call carries Google's documented placeholder
+  signature** (`skip_thought_signature_validator`, the `gemini` quirk profile), so
+  a conversation can move onto Gemini mid tool loop. Its own signatures are always
+  used when present.
+- **Responses: `include: ["reasoning.encrypted_content"]` is always sent**, with a
+  `no_encrypted_reasoning` quirk for an Open Responses server that refuses it. The
+  server's own `call_id` and item id travel in the Sealed `ids` item and go back
+  only to that endpoint.

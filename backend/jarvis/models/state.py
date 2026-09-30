@@ -31,6 +31,19 @@ _data: dict[str, Any] | None = None
 _where: str | None = None
 _dirty = False
 _last_flush = 0.0
+#: Bumped whenever what the catalog is built from (listings, probes) changes.
+_catalog_version = 0
+
+
+def catalog_version() -> tuple[str | None, int]:
+    with _lock:
+        _state()
+        return _where, _catalog_version
+
+
+def _catalog_changed() -> None:
+    global _catalog_version
+    _catalog_version += 1
 
 
 def _empty() -> dict[str, Any]:
@@ -79,8 +92,10 @@ atexit.register(flush)
 def reset() -> None:
     """Test helper: forget what is held in memory (the file is left alone)."""
     global _data, _where, _dirty
+    global _catalog_version
     with _lock:
         _data, _where, _dirty = None, None, False
+        _catalog_version += 1
 
 
 def snapshot() -> dict[str, Any]:
@@ -120,6 +135,7 @@ def record_discovery(connection: str, models: list[Discovered] | None, error: st
         if models is not None:
             entry["models"] = [_discovered_to_json(m) for m in models]
             entry["ok_at"] = entry["at"]
+        _catalog_changed()
         _touch(force=True)
 
 
@@ -139,6 +155,7 @@ def forget_discovered_model(connection: str, model_id: str) -> None:
     with _lock:
         entry = _state()["discovery"].get(connection) or {}
         entry["models"] = [r for r in entry.get("models") or [] if r.get("model_id") != model_id]
+        _catalog_changed()
         _touch(force=True)
 
 
@@ -151,6 +168,7 @@ def forget_connection(connection: str) -> None:
         for key in ("probes", "latency", "health"):
             for eid in [e for e in s[key] if e.startswith(prefix)]:
                 s[key].pop(eid, None)
+        _catalog_changed()
         _touch(force=True)
 
 
@@ -159,6 +177,7 @@ def forget_connection(connection: str) -> None:
 def record_probe(endpoint_id: str, capabilities: dict[str, Any], results: dict[str, Any]) -> None:
     with _lock:
         _state()["probes"][endpoint_id] = {"at": _iso(), "capabilities": capabilities, "results": results}
+        _catalog_changed()
         _touch(force=True)
 
 

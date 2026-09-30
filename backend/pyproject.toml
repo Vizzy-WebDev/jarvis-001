@@ -14,6 +14,9 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "httpx>=0.27",
+    # The model layer's config file (models.yaml) and structured-output validation.
+    "pyyaml>=6",
+    "jsonschema>=4",
     "websockets>=13",
     # The official MCP client. The original hand-wrote JSON-RPC over a spawned
     # process to avoid a dependency; here it already is one, so the protocol is

@@ -39,8 +39,8 @@ capability at construction, which is how one "send message" stops being able to 
 `wants_context=True` also receives the `CallContext` (session, turn, autonomy — and what a
 Skill running a pipeline needs to invoke other capabilities).
 
-**Several related tools share one module** — `self_tools.py` holds `check_myself` and
-`track_goal`, `memory_tools.py` holds the five memory tools, and so on.
+**Several related tools share one module** — `memory_tools.py` holds the five memory tools,
+`job_tools.py` the three background-work tools, and so on.
 
 ## The import invariant
 

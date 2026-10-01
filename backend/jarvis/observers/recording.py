@@ -70,6 +70,11 @@ def start_observers(event_bus: EventBus | None = None) -> None:
     from .verification import verify_answer
     _unsubscribes.append(ebus.subscribe(EventType.ASSISTANT_RESPONSE, verify_answer))
 
+    # The running summary folds what scrolled out of a conversation after a reply —
+    # here, not in the turn loop, which imports no recorder (gated by its own interlock).
+    from ..conversation_summary import on_reply as summarize_after_reply
+    _unsubscribes.append(ebus.subscribe(EventType.ASSISTANT_RESPONSE, summarize_after_reply))
+
     from .notifications import store_notification
     _unsubscribes.append(
         ebus.subscribe(EventType.NOTIFICATION_CREATED, store_notification))

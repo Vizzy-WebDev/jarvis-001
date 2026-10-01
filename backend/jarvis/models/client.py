@@ -12,6 +12,7 @@ one `StepComplete` carrying what the server said answered.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Iterator
 
 from ..ai import NoModelAvailable
@@ -21,6 +22,8 @@ from ..prompt_format import Instructions
 from . import boundary, config, settings
 from . import stream as layer_stream
 from .types import Done, ErrorEvent, Hints, Request, Requirements, Section, TextDelta, Tool
+
+logger = logging.getLogger(__name__)
 
 #: What kind of work each turn role is, and how sensitive what it carries is. Every
 #: turn-loop role carries the person's conversation, memories or screen: personal.
@@ -52,29 +55,73 @@ def pin_for(model_id: str | None) -> str | None:
         return None
 
 
+def _request(*, messages: list[dict[str, Any]], system: Any, tools: list[dict[str, Any]], session_id: str,
+             pin: str | None, role: str, need: dict[str, bool] | None) -> Request:
+    sections, stable = instructions_of(system)
+    return Request(
+        task_class=TASK_CLASS.get(role, role), data_class=DATA_CLASS.get(role, "personal"),
+        items=boundary.items_from_conversation(messages), instructions=sections,
+        tools=tuple(Tool(t["name"], t.get("description", ""),
+                         t.get("parameters") or {"type": "object", "properties": {}}) for t in tools),
+        requirements=Requirements(capabilities=frozenset({"image_in"} if (need or {}).get("vision") else ()),
+                                  pin=pin),
+        hints=Hints(stable_prefix_until=stable,
+                    reasoning_effort=settings.effort() if pin == settings.SELECTED else None),
+        affinity_key=session_id)
+
+
+def _learn_from_refusal(error: Any, request: Request) -> None:
+    """A model refused this request as too long: what it refused is a real upper bound on its
+    window. Half the refused size is recorded — a search step down from the model's own answer,
+    never a size chosen in advance — and the turn loop re-assembles to fit it."""
+    if getattr(error, "type", None) != "context_too_long" or not getattr(error, "endpoint_id", None):
+        return
+    try:
+        from . import state
+        from .resolve import estimate_tokens
+
+        refused = estimate_tokens(request, config.current().settings.image_tokens)
+        state.record_learned_context(error.endpoint_id, refused // 2)
+    except Exception:  # noqa: BLE001 — learning must never mask the refusal itself
+        logger.exception("could not record the context window %s refused", error.endpoint_id)
+
+
 class JarvisModelClient:
+    def context_capacity(self, *, session_id: str, model_id: str | None = None, role: str | None = None,
+                         need: dict[str, bool] | None = None, tools: list[dict[str, Any]] | None = None,
+                         ) -> tuple[int | None, int | None] | None:
+        """How much the model that would answer this turn can take: (context window, max output),
+        each None when the model has never said. Routed exactly as a real call is — the person's
+        pinned model, or what Auto would pick — with no model called. None when nothing would."""
+        from .capabilities import limit
+        from .engine import route
+
+        try:
+            request = _request(messages=[], system="", tools=list(tools or []), session_id=session_id,
+                               pin=pin_for(model_id), role=role or "conversation", need=need)
+            ranked, _ = route(request)
+        except Exception:  # noqa: BLE001 — not knowing is an answer; it must never fail a turn
+            logger.exception("could not work out the answering model's capacity")
+            return None
+        if not ranked:
+            return None
+        caps = ranked[0].endpoint.capabilities
+        return limit(caps, "max_context_tokens"), limit(caps, "max_output_tokens")
+
     def stream(self, *, messages: list[dict[str, Any]], system: Any, tools: list[dict[str, Any]],
                session_id: str, model_id: str | None = None, role: str | None = None,
                need: dict[str, bool] | None = None) -> Iterator[ModelEvent]:
         role = role or "conversation"
         pin = pin_for(model_id)
-        sections, stable = instructions_of(system)
-        request = Request(
-            task_class=TASK_CLASS.get(role, role), data_class=DATA_CLASS.get(role, "personal"),
-            items=boundary.items_from_conversation(messages), instructions=sections,
-            tools=tuple(Tool(t["name"], t.get("description", ""),
-                             t.get("parameters") or {"type": "object", "properties": {}}) for t in tools),
-            requirements=Requirements(capabilities=frozenset({"image_in"} if (need or {}).get("vision") else ()),
-                                      pin=pin),
-            hints=Hints(stable_prefix_until=stable,
-                        reasoning_effort=settings.effort() if pin == settings.SELECTED else None),
-            affinity_key=session_id)
+        request = _request(messages=messages, system=system, tools=tools, session_id=session_id,
+                           pin=pin, role=role, need=need)
 
         response = None
         for event in layer_stream(request):
             if isinstance(event, TextDelta):
                 yield TextChunk(event.text)
             elif isinstance(event, ErrorEvent):
+                _learn_from_refusal(event.error, request)
                 raise boundary.failure(event.error, pinned_selection=pin == settings.SELECTED)
             elif isinstance(event, Done):
                 response = event.response

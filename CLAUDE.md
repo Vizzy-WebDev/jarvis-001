@@ -58,7 +58,34 @@ environment sampler (`ops/environment/sampler.py`), Self-Improvement's own tick
 notifications trash purge (`notifications.py`), the connector icon resolver
 (`connectors/icons.py`), and the chat-history trash purge (`chat_store.py`).
 `assembly.start_background_work()` is the one place "what
-starts itself" is answerable by reading a single function.
+starts itself" is answerable by reading a single function. One interlock gates work that
+is triggered by a reply rather than a clock: `JARVIS_CONVERSATION_SUMMARY`, the running
+conversation summary (`conversation_summary.py`, subscribed to `ASSISTANT_RESPONSE` in
+`observers/recording.py`, run through `background.run_in_background`).
+
+## Conversation context — `orchestrator/context.py` + `conversation_summary.py`
+
+**There is no fixed context size anywhere, and none may be added.** Each turn the pipeline
+asks the model client which model would answer and what it can hold
+(`JarvisModelClient.context_capacity`, routed exactly like a real call), and
+`context.budget_for()` turns that into room for the assembly — proportional reserves for the
+reply, the tool declarations and a safety margin, converted from the model layer's
+characters÷3 +10% estimate so Jarvis's own assembly can never trip `context_too_small`. A
+model that never stated its window gets **no** limit from Jarvis; if it then refuses a
+request as `context_too_long`, half the refused size is recorded as its learned window
+(`models/state.record_learned_context`, folded into probes, only ever lowered) and the step is
+re-assembled once and retried. When the budget is tight, earlier turns' tool results are
+shortened before any whole turn is dropped; the current turn is never cut.
+
+What scrolls out is kept by a **running summary** per conversation (migration 37,
+`conversation_summaries`): structured notes (goal, facts, decisions, open items incl.
+Jarvis's own promises, parked topics, current) written only from the transcript, anchored on
+the saved message `seq` (`covered_seq`). A fold happens once verbatim history passes half the
+model's budget (unknown window: only what leaves the in-memory working set), always in whole
+turns, never the latest two. Edit/Retry into the covered range drops it
+(`chat_store.truncate_to_before`). **Jarvis does not search past chats** — that feature
+(`search_conversations`) was removed at the person's request; `track_goal` was replaced by the
+summary's goal. The Chat History page's own search box is unrelated and stays.
 
 ## Testing
 

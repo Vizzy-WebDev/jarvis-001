@@ -110,6 +110,12 @@ class ModelClient(Protocol):
         'background', 'utility') describing what kind of turn this is, since
         the orchestrator is the side that knows whether it was spoken,
         scheduled or typed.
+
+        A client MAY also offer `context_capacity(session_id=, model_id=, role=,
+        need=, tools=) -> (context_tokens, output_tokens) | None` — how much the
+        model that would answer can take, each part None when the model never
+        said. The turn loop sizes its context from it; a client without it is
+        treated as "unknown", which means no size limit is imposed on the turn.
         """
         ...
 

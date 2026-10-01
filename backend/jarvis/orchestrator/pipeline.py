@@ -48,7 +48,7 @@ from ..intent import Intent, Route, classify
 from ..policy import Autonomy, CallContext, Surface
 from ..policy.decide import Grant
 from ..prompt_format import with_section
-from .context import AgentBrief, AssembledContext, ContextAssembler, RelevanceContext
+from .context import AgentBrief, AssembledContext, ContextAssembler, RelevanceContext, budget_for
 from .model_port import (
     ModelClient, ModelSwitched, ModelUnavailable, StepComplete, TextChunk, ToolCall,
 )
@@ -522,6 +522,11 @@ class Orchestrator:
         # Set when the last step came back asking for a tool it was not offered:
         # that earns exactly one more attempt at the answer (see below).
         insist = False
+        # What the model that will answer can hold — asked once per turn, and again
+        # only after it refuses a request as too long (one refit per turn).
+        capacity: tuple[int | None, int | None] | None = None
+        refitted = False
+        budget: int | None = None
 
         for step in range(1, ceiling + 2):
             if step > ceiling and not insist:
@@ -530,75 +535,91 @@ class Orchestrator:
                 yield self._interrupt(request, state, "".join(spoken_so_far))
                 return
 
-            assembled = self._assemble(request)
-            tools = self._declarations(request, unlocked)
-            system = assembled.system
-            final = step >= ceiling and ceiling > 1
-            if final:
-                # The last step this turn gets. Found live: a specialist made 22
-                # successful lookups across its steps, never wrote its answer, and
-                # everything it had found was thrown away with "I went round 8
-                # times". On the last step it is asked to answer, with nothing to
-                # call — the work it already did is still in front of it.
-                tools = []
-                system = with_section(system, "final_step", FINAL_STEP_NOTE)
-                if step > ceiling:
-                    system = with_section(system, "no_tools_now", INSIST_NOTE)
-
-            self._bus.publish(
-                EventType.MODEL_CALL_STARTED,
-                {"sessionId": request.session_id, "turnId": request.turn_id,
-                 "step": step, "tools": len(tools)},
-            )
-            state.to(State.THINKING, f"step {step}")
-
-            completed: StepComplete | None = None
             # Scoped to this one step — a marker split across a tool-call
             # boundary would be meaningless anyway, since a new step is a new
             # generation, not a continuation of the same text stream.
             from ..personality import create_reaction_scanner, strip_reaction_markers
 
-            reactions = create_reaction_scanner()
-            try:
-                for event in self._model.stream(
-                    messages=assembled.messages, system=system,
-                    tools=tools, session_id=request.session_id,
-                    model_id=request.model_id,
-                    role=ROLE_FOR_SURFACE.get(request.surface, "conversation"),
-                    need=needs or None,
-                ):
-                    if cancel.is_set():
-                        # Whatever the scanner is still holding back (at most a
-                        # few characters — see its own docstring) was genuinely
-                        # heard before the user cut in; it just hadn't yet been
-                        # decided to be ordinary text rather than the start of a
-                        # marker. Yielded as a real Chunk too, so what gets
-                        # recorded as "heard" matches what was actually sent.
-                        for piece in reactions.flush():
-                            if piece.text:
-                                spoken_so_far.append(piece.text)
-                                yield Chunk(piece.text)
-                        yield self._interrupt(request, state, "".join(spoken_so_far))
-                        return
-                    if isinstance(event, TextChunk):
-                        if event.text:
-                            for piece in reactions.feed(event.text):
-                                if piece.type == "reaction":
-                                    yield Reaction(piece.kind)
-                                elif piece.text:
+            while True:
+                tools = self._declarations(request, unlocked)
+                final = step >= ceiling and ceiling > 1
+                if final:
+                    # The last step this turn gets. Found live: a specialist made 22
+                    # successful lookups across its steps, never wrote its answer, and
+                    # everything it had found was thrown away with "I went round 8
+                    # times". On the last step it is asked to answer, with nothing to
+                    # call — the work it already did is still in front of it.
+                    tools = []
+                if capacity is None:
+                    capacity = self._capacity(request, needs, tools)
+                budget = budget_for(*capacity, tool_chars=_declared_chars(tools))
+                assembled = self._assemble(request, budget)
+                system = assembled.system
+                if final:
+                    system = with_section(system, "final_step", FINAL_STEP_NOTE)
+                    if step > ceiling:
+                        system = with_section(system, "no_tools_now", INSIST_NOTE)
+
+                self._bus.publish(
+                    EventType.MODEL_CALL_STARTED,
+                    {"sessionId": request.session_id, "turnId": request.turn_id,
+                     "step": step, "tools": len(tools)},
+                )
+                state.to(State.THINKING, f"step {step}")
+
+                completed: StepComplete | None = None
+                reactions = create_reaction_scanner()
+                heard_before = len(spoken_so_far)
+                try:
+                    for event in self._model.stream(
+                        messages=assembled.messages, system=system,
+                        tools=tools, session_id=request.session_id,
+                        model_id=request.model_id,
+                        role=ROLE_FOR_SURFACE.get(request.surface, "conversation"),
+                        need=needs or None,
+                    ):
+                        if cancel.is_set():
+                            # Whatever the scanner is still holding back (at most a
+                            # few characters — see its own docstring) was genuinely
+                            # heard before the user cut in; it just hadn't yet been
+                            # decided to be ordinary text rather than the start of a
+                            # marker. Yielded as a real Chunk too, so what gets
+                            # recorded as "heard" matches what was actually sent.
+                            for piece in reactions.flush():
+                                if piece.text:
                                     spoken_so_far.append(piece.text)
                                     yield Chunk(piece.text)
-                    elif isinstance(event, ModelSwitched):
-                        yield Switched(event.to_model_id, event.reason, event.from_model_id)
-                    elif isinstance(event, StepComplete):
-                        completed = event
-            except Exception as err:  # noqa: BLE001 — provider errors are expected
-                self._bus.publish(
-                    EventType.MODEL_CALL_FAILED,
-                    {"sessionId": request.session_id, "turnId": request.turn_id,
-                     "step": step, "error": str(err)},
-                )
-                raise
+                            yield self._interrupt(request, state, "".join(spoken_so_far))
+                            return
+                        if isinstance(event, TextChunk):
+                            if event.text:
+                                for piece in reactions.feed(event.text):
+                                    if piece.type == "reaction":
+                                        yield Reaction(piece.kind)
+                                    elif piece.text:
+                                        spoken_so_far.append(piece.text)
+                                        yield Chunk(piece.text)
+                        elif isinstance(event, ModelSwitched):
+                            yield Switched(event.to_model_id, event.reason, event.from_model_id)
+                        elif isinstance(event, StepComplete):
+                            completed = event
+                except Exception as err:  # noqa: BLE001 — provider errors are expected
+                    if (_refused_as_too_long(err) and not refitted
+                            and len(spoken_so_far) == heard_before):
+                        # The model said the request was too long, before saying
+                        # anything else. Its refusal is now on record as what it can
+                        # hold (models/client.py), so this step is assembled again to
+                        # fit and tried once more.
+                        refitted = True
+                        capacity = None
+                        continue
+                    self._bus.publish(
+                        EventType.MODEL_CALL_FAILED,
+                        {"sessionId": request.session_id, "turnId": request.turn_id,
+                         "step": step, "error": str(err)},
+                    )
+                    raise
+                break
 
             # Anything still held back was never a real marker, just ordinary
             # text that happened to look like the start of one.
@@ -650,7 +671,7 @@ class Orchestrator:
                     EventType.ASSISTANT_RESPONSE,
                     {"sessionId": request.session_id, "turnId": request.turn_id,
                      "steps": step, "text": reply, "userText": request.text,
-                     "toolNames": list(tools_used)},
+                     "toolNames": list(tools_used), "contextBudget": budget},
                 )
                 self._finish(state, request)
                 yield Done(reply, steps=step, model_id=completed.model_id,
@@ -742,10 +763,28 @@ class Orchestrator:
             self._needs[request.turn_id] = prepared.need
         return prepared
 
-    def _assemble(self, request: TurnRequest) -> AssembledContext:
+    def _capacity(self, request: TurnRequest, needs: dict[str, bool],
+                  tools: list[dict[str, Any]]) -> tuple[int | None, int | None]:
+        """(context window, max output) of the model that would answer this turn, each
+        None when that model never said. A client that can't tell means 'unknown'."""
+        ask = getattr(self._model, "context_capacity", None)
+        if ask is None:
+            return (None, None)
+        try:
+            found = ask(session_id=request.session_id, model_id=request.model_id,
+                        role=ROLE_FOR_SURFACE.get(request.surface, "conversation"),
+                        need=needs or None, tools=tools)
+        except Exception:  # noqa: BLE001 — not knowing the size must never fail a turn
+            logger.exception("could not read the answering model's capacity")
+            return (None, None)
+        return found if found is not None else (None, None)
+
+    def _assemble(self, request: TurnRequest, budget_tokens: int | None) -> AssembledContext:
         # Passed only when set, so an assembler written before agents existed
         # (a test's own, say) keeps working unchanged.
-        extra = {"agent": request.agent} if request.agent is not None else {}
+        extra: dict[str, Any] = {"agent": request.agent} if request.agent is not None else {}
+        if budget_tokens is not None:
+            extra["budget_tokens"] = budget_tokens
         return self._assembler.assemble(
             session_id=request.session_id, text=request.text,
             low_confidence=request.low_confidence,
@@ -797,6 +836,20 @@ class Orchestrator:
             state.to(target, "reply ready")
         except Exception:  # noqa: BLE001
             logger.warning("could not leave %s at end of turn", state.state.value)
+
+
+def _declared_chars(tools: list[dict[str, Any]]) -> int:
+    """How much the tool declarations sent with a step weigh, in characters — part of what
+    the model has to hold, so it comes out of the budget for everything else."""
+    import json
+
+    return len(json.dumps(tools, default=str)) if tools else 0
+
+
+def _refused_as_too_long(err: BaseException) -> bool:
+    detail = getattr(err, "detail", None)
+    return isinstance(err, ModelUnavailable) and isinstance(detail, dict) \
+        and detail.get("reason") == "context_too_long"
 
 
 def _approval_of(value: Any) -> ApprovalRequired | None:

@@ -572,4 +572,20 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
     # and the feature report. Metadata only unless the person switches content on.
     # The table's DDL lives with the code that writes it (`models/trace.py`).
     36: [],
+
+    # 37: A running summary per conversation (`conversation_summary.py`) — what scrolled
+    # out of the turns sent in full, folded into structured notes (goal, decisions, open
+    # items, parked topics...) written only from the transcript. `covered_seq` is the last
+    # message `seq` the summary accounts for; anything after it is still sent as itself.
+    # Cascades with the conversation, so emptying the recycle bin takes it too.
+    37: [
+        """
+        CREATE TABLE IF NOT EXISTS conversation_summaries (
+          conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+          summary         TEXT NOT NULL,
+          covered_seq     INTEGER NOT NULL,
+          updated_at      TEXT NOT NULL
+        );
+        """
+    ],
 }

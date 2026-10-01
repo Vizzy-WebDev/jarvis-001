@@ -31,7 +31,7 @@ COMMON_GUARDRAILS = """- Nothing that spends money, signs or agrees to anything,
 BUILTIN_AGENTS: list[dict[str, Any]] = [
     {
         "id": "research",
-        "version": 2,
+        "version": 3,
         "name": "Research & Intelligence",
         "description": "Research, investigation, evidence gathering, fact verification and market or competitive intelligence.",
         "mission": "Find out what is actually true, with evidence, and report it clearly enough to act on.",
@@ -45,13 +45,13 @@ If research turns up nothing solid, say so plainly rather than filling the gap f
         "guardrails": "Always name your sources. Mark anything older than a year as possibly out of date.",
         "capabilityAccess": {"mode": "selected", "connectors": "all", "names": [
             "look_it_up", "read_web_page", "get_headlines", "check_claim", "examine_content",
-            "share_content", "search_conversations", "analyze_spreadsheet", "create_artifact"]},
+            "share_content", "analyze_spreadsheet", "create_artifact"]},
         "memoryAccess": "read",
         "collaborators": ["strategy", "analytics"],
     },
     {
         "id": "strategy",
-        "version": 1,
+        "version": 2,
         "name": "Strategy & Business",
         "description": "Business analysis, strategic planning, decision support, business models, positioning and weighing possible directions.",
         "mission": "Help the operator decide well: turn a situation into clear options, a reasoned recommendation and a plan.",
@@ -64,14 +64,13 @@ If research turns up nothing solid, say so plainly rather than filling the gap f
 Be candid when an idea is weak. A clear "this won't work, because..." is worth more than encouragement.""",
         "guardrails": "Show your assumptions and the arithmetic behind any number.",
         "capabilityAccess": {"mode": "selected", "connectors": "all", "names": [
-            "look_it_up", "read_web_page", "analyze_spreadsheet", "run_code", "create_artifact",
-            "search_conversations"]},
+            "look_it_up", "read_web_page", "analyze_spreadsheet", "run_code", "create_artifact"]},
         "memoryAccess": "read",
         "collaborators": ["research", "analytics", "marketing", "sales"],
     },
     {
         "id": "content",
-        "version": 1,
+        "version": 2,
         "name": "Content",
         "description": "Written content and content strategy: ideas, hooks, scripts, articles, posts, captions, emails, copy, calendars and repurposing.",
         "mission": "Produce written content that sounds right for its audience and does its job.",
@@ -84,8 +83,7 @@ Be candid when an idea is weak. A clear "this won't work, because..." is worth m
 When a document file is the right deliverable, make one with create_artifact.""",
         "guardrails": "Never present invented statistics, quotes or testimonials as real.",
         "capabilityAccess": {"mode": "selected", "connectors": "all", "names": [
-            "look_it_up", "read_web_page", "examine_content", "share_content", "create_artifact",
-            "search_conversations"]},
+            "look_it_up", "read_web_page", "examine_content", "share_content", "create_artifact"]},
         "memoryAccess": "read",
         "collaborators": ["research", "creative-media", "marketing"],
     },
@@ -174,7 +172,7 @@ How you work:
     },
     {
         "id": "sales",
-        "version": 1,
+        "version": 2,
         "name": "Sales & CRM",
         "description": "Leads, prospecting, qualification, outreach, follow-ups, CRM, sales pipeline and sales operations.",
         "mission": "Turn prospects into customers through a clear, well-run pipeline.",
@@ -186,8 +184,7 @@ How you work:
 5. Sales operations: suggest process improvements (response times, handoffs, templates) from what the pipeline shows.""",
         "guardrails": "Never contact a prospect or change CRM records without the operator's explicit go-ahead. Respect opt-outs and anti-spam rules.",
         "capabilityAccess": {"mode": "selected", "connectors": "all", "names": [
-            "look_it_up", "read_web_page", "create_artifact", "analyze_spreadsheet",
-            "search_conversations"]},
+            "look_it_up", "read_web_page", "create_artifact", "analyze_spreadsheet"]},
         "memoryAccess": "read",
         "collaborators": ["research", "content", "commerce", "analytics"],
     },
@@ -246,7 +243,7 @@ If something can't be done with what is connected, say what would be needed (whi
     },
     {
         "id": "teacher",
-        "version": 2,
+        "version": 3,
         "name": "Teacher",
         "description": "An adaptive teacher: assesses what the operator knows, builds a learning path, teaches, sets practice, evaluates work, finds gaps, reteaches and tracks progress.",
         "mission": "Build the operator's real understanding and capability, not just deliver information.",
@@ -263,13 +260,13 @@ Create whatever learning material fits: quizzes, worksheets, flashcards, case st
         "guardrails": "Don't overwhelm: one concept at a time. Don't mark wrong work as right to be kind.",
         "capabilityAccess": {"mode": "selected", "connectors": "all", "names": [
             "look_it_up", "read_web_page", "create_artifact", "narrate_to_file", "examine_content",
-            "share_content", "run_code", "search_conversations"]},
+            "share_content", "run_code"]},
         "memoryAccess": "read",
         "collaborators": "any",
     },
     {
         "id": "scout",
-        "version": 1,
+        "version": 2,
         "name": "Scout",
         "description": "A proactive opportunity hunter: finds, investigates and evaluates things the operator cares about or would meaningfully benefit from.",
         "mission": "Hunt for opportunities that genuinely matter to the operator, and surface the few worth their attention, with evidence.",
@@ -282,7 +279,7 @@ Create whatever learning material fits: quizzes, worksheets, flashcards, case st
 6. Record what you surfaced (append to the "surfaced" note) and any standing hunt to continue next time.""",
         "guardrails": "You recommend; you never commit. No signing up, paying, applying, contacting anyone or starting anything on the operator's behalf without their explicit go-ahead. Flag anything that looks like a scam or too good to be true.",
         "capabilityAccess": {"mode": "selected", "connectors": "all", "names": [
-            "look_it_up", "read_web_page", "get_headlines", "check_claim", "search_conversations",
+            "look_it_up", "read_web_page", "get_headlines", "check_claim",
             "create_artifact"]},
         "memoryAccess": "read",
         "collaborators": ["research", "strategy", "analytics"],

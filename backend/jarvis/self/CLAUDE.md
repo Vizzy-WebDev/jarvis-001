@@ -24,10 +24,9 @@ work even when nothing else can answer.
   - `self_capability_stats` — a rolling per-`(axis, key)` tally. `record_attempt(axis, key,
     ok)` bumps it; `get_stat()` / `list_stats()` read it. A row never written returns `None`,
     never a zeroed-out fake.
-  - `self_goals` — at most one active goal per `(scope_kind, scope_ref)`. `declare_goal()`
-    closes the prior active goal for that scope first; `get_active_goal()` / `close_goal()`.
-    A goal also stores `source_turn_text`, the real text of the user's latest message at declare
-    time (honestly `None` when none existed).
+  - (The `self_goals` table from migration-era `track_goal` is still in the schema but nothing
+    reads or writes it: the tool was removed, and a conversation's goal now comes from its
+    running summary — `jarvis/conversation_summary.py`.)
   - `capture_health` — `record_capture_health()` / `capture_health_summary()`: the health of
     the RECORDER itself. Without it, "never used" and "the thing that records usage is
     broken" are indistinguishable. Read by `ops/diagnostics/checks/capture_health.py`.
@@ -57,15 +56,16 @@ work even when nothing else can answer.
 2. **`failure_modes`** — scoped `improvement_lessons`, filtered to what is relevant.
 3. **`how_it_behaves`** — a read-only view over Self-Improvement's active rules; owns none of
    that data.
-4. **`doing_now`** — active jobs, the goal declared for this session, and the Adaptive
-   Communication Register's already-computed style, reported and never re-decided.
+4. **`doing_now`** — active jobs, the goal from this conversation's running summary
+   (`conversation_summary.goal_of()`), and the Adaptive Communication Register's
+   already-computed style, reported and never re-decided.
 5. **`whats_its_call`** — what is genuinely Jarvis's own decision. It reads the LIVE values out
    of `memory/policy.py`'s `THRESHOLDS` and `improvement/policy.py`'s `MIN_EVIDENCE_BY_TRUST`,
    and builds its sentences FROM those numbers, so the prose and the number are one read and
    cannot drift apart.
 
-A goal is reported as *what Jarvis recorded it understood*, never as a verified account of what
-the user meant. There is deliberately no computed "aligned / drifted" verdict: whether a goal
+The goal is reported as *Jarvis's own running summary of the conversation*, never as a verified
+account of what the user meant. There is deliberately no computed "aligned / drifted" verdict: whether a goal
 matches a request is a semantic question no plain code can honestly answer, so the model is
 given both real texts to judge freshly.
 
@@ -86,9 +86,8 @@ or `observers/`):
 ## Push and pull
 
 - **Pull (live):** `tools/self_tools.py` provides `check_myself` (`core`, `meta`; builds the
-  requested dimensions, saves a snapshot and returns `snapshotId` alongside them) and
-  `track_goal` (records what Jarvis understands the current goal to be; no confirmation, since
-  recording an understanding has no outward effect). `prompt.py`'s `SELF_KNOWLEDGE` instruction
+  requested dimensions, saves a snapshot and returns `snapshotId` alongside them).
+  `prompt.py`'s `SELF_KNOWLEDGE` instruction
   tells the model to call `check_myself` before claiming how reliable it is, what it is doing
   and why, or what is genuinely its call.
 - **Push (defined, not wired):** `signals.detect()` and `prompt.py`'s `self_focus_section()`

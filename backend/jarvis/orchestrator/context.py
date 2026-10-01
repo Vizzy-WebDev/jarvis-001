@@ -20,9 +20,20 @@ exactly when memory starts being worth having.
    sentence happens to share no words with it. Relevance decides what ELSE gets
    in, never what gets excluded from the floor.
 
-3. **The budget is counted in estimated tokens (characters / 4), and the estimate
-   is labelled as one.** A real tokeniser is per-provider, and being exactly right
-   about the budget matters far less than never silently exceeding it.
+3. **The budget is the answering model's, never a number chosen here.** The turn
+   loop asks the model layer which model will take the turn and what it can hold
+   (`budget_for` turns that into room for this assembly). A model that has never
+   said how much it can hold gets no limit from Jarvis at all: everything relevant
+   goes in, and if that model refuses the request as too long, the size it refused
+   is recorded as what it can take and the step is assembled again to fit.
+   Counting is in estimated tokens (characters / 4), and the estimate is labelled
+   as one.
+
+4. **What gives way first, when the budget is tight:** older history before the
+   current turn (whose own content is a floor), and within that history, earlier
+   turns' long tool results are shortened before any whole turn is dropped. What
+   is older than the running summary (`conversation_summary.py`) is represented by
+   the summary rather than repeated.
 
 Cutting the transcript is done with the same rule the conversation store uses: a
 slice must never land between an assistant's tool call and its result, because
@@ -36,19 +47,47 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from .. import conversation, prompt
+from .. import conversation, conversation_summary, prompt
 from ..memory import store as memory_store
 
 logger = logging.getLogger(__name__)
 
-#: The whole context budget for one turn, in ESTIMATED tokens. Deliberately well
-#: under the smallest context window on the roster: the budget exists to keep the
-#: prompt purposeful, not to fill whatever space a model happens to have.
-DEFAULT_BUDGET_TOKENS = 6000
-
-#: What memory may take of it. Everything else goes to the transcript, which is
-#: what the user is actually talking about right now.
+#: What memory may take of the model's budget. Everything else goes to the
+#: transcript, which is what the user is actually talking about right now.
 MEMORY_SHARE = 0.2
+
+#: Of a model's own window: what is kept back for its reply when it declares no
+#: maximum output (and the most a declared maximum may claim), and a margin for
+#: the difference between any estimate and the provider's real tokeniser. Both are
+#: shares of the model's own size, so they scale with it.
+REPLY_SHARE = 0.25
+SAFETY_SHARE = 0.05
+
+#: How the model layer counts a request (`models/resolve.py estimate_tokens`):
+#: characters / 3, plus 10%. Converting from its units to this module's is the one
+#: place the two rules meet, so Jarvis's own assembly never trips the layer's
+#: "too big for this model" check.
+_LAYER_CHARS_PER_TOKEN = 3
+_LAYER_OVERHEAD = 1.1
+_CHARS_PER_TOKEN = 4
+
+#: An earlier turn's tool result, once the budget is tight, keeps this much of its
+#: text. A stub length, not a context limit: it only ever applies when the
+#: alternative is dropping that whole turn.
+SHORTENED_RESULT_CHARS = 600
+
+
+def budget_for(context_tokens: int | None, output_tokens: int | None = None,
+               tool_chars: int = 0) -> int | None:
+    """Room for this assembly, in estimated tokens, from what the answering model
+    says it can hold — or None when it has never said, meaning no limit."""
+    if not context_tokens or context_tokens <= 0:
+        return None
+    reply_cap = context_tokens * REPLY_SHARE
+    reply = min(output_tokens, reply_cap) if output_tokens else reply_cap
+    usable_layer_tokens = context_tokens - reply - context_tokens * SAFETY_SHARE
+    usable_chars = usable_layer_tokens / _LAYER_OVERHEAD * _LAYER_CHARS_PER_TOKEN - tool_chars
+    return max(0, int(usable_chars // _CHARS_PER_TOKEN))
 
 #: Below this, a memory is included regardless of relevance (1-5 scale).
 ALWAYS_INCLUDE_IMPORTANCE = 4
@@ -149,10 +188,12 @@ def score_memory(memory: dict[str, Any], terms: set[str], position: int) -> floa
 SPECIALIST_FLOOR_CATEGORIES = ("Long-term Goals", "Projects")
 
 
-def select_memories(text: str, memories: list[dict[str, Any]], budget_tokens: int,
+def select_memories(text: str, memories: list[dict[str, Any]], budget_tokens: int | None,
                     *, floor_categories: tuple[str, ...] = (),
                     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """The memories worth this turn's budget, and an account of the choice."""
+    """The memories worth this turn's budget, and an account of the choice.
+    `budget_tokens=None` (the model never said its size) caps nothing: what is
+    relevant, or important enough, goes in."""
     terms = _terms(text)
     scored = [(score_memory(m, terms, i), i, m) for i, m in enumerate(memories)]
 
@@ -166,7 +207,7 @@ def select_memories(text: str, memories: list[dict[str, Any]], budget_tokens: in
     used = 0
     for memory in floor + relevant:
         cost = estimate_tokens(memory.get("text", "")) + 8  # the "- ... (noted ...)" wrapper
-        if used + cost > budget_tokens:
+        if budget_tokens is not None and used + cost > budget_tokens:
             continue
         chosen.append(memory)
         used += cost
@@ -182,7 +223,7 @@ def select_memories(text: str, memories: list[dict[str, Any]], budget_tokens: in
     }
 
 
-def _message_cost(message: dict[str, Any]) -> int:
+def message_cost(message: dict[str, Any]) -> int:
     return (estimate_tokens(str(message.get("text") or ""))
             + estimate_tokens(str(message.get("toolCalls") or ""))
             + estimate_tokens(str(message.get("toolResults") or "")))
@@ -202,10 +243,10 @@ def trim_messages(messages: list[dict[str, Any]], budget_tokens: int) -> list[di
     floor = messages[last_user:] if last_user is not None else []
     older = messages[:last_user] if last_user is not None else list(messages)
 
-    used = sum(_message_cost(m) for m in floor)
+    used = sum(message_cost(m) for m in floor)
     kept: list[dict[str, Any]] = []
     for message in reversed(older):
-        cost = _message_cost(message)
+        cost = message_cost(message)
         if used + cost > budget_tokens and (kept or floor):
             break
         kept.append(message)
@@ -218,6 +259,47 @@ def trim_messages(messages: list[dict[str, Any]], budget_tokens: int) -> list[di
     while kept and kept[0].get("role") == "tool":
         kept.pop(0)
     return kept
+
+
+def shortened_result(result: Any) -> Any:
+    import json
+
+    try:
+        text = result if isinstance(result, str) else json.dumps(result, default=str)
+    except (TypeError, ValueError):
+        text = str(result)
+    if len(text) <= SHORTENED_RESULT_CHARS:
+        return result
+    return text[:SHORTENED_RESULT_CHARS] + " …(shortened — shown in full earlier in the conversation)"
+
+
+def shorten_old_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The same transcript with every tool result BEFORE the latest user message cut to
+    a short excerpt. Copies — the stored conversation is never touched — and the current
+    turn's own results are left whole, since that is what is being worked on."""
+    last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=None)
+    if last_user is None:
+        return list(messages)
+    out = []
+    for index, message in enumerate(messages):
+        if index < last_user and message.get("role") == "tool" and message.get("toolResults"):
+            message = {**message, "toolResults": [{**entry, "result": shortened_result(entry.get("result"))}
+                                                  for entry in message["toolResults"]]}
+        out.append(message)
+    return out
+
+
+def fit_messages(messages: list[dict[str, Any]], budget_tokens: int | None) -> list[dict[str, Any]]:
+    """The transcript to send, within the model's budget.
+
+    No budget: everything. Everything fits: everything, unchanged. Otherwise older
+    turns' tool results are shortened first, and only then are whole older turns
+    dropped (oldest first) — so one big web result costs its own detail, not the
+    conversation around it.
+    """
+    if budget_tokens is None or sum(message_cost(m) for m in messages) <= budget_tokens:
+        return list(messages)
+    return trim_messages(shorten_old_tool_results(messages), budget_tokens)
 
 
 def _waiting_notices() -> list[dict[str, Any]]:
@@ -259,18 +341,31 @@ def _answered_approvals(session_id: str) -> str:
         return ""
 
 
-class RelevanceContext:
-    """The real assembler: a budget, memory chosen for this turn, and the tail of
-    the conversation that fits in what is left."""
+def _history(session_id: str) -> tuple[list[dict[str, Any]], str, int | None]:
+    """The conversation as it is sent: the running summary (rendered) and the messages it
+    does not already cover. Unbound sessions (jobs, scheduled runs) have no summary."""
+    messages = conversation.get_messages(session_id)
+    summary = conversation_summary.get(session_id)
+    if summary is None:
+        return messages, "", None
+    covered = summary["coveredSeq"]
+    newer = [m for m in messages if not isinstance(m.get("seq"), int) or m["seq"] > covered]
+    return newer, conversation_summary.render(summary["summary"]), covered
 
-    def __init__(self, *, budget_tokens: int = DEFAULT_BUDGET_TOKENS,
-                 memory_share: float = MEMORY_SHARE) -> None:
-        self.budget_tokens = budget_tokens
+
+class RelevanceContext:
+    """The real assembler: memory chosen for this turn, the running summary of what
+    scrolled out, and the tail of the conversation — within whatever the answering
+    model can hold (`budget_tokens`, from `budget_for`), or everything relevant when
+    the model has never said."""
+
+    def __init__(self, *, memory_share: float = MEMORY_SHARE) -> None:
         self.memory_share = memory_share
 
     def assemble(self, *, session_id: str, text: str, low_confidence: bool = False,
-                 background: bool = False, agent: AgentBrief | None = None) -> AssembledContext:
-        memory_budget = int(self.budget_tokens * self.memory_share)
+                 background: bool = False, agent: AgentBrief | None = None,
+                 budget_tokens: int | None = None) -> AssembledContext:
+        memory_budget = int(budget_tokens * self.memory_share) if budget_tokens is not None else None
 
         conflicted = memory_store.conflicted_memory_ids()
         available = [m for m in memory_store.list_memories() if m["id"] not in conflicted]
@@ -281,11 +376,14 @@ class RelevanceContext:
             text, available, memory_budget,
             floor_categories=SPECIALIST_FLOOR_CATEGORIES if agent is not None else ())
         memories_text = memory_store.approved_memories_text(chosen)
+        history, summary_text, covered = _history(session_id)
+        so_far = prompt.conversation_so_far_section(summary_text)
 
         if agent is not None:
             return self._specialist(agent, session_id=session_id, memories_text=memories_text,
                                     chosen=chosen, selection=selection,
-                                    low_confidence=low_confidence)
+                                    low_confidence=low_confidence, budget_tokens=budget_tokens,
+                                    history=history, so_far=so_far, covered=covered)
 
         # Rules Jarvis has learned about its own work ride in the volatile half:
         # they change as it learns, and they apply to a background job's turn as
@@ -316,13 +414,17 @@ class RelevanceContext:
         answered = _answered_approvals(session_id)
         system = prompt.system_instruction(
             memories=memories_text, low_confidence=low_confidence,
-            extra=[p for p in (("learned_rules", rules), ("answered_approvals", answered),
-                               ("waiting_notices", notices), ("style_now", floors_text)) if p[1]],
+            extra=[p for p in (("conversation_so_far", so_far), ("learned_rules", rules),
+                               ("answered_approvals", answered), ("waiting_notices", notices),
+                               ("style_now", floors_text)) if p[1]],
             has_audience=has_audience)
-        remaining = max(0, self.budget_tokens - estimate_tokens(system))
-        messages = trim_messages(conversation.get_messages(session_id), remaining)
+        remaining = (max(0, budget_tokens - estimate_tokens(system))
+                     if budget_tokens is not None else None)
+        messages = fit_messages(history, remaining)
 
         included = ("system_instruction",)
+        if so_far:
+            included += ("conversation_so_far",)
         if rules:
             included += ("learned_rules",)
         if notices:
@@ -337,20 +439,21 @@ class RelevanceContext:
             messages=messages,
             included=included,
             notes={
-                "budgetTokens": self.budget_tokens,
-                "estimatedTokens": estimate_tokens(system) + sum(
-                    estimate_tokens(str(m.get("text") or "")) for m in messages),
+                "budgetTokens": budget_tokens,
+                "estimatedTokens": estimate_tokens(system) + sum(message_cost(m) for m in messages),
                 "estimate": "characters / 4 — an estimate, not a tokeniser",
                 "memory": selection,
                 "messagesKept": len(messages),
-                "messagesAvailable": len(conversation.get_messages(session_id)),
+                "messagesAvailable": len(history),
+                "summaryCoveredSeq": covered,
             },
         )
 
-
     def _specialist(self, agent: AgentBrief, *, session_id: str, memories_text: str,
                     chosen: list[dict[str, Any]], selection: dict[str, Any],
-                    low_confidence: bool) -> AssembledContext:
+                    low_confidence: bool, budget_tokens: int | None,
+                    history: list[dict[str, Any]], so_far: str,
+                    covered: int | None) -> AssembledContext:
         """A specialist's own prompt: its identity and doctrine in place of Jarvis's,
         the same honesty rules, and the same learned rules. No waiting notices —
         those are delivered by Jarvis to the person, never to a specialist."""
@@ -360,10 +463,14 @@ class RelevanceContext:
         answered = _answered_approvals(session_id)
         system = prompt.specialist_instruction(
             agent, memories=memories_text, low_confidence=low_confidence,
-            extra=[p for p in (("learned_rules", rules), ("answered_approvals", answered)) if p[1]] or None)
-        remaining = max(0, self.budget_tokens - estimate_tokens(system))
-        messages = trim_messages(conversation.get_messages(session_id), remaining)
+            extra=[p for p in (("conversation_so_far", so_far), ("learned_rules", rules),
+                               ("answered_approvals", answered)) if p[1]] or None)
+        remaining = (max(0, budget_tokens - estimate_tokens(system))
+                     if budget_tokens is not None else None)
+        messages = fit_messages(history, remaining)
         included = ("specialist_instruction",)
+        if so_far:
+            included += ("conversation_so_far",)
         if rules:
             included += ("learned_rules",)
         if chosen:
@@ -372,8 +479,9 @@ class RelevanceContext:
             included += ("conversation",)
         return AssembledContext(
             system=system, messages=messages, included=included,
-            notes={"agent": agent.agent_id, "budgetTokens": self.budget_tokens,
-                   "memory": selection, "messagesKept": len(messages)})
+            notes={"agent": agent.agent_id, "budgetTokens": budget_tokens,
+                   "memory": selection, "messagesKept": len(messages),
+                   "summaryCoveredSeq": covered})
 
 
 class WindowContext:
@@ -385,7 +493,7 @@ class WindowContext:
         self._system = system
 
     def assemble(self, *, session_id: str, text: str, low_confidence: bool = False,
-                 ) -> AssembledContext:
+                 **_: Any) -> AssembledContext:
         return AssembledContext(
             system=self._system,
             messages=conversation.get_messages(session_id),

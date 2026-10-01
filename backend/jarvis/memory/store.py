@@ -8,8 +8,9 @@ away by a conversation delete.
 
 Recalling a durable FACT is not a search: the approved set is small enough to sit
 in the prompt, and `approved_memories_text()` is capped so that stays true as the
-store grows rather than being an assumption that quietly stops holding. Recalling
-something SAID is a different problem and does use search — `search_conversations`.
+store grows rather than being an assumption that quietly stops holding. What was
+SAID earlier in the current conversation is carried by its running summary
+(`conversation_summary.py`), not by a search over past chats.
 
 **Added in the port (§22): `importance` and `expires_at`.** Importance is NULL
 until something actually judges it; a default of 3 would be a number nobody chose,

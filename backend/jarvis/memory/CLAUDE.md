@@ -60,9 +60,11 @@ to obtain, so it is never queued for a second review. `update_memory` and
 `forget_something` find the target by a case-insensitive substring match, and their
 confirmation text reads back the ACTUAL stored text about to change.
 
-**`jarvis/tools/search_conversations.py`** is a separate capability — not a Memory write
-path, but a read-only search over `chat_store.py`'s full transcript store. See the root
-`CLAUDE.md` for why the two are deliberately different mechanisms.
+**Jarvis does not search past chats.** The `search_conversations` tool was removed at the
+person's request. Across conversations, Jarvis knows only what is in Memory; within one, the
+running summary (`jarvis/conversation_summary.py`) carries what scrolled out of view. The Chat
+History page's own search box (the person searching, `chat_store.list_conversations(query=)`)
+is unrelated and stays.
 
 **`frontend/components/screens/MemoryScreen.tsx`** (`#/memory`) is the trust dial plus a
 browsable, editable, searchable view over everything in `store.py`, each memory carrying its

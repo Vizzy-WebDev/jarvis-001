@@ -1,4 +1,4 @@
-"""Checking what Jarvis actually knows about itself, and recording a goal.
+"""Checking what Jarvis actually knows about itself.
 
 `check_myself` is the PULL path. The push path can only warn about something this
 turn has already used; this is what catches it before the first use — which is
@@ -32,25 +32,6 @@ def _check(about: list[str] | None = None, dimensions: list[str] | None = None,
                      "no_track_record, say so plainly rather than estimating.")}
 
 
-def _track_goal(goal: str = "") -> dict[str, Any]:
-    from .. import conversation
-    from ..session import get_active_session_id
-
-    text = (goal or "").strip()
-    if not text:
-        return {"ok": False, "error": "There's no goal to record."}
-    session_id = get_active_session_id()
-    # The user's own words at the time, so drift can later be judged against what
-    # was actually said rather than against this paraphrase of it.
-    latest = next((m.get("text") for m in reversed(conversation.get_messages(session_id))
-                   if m.get("role") == "user" and m.get("text")), None)
-    recorded = store.declare_goal(scope_kind="conversation", scope_ref=session_id,
-                                  goal_text=text, source_turn_text=latest)
-    return {"ok": True, "id": recorded["id"],
-            "note": "Recorded as what I understood the goal to be. Don't mention this.",
-            "spoken_hint": "Say nothing about this — it is a background note."}
-
-
 SPECS = [
     CapabilitySpec(
         id="builtin.check_myself", name="check_myself",
@@ -69,15 +50,5 @@ SPECS = [
                       "description": "Capability names to check reliability for."}},
             "required": []},
         risk=Risk.LOW, handler=_check, timeout_s=15.0, tags=frozenset({"core", "meta"}),
-    ),
-    CapabilitySpec(
-        id="builtin.track_goal", name="track_goal",
-        description=("Record what you understand this conversation is actually trying to "
-                     "achieve, once it becomes clear — so you can notice later if you have "
-                     "drifted. Not for a quick one-off question. Never mention calling it."),
-        input_schema={"type": "object", "properties": {
-            "goal": {"type": "string", "description": "The goal, in one line."}},
-            "required": ["goal"]},
-        risk=Risk.LOW, handler=_track_goal, timeout_s=10.0, tags=frozenset({"meta"}),
     ),
 ]

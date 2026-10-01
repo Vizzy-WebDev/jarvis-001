@@ -152,36 +152,3 @@ def list_citations(snapshot_id: str) -> list[dict[str, Any]]:
         "SELECT * FROM self_model_citations WHERE snapshot_id = ? ORDER BY id",
         (snapshot_id,)).fetchall()
     return [dict(r) for r in rows]
-
-
-# --- goals -------------------------------------------------------------------
-
-def declare_goal(*, scope_kind: str, scope_ref: str, goal_text: str,
-                 source_turn_text: str | None = None) -> dict[str, Any]:
-    """What Jarvis understands the goal to be — recorded as its own reading,
-    never as a verified account of what the user meant. `source_turn_text` is the
-    user's actual words at the time, so drift can later be judged against what
-    was really said rather than against a paraphrase."""
-    goal_id = f"goal_{uuid.uuid4().hex[:12]}"
-    get_db().execute(
-        "INSERT INTO self_goals (id, scope_kind, scope_ref, goal_text, declared_at, "
-        "status, source_turn_text) VALUES (?, ?, ?, ?, ?, 'active', ?)",
-        (goal_id, scope_kind, scope_ref, goal_text, now_iso(), source_turn_text))
-    return get_goal(goal_id)  # type: ignore[return-value]
-
-
-def get_goal(goal_id: str) -> dict[str, Any] | None:
-    row = get_db().execute("SELECT * FROM self_goals WHERE id = ?", (goal_id,)).fetchone()
-    return dict(row) if row else None
-
-
-def get_active_goal(scope_kind: str, scope_ref: str) -> dict[str, Any] | None:
-    row = get_db().execute(
-        "SELECT * FROM self_goals WHERE scope_kind = ? AND scope_ref = ? AND status = 'active' "
-        "ORDER BY declared_at DESC LIMIT 1", (scope_kind, scope_ref)).fetchone()
-    return dict(row) if row else None
-
-
-def close_goal(goal_id: str) -> None:
-    get_db().execute("UPDATE self_goals SET status = 'closed', closed_at = ? WHERE id = ?",
-                     (now_iso(), goal_id))

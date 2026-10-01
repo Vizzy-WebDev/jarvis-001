@@ -15,14 +15,14 @@ as "passed":
    (`run_in_background: true`) with `JARVIS_DATA_DIR`/`JARVIS_ENV_PATH` pointed at empty
    scratch paths and an unusual `PORT`. Must come up with no unhandled exception.
 3. **Migrations + tool loader** — read the scratch `jarvis.db` read-only and confirm
-   `PRAGMA user_version` reached 33: `jarvis/migrations.py`'s `MIGRATION_SQL` (19,
+   `PRAGMA user_version` reached 37: `jarvis/migrations.py`'s `MIGRATION_SQL` (19,
    the original schema, never hand-edited) plus
-   `migrations_extra.py`'s `EXTRA_MIGRATION_SQL` (14, this build's own — the latest
-   being migration 33, Content Management's niches as folders: `cm_niches`). Counting only
+   `migrations_extra.py`'s `EXTRA_MIGRATION_SQL` (18, this build's own — the latest
+   being migration 37, the running conversation summary: `conversation_summaries`). Counting only
    the first file gives 19 and a false failure — the gate caught exactly that mistake
    in this document. **The database is created lazily on first use**, so hit a route
    before looking for the file. Confirm `load_tools()` (or a route that touches the
-   capability registry) succeeds with no import error — currently 72 tools across 37
+   capability registry) succeeds with no import error — currently 70 tools across 35
    modules; a real launch's own startup log is not a reliable place to see the count,
    since nothing in this project configures root logging by default and `jarvis.*`
    loggers have no handler attached unless something else in the process added one.

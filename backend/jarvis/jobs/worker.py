@@ -41,9 +41,8 @@ JOB_OWN_TOOLS = ["request_job_split"]
 
 TOOLS_BY_KIND: dict[str, list[str] | None] = {
     "generic": None,
-    "research": ["look_it_up", "read_web_page", "get_headlines",
-                 "search_conversations", *JOB_OWN_TOOLS],
-    "files": ["read_web_page", "search_conversations", *JOB_OWN_TOOLS],
+    "research": ["look_it_up", "read_web_page", "get_headlines", *JOB_OWN_TOOLS],
+    "files": ["read_web_page", *JOB_OWN_TOOLS],
 }
 
 

@@ -97,37 +97,6 @@ def _fts_phrase(q: str) -> str:
     return f'"{escaped}"'
 
 
-def _quoted_terms(q: str) -> list[str]:
-    return [f'"{t.replace(chr(34), chr(34) * 2)}"' for t in str(q).strip().split() if t]
-
-
-def _fts_and_terms(q: str) -> str:
-    """Match messages containing ALL of q's words, in any order or position.
-
-    Unlike _fts_phrase, this does not require adjacency. For a caller handing
-    over a few keywords rather than a literal phrase: a whole-string phrase quote
-    returns zero hits for a multi-keyword query whenever the words are not
-    adjacent in that exact order, which is the common case, not the exception.
-    Each word is quoted individually so a token like "C++", an apostrophe, or the
-    literal word "NOT" can never be misread as query syntax; a plain space
-    between already-literal tokens is AND to FTS5.
-    """
-    return " ".join(_quoted_terms(q))
-
-
-def _fts_or_terms(q: str) -> str:
-    """The same injection-safe per-term quoting, OR'd instead of AND'd.
-
-    bm25's ranking still puts a message matching more terms above one matching
-    fewer, so this widens what can match without losing precision. Exists for the
-    fallback below: a long keyword reduction of a whole question routinely
-    includes words never actually in the original message ("switching" for a
-    message that said "switched"), and requiring all of them to match literally
-    produces a false negative on exactly the queries the fallback exists to save.
-    """
-    return " OR ".join(_quoted_terms(q))
-
-
 # --- reads -------------------------------------------------------------------
 
 
@@ -247,71 +216,6 @@ def get_messages_since(conversation_id: str, after_seq: int = 0) -> list[dict[st
     return [{**_row_to_message(r), "seq": r["seq"]} for r in rows]
 
 
-def _run_message_search(
-    fts_query: str, limit: int, exclude_conversation_id: str | None, include_archived: bool
-) -> list[dict[str, Any]]:
-    params: list[Any] = [fts_query]
-    exclude_clause = ""
-    if exclude_conversation_id:
-        exclude_clause = "AND c.id != ?"
-        params.append(exclude_conversation_id)
-    params.append(limit)
-    archived_clause = "1=1" if include_archived else "c.archived = 0"
-
-    rows = get_db().execute(
-        f"""SELECT m.id, m.conversation_id, m.role, m.created_at, c.title,
-                   snippet(messages_fts, 0, '', '', '…', 16) AS excerpt,
-                   bm25(messages_fts) AS rank
-            FROM messages m
-            JOIN messages_fts f ON f.rowid = m.id
-            JOIN conversations c ON c.id = m.conversation_id
-            WHERE f.text MATCH ?
-              AND ({archived_clause})
-              {exclude_clause}
-            ORDER BY rank
-            LIMIT ?""",
-        params,
-    ).fetchall()
-
-    return [
-        {
-            "conversationId": r["conversation_id"],
-            "title": r["title"],
-            "role": r["role"],
-            "createdAt": r["created_at"],
-            "excerpt": r["excerpt"],
-        }
-        for r in rows
-    ]
-
-
-def search_messages(
-    query: str,
-    limit: int = 8,
-    exclude_conversation_id: str | None = None,
-    include_archived: bool = False,
-) -> list[dict[str, Any]]:
-    """Full-text search over EVERY conversation's messages, ranked by bm25.
-
-    `exclude_conversation_id` leaves out the conversation the caller is already
-    in — its content is already in the model's context window, so surfacing it
-    again would waste tokens and read as a non sequitur.
-    """
-    q = str(query or "").strip()
-    if not q:
-        return []
-    and_query = _fts_and_terms(q)
-    if not and_query:
-        return []
-
-    precise = _run_message_search(and_query, limit, exclude_conversation_id, include_archived)
-    if precise:
-        return precise
-    # Nothing matched every term literally. Widening to OR only when the strict
-    # pass came back empty keeps a well-targeted query at its original precision.
-    return _run_message_search(_fts_or_terms(q), limit, exclude_conversation_id, include_archived)
-
-
 # --- writes ------------------------------------------------------------------
 
 
@@ -382,7 +286,9 @@ def append_message(conversation_id: str, message: dict[str, Any]) -> dict[str, A
     # the frontend an in-memory-only id that means nothing once the message is
     # actually persisted (see conversation.py for why that distinction matters).
     described = get_conversation(conversation_id) or {}
-    return {**described, "messageId": message_id}
+    # `seq` too: the in-memory copy carries it, so the running summary can say exactly
+    # which messages it already accounts for.
+    return {**described, "messageId": message_id, "seq": next_seq}
 
 
 def truncate_to_before(conversation_id: str, message_id: str) -> int:
@@ -401,7 +307,15 @@ def truncate_to_before(conversation_id: str, message_id: str) -> int:
         row_id = int(message_id[1:]) if message_id.startswith("m") else int(message_id)
     except ValueError:
         return 0
-    cursor = get_db().execute(
+    db = get_db()
+    cut = db.execute("SELECT seq FROM messages WHERE conversation_id = ? AND id = ?",
+                     (conversation_id, row_id)).fetchone()
+    if cut is not None:
+        # A summary covering anything being cut would describe things that no longer
+        # happened; it is dropped and rebuilt from what remains on a later reply.
+        db.execute("DELETE FROM conversation_summaries WHERE conversation_id = ? AND covered_seq >= ?",
+                   (conversation_id, cut["seq"]))
+    cursor = db.execute(
         "DELETE FROM messages WHERE conversation_id = ? AND id >= ?", (conversation_id, row_id)
     )
     return cursor.rowcount

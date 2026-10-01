@@ -48,7 +48,7 @@ def _catalog_changed() -> None:
 
 def _empty() -> dict[str, Any]:
     return {"version": VERSION, "discovery": {}, "probes": {}, "latency": {}, "health": {},
-            "connections": {}, "spend": {"month": None, "usd": 0.0}, "notices": []}
+            "connections": {}, "spend": {"month": None, "usd": 0.0}, "notices": [], "learned": {}}
 
 
 def _state() -> dict[str, Any]:
@@ -176,7 +176,7 @@ def forget_connection(connection: str) -> None:
         s["discovery"].pop(connection, None)
         s["connections"].pop(connection, None)
         prefix = f"{connection}/"
-        for key in ("probes", "latency", "health"):
+        for key in ("probes", "latency", "health", "learned"):
             for eid in [e for e in s[key] if e.startswith(prefix)]:
                 s[key].pop(eid, None)
         _catalog_changed()
@@ -193,8 +193,32 @@ def record_probe(endpoint_id: str, capabilities: dict[str, Any], results: dict[s
 
 
 def probed() -> dict[str, dict[str, Any]]:
+    """What probes measured, with any context window learned from a real refusal folded in
+    (the smaller of the two wins: the model itself said no above it)."""
     with _lock:
-        return {eid: dict(p.get("capabilities") or {}) for eid, p in _state()["probes"].items()}
+        out = {eid: dict(p.get("capabilities") or {}) for eid, p in _state()["probes"].items()}
+        for eid, learned in _state()["learned"].items():
+            window = learned.get("max_context_tokens")
+            if isinstance(window, int):
+                caps = out.setdefault(eid, {})
+                known = caps.get("max_context_tokens")
+                caps["max_context_tokens"] = min(known, window) if isinstance(known, int) else window
+        return out
+
+
+def record_learned_context(endpoint_id: str, tokens: int) -> int:
+    """An upper bound on a model's context window, learned when it refused a request as too
+    long. Kept apart from probe results so a later probe run cannot silently drop it, and only
+    ever lowered. Returns the window now on record."""
+    tokens = max(1, int(tokens))
+    with _lock:
+        learned = _state()["learned"]
+        previous = (learned.get(endpoint_id) or {}).get("max_context_tokens")
+        window = min(previous, tokens) if isinstance(previous, int) else tokens
+        learned[endpoint_id] = {"at": _iso(), "max_context_tokens": window}
+        _catalog_changed()
+        _touch(force=True)
+        return window
 
 
 # --- latency ---------------------------------------------------------------------------------

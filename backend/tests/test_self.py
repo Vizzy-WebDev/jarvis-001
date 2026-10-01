@@ -167,23 +167,29 @@ def test_only_numbers_are_logged_as_citable_at_all():
     assert fields == {"attempts"}
 
 
-# --- goals -------------------------------------------------------------------
+# --- the conversation goal ---------------------------------------------------
 
-def test_a_goal_keeps_the_user_s_own_words_alongside_the_paraphrase():
-    """So drift is later judged against what was actually said, not against a
-    paraphrase of it."""
-    recorded = store.declare_goal(scope_kind="conversation", scope_ref="s1",
-                                  goal_text="get the export working",
-                                  source_turn_text="the export keeps failing, sort it out")
-    assert recorded["source_turn_text"] == "the export keeps failing, sort it out"
-    assert store.get_active_goal("conversation", "s1")["id"] == recorded["id"]
+def test_doing_now_reports_the_goal_from_the_conversation_s_running_summary():
+    """`track_goal` is gone: what the conversation is working towards comes from its
+    running summary, and is reported as Jarvis's own notes, not as a verified account."""
+    from jarvis import chat_store, conversation_summary
+
+    conv = chat_store.create_conversation()["id"]
+    chat_store.append_message(conv, {"role": "user", "text": "the export keeps failing, sort it out"})
+    notes = conversation_summary.clean({"goal": "get the export working", "facts": [], "decisions": [],
+                                        "open": [], "parked": [], "current": "the export"})
+    assert conversation_summary._store(conv, notes, 1, None)
+
+    doing = model.build(["doing_now"], session_id=conv)["doing_now"]
+    assert doing["conversationGoal"]["goal"] == "get the export working"
+    assert "not a verified account" in doing["conversationGoal"]["note"]
 
 
-def test_the_goal_is_reported_as_a_reading_not_a_verified_account():
-    store.declare_goal(scope_kind="conversation", scope_ref="s1", goal_text="g",
-                       source_turn_text="their words")
-    doing = model.build(["doing_now"], session_id="s1")["doing_now"]
-    assert "not a verified account" in doing["declaredGoal"]["note"]
+def test_no_summary_means_no_goal_is_claimed():
+    from jarvis import chat_store
+
+    conv = chat_store.create_conversation()["id"]
+    assert model.build(["doing_now"], session_id=conv)["doing_now"]["conversationGoal"] is None
 
 
 # --- notable tool outcomes reaching Self-Improvement --------------------------

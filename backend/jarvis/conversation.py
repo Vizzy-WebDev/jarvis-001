@@ -101,6 +101,10 @@ def _push(session_id: str, message: dict[str, Any]) -> dict[str, Any]:
             # Without this, every message id in a live session was a
             # placeholder chat_store had never heard of.
             full["id"] = persisted["messageId"]
+        if persisted and isinstance(persisted.get("seq"), int):
+            # Which saved message this is, so the running summary can say exactly
+            # what it already covers (conversation_summary.py).
+            full["seq"] = persisted["seq"]
     with _lock:
         messages = _sessions.setdefault(session_id, [])
         messages.append(full)
@@ -126,7 +130,9 @@ def hydrate(session_id: str) -> None:
     """
     bind_session(session_id)
     stored = []
-    for message in chat_store.get_messages(session_id):
+    # `get_messages_since(…, 0)` is every message WITH its `seq`, which the running
+    # summary needs to know what it already covers.
+    for message in chat_store.get_messages_since(session_id, 0):
         rest = {k: v for k, v in message.items() if k != "id"}
         stored.append({"id": _new_id(), **rest})
     with _lock:

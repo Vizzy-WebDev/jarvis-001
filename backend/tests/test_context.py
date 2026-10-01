@@ -81,8 +81,8 @@ def test_a_contradicted_memory_is_not_offered_for_selection_at_all():
 def test_memory_cannot_take_more_than_its_share_of_the_budget():
     for i in range(200):
         remember(f"Fact {i}: " + "some fairly wordy remembered detail " * 5)
-    context = RelevanceContext(budget_tokens=2000, memory_share=0.2).assemble(
-        session_id="s1", text="tell me a remembered detail")
+    context = RelevanceContext(memory_share=0.2).assemble(
+        session_id="s1", text="tell me a remembered detail", budget_tokens=2000)
     used = context.notes["memory"]["tokensUsed"]
     assert used <= context.notes["memory"]["tokenBudget"] == 400
 
@@ -90,7 +90,7 @@ def test_memory_cannot_take_more_than_its_share_of_the_budget():
 def test_the_transcript_is_trimmed_to_what_is_left():
     for i in range(100):
         conversation.push_user_text("s1", f"message number {i} " + "padding " * 40)
-    context = RelevanceContext(budget_tokens=1500).assemble(session_id="s1", text="carry on")
+    context = RelevanceContext().assemble(session_id="s1", text="carry on", budget_tokens=1500)
     assert context.notes["messagesKept"] < context.notes["messagesAvailable"]
     assert context.messages[-1]["text"].startswith("message number 99")
 

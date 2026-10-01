@@ -34,7 +34,7 @@ MINIMUM_ANSWER_CHARS = 200
 #: Tools whose use says the turn DID something, rather than looked something up.
 #: A turn that only read the clock is not consequential however long the answer.
 _TRIVIAL_TOOLS = frozenset({
-    "get_time", "check_myself", "track_goal", "find_capability", "check_spending",
+    "get_time", "check_myself", "find_capability", "check_spending",
     "check_environment", "check_my_health", "acknowledge_notice",
 })
 

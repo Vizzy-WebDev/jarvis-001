@@ -78,12 +78,10 @@ def _how_it_behaves() -> dict[str, Any]:
 def _doing_now(session_id: str | None = None) -> dict[str, Any]:
     from ..jobs import job_store
 
-    active = job_store.list_active_jobs()
-    goal = None
-    if session_id:
-        from . import store
+    from ..conversation_summary import goal_of
 
-        goal = store.get_active_goal("conversation", session_id)
+    active = job_store.list_active_jobs()
+    goal = goal_of(session_id)
     return {
         "backgroundWork": [{"title": j["title"], "status": j["status"],
                             **({"progress": j["progress"]} if j.get("progress") is not None
@@ -91,12 +89,12 @@ def _doing_now(session_id: str | None = None) -> dict[str, Any]:
                             **({"currentStep": j["currentStep"]} if j.get("currentStep")
                                else {})}
                            for j in active],
-        "declaredGoal": ({"goal": goal["goal_text"],
-                          "theirWordsAtTheTime": goal["source_turn_text"],
-                          "note": ("This is what I recorded I understood the goal to be, "
-                                   "not a verified account of what they meant. Judge "
-                                   "freshly whether it still serves what they asked.")}
-                         if goal else None),
+        "conversationGoal": ({"goal": goal,
+                              "note": ("This is from my own running summary of this "
+                                       "conversation, not a verified account of what they "
+                                       "meant. Judge freshly whether it still serves what "
+                                       "they asked.")}
+                             if goal else None),
     }
 
 

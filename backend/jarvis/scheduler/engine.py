@@ -24,7 +24,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -33,7 +32,7 @@ from ..events.bus import EventBus
 from ..jscompat import now_iso, to_iso_z
 from ..policy import Autonomy, Surface
 from .recurrence import next_run_at
-from .task_store import get_task, list_tasks, record_run, update_task
+from .task_store import get_task, list_runs, list_tasks, record_run, update_task
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +61,26 @@ def run_task_now(task_id: str, *, late: bool = False,
         raise KeyError(f"Unknown task: {task_id}")
 
     try:
-        result = _run_action(task)
+        result = _run_action(task, late=late, event_bus=ebus)
     except Exception as err:  # noqa: BLE001 — a task must never take the loop down
         logger.exception("task %s threw", task_id)
         result = {"ok": False, "summary": "", "error": str(err) or "Something went wrong."}
+    if result.get("recorded"):
+        # A prompt run is durable work, which records its own run when it finishes — so a
+        # run picked back up after a restart is recorded too, with nobody waiting on it.
+        return result
+    return complete_run(task, result, late=late, event_bus=ebus)
+
+
+def complete_run(task: dict[str, Any], result: dict[str, Any], *, late: bool,
+                 event_bus: EventBus | None = None, resumed: bool = False,
+                 work_id: str | None = None) -> dict[str, Any]:
+    """Check a finished run, record it, and tell whoever should hear. Returns the result as
+    recorded. A run of durable work (`work_id`) is recorded at most once."""
+    ebus = event_bus or default_bus
+    task_id = task["id"]
+    if work_id and any(r.get("workId") == work_id for r in list_runs(task_id)):
+        return {**result, "recorded": True}
 
     # Did the run actually do what the task asked for? Only for a `prompt`
     # action, whose whole output is free text nobody watched being produced.
@@ -95,6 +110,11 @@ def run_task_now(task_id: str, *, late: bool = False,
         # A parked approval is not a failure and not a success: the task did
         # what it could and is waiting for a person.
         "awaitingApproval": result.get("awaitingApproval") or None,
+        # Durable runs only: which piece of work this was, and whether it was picked back
+        # up after Jarvis restarted part-way through it.
+        **({"workId": work_id} if work_id else {}),
+        **({"resumedAfterRestart": True, "note": "Resumed after Jarvis restarted."}
+           if resumed else {}),
     })
 
     # Self-Improvement's capture step — zero model calls, safe on every run.
@@ -118,7 +138,7 @@ def run_task_now(task_id: str, *, late: bool = False,
     if task["action"].get("type") == "prompt" and run["ok"] and run["summary"]:
         _checkpoint_later(run)
 
-    return result
+    return {**result, "recorded": True}
 
 
 def _verify_run(task: dict[str, Any], result: dict[str, Any]) -> Any:
@@ -179,7 +199,8 @@ def _checkpoint_later(run: dict[str, Any]) -> None:
     threading.Thread(target=_go, name="task-checkpoint", daemon=True).start()
 
 
-def _run_action(task: dict[str, Any]) -> dict[str, Any]:
+def _run_action(task: dict[str, Any], *, late: bool = False,
+                event_bus: EventBus | None = None) -> dict[str, Any]:
     action = task.get("action") or {}
     kind = action.get("type")
 
@@ -188,7 +209,7 @@ def _run_action(task: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "summary": action.get("text") or task["title"]}
 
     if kind == "prompt":
-        return _run_prompt(task, action)
+        return _run_prompt(task, action, late=late, event_bus=event_bus)
 
     if kind == "briefing":
         from .briefing import compose_briefing
@@ -233,52 +254,45 @@ def _allowed_names(action: dict[str, Any]) -> frozenset[str] | None:
     return frozenset(allowed)
 
 
-def _run_prompt(task: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:
-    from ..assembly import get_orchestrator
-    from ..orchestrator import ApprovalRequired, Done, Failed, TurnRequest
-
+def _run_prompt(task: dict[str, Any], action: dict[str, Any], *, late: bool = False,
+                event_bus: EventBus | None = None) -> dict[str, Any]:
     text = (action.get("text") or "").strip()
     if not text:
         return {"ok": False, "summary": "", "error": "This task has nothing to ask."}
     if action.get("agentId"):
         return _run_as_specialist(task, action, text)
+    # One round of durable work (`scheduler/durable_runs.py`): if Jarvis stops part-way,
+    # the run is picked back up once at the next start and still recorded.
+    from .durable_runs import run_prompt
 
-    # Its own ephemeral session: never bound to chat history, so a task's
-    # working turns cannot appear in the user's conversation list, and never
-    # shares a transcript with whatever they are actually talking about.
-    session_id = f"task:{task['id']}:{uuid.uuid4().hex[:8]}"
-    request = TurnRequest(
+    return run_prompt(task, action, text, late=late, event_bus=event_bus)
+
+
+def prompt_request(task: dict[str, Any], text: str, session_id: str, spec: Any) -> Any:
+    """The turn a scheduled prompt runs as."""
+    from ..orchestrator import TurnRequest
+
+    action = task.get("action") or {}
+    return TurnRequest(
         text=text,
+        # Its own ephemeral session: never bound to chat history, so a task's
+        # working turns cannot appear in the user's conversation list, and never
+        # shares a transcript with whatever they are actually talking about.
         session_id=session_id,
         surface=Surface.SCHEDULED,
         # Pre-consent covers ordinary work. A HIGH-risk action inside a
         # scheduled task still parks for a human — the owner's explicit rule,
         # enforced by the policy, not by this module.
         autonomy=Autonomy.PRE_CONSENTED,
-        turn_id=uuid.uuid4().hex,
+        turn_id=spec.turn_id,
         allowed_names=_allowed_names(action),
         # A pin, honoured by ORDER and not exclusion: a task pinned to a model
         # that has since been deleted falls back to the usual ranking rather
         # than failing, and the run history says which one actually answered.
         model_id=(action.get("modelId") or None),
+        operation_scope=spec.operation_scope,
+        continuable=spec.continuable,
     )
-
-    answer, parked, failure, model_id = "", None, None, None
-    for event in get_orchestrator().run_turn(request):
-        if isinstance(event, Done):
-            answer = event.text
-            model_id = event.model_id
-        elif isinstance(event, ApprovalRequired):
-            parked = event
-        elif isinstance(event, Failed):
-            failure = event
-
-    if parked is not None:
-        return {"ok": False, "summary": answer, "awaitingApproval": parked.approval_id,
-                "error": f"{parked.capability} needs your go-ahead before this can finish."}
-    if failure is not None:
-        return {"ok": False, "summary": answer, "error": failure.error}
-    return {"ok": True, "summary": answer, "modelId": model_id}
 
 
 def _run_as_specialist(task: dict[str, Any], action: dict[str, Any], text: str) -> dict[str, Any]:
@@ -373,6 +387,11 @@ def start() -> bool:
                 tick()
             except Exception:  # noqa: BLE001
                 logger.exception("scheduler tick failed")
+
+    # Prompt runs a restart interrupted are picked back up once — before the first tick.
+    from .durable_runs import recover_interrupted
+
+    recover_interrupted()
 
     _stop.clear()
     _timer = threading.Thread(target=loop, name="scheduler", daemon=True)

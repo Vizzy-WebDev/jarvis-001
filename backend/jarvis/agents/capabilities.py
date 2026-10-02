@@ -178,11 +178,23 @@ def sync(registry: CapabilityRegistry) -> list[str]:
     return [a["id"] for a in enabled]
 
 
+#: Runs closed off by the last `close_orphaned_runs()` in this process, for the startup
+#: step that starts the ones Jarvis was waiting on again (`agents/durable_runs.py`).
+closed_at_startup: list[dict[str, Any]] = []
+
+
 def close_orphaned_runs() -> int:
-    """At startup: a run still marked running has nothing running it any more."""
-    orphans = [r for r in store.list_runs(limit=500) if r["status"] == "running"]
+    """At startup: a run still marked running has nothing running it any more.
+
+    Except durable work (`agents/durable_runs.py`): a run that is itself a piece of durable
+    work is picked back up by that, not closed here."""
+    from .. import durable
+
+    orphans = [r for r in store.list_runs(limit=500) if r["status"] == "running"
+               and (durable.peek(r["id"]) or {}).get("status") != "running"]
     for run in orphans:
         store.finish_run(run["id"], status="failed", result=run.get("result"),
                          error="Jarvis restarted before this finished.",
                          tools_used=run.get("toolsUsed"))
+    closed_at_startup.extend(orphans)
     return len(orphans)

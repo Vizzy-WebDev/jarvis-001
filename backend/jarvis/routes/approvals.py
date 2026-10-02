@@ -49,6 +49,20 @@ def _public(approval: Any) -> dict[str, Any]:
     }
 
 
+def _continue_job(approval: Any, *, allowed: bool, result: Any = None) -> bool:
+    """If a background job is waiting on this approval, let it carry on now. True when the
+    approval belonged to a job's session (whether or not that job was still waiting)."""
+    from ..jobs import worker
+    from ..jobs.orchestrator import answer_approval
+
+    session = approval.session_id or ""
+    prefix = worker.session_for("")
+    if not session.startswith(prefix):
+        return False
+    answer_approval(session[len(prefix):], approval.id, allowed=allowed, result=result)
+    return True
+
+
 @router.get("/approvals")
 def pending(session: str | None = None) -> dict[str, Any]:
     return {"approvals": [_public(a) for a in store.pending(session)]}
@@ -70,6 +84,9 @@ def decide(approval_id: str, body: dict[str, Any] = Body(default_factory=dict)):
 
     if decision is not Resolution.ALLOW:
         resolved = store.resolve(approval_id, decision, resolving_turn)
+        if decision is Resolution.DENY:
+            # A job waiting on this carries on without it, told plainly it was declined.
+            _continue_job(approval, allowed=False)
         return {"approval": _public(resolved), "ran": False}
 
     # Some approvals are answered rather than executed: a control session is
@@ -97,12 +114,15 @@ def decide(approval_id: str, body: dict[str, Any] = Body(default_factory=dict)):
     # The turn that asked recorded "needs your go-ahead" as this call's result.
     # Now that it has run, the saved conversation says what really happened, so
     # the next turn does not believe the file was never made. A model's tool call
-    # runs under operation id `<turn>:<call id>` (orchestrator/pipeline.py).
-    _, _, call_id = (approval.operation_id or "").partition(":")
-    if call_id and approval.session_id:
-        conversation.settle_tool_result(
-            approval.session_id, call_id, approval.capability,
-            result.value if result.ok else {"error": result.error})
+    # runs under operation id `<turn>:<call id>` (orchestrator/pipeline.py). A job's
+    # calls run under a durable operation scope instead, and its own saved transcript is
+    # settled by the job itself as it carries on (`jobs/orchestrator.answer_approval`).
+    settled = result.value if result.ok else {"error": result.error}
+    if not _continue_job(approval, allowed=True, result=settled):
+        _, _, call_id = (approval.operation_id or "").partition(":")
+        if call_id and approval.session_id:
+            conversation.settle_tool_result(
+                approval.session_id, call_id, approval.capability, settled)
 
     return {
         "approval": _public(store.get(approval_id)),

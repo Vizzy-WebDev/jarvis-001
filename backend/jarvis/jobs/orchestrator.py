@@ -29,7 +29,7 @@ from ..jscompat import now_iso
 from . import job_store, worker
 from .policy import (
     DIAGNOSE_TAIL_SIZE, can_auto_retry, classify_recovery, diagnose_stall, has_capacity,
-    is_hung, resource_available,
+    is_hung, open_external_intents, resource_available,
 )
 
 logger = logging.getLogger(__name__)
@@ -118,24 +118,74 @@ def admit(*, title: str, goal: str, kind: str = "generic", priority: int = 2,
 def resume(job_id: str, *, guidance: str | None = None,
            event_bus: EventBus | None = None) -> dict[str, Any] | None:
     """The one way a parked job starts again — used for every kind of park, so
-    there is no separate machinery for "OK to start?" versus "OK to send it?"."""
+    there is no separate machinery for "OK to start?" versus "OK to send it?".
+
+    It continues from the last finished round, with everything the work had already
+    learned; guidance, if given, is what the next round is told.
+    """
     job = job_store.get_job(job_id)
     if job is None:
         return None
     if guidance:
-        job_store.append_trace(job_id, phase="intent", effect="read", kind="note",
+        job_store.append_trace(job_id, phase="intent", effect="read", kind="nudge",
                                summary="guidance from the user", detail=guidance)
     job_store.update_job(job_id, {"status": "queued", "error": None})
     # Only the action that actually resolves the decision marks the row
     # delivered — showing it is not resolving it.
     job_store.deliver_all_for_job(job_id)
-    worker.run_in_background(job_id, event_bus=event_bus)
+    worker.run_in_background(job_id, event_bus=event_bus,
+                             answer={"guidance": guidance} if guidance else {})
+    return job_store.get_job(job_id)
+
+
+def restart(job_id: str, event_bus: EventBus | None = None) -> dict[str, Any] | None:
+    """Start it over from the goal: its saved rounds are dropped, so everything it did is
+    done again. Whether that is safe is the caller's question (`routes/jobs.py`)."""
+    from .. import durable
+
+    if job_store.get_job(job_id) is None:
+        return None
+    durable.stop(job_id)
+    job_store.update_job(job_id, {"status": "queued", "result": None, "error": None,
+                                  "progress": 0, "currentStep": None, "retries": 0})
+    job_store.deliver_all_for_job(job_id)
+    worker.run_in_background(job_id, event_bus=event_bus, fresh=True)
+    return job_store.get_job(job_id)
+
+
+def answer_approval(job_id: str, approval_id: str, *, allowed: bool, result: Any = None,
+                    event_bus: EventBus | None = None) -> dict[str, Any] | None:
+    """The person answered what a job was waiting on: settle it into the job's own working
+    transcript and let the job carry on by itself. Nothing happens unless the job really is
+    waiting on exactly that approval."""
+    from .. import durable
+
+    job = job_store.get_job(job_id)
+    work = durable.peek(job_id) or {}
+    waiting = work.get("waiting_on") or {}
+    if job is None:
+        return None
+    if work.get("status") == "waiting":
+        if (waiting.get("approval") or {}).get("id") != approval_id:
+            return None
+    elif not (work.get("status") == "running" and job.get("status") == "awaiting_decision"):
+        # Running means it stopped just as it was parking (a crash); it reaches the wait
+        # again and the answer applies there (`durable.advance`). Anything else: not waiting.
+        return None
+    job_store.update_job(job_id, {"status": "queued", "error": None})
+    job_store.deliver_all_for_job(job_id)
+    worker.run_in_background(job_id, event_bus=event_bus,
+                             answer={"approval": {"allowed": allowed, "result": result}})
     return job_store.get_job(job_id)
 
 
 def cancel(job_id: str, event_bus: EventBus | None = None) -> dict[str, Any] | None:
+    from .. import durable
+
     job = job_store.update_job(job_id, {"status": "cancelled", "finishedAt": now_iso(),
                                         "currentStep": None})
+    # The round in flight stops at its next step; no later round starts (`worker._stopped`).
+    durable.stop(job_id)
     job_store.deliver_all_for_job(job_id)
     (event_bus or default_bus).publish(EventType.JOB_UPDATED,
                                        {"id": job_id, "status": "cancelled"})
@@ -151,12 +201,13 @@ def supervise(now_ms: float | None = None, event_bus: EventBus | None = None) ->
 
     for job in job_store.list_active_jobs():
         if job["status"] == "running" and is_hung(job, now_ms=now_ms, timeout_ms=HANG_TIMEOUT_MS):
-            actions.append(_recover(job, "no heartbeat — the work looks hung", ebus))
+            actions.append(_recover(job, "no heartbeat — the work looks hung", ebus, live=True))
             continue
         if job["status"] == "running":
             stall = diagnose_stall(job_store.get_trace_tail(job["id"], DIAGNOSE_TAIL_SIZE))
             if stall is not None:
-                actions.append(_recover(job, stall["detail"], ebus, cause=stall["cause"]))
+                actions.append(_recover(job, stall["detail"], ebus, cause=stall["cause"],
+                                        live=True))
 
     for job in job_store.list_jobs(status="stalled"):
         actions.append(_recover(job, job.get("error") or "it stopped making progress", ebus))
@@ -164,18 +215,23 @@ def supervise(now_ms: float | None = None, event_bus: EventBus | None = None) ->
 
 
 def _recover(job: dict[str, Any], detail: str, ebus: EventBus,
-             cause: str = "stalled") -> dict[str, Any]:
+             cause: str = "stalled", live: bool = False) -> dict[str, Any]:
     """Spend the single automatic retry, or hand it to the user.
 
-    The nudge goes into the SAME session, so nothing about pausing and resuming
-    discards the context the work has already built up.
+    A job still running (hung, or going round in circles) is stopped first, so it never
+    runs twice at once. The retry continues from its last finished round — nothing about
+    pausing and resuming discards what the work has already done — and is told why.
     """
+    from .. import durable
+
     job_id = job["id"]
+    if live:
+        durable.stop(job_id)
     if can_auto_retry(job):
         job_store.update_job(job_id, {"retries": 1, "status": "queued", "error": None})
-        job_store.append_trace(job_id, phase="intent", effect="read", kind="note",
+        job_store.append_trace(job_id, phase="intent", effect="read", kind="nudge",
                                summary=f"retrying after {cause}", detail=detail)
-        worker.run_in_background(job_id, event_bus=ebus)
+        worker.run_in_background(job_id, event_bus=ebus, answer={"note": detail})
         return {"job": job_id, "action": "retried", "cause": cause}
 
     job_store.update_job(job_id, {"status": "awaiting_decision",
@@ -192,13 +248,26 @@ def recover_orphans(event_bus: EventBus | None = None) -> list[dict[str, Any]]:
 
     No heuristic is needed to know that — the process is gone. What the trace
     decides is whether picking it back up is SAFE, and the verdict is read from
-    the record rather than asked of the job.
+    the record rather than asked of the job: an action that reaches outside Jarvis and
+    started without a recorded outcome may or may not have happened, so the person is
+    asked to check that one action. Anything else continues from its last finished
+    round, and finished actions are never repeated (`jarvis/durable.py`).
+
+    A job still `queued` never got its worker before the process stopped; it starts now.
     """
     ebus = event_bus or default_bus
     out: list[dict[str, Any]] = []
-    for job in job_store.list_jobs(status="running"):
+    for job in job_store.list_jobs(status="queued", limit=500):
+        worker.run_in_background(job["id"], event_bus=ebus)
+        out.append({"job": job["id"], "recovery": "started"})
+    for job in job_store.list_jobs(status="running", limit=500):
         trace = job_store.get_trace(job["id"])
-        verdict = classify_recovery(job, trace)
+        verdict = classify_recovery(job, trace, recorded=_recorded_operations(trace))
+        # The durable runner's own write-ahead record says the same from its side, for an
+        # action whose trace row never got written.
+        in_doubt = _durable_unsure(job["id"])
+        if verdict == "resumable" and in_doubt:
+            verdict = "unrecoverable"
         job_store.update_job(job["id"], {"recovery": verdict})
         # A crash is worth learning from in its own right — whatever the job
         # goes on to do next. A real, disclosed gap until now: this used to
@@ -214,19 +283,55 @@ def recover_orphans(event_bus: EventBus | None = None) -> list[dict[str, Any]]:
         if verdict == "resumable":
             job_store.update_job(job["id"], {"status": "queued"})
             worker.run_in_background(job["id"], event_bus=ebus)
-        elif verdict == "restartable":
-            job_store.update_job(job["id"], {"status": "queued"})
-            worker.run_in_background(job["id"], event_bus=ebus)
         else:
-            job_store.update_job(job["id"], {"status": "awaiting_decision"})
+            unsure = open_external_intents(trace, _recorded_operations(trace)) or \
+                [{"name": a["capability"], "operationId": a["operationId"]} for a in in_doubt]
+            name = (unsure[-1].get("name") if unsure else None) or "an action"
+            job_store.update_job(job["id"], {"status": "awaiting_decision",
+                                             "currentStep": f"check {name}"})
             job_store.add_outbox(
                 tier=1, job_id=job["id"], reason="crashed",
-                summary=(f'"{job["title"]}" stopped part-way through something that '
-                         "cannot safely be repeated. What would you like to do?"
+                detail={"unsure": unsure},
+                summary=(f'"{job["title"]}" stopped in the middle of {name}, which reaches '
+                         "outside Jarvis, so I can't tell whether it happened. Please check, "
+                         "then tell me to keep going (it may try it again) or discard the job."
                          if verdict == "unrecoverable"
                          else f'"{job["title"]}" is waiting on you.'))
         out.append({"job": job["id"], "recovery": verdict})
     return out
+
+
+def _durable_unsure(job_id: str) -> list[dict[str, Any]]:
+    from .. import durable
+
+    return durable.unsure(job_id) if durable.peek(job_id) is not None else []
+
+
+def _recorded_operations(trace: list[dict[str, Any]]) -> set[str]:
+    """Which of the trace's actions have a recorded result in the operations table — those
+    finished even if the trace's own outcome row never got written."""
+    from ..db import get_db
+
+    ids = [d.get("operationId") for d in (_detail_of(r) for r in trace)
+           if isinstance(d, dict) and d.get("operationId")]
+    if not ids:
+        return set()
+    marks = ",".join("?" for _ in ids)
+    rows = get_db().execute(f"SELECT operation_id FROM operations WHERE operation_id IN ({marks})",
+                            ids).fetchall()
+    return {r[0] for r in rows}
+
+
+def _detail_of(row: dict[str, Any]) -> Any:
+    import json
+
+    raw = row.get("detail")
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return None
+    return raw
 
 
 def start(*, event_bus: EventBus | None = None) -> bool:
@@ -242,6 +347,14 @@ def start(*, event_bus: EventBus | None = None) -> bool:
     if not is_enabled() or _timer is not None:
         return False
 
+    # Specialist runs first: building the registry closes off runs nothing is running any
+    # more, and that must happen before a recovered job starts a run of its own.
+    try:
+        from ..agents.durable_runs import recover_at_startup
+
+        recover_at_startup()
+    except Exception:  # noqa: BLE001
+        logger.exception("specialist run recovery failed at startup")
     try:
         recover_orphans(event_bus=event_bus)
     except Exception:  # noqa: BLE001

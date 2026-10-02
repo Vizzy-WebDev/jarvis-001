@@ -28,7 +28,10 @@ as "passed":
    loggers have no handler attached unless something else in the process added one.
 4. **Route smoke test** — `curl` a real GET (200), a route taking an id with a
    nonexistent one (a clean 404, not a crash), and `/` (the real `index.html` from the
-   static mount).
+   static mount). Then `POST /api/jobs` with a goal: the job must run through the durable
+   runner — `data/durable.db` appears then (not at boot), with a `works` row for the job
+   and a `rounds` row per round. With no model connected it ends `stalled` with the plain
+   "No model is connected yet" message, never a crash.
 5. **Any recently-fixed security behaviour** — re-confirm it live rather than by reading
    the code, e.g. `GET /api/artifacts/:id`'s forced-download headers on a plain request.
 6. **The full suites** — `pytest tests -q` and the Playwright files, run as the two

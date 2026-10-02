@@ -17,17 +17,17 @@ reading of the record rather than a guess.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
-import uuid
-from typing import Any
+from typing import Any, Iterator
 
 from ..events import EventType, bus as default_bus
 from ..events.bus import EventBus
 from ..jscompat import now_iso
 from ..policy import Autonomy, Surface
 from . import job_store
-from .policy import DIAGNOSE_TAIL_SIZE, diagnose_stall, step_budget_exceeded
+from .policy import STEP_BUDGET_BY_KIND
 
 logger = logging.getLogger(__name__)
 
@@ -66,104 +66,279 @@ def _installed_skill_names() -> list[str]:
     return [spec.name for spec in get_registry().list(kind=CapabilityKind.SKILL)]
 
 
+#: The bus each job's own events go to, for the hooks the durable runner calls on its
+#: behalf (they run inside saved steps, so the bus cannot travel as an argument).
+_buses: dict[str, EventBus] = {}
+
+
+def _bus_for(job_id: str) -> EventBus:
+    return _buses.get(job_id) or default_bus
+
+
 def run_job(job_id: str, *, event_bus: EventBus | None = None,
-            max_steps: int | None = None) -> dict[str, Any]:
-    """Drive one job to a conclusion, or to the point where a person is needed."""
-    from ..assembly import get_orchestrator
-    from ..orchestrator import ApprovalRequired, Chunk, Done, Failed, ToolRan, TurnRequest
+            answer: dict[str, Any] | None = None, fresh: bool = False) -> dict[str, Any]:
+    """Move one job forward — to a conclusion, or to the point where a person is needed.
+
+    The job is durable work (`jarvis/durable.py`): it runs in rounds, each an ordinary turn,
+    and every finished round is saved. Started, resumed after a decision, retried after a
+    stall or picked up after a restart, it is this same call — the runner knows which, and
+    never repeats a finished round. `answer` is what it is continued with (guidance, an
+    approval's outcome); `fresh` starts it over from the goal (a restart).
+    """
+    from .. import durable
 
     ebus = event_bus or default_bus
     job = job_store.get_job(job_id)
     if job is None:
         raise KeyError(f"Unknown job: {job_id}")
+    if fresh:
+        durable.forget(job_id)
+    else:
+        work = durable.get(job_id)
+        settled = (work or {}).get("status")
+        if settled == "finished" or (settled == "waiting" and answer is None):
+            # Nothing to run: it already finished, or it is waiting on an answer that a
+            # plain start or recovery must never supply on the person's behalf. If the job's
+            # own row fell out of step (a crash between the two records), it is put back.
+            report = _report(work or {}, job_id)
+            if job.get("status") in ("queued", "running"):
+                job_store.update_job(job_id, {"status": _status_of(report)})
+            return report
 
+    _buses[job_id] = ebus
     job_store.update_job(job_id, {"status": "running", "startedAt": job.get("startedAt") or now_iso()})
     job_store.heartbeat(job_id, step="starting")
     ebus.publish(EventType.JOB_UPDATED, {"id": job_id, "status": "running"})
 
-    allowed = TOOLS_BY_KIND.get(job["kind"], None)
-    if allowed is not None:
-        # A restricted kind's own fence was never meant to keep out a Skill —
-        # see _installed_skill_names()'s own header comment.
-        allowed = [*allowed, *_installed_skill_names()]
-    request = TurnRequest(
-        text=job["goal"],
-        session_id=session_for(job_id),
-        surface=Surface.JOB,
-        # Nobody is present. A decision is parked, never asked.
-        autonomy=Autonomy.ESCALATE,
-        turn_id=uuid.uuid4().hex,
-        allowed_names=frozenset(allowed) if allowed else None,
-    )
+    budget = STEP_BUDGET_BY_KIND.get(job["kind"], STEP_BUDGET_BY_KIND["generic"])
+    try:
+        reached = durable.advance(job_id, KIND, job["goal"], budget=budget, answer=answer)
+    finally:
+        _buses.pop(job_id, None)
+    report = _report({"status": reached["state"], "result": reached.get("result"),
+                      "waiting_on": reached.get("why")}, job_id)
+    if (job_store.get_job(job_id) or {}).get("status") == "running":
+        # Its hooks normally say where it stopped; a pause re-reached from a saved step
+        # (after a crash) runs no hook again, so the row is set from the record.
+        job_store.update_job(job_id, {"status": _status_of(report), "currentStep": None})
+    return report
 
-    events = None
+
+def _status_of(report: dict[str, Any]) -> str:
+    status = report.get("status")
+    return status if status in ("done", "awaiting_decision", "stalled", "cancelled") \
+        else "awaiting_decision"
+
+
+def _report(work: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
+    """Where the job's durable work got to, in the shape a caller of `run_job` reads."""
+    if work.get("status") == "finished":
+        result = work.get("result")
+        return result if isinstance(result, dict) else {"status": "done"}
+    why = work.get("waiting_on") or {}
+    reason = why.get("reason")
+    if reason == "approval":
+        return {"status": "awaiting_decision", "approvalId": (why.get("approval") or {}).get("id")}
+    if reason == "budget":
+        return {"status": "awaiting_decision", "reason": "budget", "steps": why.get("steps")}
+    if reason in ("failed", "rejected"):
+        return {"status": "stalled", "error": _stall_detail(why), "cause": _stall_cause(why)}
+    job = job_store.get_job(job_id or work.get("id") or "") or {}
+    return {"status": job.get("status"), "reason": reason}
+
+
+# --- the job kind of durable work --------------------------------------------
+
+KIND = "job"
+
+
+def _allowed_for(job: dict[str, Any]) -> frozenset[str] | None:
+    allowed = TOOLS_BY_KIND.get(job["kind"], None)
+    if allowed is None:
+        return None
+    # A restricted kind's own fence was never meant to keep out a Skill —
+    # see _installed_skill_names()'s own header comment.
+    return frozenset([*allowed, *_installed_skill_names()])
+
+
+def _turn(job_id: str, text: str, spec: Any, cancel: threading.Event) -> Iterator[Any]:
+    """One round's turn: an ordinary turn on the job's own session, nobody present."""
+    from ..assembly import get_orchestrator
+    from ..orchestrator import Failed, TurnRequest
+
+    job = job_store.get_job(job_id) or {}
+    job_store.heartbeat(job_id, step="working")
     if job.get("agentId"):
         # A specialist's job: the same turn, run AS that agent through the one
         # agent path, so its doctrine, access and model apply and the run is
-        # recorded like any other. Supervision below is unchanged.
+        # recorded like any other. Supervision is unchanged.
         from ..agents import runner
 
         try:
             agent = runner.usable_agent(job["agentId"])
         except runner.AgentUnavailable as err:
-            return _stall(job_id, str(err), ebus, cause="specialist unavailable")
-        run = runner.start_run(agent, job["goal"], session_id=request.session_id,
+            yield Failed(str(err), code="specialist_unavailable")
+            return
+        run = runner.start_run(agent, text, session_id=session_for(job_id),
                                requested_by="job", conversation_id=job.get("conversationId"),
-                               job_id=job_id, event_bus=ebus)
-        events = runner.stream_run(agent, run, job["goal"], autonomy=Autonomy.ESCALATE,
-                                   surface=Surface.SCHEDULED, event_bus=ebus)
+                               job_id=job_id, event_bus=_bus_for(job_id))
+        yield from runner.stream_run(agent, run, text, autonomy=Autonomy.ESCALATE,
+                                     surface=Surface.SCHEDULED, event_bus=_bus_for(job_id),
+                                     cancel=cancel, turn=spec)
+        return
+    allowed = _allowed_for(job)
+    request = TurnRequest(
+        text=text,
+        session_id=session_for(job_id),
+        surface=Surface.JOB,
+        # Nobody is present. A decision is parked, never asked.
+        autonomy=Autonomy.ESCALATE,
+        turn_id=spec.turn_id,
+        allowed_names=allowed,
+        operation_scope=spec.operation_scope,
+        continuable=spec.continuable,
+        max_steps=spec.max_steps,
+    )
+    yield from get_orchestrator().run_turn(request, cancel)
 
-    answer, parked, failure, steps = "", None, None, 0
-    for event in events if events is not None else get_orchestrator().run_turn(request):
-        if isinstance(event, Chunk):
-            continue
-        if isinstance(event, ToolRan):
-            steps += 1
-            job_store.append_trace(
-                job_id, phase="outcome", effect="workspace" if event.ok else "read",
-                kind="tool", summary=f"{event.capability} {event.outcome.value}",
-                detail={"name": event.capability, "ok": event.ok, "error": event.error})
-            job_store.heartbeat(job_id, step=f"using {event.capability}")
-            if max_steps and step_budget_exceeded(steps, job["kind"]):
-                break
-        elif isinstance(event, ApprovalRequired):
-            parked = event
-        elif isinstance(event, Done):
-            answer = event.text
-        elif isinstance(event, Failed):
-            failure = event
 
-    if parked is not None:
-        return _park(job_id, parked, ebus)
-    if failure is not None:
-        return _stall(job_id, failure.error, ebus)
+def _on_event(job_id: str, event: Any) -> None:
+    from ..orchestrator import ToolRan
 
-    stall = diagnose_stall(job_store.get_trace_tail(job_id, DIAGNOSE_TAIL_SIZE))
-    if stall is not None and not answer:
-        return _stall(job_id, stall["detail"], ebus, cause=stall["cause"])
+    if isinstance(event, ToolRan):
+        job_store.heartbeat(job_id, step=f"using {event.capability}")
 
+
+def _effect_of(capability: str) -> str:
+    """What an action can touch, from its declared risk (`durable.is_external`): LOW only
+    reads; MEDIUM and HIGH change something that may be outside Jarvis."""
+    from .. import durable
+
+    return "external" if durable.is_external(capability) else "read"
+
+
+def _observe(job_id: str, event_type: str, payload: dict[str, Any]) -> None:
+    """The write-ahead trace, from what really happened: an `intent` row BEFORE an action
+    runs and an `outcome` row after it, both carrying the operation id that ties them."""
+    name = str(payload.get("capability") or "")
+    if event_type == EventType.TOOL_STARTED.value:
+        job_store.append_trace(job_id, phase="intent", effect=_effect_of(name), kind="tool",
+                               summary=f"{name} starting",
+                               detail={"name": name, "args": payload.get("args") or {},
+                                       "operationId": payload.get("operationId")})
+    elif event_type in (EventType.TOOL_COMPLETED.value, EventType.TOOL_FAILED.value):
+        ok = event_type == EventType.TOOL_COMPLETED.value
+        job_store.append_trace(job_id, phase="outcome", effect=_effect_of(name), kind="tool",
+                               summary=f"{name} {'completed' if ok else 'failed'}",
+                               detail={"name": name, "ok": ok, "error": payload.get("error"),
+                                       "operationId": payload.get("operationId")})
+
+
+def _stopped(job_id: str) -> bool:
+    return (job_store.get_job(job_id) or {}).get("status") == "cancelled"
+
+
+def _finish(job_id: str, outcome: dict[str, Any]) -> dict[str, Any]:
+    """The work says it is finished: check that, then record it once."""
+    job = job_store.get_job(job_id) or {}
+    answer = outcome.get("text") or ""
     # "It finished" is not the same as "it did what was asked". A checked
     # mismatch is treated exactly like a stall — the SAME single retry, the same
     # counter, the same escalation — rather than a second recovery mechanism
     # with its own rules. An unchecked one changes nothing.
     verdict = _verify_result(job, answer)
     if verdict is not None and verdict.failed:
-        return _stall(job_id, f"it finished, but it did not do what was asked: "
-                              f"{verdict.reason or 'the result does not match the request'}",
-                      ebus, cause="did not match the request")
+        return {"accepted": False,
+                "error": "it finished, but it did not do what was asked: "
+                         f"{verdict.reason or 'the result does not match the request'}"}
+
+    from .. import durable
 
     job_store.update_job(job_id, {"status": "done", "result": answer,
                                   "finishedAt": now_iso(), "progress": 100,
-                                  "currentStep": None})
-    job_store.append_trace(job_id, phase="outcome", effect="read", kind="note",
-                           summary="finished", detail=answer[:500])
-    ebus.publish(EventType.JOB_COMPLETED, {"id": job_id, "status": "done",
-                                           "title": job["title"]})
+                                  "currentStep": None, "error": None})
+    # Once per attempt: a finish replayed after a crash records nothing twice, and a job
+    # started over (a restart) that finishes again says so again.
+    attempt = int((durable.get(job_id) or {}).get("epoch") or 0) + 1
+    note = "finished" if attempt == 1 else f"finished (attempt {attempt})"
+    if not _has_trace(job_id, note):
+        job_store.append_trace(job_id, phase="outcome", effect="read", kind="note",
+                               summary=note, detail=answer[:500])
+    _bus_for(job_id).publish(EventType.JOB_COMPLETED, {"id": job_id, "status": "done",
+                                                       "title": job.get("title")})
     # Tier 3: worth recording, never worth interrupting for. The user finds it
     # when they ask, or through the ambient notification channel.
-    job_store.add_outbox(tier=3, summary=f'"{job["title"]}" finished.', job_id=job_id,
-                         reason="finished")
-    return {"status": "done", "result": answer}
+    _outbox_once(job_id, tier=3, reason="finished", summary=f'"{job.get("title")}" finished.',
+                 detail={"attempt": attempt})
+    return {"accepted": True, "status": "done", "result": answer}
+
+
+def _park(job_id: str, why: dict[str, Any]) -> None:
+    """The work has to wait — record why, for the person and for the supervisor."""
+    reason = why.get("reason")
+    if reason == "approval":
+        _park_for_approval(job_id, why.get("approval") or {})
+    elif reason == "budget":
+        _park_for_budget(job_id, int(why.get("steps") or 0))
+    elif reason in ("failed", "rejected"):
+        _stall(job_id, _stall_detail(why), _bus_for(job_id), cause=_stall_cause(why))
+    # "stopped": whoever stopped it (the person cancelling, the supervisor) already said why.
+
+
+def _stall_detail(why: dict[str, Any]) -> str:
+    return str(why.get("error") or "it stopped making progress")
+
+
+def _stall_cause(why: dict[str, Any]) -> str:
+    return "did not match the request" if why.get("reason") == "rejected" else "failed"
+
+
+def _park_for_approval(job_id: str, approval: dict[str, Any]) -> None:
+    job = job_store.get_job(job_id) or {}
+    capability = approval.get("capability") or "something"
+    job_store.update_job(job_id, {"status": "awaiting_decision",
+                                  "currentStep": f"waiting on {capability}"})
+    if not any(row.get("kind") == "decision" and approval.get("id")
+               and str(approval.get("id")) in str(row.get("detail") or "")
+               for row in job_store.get_trace(job_id)):
+        job_store.append_trace(job_id, phase="intent", effect="external", kind="decision",
+                               summary=f"{capability} needs a decision",
+                               detail={"approvalId": approval.get("id")})
+    # Tier 1: the job cannot continue without an answer, so this is worth
+    # raising the next time the user is here.
+    _outbox_once(job_id, tier=1, reason="permission",
+                 summary=f'"{job.get("title")}" needs your go-ahead: {approval.get("reason") or ""}',
+                 detail={"approvalId": approval.get("id"), "capability": capability})
+    _bus_for(job_id).publish(EventType.JOB_UPDATED, {"id": job_id, "status": "awaiting_decision"})
+
+
+def _park_for_budget(job_id: str, steps: int) -> None:
+    job = job_store.get_job(job_id) or {}
+    job_store.update_job(job_id, {"status": "awaiting_decision", "currentStep": None})
+    _outbox_once(job_id, tier=1, reason="budget",
+                 summary=f'"{job.get("title")}" is still not done after {steps} steps. '
+                         "Keep going?",
+                 detail={"steps": steps})
+    _bus_for(job_id).publish(EventType.JOB_UPDATED, {"id": job_id, "status": "awaiting_decision"})
+
+
+def _has_trace(job_id: str, summary: str) -> bool:
+    return any(row.get("summary") == summary for row in job_store.get_trace(job_id))
+
+
+def _outbox_once(job_id: str, *, tier: int, reason: str, summary: str, detail: Any = None) -> None:
+    """Add an outbox row unless the same one was already raised — a step replayed after a
+    crash must not ask the person the same thing twice, nor ask again what they already
+    answered (an answered row is delivered, and still the same question)."""
+    from ..heartbeat import outbox
+
+    same_detail = json.dumps(detail, sort_keys=True, default=str) if detail is not None else None
+    for row in outbox.for_job(job_id):
+        row_detail = (json.dumps(row["detail"], sort_keys=True, default=str)
+                      if row["detail"] is not None else None)
+        if row["reason"] == reason and row["summary"] == summary and row_detail == same_detail:
+            return
+    job_store.add_outbox(tier=tier, job_id=job_id, reason=reason, summary=summary, detail=detail)
 
 
 def _verify_result(job: dict[str, Any], answer: str) -> Any:
@@ -183,23 +358,6 @@ def _verify_result(job: dict[str, Any], answer: str) -> Any:
     except Exception:  # noqa: BLE001 — a check that fails must not fail the job
         logger.exception("the semantic check on job %s failed", job.get("id"))
         return None
-
-
-def _park(job_id: str, parked: Any, ebus: EventBus) -> dict[str, Any]:
-    job = job_store.get_job(job_id) or {}
-    job_store.update_job(job_id, {"status": "awaiting_decision",
-                                  "currentStep": f"waiting on {parked.capability}"})
-    job_store.append_trace(job_id, phase="intent", effect="external", kind="decision",
-                           summary=f"{parked.capability} needs a decision",
-                           detail={"approvalId": parked.approval_id})
-    # Tier 1: the job cannot continue without an answer, so this is worth
-    # raising the next time the user is here.
-    job_store.add_outbox(tier=1, job_id=job_id, reason="permission",
-                         summary=f'"{job.get("title")}" needs your go-ahead: {parked.reason}',
-                         detail={"approvalId": parked.approval_id,
-                                 "capability": parked.capability})
-    ebus.publish(EventType.JOB_UPDATED, {"id": job_id, "status": "awaiting_decision"})
-    return {"status": "awaiting_decision", "approvalId": parked.approval_id}
 
 
 def _stall(job_id: str, detail: str, ebus: EventBus, cause: str = "failed") -> dict[str, Any]:
@@ -222,10 +380,12 @@ _threads: list[threading.Thread] = []
 _threads_lock = threading.Lock()
 
 
-def run_in_background(job_id: str, event_bus: EventBus | None = None) -> threading.Thread:
+def run_in_background(job_id: str, event_bus: EventBus | None = None, *,
+                      answer: dict[str, Any] | None = None,
+                      fresh: bool = False) -> threading.Thread:
     def _go() -> None:
         try:
-            run_job(job_id, event_bus=event_bus)
+            run_job(job_id, event_bus=event_bus, answer=answer, fresh=fresh)
         except Exception:  # noqa: BLE001 — a worker crash must not take the app down
             logger.exception("job %s crashed", job_id)
             try:
@@ -253,3 +413,14 @@ def join_all(timeout: float = 10.0) -> bool:
     for thread in alive:
         thread.join(timeout=timeout)
     return all(not t.is_alive() for t in alive)
+
+
+def _register() -> None:
+    from .. import durable
+
+    durable.register(durable.Kind(
+        name=KIND, session_for=session_for, turn=_turn, finish=_finish, park=_park,
+        continuable=True, on_event=_on_event, observe=_observe, stopped=_stopped))
+
+
+_register()

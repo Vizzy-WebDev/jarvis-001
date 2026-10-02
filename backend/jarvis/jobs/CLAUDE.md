@@ -23,10 +23,15 @@ leaf-safe, and put anything that reaches the orchestrator or registry inside the
   the conversation that started it. `ACTIVE_STATUSES` is `queued`, `running`,
   `awaiting_decision`. `heartbeat()` stamps liveness (unrelated to `jarvis/heartbeat/`).
 - **The write-ahead trace** — `append_trace()` / `get_trace()` / `get_trace_tail()` are thin
-  wrappers over `ops/trace.py` with `source='job'` bound. A caller writes an `intent` row
-  (`effect`: `read` | `workspace` | `external`) BEFORE an effectful action and an `outcome` row
-  after, so a crash between the two still leaves the intent on record. That is what lets
-  `policy.classify_recovery()` derive an honest verdict instead of a job assessing itself.
+  wrappers over `ops/trace.py` with `source='job'` bound. Every tool call a job's round makes
+  gets an `intent` row (from `TOOL_STARTED`, carrying `name`, redacted `args` and
+  `operationId`) BEFORE it runs and an `outcome` row (`TOOL_COMPLETED`/`TOOL_FAILED`, same
+  `operationId`) after — written by `worker._observe`, the durable runner's subscriber for the
+  job's session. `effect` is `external` for a MEDIUM/HIGH-risk capability, `read` for LOW
+  (`durable.is_external`). That is what lets `policy.classify_recovery()` derive an honest
+  verdict, and what `diagnose_stall()`'s repeat/oscillation checks read. Other rows: `decision`
+  (parked on an approval), `note` (finished, stalled), `nudge` (a retry or the person's
+  guidance).
 - **The Tier 1/2/3 interruption queue** — `add_outbox()`, `list_pending_outbox()`,
   `mark_delivered()` and `deliver_all_for_job()` are thin wrappers over `heartbeat/outbox.py`
   with `source='job'` bound. `orchestrator/context.py` drains pending rows into the next turn
@@ -37,11 +42,17 @@ leaf-safe, and put anything that reaches the orchestrator or registry inside the
 
 Run on every supervisor tick for every active job, so: no model calls, no side effects, no I/O,
 and checkable as a truth table (the same discipline as `memory/policy.py`).
-- `classify_recovery(job, trace)` — a job found `running` at startup with nothing running it.
-  Pessimistic: `awaiting_decision` → `needs_input`; ANY `external` trace row (even a bare
-  intent, since a crash between logging and doing is indistinguishable from one after) →
-  `unrecoverable`; no `workspace` rows → `resumable`; otherwise → `restartable`.
-- `diagnose_stall(tail)` — first match wins over the last `DIAGNOSE_TAIL_SIZE` (8) trace rows:
+- `classify_recovery(job, trace, recorded)` — a job found `running` at startup with nothing
+  running it. The work is durable, so finished rounds and recorded actions are never repeated;
+  what is judged is the action that might have been in flight: `awaiting_decision` →
+  `needs_input`; an `external` tool intent with no outcome — no outcome row with its
+  `operationId` and not in `recorded` (operation ids the `operations` table has) — →
+  `unrecoverable` (it may or may not have happened; a person checks); otherwise →
+  `resumable`. There is no `restartable` any more. `open_external_intents()` lists those
+  actions; `has_external_effect()` (any `external` row at all) is what makes a restart need
+  `force`.
+- `diagnose_stall(tail)` — first match wins over the last `DIAGNOSE_TAIL_SIZE` (8) trace rows,
+  counting only rows after the last `nudge` (the pattern a retry already answered):
   `exact_repeat`, `oscillation`, `repeated_failure`, `near_duplicate_reasoning`
   (`NEAR_DUPLICATE_SIMILARITY` 0.85). Returns `{cause, detail}` or `None`.
 - `is_hung`, `has_capacity`, `resource_available`, `step_budget_exceeded`
@@ -49,14 +60,29 @@ and checkable as a truth table (the same discipline as `memory/policy.py`).
   retry and a stall retry share the same `retries` counter, so a job cannot get two goes by
   failing two ways.
 
-## `worker.py` — drives one job
+## `worker.py` — drives one job, as durable work
 
-`run_job(job_id)` runs the job's goal as a real turn on its own session, `job:<id>`
-(`session_for()`). **A worker structurally cannot write into the conversation the user is
-looking at**: its session is keyed separately and never bound to chat history. **A worker
-never asks the user directly**: it runs with `Autonomy.ESCALATE` on `Surface.JOB`, so a call
-needing a human is parked (`_park()`) — status `awaiting_decision`, a trace row and a Tier 1
-outbox row. A job may wait hours, so the record is a table row, not a short-lived token.
+**A job is durable work (`jarvis/durable.py`, kind `job`).** `run_job(job_id, answer=, fresh=)`
+is the one call for every path — start, resume after a park, the supervisor's retry, recovery
+after a restart, restart (`fresh=True`) — and `durable.advance` knows which. The job runs in
+**rounds**, each an ordinary turn (`_turn`) on its own session `job:<id>` (`session_for()`),
+with a replay-stable `operation_scope` and `continuable=True`: a round that uses its last step
+writes a progress note and the next round continues from the saved transcript. Rounds continue
+until the model answers before its last step, or the job's model steps reach
+`STEP_BUDGET_BY_KIND` (now really applied, and never overshot — the last round is cut to what
+is left), when it parks with "still not done after N steps — keep going?" (`reason: budget`).
+A finished round is never run again; a round cut off by a crash is run again from its start,
+and every tool call it had finished returns its recorded result instead of running twice.
+`answer=None` (a plain start or recovery) never answers a waiting job on the person's behalf.
+
+**A worker structurally cannot write into the conversation the user is looking at**: its
+session is keyed separately and never bound to chat history. **A worker never asks the user
+directly**: it runs with `Autonomy.ESCALATE` on `Surface.JOB`, so a call needing a human parks
+the work (`_park` → `_park_for_approval`) — status `awaiting_decision`, a `decision` trace row
+and a Tier 1 outbox row — and the durable work waits. A job may wait hours, so the record is a
+table row, not a short-lived token. Every hook the runner calls is safe to replay: outbox rows,
+the decision row and the finish note are written once (`_outbox_once`, per attempt for the
+finish).
 
 - **Tools by kind.** `TOOLS_BY_KIND`: `generic` is `None` (the full catalogue, no fence);
   `research` and `files` are small hardcoded lists plus `JOB_OWN_TOOLS` (`request_job_split`).
@@ -65,14 +91,16 @@ outbox row. A job may wait hours, so the record is a table row, not a short-live
   restrict. `computer` never goes through this loop: it is admitted parked (below). `kind` ONLY
   gates which tools are callable — there is no per-kind system prompt, and the worker's first
   message is the raw `goal`.
-- **Tracing.** Each `ToolRan` writes an outcome row and refreshes the heartbeat. A stall found
-  in the trace tail with no answer goes to `_stall()`.
-- **Completion is verified.** "It finished" is not "it did what was asked":
-  `_verify_result()` calls `ops/verify.py`'s `verify_semantic_match()` with the job's goal. A
-  checked mismatch is treated exactly like a stall — the same single retry, the same counter,
-  the same escalation, never a second recovery mechanism. `checked: false` (no model available)
-  never blocks a real completion. Success stores the result, publishes `JOB_COMPLETED` and adds
-  a Tier 3 outbox row (worth recording, never worth interrupting for).
+- **Tracing.** `_observe` writes the intent/outcome rows (above); each `ToolRan` refreshes the
+  heartbeat. A failed round (no model, an error) parks the work as `stalled` (`_stall`) for
+  the supervisor.
+- **Completion is verified** (`_finish`, the kind's finisher). "It finished" is not "it did what
+  was asked": `_verify_result()` calls `ops/verify.py`'s `verify_semantic_match()` with the
+  job's goal. A checked mismatch is refused (`accepted: False`) and treated exactly like a
+  stall — the same single retry, the same counter, the same escalation, never a second recovery
+  mechanism. `checked: false` (no model available) never blocks a real completion. Success
+  stores the result, publishes `JOB_COMPLETED` and adds a Tier 3 outbox row (worth recording,
+  never worth interrupting for).
 
 ## `orchestrator.py` — admission, supervision, crash recovery
 
@@ -85,25 +113,40 @@ outbox row. A job may wait hours, so the record is a table row, not a short-live
   **A `computer` job never starts unattended:** it is created `awaiting_decision` with a Tier 1
   outbox row asking to start.
 - `resume(job_id, guidance)` — the one way a parked job starts again, for every kind of park.
-  It marks the outbox rows delivered because this action is what actually resolves the decision.
-- `cancel(job_id)` — works from any status and marks pending outbox rows delivered, so a
-  cancelled job's old question never resurfaces.
+  It continues from the last finished round; guidance (a `nudge` trace row) is what the next
+  round is told. It marks the outbox rows delivered because this action is what actually
+  resolves the decision.
+- `answer_approval(job_id, approval_id, allowed, result)` — called by `routes/approvals.py`
+  when the person answers an approval a job (`job:` session) is waiting on: the job's saved
+  transcript gets the real result (or "declined") in place of "needs your go-ahead", and the job
+  carries on by itself. Nothing happens unless it is waiting on exactly that approval.
+- `restart(job_id)` — stops it, clears the result, and starts over from the goal
+  (`durable.forget` → a new epoch, so finished actions are genuinely done again).
+- `cancel(job_id)` — works from any status, stops the round in flight (`durable.stop`, the
+  turn's cancel event) and marks pending outbox rows delivered, so a cancelled job's old
+  question never resurfaces. No later round starts (`worker._stopped`); "keep going" continues it.
 - `supervise()` — the periodic pass (`TICK_SECONDS` 60, gated by `JARVIS_JOBS`). A `running`
   job with no heartbeat for `HANG_TIMEOUT_MS` (5 min) is hung; otherwise `diagnose_stall()` runs
-  on its trace tail. `_recover()` spends the job's one retry (back to `queued`, with a trace
-  note) or, if it is spent, parks the job `awaiting_decision` with a Tier 1 `stuck` outbox row.
-- `recover_orphans()` — at startup anything still `running` crashed (no heuristic needed). The
-  trace decides whether picking it back up is safe: `resumable` and `restartable` jobs are
-  requeued, and anything else is parked with a Tier 1 `crashed` row. The crash is also recorded
-  for Self-Improvement.
-- `start()` / `stop()` run the timer.
+  on its trace tail. `_recover()` stops a live one first (never two runs at once — the durable
+  per-work lock also guarantees it), then spends the job's one retry — a RESUME from its last
+  round, told why (`note`) — or, if it is spent, parks the job `awaiting_decision` with a Tier 1
+  `stuck` outbox row.
+- `recover_orphans()` — at startup: `queued` jobs start; anything still `running` crashed (no
+  heuristic needed). The trace and the durable runner's own write-ahead record
+  (`durable.unsure`) decide whether continuing is safe: `resumable` jobs continue from their
+  last finished round; one that died inside an external action is parked with a Tier 1
+  `crashed` row naming it. The crash is also recorded for Self-Improvement.
+- `start()` / `stop()` run the timer. `start()` first runs the specialist-run recovery
+  (`agents/durable_runs.recover_at_startup`, which builds the registry and so closes orphaned
+  runs off) BEFORE recovering jobs, so a recovered job's new run is never closed as an orphan.
 
 ## Routes and tools
 
 `routes/jobs.py` exposes list/create/get plus `POST /jobs/{id}/resume`, `/restart` and
-`/discard`. `restart` is REFUSED for a job the trace marks `unrecoverable` unless the caller
-passes `force`, because repeating something that reached the outside world is not something a
-retry can undo. `tools/job_tools.py` provides `work_in_background`, `check_on_work` and
+`/discard`. `restart` is REFUSED when anything the job did or started reached outside Jarvis
+(`has_external_effect` on its trace) unless the caller passes `force`, because starting over
+repeats it, and repeating something that reached the outside world is not something a retry
+can undo. (`resume` never repeats a finished action, so it needs no such check.) `tools/job_tools.py` provides `work_in_background`, `check_on_work` and
 `stop_working_on`.
 
 ## Splitting (`tools/job_split.py`, `request_job_split`)

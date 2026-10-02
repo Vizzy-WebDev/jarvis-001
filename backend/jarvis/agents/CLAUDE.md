@@ -60,7 +60,20 @@ per request. The asker is found from the calling turn's session (`running_run_fo
   took 1–3 min per specialist step; without this the chat sat silent for 15 min and gave up.
   An agent asking another still waits fully — its own deliverable needs the answer.
 - `background=true` admits a job with `agent_id`; `jobs/worker.py` runs it through
-  `stream_run`, so supervision/retry/parking are the jobs system's.
+  `stream_run`, so supervision/retry/parking are the jobs system's — and it is durable work
+  like any job: each round is one run (`stream_run(..., turn=spec)` carries the round's turn
+  id, operation scope and step cap), so a restart continues it rather than starting over.
+- **A run a restart cut off** (`durable_runs.py`). At startup the registry build closes off
+  runs still `running` (`capabilities.close_orphaned_runs`, which leaves durable runs alone and
+  remembers what it closed). Then `recover_at_startup()` (called first by the job supervisor's
+  `start()`) starts again each ROOT run Jarvis or the person asked for — not a nested run, not a
+  job's, not one a specialist asked for — as a new run with its own session
+  (`<old run id>:again`), as one round of durable work (kind `agent_run`, `ESCALATE`, nobody
+  waiting). Its result is delivered by `_deliver_late` exactly once (outbox checked by
+  `source_ref`), so it reaches the chat it was asked in. The cut-off attempt saved nothing, so
+  it starts over; from then on a second restart picks it up once (a finished tool call is
+  recalled, not repeated); a third, or one that died inside an outside action, is reported
+  unfinished. The closed run's error names its replacement.
 - A scheduled `prompt` task may carry `agentId` (`schedule_task`'s `agent`); every run of
   one task shares `task:<id>` as its conversation, so a standing hunt carries on.
 

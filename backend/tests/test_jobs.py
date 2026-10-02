@@ -24,8 +24,8 @@ from jarvis.events import EventType
 from jarvis.events.bus import EventBus
 from jarvis.jobs import job_store, orchestrator, worker
 from jarvis.jobs.policy import (
-    can_auto_retry, classify_recovery, diagnose_stall, has_capacity, is_hung,
-    resource_available, step_budget_exceeded, text_similarity,
+    can_auto_retry, classify_recovery, diagnose_stall, has_capacity, has_external_effect,
+    is_hung, open_external_intents, resource_available, step_budget_exceeded, text_similarity,
 )
 from jarvis.policy import Autonomy, CallContext, Surface
 from jarvis.policy import approvals as approval_store
@@ -52,20 +52,66 @@ def tool_trace(name: str, args: dict) -> dict:
 
 # --- the policy, as a truth table --------------------------------------------
 
-def test_a_crash_part_way_through_something_external_is_never_repeated():
-    """The write-ahead intent alone condemns it: a crash before the action and a
-    crash after it look identical from here, and retrying risks doing it twice."""
-    for phase in ("intent", "outcome"):
-        trace = [{"effect": "external", "phase": phase}]
-        assert classify_recovery({"status": "running"}, trace) == "unrecoverable"
+def _intent(effect: str, operation: str | None, name: str = "send_email") -> dict:
+    return {"kind": "tool", "phase": "intent", "effect": effect,
+            "detail": json.dumps({"name": name, "args": {"to": "a"}, "operationId": operation})}
+
+
+def _outcome(effect: str, operation: str | None, name: str = "send_email") -> dict:
+    return {"kind": "tool", "phase": "outcome", "effect": effect,
+            "detail": json.dumps({"name": name, "ok": True, "operationId": operation})}
+
+
+def test_an_external_action_that_started_and_never_finished_is_never_repeated_unasked():
+    """It may or may not have happened — only a person can check. With or without an
+    operation id to match, an open external intent condemns automatic recovery."""
+    for operation in ("op-1", None):
+        assert classify_recovery({"status": "running"},
+                                 [_intent("external", operation)]) == "unrecoverable"
+
+
+def test_an_external_action_with_a_recorded_outcome_is_finished_and_safe_to_continue_past():
+    """Changed deliberately (durable rounds): a finished action is recorded under an
+    operation id a replay reuses, so continuing never repeats it."""
+    trace = [_intent("external", "op-1"), _outcome("external", "op-1")]
+    assert classify_recovery({"status": "running"}, trace) == "resumable"
+
+
+def test_a_result_in_the_operations_table_counts_as_finished_even_without_an_outcome_row():
+    """The crash can land between the action being recorded and the trace's outcome row."""
+    trace = [_intent("external", "op-1")]
+    assert classify_recovery({"status": "running"}, trace, recorded={"op-1"}) == "resumable"
+    assert classify_recovery({"status": "running"}, trace, recorded={"op-2"}) == "unrecoverable"
+
+
+def test_an_outcome_for_a_different_action_does_not_close_an_open_one():
+    trace = [_intent("external", "op-1"), _intent("external", "op-2"),
+             _outcome("external", "op-1")]
+    assert classify_recovery({"status": "running"}, trace) == "unrecoverable"
+    assert [o["operationId"] for o in open_external_intents(trace)] == ["op-2"]
 
 
 def test_a_job_that_only_read_things_can_simply_be_picked_back_up():
     assert classify_recovery({"status": "running"}, [{"effect": "read"}]) == "resumable"
+    assert classify_recovery({"status": "running"}, [_intent("read", "op-1")]) == "resumable"
 
 
-def test_a_job_that_touched_its_own_workspace_starts_over():
-    assert classify_recovery({"status": "running"}, [{"effect": "workspace"}]) == "restartable"
+def test_a_job_that_touched_its_own_workspace_is_continued_not_started_over():
+    """Changed deliberately (durable rounds): there is no 'restartable' any more — the
+    saved rounds are continued, never thrown away by recovery."""
+    assert classify_recovery({"status": "running"}, [{"effect": "workspace"}]) == "resumable"
+
+
+def test_a_parked_decision_is_not_an_action_in_flight():
+    trace = [{"kind": "decision", "phase": "intent", "effect": "external",
+              "detail": json.dumps({"approvalId": "apr_1"})}]
+    assert classify_recovery({"status": "running"}, trace) == "resumable"
+
+
+def test_restarting_needs_say_so_for_anything_external_finished_or_not():
+    assert has_external_effect([_intent("external", "op-1"), _outcome("external", "op-1")])
+    assert has_external_effect([{"effect": "external", "phase": "outcome"}])
+    assert not has_external_effect([_intent("read", "op-1"), {"effect": "workspace"}])
 
 
 def test_a_job_parked_on_a_decision_still_needs_that_decision():
@@ -194,7 +240,7 @@ def test_an_orphan_that_did_something_external_is_never_silently_restarted():
 
     assert outcome["recovery"] == "unrecoverable"
     assert job_store.get_job(job["id"])["status"] == "awaiting_decision"
-    assert "cannot safely be repeated" in job_store.list_pending_outbox()[0]["summary"]
+    assert "can't tell whether it happened" in job_store.list_pending_outbox()[0]["summary"]
 
 
 # --- a crash reaching Self-Improvement (S9) -----------------------------------

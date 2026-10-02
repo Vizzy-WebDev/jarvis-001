@@ -26,29 +26,57 @@ NEAR_DUPLICATE_SIMILARITY = 0.85
 
 # --- crash recovery ----------------------------------------------------------
 
-def classify_recovery(job: dict[str, Any] | None, trace: list[dict[str, Any]] | None = None) -> str:
+def classify_recovery(job: dict[str, Any] | None, trace: list[dict[str, Any]] | None = None,
+                      recorded: set[str] | None = None) -> str:
     """An honest verdict for a job found `running` with nothing running it.
 
-    Pessimistic at every branch, on purpose:
+    The work is durable: its finished rounds are saved, and an action that finished is
+    recorded under an operation id a replay reuses, so picking it back up never repeats it.
+    What is left to judge is the one action that might have been in flight:
 
-    - Parked on a decision when it died → it still needs that decision.
-    - ANY trace row marked `effect: 'external'` → unrecoverable, whether the
-      action completed or only got as far as being logged as about to happen. A
-      crash between logging the intent and doing the thing is indistinguishable
-      from one between doing it and logging the outcome, so the write-ahead
-      intent alone is enough to condemn it. Retrying risks doing it twice.
-    - Nothing beyond reads → safe to pick back up.
-    - Otherwise (touched its own workspace, nothing external) → safe to start
-      over, since nothing irreversible happened outside the job's own scope.
+    - Parked on a decision when it died → it still needs that decision (`needs_input`).
+    - An action that reaches outside Jarvis (`effect: 'external'`) STARTED and has no
+      outcome — neither an outcome row nor a `recorded` result (operation ids that finished)
+      → `unrecoverable`: it may or may not have happened, and only a person can check.
+      Retrying it unasked risks doing it twice.
+    - Otherwise → `resumable`: it continues from its last finished round.
     """
     trace = trace or []
     if (job or {}).get("status") == "awaiting_decision":
         return "needs_input"
-    if any(row.get("effect") == "external" for row in trace):
+    if open_external_intents(trace, recorded):
         return "unrecoverable"
-    if not any(row.get("effect") == "workspace" for row in trace):
-        return "resumable"
-    return "restartable"
+    return "resumable"
+
+
+def open_external_intents(trace: list[dict[str, Any]] | None,
+                          recorded: set[str] | None = None) -> list[dict[str, Any]]:
+    """External actions that started and never recorded an outcome: `{name, args,
+    operationId}` each, oldest first. An intent with no operation id cannot be matched to an
+    outcome, so it counts as open — the pessimistic reading."""
+    trace = trace or []
+    recorded = recorded or set()
+    finished = {(_detail(row) or {}).get("operationId") for row in trace
+                if row.get("phase") == "outcome" and isinstance(_detail(row), dict)}
+    out = []
+    for row in trace:
+        if row.get("phase") != "intent" or row.get("kind") != "tool" \
+                or row.get("effect") != "external":
+            continue
+        detail = _detail(row)
+        detail = detail if isinstance(detail, dict) else {}
+        operation = detail.get("operationId")
+        if operation and (operation in finished or operation in recorded):
+            continue
+        out.append({"name": detail.get("name"), "args": detail.get("args") or {},
+                    "operationId": operation})
+    return out
+
+
+def has_external_effect(trace: list[dict[str, Any]] | None) -> bool:
+    """Did anything this job did — or started to do — reach outside Jarvis? Starting over
+    would do it again, which is what makes a restart need the person's say-so."""
+    return any(row.get("effect") == "external" for row in (trace or []))
 
 
 # --- live stall diagnosis ----------------------------------------------------
@@ -118,6 +146,11 @@ def diagnose_stall(tail: list[dict[str, Any]] | None = None) -> dict[str, str] |
     in order, first match wins.
     """
     tail = tail or []
+    # Only what happened since the work was last nudged (a retry, the person's guidance):
+    # the rows before it are the very pattern that nudge already answered.
+    nudges = [i for i, row in enumerate(tail) if row.get("kind") == "nudge"]
+    if nudges:
+        tail = tail[nudges[-1] + 1:]
     intents = [row for row in tail if row.get("kind") == "tool" and row.get("phase") == "intent"]
     signatures = [_tool_signature(row) for row in intents]
 

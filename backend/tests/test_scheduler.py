@@ -382,7 +382,7 @@ def test_a_pinned_model_reaches_the_gateway_and_the_run_says_which_one_answered(
     seen = {}
 
     class FakeOrchestrator:
-        def run_turn(self, request):
+        def run_turn(self, request, cancel=None):
             seen["model_id"] = request.model_id
             seen["allowed"] = request.allowed_names
             yield Done("all done", steps=1, model_id="the-one-that-answered")
@@ -402,7 +402,7 @@ def test_a_task_with_no_pin_asks_for_no_particular_model(monkeypatch):
     seen = {}
 
     class FakeOrchestrator:
-        def run_turn(self, request):
+        def run_turn(self, request, cancel=None):
             seen["model_id"] = request.model_id
             yield Done("fine", steps=1)
 

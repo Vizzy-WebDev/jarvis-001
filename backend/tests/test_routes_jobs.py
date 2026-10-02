@@ -22,7 +22,7 @@ def client(scratch, monkeypatch):
     # for. A real worker would make real model calls on a background thread.
     started: list[str] = []
     monkeypatch.setattr(orchestrator.worker, "run_in_background",
-                        lambda job_id, event_bus=None: started.append(job_id))
+                        lambda job_id, event_bus=None, **_: started.append(job_id))
     test_client = TestClient(create_app())
     test_client.started = started  # type: ignore[attr-defined]
     return test_client
@@ -106,7 +106,10 @@ def test_restarting_refuses_on_a_trace_that_reached_the_outside_world(client):
     """Repeating something that already left the machine is not something a
     retry can take back, so the record decides and the route reports it."""
     created = client.post("/api/jobs", json={"goal": "send the email"}).json()["job"]
-    job_store.update_job(created["id"], {"recovery": "unrecoverable"})
+    # Read from the trace itself (changed deliberately with durable rounds): anything that
+    # reached outside Jarvis, finished or not, would be done again by starting over.
+    job_store.append_trace(created["id"], phase="outcome", effect="external", kind="tool",
+                           summary="send_email completed")
 
     refused = client.post(f"/api/jobs/{created['id']}/restart").json()
     assert refused["ok"] is False and refused["reason"] == "unrecoverable"

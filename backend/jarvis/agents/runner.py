@@ -224,7 +224,7 @@ def _message_for(task: str, context: str | None, requested_by: str) -> str:
 def stream_run(agent: dict[str, Any], run: dict[str, Any], message: str, *,
                autonomy: Autonomy, surface: Surface, direct: bool = False,
                attachments: tuple[str, ...] = (), event_bus: Any = None,
-               cancel: threading.Event | None = None) -> Iterator[Any]:
+               cancel: threading.Event | None = None, turn: Any = None) -> Iterator[Any]:
     """Run an already-recorded agent run's turn, yielding its events as they happen
     and recording how it ended. The chat's "talk directly" path streams this to the
     browser; `run_agent` consumes it."""
@@ -236,7 +236,12 @@ def stream_run(agent: dict[str, Any], run: dict[str, Any], message: str, *,
     request = TurnRequest(
         text=message, session_id=run["sessionId"], surface=surface, autonomy=autonomy,
         allowed_names=allowed, always_declare=declared, model_id=agent.get("modelPin") or None,
-        agent=brief_for(agent, direct=direct), attachments=attachments)
+        agent=brief_for(agent, direct=direct), attachments=attachments,
+        # Durable background work fixes the turn id, operation scope and round shape
+        # (`durable.TurnSpec`) so a replayed round repeats nothing it already did.
+        **({"turn_id": turn.turn_id, "operation_scope": turn.operation_scope,
+            "continuable": turn.continuable, "max_steps": turn.max_steps}
+           if turn is not None else {}))
 
     status, result, error, approval, model_id = "failed", "", None, None, None
     tools: list[str] = []

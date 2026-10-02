@@ -556,7 +556,7 @@ def test_a_scheduled_prompt_task_whose_answer_misses_the_point_is_recorded_as_no
     task = task_store.create_task(title="Morning summary", recurrence={"type": "daily", "time": "07:00"},
                                   action={"type": "prompt", "prompt": "summarise my day"})
     monkeypatch.setattr(engine, "_run_action",
-                        lambda t: {"ok": True, "summary": "Here is a recipe for soup."})
+                        lambda t, **_: {"ok": True, "summary": "Here is a recipe for soup."})
     monkeypatch.setattr("jarvis.ops.verify.verify_semantic_match",
                         lambda **kw: verify.Verdict(True, False, "it is about soup"))
 
@@ -572,7 +572,7 @@ def test_a_scheduled_task_of_another_kind_is_never_checked(monkeypatch):
     called = []
     task = task_store.create_task(title="Open the thing", recurrence={"type": "daily", "time": "07:00"},
                                   action={"type": "capability", "name": "get_time", "args": {}})
-    monkeypatch.setattr(engine, "_run_action", lambda t: {"ok": True, "summary": "opened"})
+    monkeypatch.setattr(engine, "_run_action", lambda t, **_: {"ok": True, "summary": "opened"})
     monkeypatch.setattr("jarvis.ops.verify.verify_semantic_match",
                         lambda **kw: called.append(kw) or verify.Verdict(True, False, "no"))
     assert engine.run_task_now(task["id"], event_bus=EventBus())["ok"] is True

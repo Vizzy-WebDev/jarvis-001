@@ -339,3 +339,62 @@ def test_the_agent_store_stays_a_leaf_over_the_database():
     assert imports_of(PACKAGE / "agents" / "store.py") <= {"jarvis.db", "jarvis.db.get_db",
                                                              "jarvis.jscompat",
                                                              "jarvis.jscompat.now_iso"}
+
+
+# --- durable background work (`jarvis/durable.py`) --------------------------------
+
+def raw_imports(path: Path, *, top_level_only: bool = False) -> set[str]:
+    """Every module a file imports, any package, as written (relative ones resolved)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    package = path.relative_to(PACKAGE.parent).with_suffix("").parts
+    nodes = tree.body if top_level_only else list(ast.walk(tree))
+    found: set[str] = set()
+    for node in nodes:
+        if isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                base = package[:-node.level] if node.level <= len(package) else ()
+                prefix = ".".join(base)
+                head = f"{prefix}.{node.module}" if node.module else prefix
+            else:
+                head = node.module or ""
+            found.add(head)
+            found.update(f"{head}.{alias.name}" for alias in node.names)
+    return found
+
+
+def test_langgraph_is_used_in_exactly_one_place():
+    """LangGraph persists and orchestrates background work — `durable.py` and nothing else.
+    The live conversation keeps its own turn loop; a second module reaching for LangGraph
+    is how a second agent loop would start to grow."""
+    users = sorted(str(p.relative_to(PACKAGE.parent)) for p in files_under()
+                   if any(n == "langgraph" or n.startswith("langgraph.") for n in raw_imports(p)))
+    assert users == ["jarvis/durable.py"]
+
+
+def test_no_langchain_model_client_anywhere():
+    """Models are reached through Jarvis's own model layer only (`jarvis/models/`)."""
+    assert [str(p.relative_to(PACKAGE.parent)) for p in files_under()
+            if any(n.startswith("langchain") for n in raw_imports(p))] == []
+
+
+def test_the_turn_loop_and_the_model_layer_know_nothing_of_durable_work():
+    """Durable work calls the turn loop; never the other way round."""
+    assert offending(files_under("orchestrator") + files_under("models"),
+                     ("jarvis.durable",)) == []
+
+
+def test_no_tool_imports_durable_work():
+    assert offending(files_under("tools"), ("jarvis.durable",)) == []
+
+
+def test_durable_work_reaches_the_turn_loop_only_when_it_runs():
+    """Its module-level imports stay light, so anything (a job tool, the agents package)
+    can import it without pulling in the turn loop, the composition root or a kind — the
+    loader invariant's cycle, kept out structurally."""
+    top = raw_imports(PACKAGE / "durable.py", top_level_only=True)
+    forbidden = ("jarvis.orchestrator", "jarvis.assembly", "jarvis.tools", "jarvis.jobs",
+                 "jarvis.agents", "jarvis.scheduler", "jarvis.capabilities", "jarvis.models",
+                 "langgraph")
+    assert sorted(n for n in top if any(n == f or n.startswith(f + ".") for f in forbidden)) == []

@@ -61,7 +61,10 @@ notifications trash purge (`notifications.py`), the connector icon resolver
 starts itself" is answerable by reading a single function. One interlock gates work that
 is triggered by a reply rather than a clock: `JARVIS_CONVERSATION_SUMMARY`, the running
 conversation summary (`conversation_summary.py`, subscribed to `ASSISTANT_RESPONSE` in
-`observers/recording.py`, run through `background.run_in_background`).
+`observers/recording.py`, run through `background.run_in_background`). Picking up
+background work a restart interrupted is not a clock and has no interlock of its own: it runs
+once inside the job supervisor's `start()` (specialist runs first, then jobs) and the
+scheduler's `start()` (prompt runs), so it is on exactly when they are (`jarvis/durable.py`).
 
 ## Conversation context — `orchestrator/context.py` + `conversation_summary.py`
 
@@ -311,6 +314,38 @@ same JSON shapes (connection id = connection name, format = driver name). Speech
 (`external-services`) are a separate system and must not be disturbed.
 
 Nothing under `jarvis/tools/` may import the orchestrator; `ai.py` is the seam a tool may use.
+
+## Durable background work — `jarvis/durable.py`
+
+Background work — a job, a scheduled prompt run, a specialist run a restart cut off — runs in
+**rounds**, and every finished round (its outcome and working transcript) is saved in
+`data/durable.db`, so after a crash or restart the work continues at the round that was
+running instead of starting over. **LangGraph (pinned in `pyproject.toml`) is used here for
+persistence and orchestration of background work ONLY** — its functional API: one
+`@entrypoint` per piece of work, one `@task` per round. Waiting for a person ENDS a run with
+its place saved, and only an explicit answer starts the next — never LangGraph's
+`interrupt()`, which a run picked back up after a crash answers with an EARLIER answer (found
+by a real restart; `test_recovery_never_hands_an_earlier_answer_to_a_later_question`).
+Never the live conversation, never a model client; `test_architecture.py` asserts LangGraph is
+imported by `durable.py` alone and no LangChain anything exists. Each round is ONE ordinary turn
+through the one turn loop — there is no second agent loop.
+
+- **Nothing finished is done twice.** A round runs with `TurnRequest.operation_scope`, so a tool
+  call's operation id is `<work>/e<epoch>/r<round>:<name>:<argument hash>#<n>` — the same when
+  the round is replayed — and `capabilities/execute.py` returns the recorded result. Recorded
+  LOW-risk failures of that round are cleared first (retried); an external failure is kept.
+- **An action that may or may not have happened is never repeated unasked.** Every action a
+  round starts is written down before it runs (the `started` table); an external one
+  (MEDIUM/HIGH risk) with no recorded result stops automatic recovery (`durable.unsure`), and
+  the person is asked to check it.
+- `TurnRequest.continuable` + `Done.final_step`: a round that uses its last step writes a
+  progress note; the next round carries on. `TurnRequest.max_steps` keeps a job's step budget
+  (`STEP_BUDGET_BY_KIND`) exact.
+- One call moves work forward whatever its state (`durable.advance`); a waiting piece of work
+  continues only with an explicit answer, never from a plain start or recovery. One thread
+  advances a piece of work at a time; `durable.stop` interrupts the round in flight.
+- `Start Jarvis.bat` reinstalls when `backend\pyproject.toml` changed since the last install,
+  so an update that adds a package never leaves an existing install unable to start.
 
 ## Specialist agents — `jarvis/agents/` (see its own `CLAUDE.md`)
 

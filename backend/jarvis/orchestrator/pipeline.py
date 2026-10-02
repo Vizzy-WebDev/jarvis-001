@@ -81,6 +81,11 @@ FINAL_STEP_NOTE = ("This is your last step for this request: there is nothing mo
 #: anyway (see `_run_model_loop`).
 INSIST_NOTE = ("No tools exist for this reply — any tool call will be ignored. Write your "
                "answer to the person now, in plain words, from what you already have.")
+#: The last step of one ROUND of longer background work (`TurnRequest.continuable`): the
+#: work is not over, so what is asked for is where it stands, not a final answer.
+ROUND_END_NOTE = ("This round of the work ends here: there is nothing more to call right now. "
+                  "Write a short progress note — what you have done so far, what you found, and "
+                  "exactly what is left to do. You will continue from it in the next round.")
 
 
 #: Above this many capabilities, a turn is declared its CORE set plus whatever
@@ -193,6 +198,9 @@ class Done:
     #: user_message_id`. None for the CLARIFY fast-return, which never wrote
     #: an assistant message at all.
     message_id: str | None = None
+    #: True when this answer came from the turn's last allowed step — for a continuable
+    #: round of background work, that means "ran out of room", not "finished".
+    final_step: bool = False
 
 
 TurnEvent = (Routed | Chunk | Reaction | ToolRan | ApprovalRequired | Switched | Interrupted
@@ -304,6 +312,34 @@ class TurnRequest:
     #: PERMITTED (every connector tool, say) can be far more than is worth
     #: DECLARING on every step — the rest stay reachable through find_capability.
     always_declare: frozenset[str] | None = None
+    #: Set by durable background work (`jarvis/durable.py`). Tool calls then get operation
+    #: ids that are the SAME when a round is replayed after a crash —
+    #: `<scope>:<name>:<argument hash>#<n-th identical call>` — so `capabilities/execute.py`
+    #: returns what an already-finished call returned instead of doing it again.
+    operation_scope: str | None = None
+    #: Set by durable background work: the turn is one round of something longer, so its
+    #: last step asks for a progress note rather than a final answer, and `Done.final_step`
+    #: says the round ran out rather than finished.
+    continuable: bool = False
+    #: Set by durable background work: at most this many model steps in this turn (never more
+    #: than the usual ceiling), so a job's step budget is never overshot by a whole round.
+    max_steps: int | None = None
+
+
+def operation_id_for(scope: str, name: str, args: dict[str, Any], seen: dict[str, int]) -> str:
+    """A tool call's replay-stable operation id within one round of background work.
+
+    Deterministic in what the call IS (its capability and arguments) and how many identical
+    calls this round already made — never in anything minted per attempt — so the same round
+    replayed after a crash produces the same ids in the same order.
+    """
+    import hashlib
+    import json
+
+    digest = hashlib.sha256(json.dumps(args or {}, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    key = f"{name}:{digest}"
+    seen[key] = seen.get(key, 0) + 1
+    return f"{scope}:{key}#{seen[key]}"
 
 
 def _prepare_for_new_turn(state: AssistantState) -> None:
@@ -351,6 +387,12 @@ class Orchestrator:
         #: when the attachments are prepared and read once by the model loop.
         self._needs: dict[str, dict[str, bool]] = {}
         self._lock = threading.RLock()
+
+    @property
+    def event_bus(self) -> EventBus:
+        """The bus this loop publishes on — for a caller that runs turns and must watch what
+        they do (durable background work counts each round's model calls on it)."""
+        return self._bus
 
     def state_for(self, session_id: str) -> AssistantState:
         with self._lock:
@@ -515,10 +557,15 @@ class Orchestrator:
         # that returned `unlock` (see tools/find_capability.py). Per-turn and
         # per-call: nothing here outlives the turn that earned it.
         unlocked: set[str] = set()
+        # Identical calls counted per round, for replay-stable operation ids (only used when
+        # `request.operation_scope` is set — durable background work).
+        seen_calls: dict[str, int] = {}
         # What this turn actually DID, for the observers downstream of it. The
         # loop keeps the list; it does not know or care who reads it.
         tools_used: list[str] = []
         ceiling = step_ceiling()
+        if request.max_steps is not None:
+            ceiling = max(1, min(ceiling, request.max_steps))
         # Set when the last step came back asking for a tool it was not offered:
         # that earns exactly one more attempt at the answer (see below).
         insist = False
@@ -556,7 +603,8 @@ class Orchestrator:
                 assembled = self._assemble(request, budget)
                 system = assembled.system
                 if final:
-                    system = with_section(system, "final_step", FINAL_STEP_NOTE)
+                    system = with_section(system, "final_step",
+                                          ROUND_END_NOTE if request.continuable else FINAL_STEP_NOTE)
                     if step > ceiling:
                         system = with_section(system, "no_tools_now", INSIST_NOTE)
 
@@ -674,7 +722,7 @@ class Orchestrator:
                      "toolNames": list(tools_used), "contextBudget": budget},
                 )
                 self._finish(state, request)
-                yield Done(reply, steps=step, model_id=completed.model_id,
+                yield Done(reply, steps=step, model_id=completed.model_id, final_step=final,
                           message_id=pushed_reply.get("id"))
                 return
 
@@ -690,7 +738,7 @@ class Orchestrator:
             results: list[dict[str, Any]] = []
             state.to(State.EXECUTING, f"step {step}")
             for call in completed.tool_calls:
-                result = self._execute_call(request, call)
+                result = self._execute_call(request, call, seen_calls)
                 tools_used.append(call.name)
                 yield ToolRan(call.name, result.ok, result.outcome, result.error,
                               _attachment_of(result.value), _navigate_of(result.value),
@@ -720,13 +768,18 @@ class Orchestrator:
         state.fail("the turn ran out of steps")
         yield Failed(
             f"I went round {ceiling} times without finishing that, so I stopped. "
-            "Tell me what to try differently."
+            "Tell me what to try differently.",
+            code="out_of_steps",
         )
 
     # --- helpers -------------------------------------------------------------
 
-    def _execute_call(self, request: TurnRequest, call: ToolCall) -> ExecutionResult:
-        ctx = self._context_for(request, f"{request.turn_id}:{call.id}")
+    def _execute_call(self, request: TurnRequest, call: ToolCall,
+                      seen: dict[str, int] | None = None) -> ExecutionResult:
+        operation_id = (operation_id_for(request.operation_scope, call.name, dict(call.args or {}),
+                                         seen if seen is not None else {})
+                        if request.operation_scope else f"{request.turn_id}:{call.id}")
+        ctx = self._context_for(request, operation_id)
         return execute(
             call.name, dict(call.args or {}), ctx,
             registry=self._registry, grants=request.grants,

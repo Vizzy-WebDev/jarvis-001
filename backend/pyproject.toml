@@ -37,6 +37,12 @@ dependencies = [
     # when they are absent rather than failing at import.
     "pywinauto>=0.6; sys_platform == 'win32'",
     "pyautogui>=0.9; sys_platform == 'win32'",
+    # Durable background work (`jarvis/durable.py`): a job's finished rounds are saved, so a
+    # crash or restart resumes it instead of starting over. Used for persistence and
+    # orchestration of background work ONLY — never the live turn loop, never a model client.
+    # Pinned exactly: these move fast, and the launcher reinstalls when this file changes.
+    "langgraph==1.2.12",
+    "langgraph-checkpoint-sqlite==3.1.1",
 ]
 
 [project.optional-dependencies]

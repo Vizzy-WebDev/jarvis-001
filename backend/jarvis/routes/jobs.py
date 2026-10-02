@@ -31,6 +31,7 @@ from fastapi.responses import JSONResponse
 
 from ..heartbeat import outbox
 from ..jobs import job_store, orchestrator
+from ..jobs.policy import has_external_effect
 
 router = APIRouter(prefix="/api")
 
@@ -119,22 +120,21 @@ def resume(job_id: str, body: dict[str, Any] = Body(default_factory=dict)):
 def restart(job_id: str, body: dict[str, Any] = Body(default_factory=dict)):
     """Start it over rather than continue it.
 
-    Refused for a job the trace says is unrecoverable, and that refusal is the
-    point: ANY row recording a real outward effect makes restarting unsafe,
-    because repeating something that reached the outside world is not something
-    a retry can take back. `force` exists for the person who knows better than
-    the record, and has to say so explicitly.
+    Starting over drops the job's saved rounds, so everything it did is done again.
+    Refused when anything it did — or started to do — reached outside Jarvis, and that
+    refusal is the point: repeating something that reached the outside world is not
+    something a retry can take back. `force` exists for the person who knows better than
+    the record, and has to say so explicitly. (Continuing — `resume` — never repeats a
+    finished action, so it needs no such check.)
     """
     job = job_store.get_job(job_id)
     if job is None:
         return JSONResponse({"ok": False, "error": "Unknown job."}, status_code=404)
-    if job.get("recovery") == "unrecoverable" and not body.get("force"):
+    if has_external_effect(job_store.get_trace(job_id)) and not body.get("force"):
         return {"ok": False, "reason": "unrecoverable",
                 "message": "This job already did something outside Jarvis that starting "
                            "over could repeat. Restart anyway?"}
-    job_store.update_job(job_id, {"result": None, "error": None, "progress": 0,
-                                  "currentStep": None})
-    restarted = orchestrator.resume(job_id)
+    restarted = orchestrator.restart(job_id)
     return {"ok": True, "job": restarted}
 
 

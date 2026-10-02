@@ -53,8 +53,36 @@ if not exist "%VENV_PY%" (
         pause
         exit /b 1
     )
+    copy /y "backend\pyproject.toml" "%VENV%\installed-pyproject.toml" >nul
     echo.
     echo Setup complete.
+    echo.
+)
+
+rem --- keep what is installed in step with this copy --------------------------
+rem An existing install ran "pip install" once, on its first launch. When an update
+rem needs a new package (backend\pyproject.toml changed since the last install),
+rem install again, so the new version finds what it needs instead of failing to start.
+set "STAMP=%VENV%\installed-pyproject.toml"
+set "REINSTALL="
+if not exist "%STAMP%" set "REINSTALL=1"
+if exist "%STAMP%" (
+    fc /b "backend\pyproject.toml" "%STAMP%" >nul 2>&1
+    if errorlevel 1 set "REINSTALL=1"
+)
+if defined REINSTALL (
+    echo Updating what Jarvis needs for this version - this can take a few minutes...
+    echo.
+    "%VENV_PY%" -m pip install -e backend
+    if errorlevel 1 (
+        echo.
+        echo Jarvis couldn't install what this version needs. Scroll up to see why.
+        echo.
+        echo Check your internet connection, then double-click this file again.
+        pause
+        exit /b 1
+    )
+    copy /y "backend\pyproject.toml" "%STAMP%" >nul
     echo.
 )
 

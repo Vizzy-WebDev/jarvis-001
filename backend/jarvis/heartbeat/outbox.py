@@ -80,6 +80,14 @@ def pending_for_source_ref(source: str, source_ref: str | None) -> list[dict[str
     return [_entry(r) for r in rows]
 
 
+def for_source_ref(source: str, source_ref: str) -> list[dict[str, Any]]:
+    """Every row a source ever raised for one thing, delivered or not."""
+    rows = get_db().execute(
+        "SELECT * FROM outbox WHERE source = ? AND source_ref = ? ORDER BY created_at",
+        (source, source_ref)).fetchall()
+    return [_entry(r) for r in rows]
+
+
 def for_job(job_id: str) -> list[dict[str, Any]]:
     rows = get_db().execute(
         "SELECT * FROM outbox WHERE job_id = ? ORDER BY created_at", (job_id,)).fetchall()

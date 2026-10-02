@@ -14,6 +14,15 @@
   - **The schedule advances BEFORE the run**, so a task that throws, or a restart
     mid-run, can never re-fire the same due timestamp forever. A run missed for days
     catches up exactly once and is flagged `late` (more than `LATE_THRESHOLD` past due).
+  - **A `prompt` run is one round of durable work** (`durable_runs.py`, kind `task_run`,
+    `jarvis/durable.py`). If Jarvis stops part-way, the next start (`engine.start()` →
+    `recover_interrupted()`, before the first tick) picks it up ONCE: finished tool calls are
+    recalled, not repeated, and the run history says `resumedAfterRestart` / "Resumed after
+    Jarvis restarted." Interrupted a second time — or in the middle of an action that reaches
+    outside Jarvis (it may or may not have happened) — it is recorded as not tried again,
+    naming that action. The run is recorded by the durable finisher through `complete_run()`,
+    at most once per run (`workId`). A run done by a specialist (`action.agentId`) still goes
+    through `runner.run_agent` and is not resumed.
   - **A `prompt` task runs as its own ephemeral session** (`task:<id>:<suffix>`), never
     bound to chat history, with `Autonomy.PRE_CONSENTED` on `Surface.SCHEDULED`. Pre-consent
     covers ordinary work only — a HIGH-risk call inside it still parks for a human

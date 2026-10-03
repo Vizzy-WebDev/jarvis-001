@@ -1,0 +1,325 @@
+{
+  "entries": [
+    {
+      "id": "notion",
+      "label": "Notion",
+      "icon": "notion",
+      "description": "Search, read, and update pages and databases in your Notion workspace.",
+      "connectFlow": { "kind": "oauth_dcr", "url": "https://mcp.notion.com/mcp" }
+    },
+    {
+      "id": "github",
+      "label": "GitHub",
+      "icon": "github",
+      "description": "Search code, read and open issues/PRs, and work with repositories.",
+      "connectFlow": {
+        "kind": "oauth_guided",
+        "url": "https://api.githubcopilot.com/mcp/",
+        "guide": {
+          "consoleLabel": "GitHub Developer Settings",
+          "steps": [
+            "Go to GitHub, click your profile picture (top right), then Settings.",
+            "In the left sidebar, click Developer settings, then OAuth Apps, then New OAuth App.",
+            "Application name: anything you like, e.g. \"Jarvis\". Homepage URL: anything, e.g. http://127.0.0.1.",
+            "Authorization callback URL: paste the address shown below exactly.",
+            "Click Register application, then click Generate a new client secret.",
+            "Copy the Client ID and the new Client Secret and paste them in below."
+          ]
+        }
+      }
+    },
+    {
+      "id": "slack",
+      "label": "Slack",
+      "icon": "slack",
+      "description": "Search and send messages, and read canvases, in your Slack workspace.",
+      "connectFlow": {
+        "kind": "oauth_guided",
+        "url": "https://mcp.slack.com/mcp",
+        "guide": {
+          "consoleLabel": "Slack App Management",
+          "note": "Slack requires the redirect address to use HTTPS. Jarvis's address is plain HTTP, so Slack's own sign-in step may refuse it — if that happens, this connector can't be completed yet.",
+          "steps": [
+            "Go to api.slack.com/apps, click Create New App, then From scratch. Give it a name and pick your workspace.",
+            "In the left sidebar, click OAuth & Permissions, add the address shown below under Redirect URLs, then click Save URLs.",
+            "In the left sidebar, click Basic Information — your Client ID and Client Secret are under App Credentials.",
+            "Copy both and paste them in below."
+          ]
+        }
+      }
+    },
+    {
+      "id": "google-drive",
+      "label": "Google Drive",
+      "icon": "google-drive",
+      "description": "Search, read, and upload files in your Google Drive.",
+      "connectFlow": {
+        "kind": "oauth_guided",
+        "url": "https://drivemcp.googleapis.com/mcp/v1",
+        "guide": {
+          "consoleLabel": "Google Cloud Console",
+          "steps": [
+            "Go to console.cloud.google.com and create or pick a project.",
+            "Go to Google Auth Platform, then Branding, and fill in the basic app info if it asks you to.",
+            "Go to Google Auth Platform, then Clients, then Create Client. Application type: Web application.",
+            "Under Authorized redirect URIs, paste the address shown below exactly.",
+            "Click Create, then copy the Client ID and Client Secret and paste them in below."
+          ]
+        }
+      }
+    },
+    {
+      "id": "gmail",
+      "label": "Gmail",
+      "icon": "gmail",
+      "description": "Read, search, and compose email in your Gmail account.",
+      "connectFlow": {
+        "kind": "oauth_guided",
+        "url": "https://gmailmcp.googleapis.com/mcp/v1",
+        "guide": {
+          "consoleLabel": "Google Cloud Console",
+          "note": "This is a Google Workspace Developer Preview feature, not a finished general-release product yet — Google itself may still change or restrict it.",
+          "steps": [
+            "Go to console.cloud.google.com and create or pick a project.",
+            "Go to APIs & Services, then Library, and enable both the \"Gmail API\" and the \"Gmail MCP API\".",
+            "Go to Google Auth Platform, then Branding, and fill in the basic app info if it asks you to.",
+            "Go to Google Auth Platform, then Clients, then Create Client. Application type: Web application.",
+            "Under Authorized redirect URIs, paste the address shown below exactly.",
+            "Click Create, then copy the Client ID and Client Secret and paste them in below."
+          ]
+        }
+      }
+    },
+    {
+      "id": "higgsfield-api",
+      "type": "api",
+      "label": "Higgsfield API",
+      "icon": "higgsfield",
+      "description": "Generate images and videos with Higgsfield's models through its developer API, using an API key.",
+      "api": {
+        "baseUrl": "https://api.higgsfield.ai",
+        "auth": {
+          "kind": "bearer",
+          "prefix": "Key"
+        },
+        "keyLabel": "API key",
+        "keyHint": "Paste it in the key-id:key-secret form the Higgsfield console gives you.",
+        "test": {
+          "method": "GET",
+          "path": "/requests/00000000-0000-0000-0000-000000000000/status",
+          "okStatus": [
+            200,
+            404
+          ]
+        },
+        "operations": [
+          {
+            "name": "generate",
+            "description": "Start a Higgsfield generation and wait for the finished result (image or video URLs). Pass the model id as model, e.g. bytedance/seedance-2.5/text-to-video or higgsfield-ai/soul/v2/standard, and that model's inputs as body, e.g. {\"prompt\": \"...\", \"duration\": 5, \"resolution\": \"720p\", \"aspect_ratio\": \"16:9\"}. Uses the account's API credits.",
+            "method": "POST",
+            "path": "/{model}",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "model": {
+                  "type": "string",
+                  "description": "The model id, e.g. bytedance/seedance-2.5/text-to-video."
+                },
+                "body": {
+                  "type": "object",
+                  "description": "The model's inputs, e.g. {\"prompt\": \"A cinematic scene at sunset\", \"duration\": 5, \"resolution\": \"720p\", \"aspect_ratio\": \"16:9\"}."
+                }
+              },
+              "required": [
+                "model",
+                "body"
+              ]
+            },
+            "wait": {
+              "idFrom": "request_id",
+              "method": "GET",
+              "path": "/requests/{id}/status",
+              "statusField": "status",
+              "done": [
+                "completed"
+              ],
+              "failed": [
+                "failed",
+                "nsfw",
+                "canceled"
+              ],
+              "intervalS": 5,
+              "timeoutS": 900
+            }
+          },
+          {
+            "name": "get_request_status",
+            "description": "Check a Higgsfield generation request by its request id, returning its status and, once completed, its result.",
+            "method": "GET",
+            "path": "/requests/{request_id}/status",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "request_id": {
+                  "type": "string",
+                  "description": "The request id a generation returned."
+                }
+              },
+              "required": [
+                "request_id"
+              ]
+            }
+          },
+          {
+            "name": "cancel_request",
+            "description": "Cancel a Higgsfield generation request that has not started processing yet.",
+            "method": "POST",
+            "path": "/requests/{request_id}/cancel",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "request_id": {
+                  "type": "string",
+                  "description": "The request id to cancel."
+                }
+              },
+              "required": [
+                "request_id"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "higgsfield-cli",
+      "type": "cli",
+      "label": "Higgsfield CLI",
+      "icon": "higgsfield",
+      "description": "Generate images, videos and audio with the Higgsfield command-line tool installed on this computer, signed in with your Higgsfield account.",
+      "cli": {
+        "command": "higgsfield",
+        "install": "npm i -g @higgsfield/cli",
+        "login": [
+          "auth",
+          "login"
+        ],
+        "test": [
+          "account",
+          "status",
+          "--json"
+        ],
+        "commands": [
+          {
+            "name": "account_status",
+            "description": "Show the signed-in Higgsfield account's credit balance and plan.",
+            "argv": [
+              "account",
+              "status",
+              "--json"
+            ],
+            "args": []
+          },
+          {
+            "name": "list_models",
+            "description": "List the image, video, audio and text models Higgsfield offers, with their job type names.",
+            "argv": [
+              "model",
+              "list",
+              "--json"
+            ],
+            "args": []
+          },
+          {
+            "name": "model_details",
+            "description": "Show one model's accepted parameters and defaults, by its job type name.",
+            "argv": [
+              "model",
+              "get",
+              "{job_type}",
+              "--json"
+            ],
+            "args": [
+              {
+                "name": "job_type",
+                "description": "The model's job type name from list_models, e.g. nano_banana_2 or seedance_2_0."
+              }
+            ]
+          },
+          {
+            "name": "estimate_cost",
+            "description": "Estimate how many credits a generation would cost, without creating it.",
+            "argv": [
+              "generate",
+              "cost",
+              "{job_type}",
+              "--prompt",
+              "{prompt}",
+              "--json"
+            ],
+            "args": [
+              {
+                "name": "job_type",
+                "description": "The model's job type name."
+              },
+              {
+                "name": "prompt",
+                "description": "The prompt that would be used."
+              }
+            ]
+          },
+          {
+            "name": "generate",
+            "description": "Create an image or video with a Higgsfield model from a text prompt and wait for the finished result URL(s). Uses the account's credits.",
+            "argv": [
+              "generate",
+              "create",
+              "{job_type}",
+              "--prompt",
+              "{prompt}",
+              "--wait",
+              "--json"
+            ],
+            "args": [
+              {
+                "name": "job_type",
+                "description": "The model's job type name, e.g. nano_banana_2 for an image or seedance_2_0 for a video."
+              },
+              {
+                "name": "prompt",
+                "description": "What to generate."
+              }
+            ],
+            "timeoutS": 900
+          },
+          {
+            "name": "get_generation",
+            "description": "Show one generation job by its id, including its status and result URL(s).",
+            "argv": [
+              "generate",
+              "get",
+              "{job_id}",
+              "--json"
+            ],
+            "args": [
+              {
+                "name": "job_id",
+                "description": "The generation job id."
+              }
+            ]
+          },
+          {
+            "name": "list_generations",
+            "description": "List recent generation jobs on the account.",
+            "argv": [
+              "generate",
+              "list",
+              "--json"
+            ],
+            "args": []
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -49,6 +49,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from .. import conversation, conversation_summary, prompt
 from ..memory import store as memory_store
+from ..open_work import snapshot as open_work_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -397,6 +398,9 @@ class RelevanceContext:
         # there would deliver it to the machinery instead of to them.
         notices = "" if background else prompt.notices_section(_waiting_notices(),
                                                                 session_id=session_id)
+        # What Jarvis has going for them, so "still on it" is something it knows. Same gate:
+        # a background turn has nobody to say it to.
+        open_work = "" if background else prompt.open_work_section(open_work_snapshot())
 
         # The adaptive communication register — both its stable half
         # (STYLE_FRAMEWORK, via has_audience below) and its per-turn half
@@ -414,7 +418,8 @@ class RelevanceContext:
         answered = _answered_approvals(session_id)
         system = prompt.system_instruction(
             memories=memories_text, low_confidence=low_confidence,
-            extra=[p for p in (("conversation_so_far", so_far), ("learned_rules", rules),
+            extra=[p for p in (("conversation_so_far", so_far), ("open_work", open_work),
+                               ("learned_rules", rules),
                                ("answered_approvals", answered), ("waiting_notices", notices),
                                ("style_now", floors_text)) if p[1]],
             has_audience=has_audience)

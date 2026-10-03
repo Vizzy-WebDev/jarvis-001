@@ -126,7 +126,8 @@ def test_the_step_budget_is_never_overshot_and_parks_with_a_question(monkeypatch
     assert worker.join_all(timeout=20)
     assert job_store.get_job(job["id"])["status"] == "done"
     assert len(brain.calls_for(f"job:{job['id']}")) == 12
-    assert [o for o in job_store.list_pending_outbox() if o["jobId"] == job["id"]] == []
+    assert [o for o in job_store.list_pending_outbox()
+            if o["jobId"] == job["id"] and o["reason"] != "finished"] == []
 
 
 def test_a_finished_job_is_not_run_again_by_a_plain_start():
@@ -181,7 +182,7 @@ def client():
 
 def _park_on_external(brain: Brain) -> tuple[dict, str]:
     job = new_job(goal="send the report")
-    brain.plan("job:", [[("call", "effect_external", {"tag": "ext"})],
+    brain.plan("job:", [[("call", "effect_high", {"tag": "ext"})],
                         [("say", "Sent, and noted.")]])
     result = run(job["id"])
     assert result["status"] == "awaiting_decision"
@@ -205,10 +206,11 @@ def test_approving_runs_the_action_once_and_the_job_carries_on_by_itself(client)
     # The next round was shown what really happened, not "needs your go-ahead".
     [call] = brain.calls_for(f"job:{job['id']}", 1)
     settled = [r for m in call["messages"] for r in m.get("toolResults") or []
-               if r["name"] == "effect_external"]
+               if r["name"] == "effect_high"]
     assert [r["result"] for r in settled] == [{"done": "ext"}]
     # Nothing left asking the person.
-    assert [o for o in job_store.list_pending_outbox() if o["jobId"] == job["id"]] == []
+    assert [o for o in job_store.list_pending_outbox()
+            if o["jobId"] == job["id"] and o["reason"] != "finished"] == []
 
 
 def test_declining_lets_the_job_carry_on_without_it_and_it_never_runs(client):
@@ -222,7 +224,7 @@ def test_declining_lets_the_job_carry_on_without_it_and_it_never_runs(client):
     assert effect_count("ext") == 0
     [call] = brain.calls_for(f"job:{job['id']}", 1)
     settled = [r for m in call["messages"] for r in m.get("toolResults") or []
-               if r["name"] == "effect_external"]
+               if r["name"] == "effect_high"]
     assert [r["result"] for r in settled] == [{"error": durable.DECLINED}]
 
 
@@ -254,7 +256,8 @@ def test_restart_forgets_the_saved_rounds_and_really_does_it_all_again(client):
     notes = [r["summary"] for r in job_store.get_trace(job["id"]) if r["kind"] == "note"]
     assert notes == ["finished", "finished (attempt 2)"]
     finished = [o for o in outbox.for_job(job["id"]) if o["reason"] == "finished"]
-    assert [o["detail"] for o in finished] == [{"attempt": 1}, {"attempt": 2}]
+    assert [o["detail"]["attempt"] for o in finished] == [1, 2]
+    assert all(o["tier"] == 2 and o["detail"]["result"] == "Done." for o in finished)
     assert [r["round"] for r in durable.rounds(job["id"])] == [0]
     assert len(brain.calls_for(f"job:{job['id']}")) == 4
 
@@ -357,7 +360,7 @@ def test_recovery_after_a_crash_is_idempotent_however_often_it_is_asked():
 def test_clearing_recorded_failures_touches_only_that_rounds_own_low_risk_calls():
     db = get_db()
     rows = [("w1/e0/r1:effect_low:aa#1", "effect_low", 0),
-            ("w1/e0/r1:effect_external:bb#1", "effect_external", 0),
+            ("w1/e0/r1:effect_high:bb#1", "effect_high", 0),
             ("w1/e0/r1:effect_low:cc#1", "effect_low", 1),
             ("w1/e0/r10:effect_low:dd#1", "effect_low", 0),
             ("w1/e0/r2:effect_low:ee#1", "effect_low", 0),
@@ -532,8 +535,8 @@ def test_recovery_never_hands_an_earlier_answer_to_a_later_question(client):
     replays earlier answers). A wait now ends the run, and only a new answer continues it."""
     brain = install(Brain())
     job = new_job(goal="send two reports")
-    brain.plan("job:", [[("call", "effect_external", {"tag": "one"})],
-                        [("call", "effect_external", {"tag": "two"})],
+    brain.plan("job:", [[("call", "effect_high", {"tag": "one"})],
+                        [("call", "effect_high", {"tag": "two"})],
                         [("say", "Both sent.")]])
     first = run(job["id"])["approvalId"]
     client.post(f"/api/approvals/{first}", json={"decision": "allow"})

@@ -198,10 +198,19 @@ transformation, not recording, so the restraint above doesn't apply to it.
 classify it. A `HIGH` risk capability with `retry.attempts > 0` is refused at
 construction: that is how one "send message" stops being able to become three.
 
-**A confirmation is a floor no instruction can lower.** The user's own explicit
-in-the-moment "skip confirming" must never be honoured for anything effectful. A confirm
-token minted in a turn cannot be redeemed in that same turn — enforced structurally, not
-by prompt instruction, after a real model was caught completing an entire
+**For HIGH-risk actions a confirmation is a floor no instruction can lower; for ordinary
+(MEDIUM) ones, the person's own clear request is the go-ahead.** That second half is the
+owner's decision, and it is structural, not a prompt: a MEDIUM capability runs with no card
+only if its author set `CapabilitySpec.request_suffices` after judging it undoable or
+contained (default off; the model cannot set it), a person is here (`Autonomy.INTERACTIVE`)
+and was heard clearly (a misheard request still confirms). `policy/decide.py` is the one
+place; HIGH ignores the flag in every combination. Every MEDIUM tool the app registers is
+named in `tests/test_policy.py`'s reviewed lists (`REQUEST_SUFFICES` / `KEEPS_ASKING`), so a new
+one cannot arrive undecided. Kept asking on purpose: `allow_folder`, `approve_skill_*`,
+`create_skill`, `run_code`, `narrate_to_file` (spends money), Content Manager edit/schedule, and
+Jarvis's own file/browser connector writes. The user's "skip confirming" is still never honoured
+for HIGH. A confirm token minted in a turn cannot be redeemed in that same turn — enforced
+structurally, not by prompt instruction, after a real model was caught completing an entire
 ask-and-answer round trip with no human reply in between.
 
 **Built-in tools are not Skills and must NEVER appear as one in the UI** — not in the
@@ -346,6 +355,18 @@ through the one turn loop — there is no second agent loop.
   advances a piece of work at a time; `durable.stop` interrupts the round in flight.
 - `Start Jarvis.bat` reinstalls when `backend\pyproject.toml` changed since the last install,
   so an update that adds a package never leaves an existing install unable to start.
+
+**Follow-through — "I'll get back to you" must really come back.** A finished job
+(`jobs/worker._deliver_result`) leaves a tier-2 notice carrying its WHOLE result (shown on the next
+person-started turn like a late specialist's, scoped to the conversation that asked, acknowledged
+with `acknowledge_notice`), raises a notification, and — only when `heartbeat/speak.may_speak_now`
+says the person is here — Jarvis says it first (short results whole, long ones as a headline).
+Questions a job cannot continue without (go-ahead, stuck, out of steps, crashed) are asked aloud
+the same way. Every step is safe to replay after a crash. `open_work.snapshot()` +
+`prompt.open_work_section` tell Jarvis what it actually has going (jobs, waiting jobs, specialist
+runs, watches) on every person-started turn, capped, so "still on it" is knowledge and a promise
+that is not on that list was never started. A job runs `Autonomy.PRE_CONSENTED` (the person set it
+going): MEDIUM steps run, HIGH still parks.
 
 ## Specialist agents — `jarvis/agents/` (see its own `CLAUDE.md`)
 

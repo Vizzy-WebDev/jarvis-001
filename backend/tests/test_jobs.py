@@ -317,8 +317,24 @@ def ctx(turn="t1") -> CallContext:
                        autonomy=Autonomy.INTERACTIVE)
 
 
-def test_backgrounding_is_read_back_before_it_starts(reg):
+def test_backgrounding_a_request_starts_at_once_with_no_card(reg, monkeypatch):
+    """Changed deliberately (Phase 3, authority): the person asking IS the go-ahead, so no card
+    stands between "I'll keep at it" and the work actually starting."""
+    started = []
+    monkeypatch.setattr("jarvis.jobs.worker.run_in_background",
+                        lambda job_id, *a, **k: started.append(job_id))
     result = execute("work_in_background", {"goal": "find flights to Lagos"}, ctx(),
+                     registry=reg)
+    assert result.outcome is ExecOutcome.COMPLETED and result.ok
+    [job] = job_store.list_active_jobs()
+    assert job["goal"] == "find flights to Lagos" and started == [job["id"]]
+
+
+def test_backgrounding_misheard_is_still_read_back_before_it_starts(reg):
+    """Floor 4 is unchanged: a request that was not heard clearly can only ADD a confirmation."""
+    misheard = CallContext(session_id="s1", turn_id="t1", surface=Surface.VOICE,
+                           autonomy=Autonomy.INTERACTIVE, low_confidence=True)
+    result = execute("work_in_background", {"goal": "find flights to Lagos"}, misheard,
                      registry=reg)
     assert result.outcome is ExecOutcome.NEEDS_APPROVAL
     assert "find flights to Lagos" in approval_store.get(result.approval_id).reason
@@ -340,10 +356,22 @@ def test_checking_on_nothing_says_so_rather_than_inventing_a_status(reg):
     assert result.ok and result.value["jobs"] == []
 
 
-def test_stopping_names_the_job_and_how_far_it_got(reg):
+def test_stopping_on_request_stops_it_and_names_what_was_stopped(reg):
+    """Changed deliberately (Phase 3): asking to stop it is the go-ahead; what was done so far
+    is kept, and the answer says which job was stopped."""
     job = job_store.create_job(title="Find flights", goal="g")
     job_store.heartbeat(job["id"], progress=60)
     result = execute("stop_working_on", {"which": "flights"}, ctx(), registry=reg)
+    assert result.ok and result.value["stopped"] == "Find flights"
+    assert job_store.get_job(job["id"])["status"] == "cancelled"
+
+
+def test_stopping_misheard_names_the_job_and_how_far_it_got(reg):
+    job = job_store.create_job(title="Find flights", goal="g")
+    job_store.heartbeat(job["id"], progress=60)
+    misheard = CallContext(session_id="s1", turn_id="t1", surface=Surface.VOICE,
+                           autonomy=Autonomy.INTERACTIVE, low_confidence=True)
+    result = execute("stop_working_on", {"which": "flights"}, misheard, registry=reg)
     reason = approval_store.get(result.approval_id).reason
     assert 'Stop working on "Find flights"?' in reason and "60%" in reason
     assert job_store.get_job(job["id"])["status"] != "cancelled"

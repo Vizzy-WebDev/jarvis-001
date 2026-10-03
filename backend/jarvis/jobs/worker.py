@@ -7,9 +7,10 @@ conversation list and never share a transcript with what the user is actually
 talking about. That is a property of the wiring, not a convention to remember.
 
 **A worker never asks the user anything directly.** It runs with
-`Autonomy.ESCALATE`, so a call needing a human parks into `awaiting_decision`
-with an outbox row rather than minting a confirmation nobody is present to
-answer. A job may wait hours; a short-lived token would be long expired.
+`Autonomy.PRE_CONSENTED` — the person set the work going, so ordinary steps toward its goal
+are already theirs, exactly like a scheduled task — and a HIGH-risk call needing a human
+parks into `awaiting_decision` with an outbox row rather than minting a confirmation nobody
+is present to answer. A job may wait hours; a short-lived token would be long expired.
 
 Every effectful step is traced before and after, which is what makes recovery a
 reading of the record rather than a guess.
@@ -191,8 +192,11 @@ def _turn(job_id: str, text: str, spec: Any, cancel: threading.Event) -> Iterato
         text=text,
         session_id=session_for(job_id),
         surface=Surface.JOB,
-        # Nobody is present. A decision is parked, never asked.
-        autonomy=Autonomy.ESCALATE,
+        # The person set this work going (their own request, the Jobs screen or an approved
+        # split), so ordinary steps toward its goal are theirs already: the same "set up in
+        # advance" rule a scheduled task runs under. A HIGH-risk step still parks — nobody is
+        # present to ask — and a computer job is still created parked.
+        autonomy=Autonomy.PRE_CONSENTED,
         turn_id=spec.turn_id,
         allowed_names=allowed,
         operation_scope=spec.operation_scope,
@@ -266,11 +270,71 @@ def _finish(job_id: str, outcome: dict[str, Any]) -> dict[str, Any]:
                                summary=note, detail=answer[:500])
     _bus_for(job_id).publish(EventType.JOB_COMPLETED, {"id": job_id, "status": "done",
                                                        "title": job.get("title")})
-    # Tier 3: worth recording, never worth interrupting for. The user finds it
-    # when they ask, or through the ambient notification channel.
-    _outbox_once(job_id, tier=3, reason="finished", summary=f'"{job.get("title")}" finished.',
-                 detail={"attempt": attempt})
+    _deliver_result(job_id, job, answer, attempt, outcome.get("files") or [])
     return {"accepted": True, "status": "done", "result": answer}
+
+
+#: A finished result this short is said whole when the person is here; longer, they are told
+#: it is done and the full result waits for the next thing they say.
+SPOKEN_RESULT_CHARS = 800
+
+
+def _deliver_result(job_id: str, job: dict[str, Any], answer: str, attempt: int,
+                    files: list[dict[str, Any]]) -> None:
+    """Get the finished result to the person — the follow-through a promise to "get back to
+    you" needs. The same three ways a late specialist result arrives: a notice carrying the
+    whole result (shown on the next turn they start), a notification, and — when they are
+    actually here — Jarvis saying so first. Each is safe to replay after a crash."""
+    title = str(job.get("title") or "The job")
+    speaking = _may_speak()
+    entry = _outbox_once(
+        job_id, tier=2, reason="finished", summary=f'"{title}" finished',
+        detail={"result": answer, "attempt": attempt, "jobId": job_id, "files": files,
+                "conversationId": job.get("conversationId"), "announced": speaking},
+        ignore=("announced",))
+    if entry is None:
+        return  # already delivered by an earlier run of this finish
+    try:
+        from .. import notifications
+
+        notifications.add(kind="job", level="success", title=f'"{title}" finished',
+                          body=answer[:300],
+                          action={"label": "Background Jobs", "section": "jobs"},
+                          meta={"jobId": job_id}, event_bus=_bus_for(job_id))
+    except Exception:  # noqa: BLE001 — the result is recorded either way
+        logger.exception("could not notify about job %s", job_id)
+    if speaking:
+        whole = bool(answer) and len(answer) <= SPOKEN_RESULT_CHARS
+        text = f"{title} is done. {answer}" if whole else \
+            f"{title} is done — I have the full result when you want it."
+        _say(text, entry if whole else None, "A background job finished.", job_id)
+
+
+def _may_speak() -> bool:
+    try:
+        from ..heartbeat.speak import may_speak_now
+
+        return may_speak_now()
+    except Exception:  # noqa: BLE001 — not knowing means not interrupting
+        logger.exception("could not tell whether the person is here")
+        return False
+
+
+def _say(text: str, entry_id: int | None, reason: str, job_id: str) -> None:
+    """Jarvis speaks first (`heartbeat/speak.py`). Marks the row delivered only when saying
+    it really was the whole message."""
+    try:
+        from ..heartbeat.speak import speak_now
+
+        speak_now(text, outbox_id=entry_id, reason=reason, event_bus=_bus_for(job_id))
+    except Exception:  # noqa: BLE001 — the row stays waiting for the next turn instead
+        logger.exception("could not say aloud what job %s needs", job_id)
+
+
+def _ask_aloud(job_id: str, entry_id: int | None, text: str, reason: str) -> None:
+    """A question the job cannot continue without: if the person is here, ask it now."""
+    if entry_id is not None and _may_speak():
+        _say(text, entry_id, reason, job_id)
 
 
 def _park(job_id: str, why: dict[str, Any]) -> None:
@@ -306,39 +370,49 @@ def _park_for_approval(job_id: str, approval: dict[str, Any]) -> None:
                                detail={"approvalId": approval.get("id")})
     # Tier 1: the job cannot continue without an answer, so this is worth
     # raising the next time the user is here.
-    _outbox_once(job_id, tier=1, reason="permission",
-                 summary=f'"{job.get("title")}" needs your go-ahead: {approval.get("reason") or ""}',
-                 detail={"approvalId": approval.get("id"), "capability": capability})
+    summary = f'"{job.get("title")}" needs your go-ahead: {approval.get("reason") or ""}'
+    entry = _outbox_once(job_id, tier=1, reason="permission", summary=summary,
+                         detail={"approvalId": approval.get("id"), "capability": capability})
     _bus_for(job_id).publish(EventType.JOB_UPDATED, {"id": job_id, "status": "awaiting_decision"})
+    _ask_aloud(job_id, entry, summary, "A background job needs a go-ahead.")
 
 
 def _park_for_budget(job_id: str, steps: int) -> None:
     job = job_store.get_job(job_id) or {}
     job_store.update_job(job_id, {"status": "awaiting_decision", "currentStep": None})
-    _outbox_once(job_id, tier=1, reason="budget",
-                 summary=f'"{job.get("title")}" is still not done after {steps} steps. '
-                         "Keep going?",
-                 detail={"steps": steps})
+    summary = f'"{job.get("title")}" is still not done after {steps} steps. Keep going?'
+    entry = _outbox_once(job_id, tier=1, reason="budget", summary=summary,
+                         detail={"steps": steps})
     _bus_for(job_id).publish(EventType.JOB_UPDATED, {"id": job_id, "status": "awaiting_decision"})
+    _ask_aloud(job_id, entry, summary, "A background job is out of steps.")
 
 
 def _has_trace(job_id: str, summary: str) -> bool:
     return any(row.get("summary") == summary for row in job_store.get_trace(job_id))
 
 
-def _outbox_once(job_id: str, *, tier: int, reason: str, summary: str, detail: Any = None) -> None:
+def _outbox_once(job_id: str, *, tier: int, reason: str, summary: str, detail: Any = None,
+                 ignore: tuple[str, ...] = ()) -> int | None:
     """Add an outbox row unless the same one was already raised — a step replayed after a
     crash must not ask the person the same thing twice, nor ask again what they already
-    answered (an answered row is delivered, and still the same question)."""
+    answered (an answered row is delivered, and still the same question). Returns the new
+    row's id, or None when it already existed. `ignore` names detail keys that may differ
+    between a first run and its replay (whether the person was here to hear it)."""
     from ..heartbeat import outbox
 
-    same_detail = json.dumps(detail, sort_keys=True, default=str) if detail is not None else None
+    def keyed(value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, dict) and ignore:
+            value = {k: v for k, v in value.items() if k not in ignore}
+        return json.dumps(value, sort_keys=True, default=str)
+
+    wanted = keyed(detail)
     for row in outbox.for_job(job_id):
-        row_detail = (json.dumps(row["detail"], sort_keys=True, default=str)
-                      if row["detail"] is not None else None)
-        if row["reason"] == reason and row["summary"] == summary and row_detail == same_detail:
-            return
-    job_store.add_outbox(tier=tier, job_id=job_id, reason=reason, summary=summary, detail=detail)
+        if row["reason"] == reason and row["summary"] == summary and keyed(row["detail"]) == wanted:
+            return None
+    return job_store.add_outbox(tier=tier, job_id=job_id, reason=reason, summary=summary,
+                                detail=detail)
 
 
 def _verify_result(job: dict[str, Any], answer: str) -> Any:

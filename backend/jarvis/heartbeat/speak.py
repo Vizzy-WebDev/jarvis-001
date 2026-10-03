@@ -24,6 +24,20 @@ from ..events.bus import EventBus
 logger = logging.getLogger(__name__)
 
 
+def may_speak_now(*, emergency: bool = False) -> bool:
+    """Is there a person here to say it to? Quiet hours and the busy dampener, in the order
+    that lets an emergency skip exactly the two it should and neither of the ones it should
+    not. Shared by everything that may speak first (the heartbeat, finished background work)."""
+    from . import presence
+    from .quiet_hours import is_quiet_now
+
+    if is_quiet_now():
+        # Reachability is never skipped: with nobody there, there is no delivery
+        # to make, emergency or not.
+        return emergency and presence.is_reachable()
+    return presence.is_available()
+
+
 def speak_now(text: str, *, outbox_id: int | None = None, reason: str | None = None,
               event_bus: EventBus | None = None) -> str:
     from .. import conversation

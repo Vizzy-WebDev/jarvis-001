@@ -36,7 +36,8 @@ HOW_YOU_USE_TOOLS = """Using your abilities:
 - When a tool result gives you data, phrase it naturally yourself — never read raw data back.
 - If a tool reports it could not do something, say plainly what happened, using only the reason the tool actually gave. Never invent a technical explanation — a permission, a security block, a glitch — that was not in the result. If no reason was given, say it did not work and offer to try again or do something else.
 - If something the user wants has no matching tool in front of you, do not assume it is impossible: most of what you can do is not declared on every turn, to keep replies fast. Call find_capability, describing what is needed in plain words, before answering from your own knowledge instead.
-- Some actions need the user's go-ahead before they take effect. When one comes back asking for confirmation, read the summary back in your own words and ask them — as your own request, never as "the system wants to" — and do not call it again until they answer. Their answer is given outside this turn; you cannot give it yourself."""
+- When they ask you to do something, asking IS the go-ahead for ordinary things — saving a note, scheduling something, watching for something, starting work in the background — so just do it. Only some actions need their go-ahead first. When one comes back asking for confirmation, read the summary back in your own words and ask them — as your own request, never as "the system wants to" — and do not call it again until they answer. Their answer is given outside this turn; you cannot give it yourself.
+- Never say you will get back to them, keep an eye on something or follow up unless you have just started it (work_in_background, schedule_task, watch_for). If you cannot, say plainly that you cannot, and what you can do instead. What you have going is listed under "what you have going for them" when there is any."""
 
 MAKING_ARTIFACTS = """Making files (artifacts) — real files they keep, which appear in this chat and on their Artifacts page:
 - When they ask you to make, write up, draft, export or save something as a file, document, spreadsheet, presentation, PDF, web page, diagram, code file or similar, make it with create_artifact straight away. Their request is the go-ahead; do not ask whether to.
@@ -216,6 +217,30 @@ def notices_section(entries: list[dict[str, Any]] | None, session_id: str | None
                          + (f"\nFiles they made: {files}" if files else "")
                          + f"\n(notice #{entry['id']} — once you have passed this on, call "
                            f"acknowledge_notice with that number)")
+        elif entry.get("source") == "job" and entry.get("reason") == "finished":
+            # Background work the person asked for has finished. Same shape as a late specialist
+            # result: the whole result rides here so it can be passed on without asking again.
+            detail = entry.get("detail") or {}
+            asked_here = (not detail.get("conversationId")
+                          or detail.get("conversationId") == session_id)
+            told = (" You already told them aloud that it finished; now give them what it "
+                    "found." if detail.get("announced") else "")
+            if not asked_here:
+                lines.append(f"- {entry['summary']} — asked for in a different conversation; "
+                             f"the full result is on the Background Jobs screen (notice "
+                             f"#{entry['id']} — if you mention it, call acknowledge_notice "
+                             f"with that number)")
+                continue
+            result = str(detail.get("result") or "").strip()
+            if len(result) > LATE_RESULT_CHARS:
+                result = (result[:LATE_RESULT_CHARS]
+                          + " …(the rest is on the Background Jobs screen)")
+            files = ", ".join(f.get("name") or f.get("url", "") for f in detail.get("files") or [])
+            lines.append(f"- {entry['summary']}.{told}"
+                         + (f" What it came back with:\n{result}" if result else "")
+                         + (f"\nFiles it made: {files}" if files else "")
+                         + f"\n(notice #{entry['id']} — once you have passed this on, call "
+                           f"acknowledge_notice with that number)")
         elif entry.get("source") == "heartbeat" or entry.get("source") == "verification":
             lines.append(f"- {entry['summary']} (notice #{entry['id']} — if you mention this, "
                          f"call acknowledge_notice with that number)")
@@ -225,6 +250,42 @@ def notices_section(entries: list[dict[str, Any]] | None, session_id: str | None
     return ("Waiting for them since you last spoke. Bring up what genuinely fits this "
             "moment, in your own words, and let the rest wait — none of it is a script to "
             "read out:\n" + "\n".join(lines))
+
+
+#: How much of the open-work section there can be: it must never crowd out the conversation.
+OPEN_WORK_MAX_LINES = 8
+OPEN_WORK_LINE_CHARS = 170
+
+
+def open_work_section(work: dict[str, Any] | None) -> str:
+    """What Jarvis has on the go for this person right now, so "still on it" is something it
+    KNOWS rather than something it says. Plain data in, a few capped lines out; nothing when
+    nothing is open. A promise that is not on this list was never started."""
+    work = work or {}
+    lines: list[str] = []
+    for job in work.get("jobs") or []:
+        title = job.get("title") or "a background job"
+        if job.get("status") == "awaiting_decision":
+            why = f" — {job['error']}" if job.get("error") else (
+                f" — {job['currentStep']}" if job.get("currentStep") else "")
+            lines.append(f'Waiting on them: "{title}"{why}')
+        else:
+            step = f" ({job['currentStep']})" if job.get("currentStep") else ""
+            progress = f", about {job['progress']}% through" if job.get("progress") else ""
+            lines.append(f'Still working: "{title}"{step}{progress}')
+    for run in work.get("runs") or []:
+        lines.append(f"A specialist is still working: {run.get('agent')} — {run.get('task')}")
+    for watch in work.get("watches") or []:
+        lines.append(f"Watching for: {watch}")
+    if not lines:
+        return ""
+    shown = [line if len(line) <= OPEN_WORK_LINE_CHARS else line[:OPEN_WORK_LINE_CHARS - 1] + "…"
+             for line in lines[:OPEN_WORK_MAX_LINES]]
+    if len(lines) > OPEN_WORK_MAX_LINES:
+        shown.append(f"…and {len(lines) - OPEN_WORK_MAX_LINES} more (use check_on_work).")
+    return ("What you have going for them right now. This is the whole list — say \"still on "
+            "it\" only about what is here, and never promise a follow-up that is not on it "
+            "or that you have not just started:\n" + "\n".join(f"- {line}" for line in shown))
 
 
 def self_focus_section(signals: dict[str, object] | None) -> str:

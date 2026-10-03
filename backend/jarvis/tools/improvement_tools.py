@@ -119,7 +119,7 @@ SPECS = [
                       "description": "Only after the user has been shown that it changed "
                                      "since and said to restore it anyway."}},
             "required": ["change_id"]},
-        risk=Risk.MEDIUM, handler=_undo,
+        risk=Risk.MEDIUM, request_suffices=True, handler=_undo,
         summarize=lambda args: f"Undo change {args.get('change_id')}?",
         timeout_s=10.0, tags=frozenset({"meta"}),
     ),

@@ -168,3 +168,94 @@ def test_every_result_carries_a_reason_safe_to_show_the_user():
     for risk, autonomy in itertools.product(Risk, Autonomy):
         result = decide(spec(risk=risk), ctx(autonomy=autonomy))
         assert result.reason and not result.reason.endswith(("Error", "None"))
+
+
+# --- "the person's own request is enough" (Phase 3) ---------------------------------
+
+def flagged(name="act", risk=Risk.MEDIUM) -> CapabilitySpec:
+    return CapabilitySpec(id=f"builtin.{name}", name=name, description="", input_schema={},
+                          risk=risk, handler=lambda **_: None, request_suffices=True)
+
+
+def test_a_clear_request_is_enough_for_a_medium_tool_that_declares_it():
+    result = decide(flagged(), ctx())
+    assert result.outcome is Outcome.ALLOWED and result.reason == "You asked for this."
+
+
+def test_the_flag_is_what_makes_the_difference_and_nothing_else():
+    """Without it, MEDIUM still asks interactively — the old rule, unchanged."""
+    assert decide(spec(risk=Risk.MEDIUM), ctx()).outcome is Outcome.NEEDS_APPROVAL
+
+
+def test_a_misheard_request_still_confirms_even_for_a_flagged_tool():
+    result = decide(flagged(), ctx(low_confidence=True))
+    assert result.outcome is Outcome.NEEDS_APPROVAL
+
+
+def test_the_flag_never_lifts_a_high_risk_action_in_any_combination():
+    """The floor, swept: surface x autonomy x confidence x wildcard grant, with the flag on."""
+    for surface, autonomy, low_conf in itertools.product(Surface, Autonomy, (True, False)):
+        result = decide(flagged("delete_file", Risk.HIGH),
+                        ctx(surface=surface, autonomy=autonomy, low_confidence=low_conf),
+                        grants=[Grant(capability="*", granted_at=time.time())])
+        assert result.outcome is Outcome.NEEDS_APPROVAL, (surface, autonomy, low_conf)
+
+
+def test_the_flag_changes_nothing_off_the_interactive_path():
+    """Nobody here to have asked: ESCALATE still parks, and pre-consent behaves as before."""
+    assert decide(flagged(), ctx(autonomy=Autonomy.ESCALATE)).outcome is Outcome.NEEDS_APPROVAL
+    assert decide(flagged(), ctx(autonomy=Autonomy.ESCALATE)).escalate is True
+    assert decide(flagged(), ctx(autonomy=Autonomy.PRE_CONSENTED)).outcome is Outcome.ALLOWED
+
+
+def test_the_flag_does_not_widen_an_allowlist():
+    assert decide(flagged("act"), ctx(), allowed_names=frozenset({"other"})).outcome \
+        is Outcome.REFUSED
+
+
+def test_a_flag_on_a_low_risk_spec_changes_nothing():
+    assert decide(flagged(risk=Risk.LOW), ctx()).reason == "Low-risk action."
+    assert decide(flagged(risk=Risk.LOW), ctx(low_confidence=True)).outcome \
+        is Outcome.NEEDS_APPROVAL
+
+
+#: Every MEDIUM capability the real app registers has been looked at, by name. A new one cannot
+#: slip in as "asks by default" or "free by accident": it must be added to one list on purpose.
+REQUEST_SUFFICES = {
+    "work_in_background", "stop_working_on", "remember_about_me", "update_memory",
+    "forget_something", "schedule_task", "cancel_task", "configure_briefing", "watch_for",
+    "stop_watching", "undo_improvement", "start_screen_recording", "clear_notifications",
+}
+KEEPS_ASKING = {
+    # The owner's decision: these widen what Jarvis can reach or run.
+    "allow_folder", "approve_skill_scripts", "approve_skill_pipeline", "create_skill",
+    # Spends money on a voice service.
+    "narrate_to_file",
+    # Content Management: its own rule says edits and scheduling confirm first.
+    "edit_content_item", "schedule_content",
+    # Jarvis's own file and browser connectors: overwriting a file or submitting a form is not
+    # undoable, and no decision has been made to relax them. Open question for the owner.
+    "write_file", "move_file", "browser_click", "browser_type",
+}
+
+
+def test_every_medium_capability_the_app_registers_has_been_decided(scratch):
+    from jarvis import assembly, db
+
+    db.reset_for_tests()
+    assembly.reset_for_tests()
+    try:
+        registry = assembly.get_registry()
+        medium = {s.name: s for s in registry.list() if s.risk is Risk.MEDIUM}
+        assert set(medium) <= REQUEST_SUFFICES | KEEPS_ASKING, \
+            f"undecided MEDIUM capabilities: {sorted(set(medium) - REQUEST_SUFFICES - KEEPS_ASKING)}"
+        for name in REQUEST_SUFFICES & set(medium):
+            assert medium[name].request_suffices, name
+        for name in KEEPS_ASKING & set(medium):
+            assert not medium[name].request_suffices, name
+        assert REQUEST_SUFFICES <= set(medium), "a reviewed tool is no longer MEDIUM"
+        # No HIGH capability may carry the flag, ever.
+        assert [s.name for s in registry.list() if s.risk is Risk.HIGH and s.request_suffices] == []
+    finally:
+        assembly.reset_for_tests()
+        db.reset_for_tests()

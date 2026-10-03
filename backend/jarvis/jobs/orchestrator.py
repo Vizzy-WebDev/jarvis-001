@@ -236,10 +236,11 @@ def _recover(job: dict[str, Any], detail: str, ebus: EventBus,
 
     job_store.update_job(job_id, {"status": "awaiting_decision",
                                   "error": detail, "currentStep": None})
-    job_store.add_outbox(tier=1, job_id=job_id, reason="stuck",
-                         summary=f'"{job["title"]}" is stuck: {detail}')
+    summary = f'"{job["title"]}" is stuck: {detail}'
+    entry = job_store.add_outbox(tier=1, job_id=job_id, reason="stuck", summary=summary)
     ebus.publish(EventType.JOB_UPDATED, {"id": job_id, "status": "awaiting_decision",
                                          "error": detail})
+    worker._ask_aloud(job_id, entry, summary, "A background job is stuck.")
     return {"job": job_id, "action": "escalated", "cause": cause}
 
 
@@ -289,14 +290,14 @@ def recover_orphans(event_bus: EventBus | None = None) -> list[dict[str, Any]]:
             name = (unsure[-1].get("name") if unsure else None) or "an action"
             job_store.update_job(job["id"], {"status": "awaiting_decision",
                                              "currentStep": f"check {name}"})
-            job_store.add_outbox(
-                tier=1, job_id=job["id"], reason="crashed",
-                detail={"unsure": unsure},
-                summary=(f'"{job["title"]}" stopped in the middle of {name}, which reaches '
-                         "outside Jarvis, so I can't tell whether it happened. Please check, "
-                         "then tell me to keep going (it may try it again) or discard the job."
-                         if verdict == "unrecoverable"
-                         else f'"{job["title"]}" is waiting on you.'))
+            crashed_summary = (
+                f'"{job["title"]}" stopped in the middle of {name}, which reaches '
+                "outside Jarvis, so I can't tell whether it happened. Please check, "
+                "then tell me to keep going (it may try it again) or discard the job."
+                if verdict == "unrecoverable" else f'"{job["title"]}" is waiting on you.')
+            entry = job_store.add_outbox(tier=1, job_id=job["id"], reason="crashed",
+                                         detail={"unsure": unsure}, summary=crashed_summary)
+            worker._ask_aloud(job["id"], entry, crashed_summary, "A background job stopped.")
         out.append({"job": job["id"], "recovery": verdict})
     return out
 

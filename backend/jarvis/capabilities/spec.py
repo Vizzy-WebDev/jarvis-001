@@ -110,6 +110,13 @@ class CapabilitySpec:
     #: terms ("Change 'uses a Mac' to 'uses a Windows PC'?"), and a read-back
     #: that cannot do that is a read-back nobody can meaningfully answer.
     summarize: Callable[[dict[str, Any]], str] | None = None
+    #: "The person's own request is enough." Only meaningful on a MEDIUM capability:
+    #: when a person is here (an interactive turn) and heard clearly, their asking for it
+    #: IS the go-ahead, so no confirmation card (`policy/decide.py`). Declared by whoever
+    #: writes the capability after judging that what it does is undoable or contained —
+    #: never by the model, and off by default, so nothing becomes automatic by accident.
+    #: A HIGH capability ignores it: that floor no instruction lowers.
+    request_suffices: bool = False
 
     def __post_init__(self) -> None:
         if not self.id or not self.name:

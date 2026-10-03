@@ -170,7 +170,7 @@ def test_a_crash_while_parking_still_reaches_the_person_and_their_answer_still_c
 
     brain = install(Brain())
     job = job_store.create_job(title="Report", goal="send the report")
-    brain.plan("job:", [[("call", "effect_external", {"tag": "ext"})], [("say", "Sent.")]])
+    brain.plan("job:", [[("call", "effect_high", {"tag": "ext"})], [("say", "Sent.")]])
     real_park = worker._park_for_approval
     armed = {"on": True}
 

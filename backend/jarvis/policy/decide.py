@@ -16,6 +16,12 @@ instruction from the model or the user in the moment:
 3. **Voice is not a bypass.** Surface is recorded and never relaxes anything —
    the defect §8 explicitly forbids.
 4. **Low speech confidence can only ever ADD a confirmation**, never remove one.
+
+One thing is NOT a floor, by the owner's decision: an explicit request from the person is
+normally enough authority for ordinary work. A MEDIUM capability whose author declared
+`request_suffices` (after judging it undoable or contained) runs without a card when a
+person is here and was heard clearly. The model cannot declare it, a HIGH capability ignores
+it, and everything above still holds.
 """
 
 from __future__ import annotations
@@ -113,6 +119,14 @@ def decide(
         return PolicyResult(
             Outcome.ALLOWED,
             f"You've already authorised {spec.name}.",
+        )
+
+    if (spec.risk is Risk.MEDIUM and spec.request_suffices
+            and ctx.autonomy is Autonomy.INTERACTIVE and not ctx.low_confidence):
+        # The person is here and asked. (A misheard request fell out above: floor 4.)
+        return PolicyResult(
+            Outcome.ALLOWED,
+            "You asked for this.",
         )
 
     if spec.risk is Risk.MEDIUM and ctx.autonomy is Autonomy.PRE_CONSENTED:

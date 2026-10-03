@@ -222,7 +222,7 @@ SPECS = [
                                      "it each time (e.g. scout for a regular opportunity hunt)."}},
             "required": ["when"]},
         # It commits the assistant to acting when nobody is watching.
-        risk=Risk.MEDIUM, handler=_schedule, summarize=_schedule_summary,
+        risk=Risk.MEDIUM, request_suffices=True, handler=_schedule, summarize=_schedule_summary,
         timeout_s=10.0, tags=frozenset({"meta"}),
     ),
     CapabilitySpec(
@@ -238,7 +238,7 @@ SPECS = [
         input_schema={"type": "object", "properties": {
             "query": {"type": "string", "description": "Which task, in their own words."}},
             "required": ["query"]},
-        risk=Risk.MEDIUM, handler=_cancel, summarize=_cancel_summary,
+        risk=Risk.MEDIUM, request_suffices=True, handler=_cancel, summarize=_cancel_summary,
         timeout_s=10.0, tags=frozenset({"meta"}),
     ),
     CapabilitySpec(
@@ -257,7 +257,7 @@ SPECS = [
             "custom_text": {"type": "string",
                             "description": "Something extra they always want included."}},
             "required": []},
-        risk=Risk.MEDIUM, handler=_configure_briefing, timeout_s=10.0,
+        risk=Risk.MEDIUM, request_suffices=True, handler=_configure_briefing, timeout_s=10.0,
         tags=frozenset({"meta"}),
     ),
 ]

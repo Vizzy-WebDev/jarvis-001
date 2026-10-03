@@ -209,9 +209,24 @@ def test_weather_is_skipped_until_a_place_is_known():
 
 # --- the tools ---------------------------------------------------------------
 
-def test_scheduling_reads_back_the_schedule_in_plain_english(reg):
+def misheard(turn: str = "t1") -> CallContext:
+    return ctx(turn, surface=Surface.VOICE, low_confidence=True)
+
+
+# Changed deliberately (Phase 3, authority): a clear request to schedule or cancel something is
+# the go-ahead, so it just happens. A misheard one is still read back first (floor 4), which is
+# where the plain-English read-back of the schedule now lives.
+
+def test_a_clear_request_schedules_at_once(reg):
+    result = execute("schedule_task", {"when": "daily", "time": "08:00", "text": "take meds"},
+                     ctx(), registry=reg)
+    assert result.ok and result.value["schedule"] == "every day at 8:00 AM"
+    assert len(task_store.list_tasks()) == 1
+
+
+def test_a_misheard_schedule_is_read_back_in_plain_english_first(reg):
     result = execute("schedule_task", {"when": "weekdays", "time": "09:30",
-                                       "title": "Stand-up"}, ctx(), registry=reg)
+                                       "title": "Stand-up"}, misheard(), registry=reg)
     assert result.outcome is ExecOutcome.NEEDS_APPROVAL
     reason = approval_store.get(result.approval_id).reason
     assert 'Schedule "Stand-up" weekdays at 9:30 AM?' in reason
@@ -220,12 +235,16 @@ def test_scheduling_reads_back_the_schedule_in_plain_english(reg):
 
 def test_an_unusable_schedule_is_explained_not_saved(reg):
     result = execute("schedule_task", {"when": "weekly", "time": "09:30"}, ctx(), registry=reg)
-    assert "which days" in approval_store.get(result.approval_id).reason
+    assert result.ok and result.value["ok"] is False and "which days" in result.value["error"]
+    assert task_store.list_tasks() == []
+    read_back = execute("schedule_task", {"when": "weekly", "time": "09:30"}, misheard("t2"),
+                        registry=reg)
+    assert "which days" in approval_store.get(read_back.approval_id).reason
 
 
-def test_approving_actually_schedules_it(reg):
+def test_approving_a_misheard_schedule_in_a_later_turn_schedules_it(reg):
     result = execute("schedule_task", {"when": "daily", "time": "08:00", "text": "take meds"},
-                     ctx("t1"), registry=reg)
+                     misheard("t1"), registry=reg)
     ran = execute_approved(result.approval_id, "t2", ctx("t2"), registry=reg)
     assert ran.ok and ran.value["schedule"] == "every day at 8:00 AM"
     assert len(task_store.list_tasks()) == 1
@@ -238,10 +257,17 @@ def test_listing_needs_no_approval(reg):
     assert result.ok and result.value["tasks"][0]["schedule"] == "every day at 9:30 AM"
 
 
-def test_cancelling_names_what_will_stop(reg):
+def test_cancelling_on_request_cancels_it(reg):
     task_store.create_task(title="Stand-up", recurrence={"type": "daily", "time": "09:30"},
                            action={"type": "message", "text": "x"})
     result = execute("cancel_task", {"query": "stand"}, ctx(), registry=reg)
+    assert result.ok and task_store.list_tasks() == []
+
+
+def test_a_misheard_cancel_names_what_will_stop_and_waits(reg):
+    task_store.create_task(title="Stand-up", recurrence={"type": "daily", "time": "09:30"},
+                           action={"type": "message", "text": "x"})
+    result = execute("cancel_task", {"query": "stand"}, misheard(), registry=reg)
     assert 'Cancel "Stand-up" (every day at 9:30 AM)?' in \
         approval_store.get(result.approval_id).reason
     assert len(task_store.list_tasks()) == 1, "nothing cancelled before the user answers"
@@ -249,7 +275,9 @@ def test_cancelling_names_what_will_stop(reg):
 
 def test_cancelling_something_that_does_not_exist_says_so(reg):
     result = execute("cancel_task", {"query": "the thing"}, ctx(), registry=reg)
-    assert "couldn't find" in approval_store.get(result.approval_id).reason
+    assert result.ok and result.value["ok"] is False and "couldn't find" in result.value["error"]
+    read_back = execute("cancel_task", {"query": "the thing"}, misheard("t2"), registry=reg)
+    assert "couldn't find" in approval_store.get(read_back.approval_id).reason
 
 
 def test_scheduling_and_cancelling_are_medium_and_listing_is_low(reg):

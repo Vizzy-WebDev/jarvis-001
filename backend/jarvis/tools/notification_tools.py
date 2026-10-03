@@ -96,7 +96,7 @@ SPECS = [
                      'delete notifications defaults to this safe, recoverable action, never '
                      'the permanent one.'),
         input_schema={"type": "object", "properties": {}, "required": []},
-        risk=Risk.MEDIUM, handler=_clear, summarize=_clear_summary,
+        risk=Risk.MEDIUM, request_suffices=True, handler=_clear, summarize=_clear_summary,
         timeout_s=10.0, tags=frozenset({"meta"}),
     ),
     CapabilitySpec(

@@ -71,7 +71,7 @@ SPECS = [
             "url": {"type": "string", "description": "For web_page_changed."},
             "then": {"type": "string", "description": "What to say when it happens."}},
             "required": ["description", "kind"]},
-        risk=Risk.MEDIUM, handler=_watch,
+        risk=Risk.MEDIUM, request_suffices=True, handler=_watch,
         summarize=lambda args: f'Watch for {args.get("description")} and tell you when it '
                                "happens?",
         timeout_s=15.0, tags=frozenset({"meta"}),
@@ -82,7 +82,7 @@ SPECS = [
         input_schema={"type": "object", "properties": {
             "which": {"type": "string", "description": "Which watch, in their own words."}},
             "required": ["which"]},
-        risk=Risk.MEDIUM, handler=_stop,
+        risk=Risk.MEDIUM, request_suffices=True, handler=_stop,
         summarize=lambda args: f'Stop watching for "{args.get("which")}"?',
         timeout_s=10.0, tags=frozenset({"meta"}),
     ),

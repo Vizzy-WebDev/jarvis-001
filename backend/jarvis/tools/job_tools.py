@@ -5,10 +5,11 @@ its whole interface to background work: start something, look in on it, stop it.
 The worker's own reporting tools are separate and marked internal — they exist
 for a job to report about itself, never for a conversation to call.
 
-`work_in_background` is MEDIUM: it commits the assistant to acting while nobody
-is watching, which is exactly the sort of thing to say out loud first. Checking
-and stopping are LOW and MEDIUM respectively — looking costs nothing; stopping
-throws away work in progress.
+`work_in_background` is MEDIUM because it commits the assistant to acting while nobody
+is watching — but it declares `request_suffices`: the person asking for it IS the
+go-ahead, so no card stands between "I'll keep at it" and the work actually starting (a
+promise to follow up is only real if the work started). Checking and stopping are LOW and
+MEDIUM respectively — looking costs nothing; stopping keeps whatever was done so far.
 """
 
 from __future__ import annotations
@@ -129,7 +130,7 @@ SPECS = [
             "priority": {"type": "integer",
                          "description": "1 (most important) to 3. Default 2."}},
             "required": ["goal"]},
-        risk=Risk.MEDIUM, handler=_start, summarize=_start_summary,
+        risk=Risk.MEDIUM, request_suffices=True, handler=_start, summarize=_start_summary,
         timeout_s=20.0, tags=frozenset({"meta"}),
     ),
     CapabilitySpec(
@@ -151,7 +152,7 @@ SPECS = [
         input_schema={"type": "object", "properties": {
             "which": {"type": "string", "description": "Which job, in their own words."}},
             "required": ["which"]},
-        risk=Risk.MEDIUM, handler=_stop, summarize=_stop_summary,
+        risk=Risk.MEDIUM, request_suffices=True, handler=_stop, summarize=_stop_summary,
         timeout_s=15.0, tags=frozenset({"meta"}),
     ),
 ]

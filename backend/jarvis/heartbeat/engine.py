@@ -95,16 +95,9 @@ def route_finding(source_id: str, item_key: str, finding: dict[str, Any], *,
 
 
 def _may_speak_now(verdict: Any) -> bool:
-    """Quiet hours and the busy dampener, in the order that lets an emergency
-    skip exactly the two it should and neither of the ones it should not."""
-    from . import presence
-    from .quiet_hours import is_quiet_now
+    from .speak import may_speak_now
 
-    if is_quiet_now():
-        # Reachability is never skipped: with nobody there, there is no delivery
-        # to make, emergency or not.
-        return bool(verdict.emergency) and presence.is_reachable()
-    return presence.is_available()
+    return may_speak_now(emergency=bool(verdict.emergency))
 
 
 # --- the tick -----------------------------------------------------------------

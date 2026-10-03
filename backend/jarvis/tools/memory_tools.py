@@ -48,10 +48,20 @@ def find_similar(text: str) -> dict[str, Any] | None:
 
 # --- remember ----------------------------------------------------------------
 
-def _remember(text: str = "") -> dict[str, Any]:
+def _remember(text: str = "", save_anyway: bool = False) -> dict[str, Any]:
     body = (text or "").strip()
     if not body:
         return {"ok": False, "error": "There's nothing to remember."}
+    # The person's request is the go-ahead (no card), so the one check the old read-back made
+    # — "you already have something like this" — happens here instead. Nothing is saved until
+    # they have chosen between updating the old note and keeping both.
+    similar = None if save_anyway else find_similar(body)
+    if similar is not None:
+        return {"ok": False, "alreadyHave": similar["text"],
+                "error": f'I already have something close to that: "{similar["text"]}". Tell them '
+                         "so, and ask whether to update that note (update_memory) or keep this "
+                         "as a separate one. Only if they say keep both, call remember_about_me "
+                         "again with save_anyway true."}
     memory = store.create_memory(category=CATEGORY, text=body, source_kind="chat",
                                  origin="explicit")
     return {"ok": True, "saved": memory["text"], "speak": f"Noted: {memory['text']}"}
@@ -156,11 +166,14 @@ SPECS = [
                      "background and must not be turned into a confirmation question."),
         input_schema={"type": "object", "properties": {
             "text": {"type": "string",
-                     "description": "The note to remember, as a short clear sentence."}},
+                     "description": "The note to remember, as a short clear sentence."},
+            "save_anyway": {"type": "boolean",
+                            "description": "Only after the user has said to keep this as a "
+                                           "separate note even though a similar one exists."}},
             "required": ["text"]},
         # MEDIUM, not LOW: this changes what the assistant will assert about the
         # user later, and a misheard note becomes a wrong "fact" repeated back.
-        risk=Risk.MEDIUM, handler=_remember, summarize=_remember_summary,
+        risk=Risk.MEDIUM, request_suffices=True, handler=_remember, summarize=_remember_summary,
         timeout_s=10.0, tags=frozenset({"core", "meta"}),
     ),
     CapabilitySpec(
@@ -175,7 +188,7 @@ SPECS = [
             "query": {"type": "string", "description": "What to find, in the user's own words."},
             "new_text": {"type": "string", "description": "What it should say now."}},
             "required": ["query", "new_text"]},
-        risk=Risk.MEDIUM, handler=_update, summarize=_update_summary,
+        risk=Risk.MEDIUM, request_suffices=True, handler=_update, summarize=_update_summary,
         timeout_s=10.0, tags=frozenset({"core", "meta"}),
     ),
     CapabilitySpec(
@@ -184,7 +197,7 @@ SPECS = [
         input_schema={"type": "object", "properties": {
             "query": {"type": "string", "description": "What to forget, in their own words."}},
             "required": ["query"]},
-        risk=Risk.MEDIUM, handler=_forget, summarize=_forget_summary,
+        risk=Risk.MEDIUM, request_suffices=True, handler=_forget, summarize=_forget_summary,
         timeout_s=10.0, tags=frozenset({"core", "meta"}),
     ),
     CapabilitySpec(

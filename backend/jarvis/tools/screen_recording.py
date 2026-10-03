@@ -48,6 +48,9 @@ START = CapabilitySpec(
     # It captures everything on screen until told to stop, which is more than a
     # glance and worth a deliberate yes.
     risk=Risk.MEDIUM,
+    # Asked for in so many words ("record my screen"): the request is the go-ahead. It is
+    # shown, can be stopped, and the file is only ever made when they said to.
+    request_suffices=True,
     handler=_start,
     timeout_s=30.0,
     tags=frozenset({"core"}),

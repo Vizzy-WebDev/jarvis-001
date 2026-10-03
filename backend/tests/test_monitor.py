@@ -131,10 +131,21 @@ def test_one_broken_watch_does_not_stop_the_others(tmp_path, monkeypatch):
 
 # --- the tools ---------------------------------------------------------------
 
-def test_setting_a_watch_is_read_back_first(reg, tmp_path):
+def test_a_clear_request_to_watch_sets_the_watch_at_once(reg, tmp_path):
+    """Changed deliberately (Phase 3, authority): asking for it is the go-ahead."""
     result = execute("watch_for", {"description": "the export finishing",
                                    "kind": "file_exists", "path": str(tmp_path / "x.csv")},
                      ctx(), registry=reg)
+    assert result.ok and result.outcome is ExecOutcome.COMPLETED
+    assert [m["description"] for m in store.list_watching()] == ["the export finishing"]
+
+
+def test_a_misheard_request_to_watch_is_read_back_first(reg, tmp_path):
+    misheard = CallContext(session_id="s1", turn_id="t1", surface=Surface.VOICE,
+                           autonomy=Autonomy.INTERACTIVE, low_confidence=True)
+    result = execute("watch_for", {"description": "the export finishing",
+                                   "kind": "file_exists", "path": str(tmp_path / "x.csv")},
+                     misheard, registry=reg)
     assert result.outcome is ExecOutcome.NEEDS_APPROVAL
     assert "the export finishing" in approval_store.get(result.approval_id).reason
     assert store.list_watching() == []

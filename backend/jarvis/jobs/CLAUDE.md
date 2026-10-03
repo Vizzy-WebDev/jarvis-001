@@ -77,7 +77,9 @@ and every tool call it had finished returns its recorded result instead of runni
 
 **A worker structurally cannot write into the conversation the user is looking at**: its
 session is keyed separately and never bound to chat history. **A worker never asks the user
-directly**: it runs with `Autonomy.ESCALATE` on `Surface.JOB`, so a call needing a human parks
+directly**: it runs with `Autonomy.PRE_CONSENTED` on `Surface.JOB` — the person set the work
+going, so MEDIUM steps toward its goal run (the same "set up in advance" rule as a scheduled
+task; Phase 3) — and a HIGH-risk call needing a human parks
 the work (`_park` → `_park_for_approval`) — status `awaiting_decision`, a `decision` trace row
 and a Tier 1 outbox row — and the durable work waits. A job may wait hours, so the record is a
 table row, not a short-lived token. Every hook the runner calls is safe to replay: outbox rows,
@@ -99,8 +101,16 @@ finish).
   job's goal. A checked mismatch is refused (`accepted: False`) and treated exactly like a
   stall — the same single retry, the same counter, the same escalation, never a second recovery
   mechanism. `checked: false` (no model available) never blocks a real completion. Success
-  stores the result, publishes `JOB_COMPLETED` and adds a Tier 3 outbox row (worth recording,
-  never worth interrupting for).
+  stores the result, publishes `JOB_COMPLETED` and delivers it (`_deliver_result`): a **tier-2**
+  notice carrying the whole result (`detail.result`, `conversationId`, `files`, `attempt`,
+  `announced`) that `prompt.notices_section` shows on the next person-started turn (scoped to the
+  conversation that asked; `acknowledge_notice` passes it on), a notification, and — when
+  `heartbeat/speak.may_speak_now()` says they are here — Jarvis speaking first (≤
+  `SPOKEN_RESULT_CHARS` whole and the row marked delivered; longer: a headline, full result waits
+  with `announced: true`). Questions a job cannot go on without are asked aloud the same way
+  (`_ask_aloud`: go-ahead, out of steps, stuck, crashed). Delivery is replay-safe (`_outbox_once`
+  returns None for a row that exists, ignoring `announced`) and a failure to speak or notify never
+  fails the job.
 
 ## `orchestrator.py` — admission, supervision, crash recovery
 

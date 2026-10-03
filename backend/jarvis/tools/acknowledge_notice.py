@@ -6,9 +6,10 @@ otherwise lose it silently. This is the action that says it genuinely reached
 the person — which is why it is a tool call rather than a side effect of
 rendering the prompt.
 
-Only for notices with no other resolving action of their own. Background work
-has `check_on_work` and `stop_working_on`, which resolve their rows by doing
-something about them.
+Only for notices with no other resolving action of their own. Background work that
+is waiting on the person has `check_on_work` and `stop_working_on`, which resolve its rows by
+doing something about them; a FINISHED job's result is a plain notice, passed on and
+acknowledged like a late specialist's.
 """
 
 from __future__ import annotations
@@ -32,9 +33,10 @@ def _run(notice_id: int | str = 0) -> dict[str, Any]:
     if entry["deliveredAt"]:
         return {"ok": True, "alreadyDone": True,
                 "note": "That one was already dealt with — don't mention it again."}
-    if entry["source"] == "job":
-        # Its own actions resolve it by doing something about it; marking it
-        # delivered here would drop it while the job is still waiting.
+    if entry["source"] == "job" and entry["reason"] != "finished":
+        # A question the job is waiting on: its own actions resolve it by doing something
+        # about it, and marking it delivered here would drop it while the job still waits.
+        # (A finished job's result is different — passing it on IS the whole job.)
         return {"ok": False,
                 "error": "That one is about background work — use check_on_work or "
                          "stop_working_on instead."}
@@ -48,8 +50,8 @@ SPEC = CapabilitySpec(
     name="acknowledge_notice",
     description=("Mark a waiting notice as passed on, once you have actually mentioned it to "
                  "the user. Call it with the notice number you were shown. Only for notices — "
-                 "anything about background work is resolved with check_on_work or "
-                 "stop_working_on instead."),
+                 "anything about background work that is still waiting on them is resolved with "
+                 "check_on_work or stop_working_on instead."),
     input_schema={"type": "object", "properties": {
         "notice_id": {"type": "integer", "description": "The number shown with the notice."}},
         "required": ["notice_id"]},

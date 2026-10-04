@@ -60,6 +60,18 @@ def categories() -> dict[str, Any]:
     return {"categories": store.list_categories()}
 
 
+@router.get("/memories/search-status")
+def search_status() -> dict[str, Any]:
+    """Whether Jarvis can find a memory by what it means, for the Memory screen: a plain state
+    (`on`, `building`, `ready`, `off`), the model, how many memories are ready, and a sentence
+    saying why when it is not on. Reads settings and the database only — it never calls a model,
+    so opening the screen can never be slowed by one."""
+    from ..memory import vectors
+    from ..orchestrator.context import SMALL_MEMORY
+
+    return vectors.status(small_limit=SMALL_MEMORY)
+
+
 @router.get("/memories")
 def listed(category: str | None = None, query: str | None = None,
            origin: str | None = None, includeArchived: bool = False) -> dict[str, Any]:

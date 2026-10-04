@@ -108,6 +108,39 @@ def get_memory(memory_id: str) -> dict[str, Any] | None:
     return _row_to_memory(row) if row else None
 
 
+# --- vectors (what each memory means, as numbers; `memory/vectors.py` decides what is valid) ---
+
+def vector_rows(space: str, model_version: str, dimension: int) -> dict[str, tuple[str, bytes]]:
+    """memory id -> (text_hash, float32 bytes), only rows made by exactly this space, model
+    version and dimension. Whether a row still matches its memory's CURRENT text is the
+    caller's check, since it is the caller that knows how the text was hashed."""
+    rows = get_db().execute(
+        "SELECT memory_id, text_hash, vector FROM memory_vectors "
+        "WHERE space = ? AND model_version = ? AND dimension = ?",
+        (space, model_version, dimension)).fetchall()
+    return {r["memory_id"]: (r["text_hash"], bytes(r["vector"])) for r in rows}
+
+
+def save_vectors(rows: Iterable[tuple[str, str, str, int, str, bytes]]) -> int:
+    """Insert or replace `(memory_id, space, model_version, dimension, text_hash, vector)`.
+    A memory deleted in the meantime is skipped rather than failing the batch."""
+    saved = 0
+    db = get_db()
+    for memory_id, space, version, dimension, text_hash, vector in rows:
+        if db.execute("SELECT 1 FROM memories WHERE id = ?", (memory_id,)).fetchone() is None:
+            continue
+        db.execute(
+            "INSERT INTO memory_vectors (memory_id, space, model_version, dimension, text_hash, "
+            "vector, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(memory_id) DO UPDATE SET space = excluded.space, "
+            "model_version = excluded.model_version, dimension = excluded.dimension, "
+            "text_hash = excluded.text_hash, vector = excluded.vector, "
+            "updated_at = excluded.updated_at",
+            (memory_id, space, version, dimension, text_hash, vector, now_iso()))
+        saved += 1
+    return saved
+
+
 def conflicted_memory_ids() -> set[str]:
     """Memories a still-pending candidate says are contradicted.
 

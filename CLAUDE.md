@@ -90,6 +90,20 @@ turns, never the latest two. Edit/Retry into the covered range drops it
 (`search_conversations`) was removed at the person's request; `track_goal` was replaced by the
 summary's goal. The Chat History page's own search box is unrelated and stays.
 
+**Memory is found by meaning once there is enough of it** (`context.select_memories`,
+`memory/vectors.py`). Up to `SMALL_MEMORY` (20 — a relevance rule, not a context size) every
+memory goes in and no model is asked. Above that, keyword overlap is fused (reciprocal rank) with
+embedding similarity, counting a memory as close in meaning only when it stands out from the rest
+(mean + 1.5σ — no fixed cosine threshold). The `memory` embedding space is made on first need by
+`models/embeddings.ensure_space` from an embedding model the person already has (local first,
+dimension probed, written to `models.yaml` once, never silently re-pointed). Vectors live in
+`memory_vectors` (migration 38), valid only for the memory's current text, model version and
+dimension; they are built in the background, self-healing, single-flight. The per-turn cost is one
+embedding of the person's message (≥ 3 words, 1.5 s timeout, cached, cool-down after a failure).
+Every failure falls back to keywords and `selection.strategy` says why;
+`GET /api/memories/search-status` feeds the Memory screen's one-line status. Memory text is
+`personal` data on every call. Past chats are still never searched — only memories are indexed.
+
 ## Testing
 
 The project has a real automated suite. Use it.

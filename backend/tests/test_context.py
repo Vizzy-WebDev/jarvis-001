@@ -13,7 +13,8 @@ from jarvis import conversation
 from jarvis.db import reset_for_tests as reset_db
 from jarvis.memory import store
 from jarvis.orchestrator.context import (
-    ALWAYS_INCLUDE_IMPORTANCE, RelevanceContext, estimate_tokens, select_memories, trim_messages,
+    ALWAYS_INCLUDE_IMPORTANCE, SMALL_MEMORY, RelevanceContext, estimate_tokens, select_memories,
+    trim_messages,
 )
 
 
@@ -32,14 +33,29 @@ def remember(text, **kw):
 
 # --- relevance ---------------------------------------------------------------
 
-def test_an_unrelated_memory_is_left_out():
-    """The whole point of the change: everything-every-turn stops scaling exactly
-    when memory starts being worth having."""
+def fill_memory(n: int = SMALL_MEMORY) -> None:
+    """Enough unrelated memories that memory is no longer 'small'."""
+    for i in range(n):
+        remember(f"An unrelated fact number {i} about gardening.")
+
+
+def test_an_unrelated_memory_is_left_out_once_memory_is_large():
+    """The whole point of relevance: everything-every-turn stops scaling exactly when memory
+    starts being worth having. (Changed deliberately, Phase 4: a SMALL memory now goes in whole.)"""
+    fill_memory(SMALL_MEMORY)
     remember("Uses Postgres at work.")
     remember("Enjoys long walks on the beach.")
     context = RelevanceContext().assemble(session_id="s1", text="which database should I use")
     assert "Postgres" in context.system
-    assert "long walks" not in context.system
+    assert "long walks" not in context.system and "number 3 about gardening" not in context.system
+
+
+def test_a_small_memory_goes_in_whole_so_a_reworded_question_never_misses_a_fact():
+    remember("Vegetarian - never suggest meat.")
+    remember("Enjoys long walks on the beach.")
+    context = RelevanceContext().assemble(session_id="s1", text="what should I cook tonight")
+    assert "Vegetarian" in context.system and "long walks" in context.system
+    assert "everything (memory is small" in context.notes["memory"]["strategy"]
 
 
 def test_a_word_form_difference_does_not_lose_the_relevant_fact():
@@ -61,12 +77,11 @@ def test_importance_overrides_relevance_and_never_the_other_way_round():
 
 
 def test_the_selection_explains_itself():
-    for i in range(5):
-        remember(f"An unrelated fact number {i}.")
+    fill_memory(SMALL_MEMORY + 5)
     notes = RelevanceContext().assemble(session_id="s1", text="tell me about ferrets"
                                         ).notes["memory"]
-    assert notes["considered"] == 5 and notes["dropped"] == 5
-    assert "no embeddings" in notes["strategy"]
+    assert notes["considered"] == SMALL_MEMORY + 5 and notes["dropped"] == SMALL_MEMORY + 5
+    assert "keyword overlap" in notes["strategy"] and "no embedding model" in notes["strategy"]
 
 
 def test_a_contradicted_memory_is_not_offered_for_selection_at_all():

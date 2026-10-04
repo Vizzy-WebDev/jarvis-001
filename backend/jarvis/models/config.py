@@ -640,6 +640,19 @@ def set_alias(name: str, *, endpoint: str | None = None, family: str | None = No
     return edit(change)
 
 
+def set_embedding_space(name: str, *, primary: str, dimension: int,
+                        model_version: str | None = None) -> Config:
+    """Declare (or replace) a named embedding space: one model, one fixed dimension."""
+    def change(data: dict[str, Any]) -> None:
+        spaces = data.setdefault("embedding_spaces", {}) or {}
+        data["embedding_spaces"] = spaces
+        entry: dict[str, Any] = {"primary": primary, "dimension": int(dimension)}
+        if model_version:
+            entry["model_version"] = model_version
+        spaces[name] = entry
+    return edit(change)
+
+
 def remove_alias(name: str) -> Config:
     def change(data: dict[str, Any]) -> None:
         (data.get("aliases") or {}).pop(name, None)

@@ -588,4 +588,22 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
         );
         """
     ],
+    # 38: What each memory means, as numbers (`memory/vectors.py`), so a memory can be found by
+    # meaning rather than only by shared words. One row per memory, valid only while the memory's
+    # text, the embedding model and its version still match what made it (`text_hash`, `space`,
+    # `model_version`, `dimension`) — an edited memory or a switched model is simply "not indexed
+    # yet", never mixed. `vector` is little-endian float32. Cascades with the memory.
+    38: [
+        """
+        CREATE TABLE IF NOT EXISTS memory_vectors (
+          memory_id     TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+          space         TEXT NOT NULL,
+          model_version TEXT NOT NULL,
+          dimension     INTEGER NOT NULL,
+          text_hash     TEXT NOT NULL,
+          vector        BLOB NOT NULL,
+          updated_at    TEXT NOT NULL
+        );
+        """
+    ],
 }

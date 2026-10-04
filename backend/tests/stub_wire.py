@@ -52,13 +52,18 @@ class _Server(ThreadingHTTPServer):
 
 class StubWire:
     def __init__(self, fmt: str, *, key: str | None = None, models: list[dict[str, Any]] | None = None,
-                 show: dict[str, dict[str, Any]] | None = None, list_status: int = 200) -> None:
+                 show: dict[str, dict[str, Any]] | None = None, list_status: int = 200,
+                 embedder: Any = None, embed_status: int | None = None) -> None:
         assert fmt in FORMATS
         self.fmt = fmt
         self.key = key
         self.models = models if models is not None else [{"id": "stub-a"}, {"id": "stub-b"}]
         self.show = show or {}
         self.list_status = list_status
+        #: `embedder(text) -> list[float]` answers `/embeddings`; None keeps the old fixed answer.
+        self.embedder = embedder
+        #: A status to answer `/embeddings` with instead (a provider that is down or refusing).
+        self.embed_status = embed_status
         self.script: list[Turn] = []
         self.requests: list[dict[str, Any]] = []
         self.base_url = ""
@@ -71,6 +76,9 @@ class StubWire:
         with self._lock:
             self.script.extend(turns)
         return self
+
+    def embeddings(self) -> list[dict[str, Any]]:
+        return [r for r in self.requests if r["method"] == "POST" and r["kind"] == "embed"]
 
     def generations(self) -> list[dict[str, Any]]:
         return [r for r in self.requests if r["method"] == "POST" and r["kind"] == "generate"]
@@ -147,8 +155,12 @@ class StubWire:
                     self._record("embed", body)
                     if not self._authorised():
                         return self._refuse(401, "Incorrect API key provided")
+                    if stub.embed_status:
+                        return self._refuse(stub.embed_status, "the embedding service is unavailable")
                     inputs = body.get("input") or []
-                    return self._json(200, {"data": [{"index": i, "embedding": [float(len(t)), float(i), 0.5]}
+                    make = stub.embedder or (lambda t: [float(len(t)), 0.0, 0.5])
+                    return self._json(200, {"data": [{"index": i, "embedding": make(t) if stub.embedder
+                                                      else [float(len(t)), float(i), 0.5]}
                                                       for i, t in reversed(list(enumerate(inputs)))],
                                             "model": body.get("model")})
                 self._record("generate", body)

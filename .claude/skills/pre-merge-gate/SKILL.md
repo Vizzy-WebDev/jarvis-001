@@ -15,10 +15,10 @@ as "passed":
    (`run_in_background: true`) with `JARVIS_DATA_DIR`/`JARVIS_ENV_PATH` pointed at empty
    scratch paths and an unusual `PORT`. Must come up with no unhandled exception.
 3. **Migrations + tool loader** — read the scratch `jarvis.db` read-only and confirm
-   `PRAGMA user_version` reached 37: `jarvis/migrations.py`'s `MIGRATION_SQL` (19,
+   `PRAGMA user_version` reached 38: `jarvis/migrations.py`'s `MIGRATION_SQL` (19,
    the original schema, never hand-edited) plus
-   `migrations_extra.py`'s `EXTRA_MIGRATION_SQL` (18, this build's own — the latest
-   being migration 37, the running conversation summary: `conversation_summaries`). Counting only
+   `migrations_extra.py`'s `EXTRA_MIGRATION_SQL` (19, this build's own — the latest
+   being migration 38, memory searched by meaning: `memory_vectors`). Counting only
    the first file gives 19 and a false failure — the gate caught exactly that mistake
    in this document. **The database is created lazily on first use**, so hit a route
    before looking for the file. Confirm `load_tools()` (or a route that touches the

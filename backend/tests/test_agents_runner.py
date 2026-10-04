@@ -18,6 +18,7 @@ from jarvis.db import reset_for_tests as reset_db
 from jarvis.events import EventType
 from jarvis.events.bus import bus
 from jarvis.memory import store as memory_store
+from jarvis.orchestrator.context import SMALL_MEMORY
 from jarvis.policy import Autonomy
 
 import medium_tool
@@ -165,6 +166,9 @@ def test_a_specialist_always_sees_what_the_operator_is_working_towards(model):
     memory_store.create_memory(category="Long-term Goals",
                                text="Wants to quit the day job and run the cart full time by 2027")
     memory_store.create_memory(category="Preferences", text="Likes oat milk")
+    # A small memory goes in whole (`context.SMALL_MEMORY`); choosing only happens above that.
+    for i in range(SMALL_MEMORY):
+        memory_store.create_memory(category="Preferences", text=f"Unrelated fact {i} about gardening")
     model.on("scout").says("hunted")
     runner.run_agent("scout", "Find me something worth my time", conversation_id="c1")
     system = model.requests_of("scout")[0]["system"]

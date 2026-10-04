@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .. import config as secrets
 from . import config, drivers, policy, state
 from .catalog import split_endpoint_id
 from .discovery import conn_info
@@ -69,3 +70,67 @@ def embed(space_name: str, inputs: list[str], *, data_class: str) -> Embeddings:
                           f"for it. {last}")
     raise NoEligibleEndpoint(f"The embedding model for “{space_name}” can't be used right now: "
                              + "; ".join(skipped) + ".")
+
+
+# --- finding a model to embed with -------------------------------------------------------------
+
+#: Most private first: a model on this computer never sends anything anywhere.
+_TRUST_ORDER = {"local": 0, "zero_retention": 1, "standard": 2}
+
+
+def candidates(data_class: str, cfg: config.Config | None = None) -> list[tuple[str, str]]:
+    """(endpoint id, why it was not usable | "") for every endpoint that says it embeds, best
+    first. Usable ones come first, ordered by how private the connection is, then by name so the
+    choice never wobbles between runs."""
+    from . import capabilities, engine
+
+    cfg = cfg or config.current()
+    cat = engine.catalog(cfg)
+    found: list[tuple[int, str, str]] = []
+    for endpoint in cat.endpoints.values():
+        if not capabilities.has(endpoint.capabilities, "embeddings"):
+            continue
+        conn = cfg.connections.get(endpoint.connection)
+        if conn is None:
+            continue
+        why = ""
+        if not policy.trust_allows(cfg, data_class, conn.trust):
+            why = f"your privacy settings don't allow {data_class} data on {conn.label or conn.name}"
+        elif conn.secret_ref and not secrets.get_secret(conn.secret_ref):
+            why = f"{conn.label or conn.name} has no key saved"
+        found.append((1 if why else 0, _TRUST_ORDER.get(conn.trust, 3), endpoint.id, why))
+    found.sort(key=lambda row: (row[0], row[1], row[2]))
+    return [(row[2], row[3]) for row in found]
+
+
+def ensure_space(name: str, *, data_class: str) -> config.EmbeddingSpace | None:
+    """The named space, made on first use from an embedding model the person already has.
+
+    Found or refused, never approximated (the same rule as `settings.ensure_pin`): an existing
+    space is returned as it is — even when its model is gone, in which case `embed()` fails and
+    the caller falls back — and a space is only ever MADE from an endpoint that says it embeds,
+    on a connection the data policy allows. The dimension is learned from one tiny real call and
+    written down once, so every later vector is checked against it. None when there is nothing
+    to make one from (or the probe failed): the caller simply does without.
+    """
+    cfg = config.current()
+    existing = cfg.embedding_spaces.get(name)
+    if existing is not None:
+        return existing
+    for endpoint_id, why in candidates(data_class, cfg):
+        if why:
+            continue
+        conn_name, model_id = split_endpoint_id(endpoint_id)
+        conn = cfg.connections[conn_name]
+        driver = drivers.get(conn.driver)
+        if not hasattr(driver, "embed"):
+            continue
+        try:
+            probe = driver.embed(conn_info(conn, cfg), model_id, ["hello"])
+        except ModelError:
+            continue
+        if not probe or not probe[0]:
+            continue
+        return config.set_embedding_space(name, primary=endpoint_id, dimension=len(probe[0]),
+                                          model_version=model_id).embedding_spaces.get(name)
+    return None

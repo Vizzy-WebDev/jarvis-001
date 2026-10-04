@@ -2,7 +2,7 @@
 
 See the root `CLAUDE.md` for the decisions that matter beyond this file (the tiered-approval
 policy seam and its hard floor, fire-and-forget checkpoints, the schema-enforced
-independence from conversations). This file covers the three modules.
+independence from conversations). This file covers the four modules.
 
 - `store.py` — the whole Memory Manager, and the **only** module that touches `db.py` for
   Memory's tables (`memories`, `memory_versions`, `memory_categories`,
@@ -24,6 +24,21 @@ independence from conversations). This file covers the three modules.
     `approved_memories_text()`, so the OLD claim is not injected while a human decides.
   - `approved_memories_text()` — what `prompt.py` injects, grouped by category.
   - `get_checkpoint()` / `set_checkpoint()` — the per-conversation `last_seq` pointer.
+  - `vector_rows()` / `save_vectors()` — the `memory_vectors` table (migration 38): one
+    float32 vector per memory with the space, model version, dimension and a hash of the text
+    it was made from. Deleting a memory deletes its vector (`ON DELETE CASCADE`); saving skips a
+    memory deleted meanwhile. Bytes only — `store.py` never imports the model layer.
+- `vectors.py` — finding a memory by what it means. `similarities(text, memories)` gives
+  cosine similarity per memory that has a VALID vector (same text hash, model version and
+  dimension — an edited memory or a switched model is "not indexed yet", never mixed), or
+  `None` plus a plain reason (message under 3 words, no embedding model, model not answering
+  or too slow — 1.5 s — privacy policy, still indexing) and the caller uses keywords. `sync()`
+  embeds what is missing in batches, single-flight, in the background, started by any turn that
+  finds memories unindexed (so no write path needs plumbing); a failure starts a 2-minute
+  cool-down. `status()` is the Memory screen's line (`GET /api/memories/search-status`) and
+  never calls a model. Memory text is `personal` data on every call. The model layer is
+  imported lazily, inside functions. Selection itself (small memory → everything; above 20,
+  keyword + meaning fused) is `orchestrator/context.select_memories`.
 - `policy.py` — `decide(candidate, trust)`, the single seam the trust levels are built on. A
   pure function (no database) so its behaviour is an exhaustive truth table. `THRESHOLDS`:
   `ask` is `inf` (approval-first for every score, even a buggy one above 1.0), `balanced`
@@ -69,4 +84,5 @@ is unrelated and stays.
 **`frontend/components/screens/MemoryScreen.tsx`** (`#/memory`) is the trust dial plus a
 browsable, editable, searchable view over everything in `store.py`, each memory carrying its
 `origin` badge. Filtering is client-side over one fetch, since Memory is a small curated
-list by design.
+list by design. Above the list, one line says whether searching by meaning is on, getting
+ready, ready to switch on, or off and why (`data-testid=memory-search-status`).

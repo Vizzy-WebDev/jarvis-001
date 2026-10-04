@@ -6,14 +6,18 @@ in the prompt". The original injects the ENTIRE approved memory set into every
 call, which works only for as long as the set stays small, and stops being true
 exactly when memory starts being worth having.
 
-**Three decisions worth stating, because each trades something real:**
+**Four decisions worth stating, because each trades something real:**
 
-1. **Relevance is keyword overlap plus importance plus recency — not embeddings.**
-   There is no embedding model in this stack, and adding one to rank a few dozen
-   short sentences would be a dependency, a download and a second model call per
-   turn for a set that fits in a prompt today. What this does instead is honest
-   about being shallow, and it is measured: `selection` on the returned context
-   says exactly what went in and why.
+1. **A small memory goes in whole; a larger one is searched — by meaning when it can be.**
+   Up to `SMALL_MEMORY` memories cost little and every one might matter, so all of them go in
+   and no model is asked anything. Above that, relevance is keyword overlap fused (reciprocal
+   rank) with similarity of meaning from an embedding model (`memory/vectors.py`), so "what
+   should I cook tonight?" finds "Vegetarian — never suggest meat" though they share no word.
+   Only a memory whose similarity stands clearly above the rest counts as close in meaning —
+   a fixed cosine threshold means something different for every model. Searching by meaning is
+   never required: no embedding model, one not answering in time, a privacy setting against it,
+   or a message too short to mean anything all fall back to keywords, and `selection` on the
+   returned context says exactly what went in and why — including which way it was found.
 
 2. **Importance overrides relevance, on purpose.** A fact the user marked as
    changing how they should be helped must not drop out because the current
@@ -49,6 +53,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from .. import conversation, conversation_summary, prompt
 from ..memory import store as memory_store
+from ..memory import vectors as memory_vectors
 from ..open_work import snapshot as open_work_snapshot
 
 logger = logging.getLogger(__name__)
@@ -189,20 +194,100 @@ def score_memory(memory: dict[str, Any], terms: set[str], position: int) -> floa
 SPECIALIST_FLOOR_CATEGORIES = ("Long-term Goals", "Projects")
 
 
+#: At or below this many memories, there is no choosing to do: everything goes in. A relevance
+#: heuristic about a SMALL curated list, not a context limit — what the model can hold is still
+#: the budget's say (`budget_tokens`), and a memory set this small costs a few hundred tokens. It
+#: also means a reworded question can never miss a fact while memory is small, with no embedding
+#: call and no delay.
+SMALL_MEMORY = 20
+
+#: Above that, at most this many memories chosen by relevance ride beside the always-included
+#: ones. Likewise a relevance cap, not a context size: twelve facts relevant to a message is
+#: plenty, and the 13th is noise however large the window is.
+MAX_RELEVANT = 12
+
+#: How far above the crowd a memory's similarity must stand to count as relevant by meaning: this many
+#: standard deviations over the mean of THIS question's similarities. Cosine values mean different
+#: things for different embedding models (an unrelated pair scores 0.1 on one and 0.4 on another), so
+#: a fixed cut-off would be wrong for most of them; "stands out from the rest of the memory" is true
+#: of all. Needs enough memories to have a crowd (`MIN_FOR_SPREAD`); below that nothing is cut.
+VECTOR_STANDOUT = 1.5
+MIN_FOR_SPREAD = 8
+
+#: Reciprocal-rank fusion's constant: how fast a lower rank stops mattering. 60 is the standard
+#: value; it is scale-free, so keyword scores and cosine similarities never need to be made
+#: comparable to each other.
+RRF_K = 60
+
+
+def _ranked(scored: list[tuple[float, int, dict[str, Any]]]) -> list[dict[str, Any]]:
+    return [m for _, _, m in sorted(scored, key=lambda row: (-row[0], row[1]))]
+
+
 def select_memories(text: str, memories: list[dict[str, Any]], budget_tokens: int | None,
                     *, floor_categories: tuple[str, ...] = (),
+                    similarity: dict[str, float] | None = None,
+                    why_not: str = "",
                     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """The memories worth this turn's budget, and an account of the choice.
-    `budget_tokens=None` (the model never said its size) caps nothing: what is
-    relevant, or important enough, goes in."""
+    `budget_tokens=None` (the model never said its size) caps nothing but relevance.
+
+    - **Small memory** (`SMALL_MEMORY` or fewer): all of it, floor first.
+    - **Larger memory:** the floor, then the most relevant — by keyword overlap fused (reciprocal
+      rank) with similarity of meaning when `similarity` says how close each memory is to what
+      was said, and by keyword overlap alone when it is None (`why_not` says why, in `strategy`).
+      A memory with no similarity of its own is ranked by keyword alone, never dropped for it.
+    """
     terms = _terms(text)
-    scored = [(score_memory(m, terms, i), i, m) for i, m in enumerate(memories)]
+    keyword = [(score_memory(m, terms, i), i, m) for i, m in enumerate(memories)]
+    overlapping = [(score, i, m) for score, i, m in keyword if score > 0]
 
     floor = [m for m in memories if (m.get("importance") or 0) >= ALWAYS_INCLUDE_IMPORTANCE
              or m.get("category") in floor_categories]
     floor_ids = {m["id"] for m in floor}
-    relevant = [m for score, _, m in sorted(scored, key=lambda row: (-row[0], row[1]))
-                if m["id"] not in floor_ids and score > 0]
+
+    if len(memories) <= SMALL_MEMORY:
+        strategy = f"everything (memory is small: {len(memories)} of up to {SMALL_MEMORY})"
+        relevant = [m for m in _ranked(keyword) if m["id"] not in floor_ids]
+    else:
+        # In a search by meaning only a REAL word match counts as a keyword hit: importance lifts a
+        # memory's score on the keyword-only path, but it is not relevance and must not pose as it.
+        shared = [row for row in keyword if _terms(row[2].get("text", "")) & terms]
+        keyword_rank = {m["id"]: r for r, m in enumerate(_ranked(shared))}
+        vector_rank: dict[str, int] = {}
+        if similarity:
+            offered = {m["id"] for m in memories}
+            values = [v for k, v in similarity.items() if k in offered]
+            bar = float("-inf")
+            if len(values) >= MIN_FOR_SPREAD:
+                mean = sum(values) / len(values)
+                spread = (sum((v - mean) ** 2 for v in values) / len(values)) ** 0.5
+                # No spread at all (every memory equally close) means nothing stands out.
+                bar = mean + VECTOR_STANDOUT * spread if spread > 0 else float("inf")
+            ordered = sorted((m for m in memories if m["id"] in similarity
+                              and similarity[m["id"]] >= bar),
+                             key=lambda m: (-similarity[m["id"]], -(m.get("importance") or 0)))
+            vector_rank = {m["id"]: r for r, m in enumerate(ordered)}
+
+        def fused(row: tuple[float, int, dict[str, Any]]) -> float:
+            memory_id = row[2]["id"]
+            total = 0.0
+            if memory_id in keyword_rank:
+                total += 1.0 / (RRF_K + keyword_rank[memory_id])
+            if memory_id in vector_rank:
+                total += 1.0 / (RRF_K + vector_rank[memory_id])
+            # Importance only breaks ties (it is far smaller than one rank step).
+            return total + (row[2].get("importance") or 0) * 1e-6
+
+        if similarity:
+            strategy = "meaning (embeddings) fused with keyword overlap, plus importance"
+            pool = [row for row in keyword if row[2]["id"] not in floor_ids
+                    and (row[2]["id"] in keyword_rank or row[2]["id"] in vector_rank)]
+            relevant = _ranked([(fused(row), row[1], row[2]) for row in pool])[:MAX_RELEVANT]
+        else:
+            strategy = ("keyword overlap + importance + recency"
+                        + (f" ({why_not})" if why_not else ""))
+            relevant = [m for m in _ranked(overlapping) if m["id"] not in floor_ids][:MAX_RELEVANT]
 
     chosen: list[dict[str, Any]] = []
     used = 0
@@ -220,7 +305,7 @@ def select_memories(text: str, memories: list[dict[str, Any]], budget_tokens: in
         "dropped": len(memories) - len(chosen),
         "tokensUsed": used,
         "tokenBudget": budget_tokens,
-        "strategy": "keyword overlap + importance + recency (no embeddings — see module docs)",
+        "strategy": strategy,
     }
 
 
@@ -373,9 +458,15 @@ class RelevanceContext:
         if agent is not None and not agent.memory:
             # The person decided this agent does not see what Jarvis knows about them.
             available = []
+        similarity, why_not = None, ""
+        if len(available) > SMALL_MEMORY:
+            # Only a LARGE memory needs searching, so a small one never pays for an embedding
+            # call. Never raises, never waits long; None means "use keywords" (`memory/vectors.py`).
+            similarity, why_not = memory_vectors.similarities(text, available)
         chosen, selection = select_memories(
             text, available, memory_budget,
-            floor_categories=SPECIALIST_FLOOR_CATEGORIES if agent is not None else ())
+            floor_categories=SPECIALIST_FLOOR_CATEGORIES if agent is not None else (),
+            similarity=similarity, why_not=why_not)
         memories_text = memory_store.approved_memories_text(chosen)
         history, summary_text, covered = _history(session_id)
         so_far = prompt.conversation_so_far_section(summary_text)

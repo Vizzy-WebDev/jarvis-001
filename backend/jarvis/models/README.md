@@ -36,6 +36,15 @@ loop's port; the one module that imports the orchestrator) and `oneshot.py`
 - **Alias** — a config name for an endpoint or a family. `selected` is the
   person's chosen model; a specialist's or scheduled task's pin is an alias named
   after the pin.
+- **Embedding space** — a name (`memory` is the one the app uses) for a primary
+  endpoint, declared identical backups and a dimension; vectors from different
+  spaces or model versions are never compared. `embeddings.ensure_space(name,
+  data_class=)` makes one on first need from an endpoint that already has the
+  `embeddings` capability (local, then zero-retention, then standard trust; one
+  tiny call probes the dimension) and writes it with `config.set_embedding_space`
+  — found or refused, never approximated, and an existing space is never
+  re-pointed. `embeddings.candidates()` lists what it could choose from and why
+  each is unusable (policy, missing key).
 - **Capabilities** — a fixed, versioned vocabulary (`capabilities.py`); each value
   records whether it was declared, discovered or probed (probed wins).
 

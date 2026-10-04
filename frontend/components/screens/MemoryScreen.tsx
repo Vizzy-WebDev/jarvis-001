@@ -9,7 +9,7 @@ import { Field, inputClass } from '@/components/ui/Field';
 import { Modal } from '@/components/ui/Modal';
 import { api, ApiRequestError } from '@/lib/api';
 import type {
-  Memory, MemoryCandidate, MemoryCategory, MemoryVersion, Prefs,
+  Memory, MemoryCandidate, MemoryCategory, MemorySearchStatus, MemoryVersion, Prefs,
 } from '@/lib/api-types';
 
 /**
@@ -53,6 +53,7 @@ export function MemoryScreen() {
   const [candidates, setCandidates] = useState<MemoryCandidate[]>([]);
   const [categories, setCategories] = useState<MemoryCategory[]>([]);
   const [trust, setTrust] = useState<Prefs['memoryTrust']>('ask');
+  const [searchStatus, setSearchStatus] = useState<MemorySearchStatus | null>(null);
 
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('');
@@ -73,6 +74,8 @@ export function MemoryScreen() {
       setConflicted(listed.conflicted);
       setCandidates(waiting.candidates);
       setCategories(groups.categories);
+      // A convenience line: it failing must never get in the way of the memories themselves.
+      api.memories.searchStatus().then(setSearchStatus).catch(() => setSearchStatus(null));
       setError(null);
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'Could not read your memories.');
@@ -127,6 +130,8 @@ export function MemoryScreen() {
       )}
 
       <TrustDial value={trust} onChange={setTrustLevel} />
+
+      {searchStatus && <SearchStatusLine status={searchStatus} />}
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <input
@@ -220,6 +225,29 @@ export function MemoryScreen() {
         />
       )}
     </>
+  );
+}
+
+/** One plain line saying whether Jarvis can find a memory by meaning, so "why did it forget that?"
+ *  has an answer on screen. Small memory needs no search at all, and it says so. */
+function SearchStatusLine({ status }: { status: MemorySearchStatus }) {
+  const model = status.model ? status.model.split('/').slice(1).join('/') || status.model : '';
+  let text: string;
+  if (status.state === 'on') {
+    text = `Smarter search: on (${model}). ${status.indexed} of ${status.total} memories ready.`;
+  } else if (status.state === 'building') {
+    text = `Smarter search: getting ready (${model}). ${status.indexed} of ${status.total} memories ready.`;
+  } else if (status.state === 'ready') {
+    text = `Smarter search: ready (${model}). ${status.reason}`;
+  } else {
+    text = `Smarter search: off. ${status.reason}`;
+  }
+  return (
+    <p className="mb-4 text-[12px] text-ink-faint" data-testid="memory-search-status"
+       data-state={status.state}>
+      {text}
+      {status.state !== 'off' && status.reason && status.state !== 'ready' ? ` ${status.reason}` : ''}
+    </p>
   );
 }
 

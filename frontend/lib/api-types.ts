@@ -533,6 +533,17 @@ export interface MemoryVersion {
   reason: string | null;
 }
 
+/** Whether Jarvis can find a memory by what it means. `ready` = an embedding model exists and it
+ *  switches on by itself once memory is large enough to need a search. */
+export interface MemorySearchStatus {
+  state: 'on' | 'building' | 'ready' | 'off';
+  model: string | null;
+  indexed: number;
+  total: number;
+  /** A plain sentence saying why when it is not simply on. May be empty. */
+  reason: string;
+}
+
 export interface MemoryCategory {
   name: string;
   status: 'approved' | 'pending';

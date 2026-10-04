@@ -44,6 +44,7 @@ import type {
   Memory,
   MemoryCandidate,
   MemoryCategory,
+  MemorySearchStatus,
   MemoryVersion,
   Monitor,
   Notification,
@@ -416,6 +417,8 @@ export const api = {
       );
     },
     categories: () => request<{ categories: MemoryCategory[] }>('/memories/categories'),
+    /** Reads settings and the database only; never calls a model. */
+    searchStatus: () => request<MemorySearchStatus>('/memories/search-status'),
     /** Empty for an id that never existed: "what changed about this" has a true
      *  answer for something that does not exist. */
     versions: (id: string) =>

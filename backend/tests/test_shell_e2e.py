@@ -1158,6 +1158,22 @@ def test_a_contradicted_memory_says_it_is_not_being_used(page):
     assert [m["text"] for m in store.list_memories()] == ["Uses Windows now"]
 
 
+def test_the_memory_screen_says_whether_searching_by_meaning_is_on(page):
+    """The screen really calls the status route and says what it found in plain words. A test
+    server has no embedding model, so the honest answer is "off", with the reason — never a
+    blank where the line should be, and never a claim the search is on."""
+    from jarvis.memory import store
+
+    store.create_memory(category="Work", text="Works at Acme", origin="explicit")
+    go_to(page, "memory")
+    line = page.wait_for_selector("[data-testid=memory-search-status]")
+
+    assert line.get_attribute("data-state") == "off"
+    text = line.inner_text()
+    assert text.startswith("Smarter search: off. ")
+    assert len(text) > len("Smarter search: off. ")  # the reason is there, not just the verdict
+
+
 def test_editing_a_memory_keeps_what_it_used_to_say(page):
     from jarvis.memory import store
 

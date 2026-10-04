@@ -200,7 +200,7 @@ def test_nobody_here_means_nothing_is_said_and_the_notice_waits():
 def test_a_short_result_is_said_whole_and_the_notice_is_then_delivered(monkeypatch):
     monkeypatch.setattr("jarvis.heartbeat.speak.may_speak_now", lambda **_: True)
     job = finished_job()
-    assert spoken_by_jarvis() == ["Find the answer is done. The answer is 42."]
+    assert spoken_by_jarvis() == ['Boss, "Find the answer" is done. The answer is 42.']
     [row] = finished_rows(job["id"])
     assert row["deliveredAt"] is not None
     assert "The answer is 42." not in system_for("conv-A"), "it was already said"
@@ -212,8 +212,8 @@ def test_a_long_result_is_announced_and_the_full_result_waits_for_the_next_turn(
     monkeypatch.setattr("jarvis.heartbeat.speak.may_speak_now", lambda **_: True)
     long_answer = "detail " * (SPOKEN_RESULT_CHARS // 7 + 50)
     job = finished_job(answer=long_answer)
-    assert spoken_by_jarvis() == ["Find the answer is done — I have the full result when you "
-                                  "want it."]
+    assert spoken_by_jarvis() == ['Boss, "Find the answer" is done — I have the full result '
+                                  "when you want it."]
     [row] = finished_rows(job["id"])
     assert row["deliveredAt"] is None and row["detail"]["announced"] is True
     system = system_for("conv-A")
@@ -241,7 +241,7 @@ def test_a_question_the_job_needs_answered_is_asked_aloud_when_they_are_here(mon
     assert run_and_wait(lambda: worker.run_job(job["id"], event_bus=EventBus()))["status"] \
         == "awaiting_decision"
     [said] = spoken_by_jarvis()
-    assert said.startswith('"Send it" needs your go-ahead')
+    assert said.startswith('Boss, "Send it" needs your go-ahead')
     # The approval card is still there to answer; only the notice is spoken for.
     from jarvis.policy import approvals
 

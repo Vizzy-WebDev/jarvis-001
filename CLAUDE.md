@@ -428,6 +428,25 @@ calculated. Jarvis may hand in, edit text and schedule (the last two confirm fir
 the person approves, archives and deletes. The Recycle Bin is never emptied automatically.
 Not to be confused with `jarvis/content/` (Content Analysis — unrelated, older).
 
+## Who Jarvis is — `jarvis/prompt.py`
+
+Jarvis is the person's own right hand, and calls them **Boss** the way a real right hand uses a
+form of address: greeting, taking something on, handing over a result or bad news, speaking up
+first — not in quick back-and-forth, never twice in one reply, never as filler. The prompt leads
+with that identity (`IDENTITY`), then how Jarvis works for Boss (`HOW_YOU_WORK`: what it owns,
+act or ask, offered initiative), then the tightened rules and the delivery register. The whole
+fixed prompt is held to ~2,000 estimated tokens (`test_identity.py` fails if it regrows), and on
+any turn with someone listening the very last section restates the identity (`REMINDER`,
+volatile so the cached prefix is unchanged) against drift on long chats. Specialists keep their
+own identity; `SPECIALIST_BOSS` maps their doctrines' "the operator" to Boss. Lines Jarvis speaks
+first from code (`jobs/worker._say`) open with "Boss,". The prompt describes the policy, never
+sets it: every tool it says to "just do" really has `request_suffices`, every tool it names
+really exists, and every rule the old prompt carried is pinned by `test_identity.py`'s
+`KEPT_RULES`. **The real proof is live**: `python -m jarvis.identity_check` runs ~10 scripted
+conversations against the person's own model in a throw-away copy of their model settings and
+flags Boss overuse, markdown, service phrasing, promises with no follow-up really set up, needless
+approval cards and things done unasked — checked from the stored tool calls, never the reply text.
+
 ## The Adaptive Communication Register — `jarvis/personality.py`
 
 The tone/delivery layer. Regex-based

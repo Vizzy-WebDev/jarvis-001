@@ -305,8 +305,8 @@ def _deliver_result(job_id: str, job: dict[str, Any], answer: str, attempt: int,
         logger.exception("could not notify about job %s", job_id)
     if speaking:
         whole = bool(answer) and len(answer) <= SPOKEN_RESULT_CHARS
-        text = f"{title} is done. {answer}" if whole else \
-            f"{title} is done — I have the full result when you want it."
+        text = f'"{title}" is done. {answer}' if whole else \
+            f'"{title}" is done — I have the full result when you want it.'
         _say(text, entry if whole else None, "A background job finished.", job_id)
 
 
@@ -322,11 +322,12 @@ def _may_speak() -> bool:
 
 def _say(text: str, entry_id: int | None, reason: str, job_id: str) -> None:
     """Jarvis speaks first (`heartbeat/speak.py`). Marks the row delivered only when saying
-    it really was the whole message."""
+    it really was the whole message. Speaking up first is exactly where a right hand uses the
+    form of address, so the line opens with it (`prompt.IDENTITY`)."""
     try:
         from ..heartbeat.speak import speak_now
 
-        speak_now(text, outbox_id=entry_id, reason=reason, event_bus=_bus_for(job_id))
+        speak_now(f"Boss, {text}", outbox_id=entry_id, reason=reason, event_bus=_bus_for(job_id))
     except Exception:  # noqa: BLE001 — the row stays waiting for the next turn instead
         logger.exception("could not say aloud what job %s needs", job_id)
 

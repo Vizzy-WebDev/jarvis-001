@@ -15,7 +15,8 @@ may be given — never agents themselves. Boundaries are by responsibility, not 
   analytics, teacher, scout`) plus `COMMON_GUARDRAILS`. Bump an entry's `version` when its
   text changes: `seed_builtins` refreshes only rows the person never edited
   (`createdAt == updatedAt`). Scout has no category list, on purpose — its target comes from
-  the operator's words or their Memory.
+  the operator's words or their Memory. The doctrines say "the operator"; the prompt maps that
+  to Boss (`prompt.SPECIALIST_BOSS`), so the text is not rewritten and no `version` bump is needed.
 - `ensure_builtins()` (`__init__.py`) is cheap and called by every reader that needs the roster.
 
 ## Running one — `runner.py`

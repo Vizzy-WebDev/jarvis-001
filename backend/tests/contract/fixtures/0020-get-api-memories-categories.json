@@ -1,0 +1,68 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/memories/categories",
+    "query": "",
+    "headers": {
+      "host": "127.0.0.1:39118",
+      "connection": "keep-alive",
+      "accept": "*/*",
+      "accept-language": "*",
+      "sec-fetch-mode": "cors",
+      "user-agent": "node",
+      "accept-encoding": "gzip, deflate"
+    },
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "contentType": "application/json; charset=utf-8",
+    "headers": {
+      "x-powered-by": "Express",
+      "content-type": "application/json; charset=utf-8",
+      "content-length": "346",
+      "etag": "W/\"15a-RVWhG+KooYSFg6gstXz0kFwQ8qY\"",
+      "date": "Fri, 04 Sep 2026 15:34:20 GMT",
+      "connection": "keep-alive",
+      "keep-alive": "timeout=5"
+    },
+    "kind": "json",
+    "body": {
+      "categories": [
+        {
+          "name": "About You",
+          "status": "approved"
+        },
+        {
+          "name": "Learning",
+          "status": "approved"
+        },
+        {
+          "name": "Long-term Goals",
+          "status": "approved"
+        },
+        {
+          "name": "People",
+          "status": "approved"
+        },
+        {
+          "name": "Preferences",
+          "status": "approved"
+        },
+        {
+          "name": "Projects",
+          "status": "approved"
+        },
+        {
+          "name": "Uncategorized",
+          "status": "approved"
+        },
+        {
+          "name": "Work",
+          "status": "approved"
+        }
+      ]
+    }
+  },
+  "recordedAt": "2026-09-04T15:34:20.133Z"
+}

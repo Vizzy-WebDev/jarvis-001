@@ -16,12 +16,13 @@ main chat:
 
 - **Notifications** — everything Jarvis has flagged for you, in one place
 - **Chat History** — every past conversation, searchable
-- **Model Settings** — which AI models Jarvis can use, and how it picks between them
+- **Model Settings** — connect an AI provider and choose the model Jarvis uses
 - **Skills** — the abilities Jarvis has, and ones you can add
-- **App Control** — apps and services Jarvis is connected to (MCP/API/CLI), and its
+- **Connector** — apps and services Jarvis is connected to (MCP/API/CLI), and its
   built-in computer control
 - **Planning** — turn an idea into a plan and a ready-to-paste prompt
 - **Content Analysis** — hand Jarvis a video, article or file and ask about it
+- **Content Management** — add, review, schedule and publish your finished content, and see its numbers
 - **Scheduled Tasks** — reminders and repeating things, including ones that use a
   specific ability of Jarvis's
 - **Background Jobs** — longer things Jarvis is working on behind the scenes
@@ -35,70 +36,49 @@ also works, since each screen has its own address.
 
 ---
 
-## 1. Adding and removing AI models
+## 1. Models — connecting an AI
 
-Open the menu → **Model Settings** → **"+ Add a model."** This opens a popup
-(closing it with Cancel, ✕, Esc, or clicking outside all just cancel — nothing is
-saved until you click the button that actually adds it).
+Jarvis needs an AI model to think with, and you choose where it comes from. Open the menu
+→ **Model Settings**.
 
-**To add one specific model:**
-1. Pick a **Type**: Google (Gemini), Anthropic (Claude), OpenAI, a local server
-   (Ollama, LM Studio — running on your own PC), or Custom (any other provider or
-   gateway, e.g. OpenRouter, Groq, Together, an in-house server — paste its address
-   and Jarvis figures out how to talk to it). Cloud providers need an API key (a
-   password-like code from that company's website); a local server usually needs no
-   key at all, just its address (Ollama's is usually `http://localhost:11434/v1`).
-2. Type the exact **Model** name and click **"Test and add."** Jarvis checks the
-   connection actually works before saving it — if something's wrong, it tells you
-   what, in plain terms, including whether it actually reached the address at all or
-   reached it but needs a key.
+**Connect a provider.** Click **Add a provider** and pick one:
 
-**To add several models at once from the same server** (this is the common case for
-Ollama/LM Studio, and for any gateway that hosts many models behind one address):
-leave the **Model** field blank and click **"Test and add"** anyway. Jarvis looks up
-what's actually available at that address and shows you a checklist — tick the ones
-you want (or use "Select all"), then click **"Add selected."** You only enter the
-address and key once, no matter how many models you're adding. One broken model in a
-large list no longer blocks the rest — Jarvis checks the address itself, not every
-individual model, so the good ones still get added even if one of them doesn't work.
+- **OpenAI**, **Anthropic** or **Google Gemini** — paste the API key from your account there.
+- **Ollama** or **LM Studio** — a model running on this computer. No key needed; Jarvis fills
+  in the usual address.
+- **Custom** — any other provider. Give its address, say which type of API it speaks, and add
+  a key if it needs one.
 
-**Your models are grouped by where they came from.** Each address/key you've
-added is shown as its own group, with the models that share it listed underneath.
-**"Add models"** on a group adds more to that same saved connection without
-re-entering the address or key. **"Remove connection"** removes the whole group —
-every model in it, and the saved key — in one action (click it twice to confirm).
-Removing or disabling a single model, and testing its connection, still works the
-same as before, per model.
+Jarvis checks the connection straight away and, where the provider allows it, lists the models
+it offers. A connection shows **Connected** or **Needs attention** (with the reason in plain
+words). **Test** re-checks it, **Edit** changes its name, address or key, and **Delete**
+removes it along with its saved key. Your key is saved on this computer and is never shown
+again.
 
----
+**Choose a model.** Click **Use** beside a model — or use the model button beside the message
+box, which lets you switch while you talk. Some providers also say how hard a model can work;
+when one does, the message box's model button shows an **Effort** choice for that model. If a
+model has no such choice, that's because its provider doesn't report one, not because it's
+hidden.
 
-## 2. Auto or manual — who picks the model
+**If the list is empty or won't load,** you can still use a model: type its ID into **Add a
+model by its ID**, exactly as the provider names it. Jarvis doesn't need a list to use a model.
 
-Still on the Model Settings screen, under "How Jarvis picks a model":
+**How Jarvis spends a turn** (further down the same screen) is separate from all of that. It
+only changes how much work *Jarvis* does around whichever model you chose — *Answer quickly*
+does fewer rounds of using tools and skips the extra check of its answer; *Answer well* checks
+its important answers after giving them, at the cost of an extra call.
 
-- **Pick automatically** (on by default) — Jarvis chooses the best model for each
-  thing you ask: something fast and cheap for quick chat, something stronger for
-  writing, code, or real thinking — and now factors in what each model actually
-  costs to run, not just a rough guess.
-- **Balance** — nudges that choice: *Prefer fastest*, *Balanced* (recommended), or
-  *Prefer best quality*.
-- Turn **Pick automatically** off to lock Jarvis to one specific model yourself —
-  do this from the **gear icon** on the main screen, in the compact "AI model"
-  dropdown.
+**If the model you chose stops being usable** — you deleted its connection, removed its key,
+or took it off the list — Jarvis says so by name and stops there. It never quietly switches to
+a different model.
 
-**If your chosen model breaks mid-conversation** (bad key, no internet, an outage),
-Jarvis automatically tries your next-best available model, tells you out loud that
-it switched and why, and keeps the conversation going without losing context. Once
-your preferred model is working again, Jarvis quietly goes back to it on its own —
-you don't have to do anything.
-
-**If nothing at all can answer**, Jarvis says so plainly instead of guessing —
-something like *"None of my models can handle this right now — check Model
-Settings."*
+Keys for speech services (Deepgram, ElevenLabs and similar) are in the **Settings** panel
+instead — the gear icon on the main screen.
 
 ---
 
-## 3. Skills — the abilities Jarvis has
+## 2. Skills — the abilities Jarvis has
 
 Open the menu → **Skills** to see everything Jarvis knows how to do beyond plain
 conversation, and turn any of them on or off.
@@ -117,7 +97,7 @@ listed here as something to "install."
 
 ---
 
-## 4. Scheduling things — by voice or by screen
+## 3. Scheduling things — by voice or by screen
 
 Just talk to Jarvis normally: *"Remind me to stretch every day at 7am,"* or
 *"Every weekday at 8, run my morning briefing."* Because this changes something
@@ -148,13 +128,8 @@ there to answer a question** the way a live conversation could — so instead of
 asking each time, Jarvis shows you **exactly what it's about to be allowed to do
 automatically** right there in the popup, and you tick **"I understand"** once,
 at setup, before you can create it. After that, it just runs on schedule; you can
-always see what happened afterward in **Recent Activity**, including which model
-handled it and whether it had to switch to a backup one, and whether what came back
-actually answered what was asked.
-
-You can also pick **which model handles this particular task** (instead of your
-usual auto-pick) from the same popup — handy if you want a stronger model for one
-recurring thing without changing your everyday default.
+always see what happened afterward in **Recent Activity**, including whether what
+came back actually answered what was asked.
 
 The list of tasks (create, turn on/off, run immediately, delete) and Recent
 Activity are on the same screen. Anything that runs while Jarvis was closed is
@@ -163,7 +138,7 @@ silently or piling up.
 
 ---
 
-## 5. The morning briefing
+## 4. The morning briefing
 
 Open the menu → **Morning Briefing**. "What to include" still has the basics:
 greeting, date/time, your upcoming reminders, your goals/notes, a suggested focus
@@ -197,7 +172,7 @@ having run late.
 
 ---
 
-## 6. Profile & Goals
+## 5. Profile & Goals
 
 Open the menu → **Profile & Goals** to see everything Jarvis has been told to
 remember about you, add a note yourself, or delete one (click **Delete** twice to
@@ -207,7 +182,7 @@ morning briefing and its suggestions; they're never sent anywhere else.
 
 ---
 
-## 7. Memory
+## 6. Memory
 
 Open the menu → **Memory** for the fuller picture behind Profile & Goals above —
 every fact Jarvis has saved about you, browsable, searchable, and editable, with a
@@ -229,7 +204,7 @@ from this screen, and every change is undoable.
 
 ---
 
-## 8. Chat History
+## 7. Chat History
 
 Open the menu → **Chat History** to see every past conversation, not just the one
 you're in right now — it's kept and searchable across restarts. You can reopen an
@@ -241,7 +216,7 @@ rather than treating it as still true today.
 
 ---
 
-## 9. Notifications
+## 8. Notifications
 
 The **bell icon** in the header shows a badge whenever Jarvis has something to tell
 you that isn't part of your current conversation — a background job finishing, a
@@ -254,7 +229,7 @@ Jarvis speaks up live.
 
 ---
 
-## 10. Jarvis learning from its own work
+## 9. Jarvis learning from its own work
 
 Open the menu → **Self-Improvement** to see what Jarvis has picked up about how it
 works, from watching its own background jobs and scheduled tasks, from moments
@@ -297,7 +272,7 @@ here — only work, projects, study, finances, and travel.
 
 ---
 
-## 11. Letting Jarvis work in the background
+## 10. Letting Jarvis work in the background
 
 For anything that'll take a while — research, a multi-step task, something you
 don't want to sit and watch — you can say *"keep working on that in the
@@ -315,7 +290,7 @@ explicit "OK, go ahead" before it touches anything.
 
 ---
 
-## 12. When Jarvis speaks up first
+## 11. When Jarvis speaks up first
 
 Most of the time, Jarvis only replies when you talk to it. But it also quietly
 keeps an eye on a couple of things — how a background job is going, something
@@ -331,9 +306,9 @@ either way, quiet hours or not.
 
 ---
 
-## 13. App Control — connecting apps, and controlling your computer
+## 12. Connector — connecting apps, and controlling your computer
 
-Open the menu → **App Control** for two different things, in three tabs (MCP / API
+Open the menu → **Connector** for two different things, in three tabs (MCP / API
 / CLI):
 
 - **Connected apps and services** — click **+ Add** → **"Browse connectors"** for a
@@ -351,33 +326,33 @@ Open the menu → **App Control** for two different things, in three tabs (MCP /
 
 ---
 
-## 14. Screenshots and screen recording
+## 13. Screenshots and screen recording
 
 Just ask — *"take a screenshot"* drops a real image straight into your
 conversation; *"record my screen for a bit"* / *"stop recording"* saves a real,
-playable video the same way. Recordings are also listed on the **App Control**
+playable video the same way. Recordings are also listed on the **Connector**
 screen if you want to find one again later. This is different from Screen Sharing
 above, which is an ongoing mode rather than a one-off capture.
 
 ---
 
-## 15. Getting Jarvis to make you a real file
+## 14. Getting Jarvis to make you a real file
 
 Ask for something you can actually keep — *"write this up as a Word document,"*
-*"put these numbers in a spreadsheet,"* *"make me a slide deck for this,"* or any
-other document, spreadsheet, presentation, or plain data/text file — and Jarvis
-builds a real file and drops it into the conversation as a card you can open or
-download. Every generated file is checked by actually opening it back up before
-it's ever handed to you, so a broken file is never silently delivered.
+*"put these numbers in a spreadsheet,"* or any other document, spreadsheet, or plain
+data/text file — and Jarvis builds a real file and drops it into the conversation as
+a card you can open or download. Every generated file is checked by actually opening
+it back up before it's ever handed to you, so a broken file is never silently
+delivered.
 
-**One honest limit:** Jarvis can't generate photographs or other raster/AI images —
-no adapter it uses does that today. And a generated slide deck (`.pptx`) is checked
-less thoroughly than a Word or Excel file — worth a quick look in real PowerPoint
-before you trust it completely.
+**Two honest limits:** Jarvis can't generate photographs or other raster/AI images —
+it has no way to do that today. And it can't build a PowerPoint slide deck either
+— it can read one you hand it, but asking it to create one gets a plain "I can't make
+that" naming what it can produce instead, not a lesser-effort attempt.
 
 ---
 
-## 16. Asking Jarvis about itself
+## 15. Asking Jarvis about itself
 
 A few things you can ask directly, in plain conversation:
 
@@ -395,7 +370,7 @@ A few things you can ask directly, in plain conversation:
 
 ---
 
-## 17. Planning something you want to build
+## 16. Planning something you want to build
 
 This is for when you have an idea — a website, an app, a business, anything —
 and you want it turned into a real plan, plus a prompt you can paste into
@@ -446,7 +421,7 @@ background and tells you when it's done.
 
 ---
 
-## 18. Getting Jarvis to look at a video, article or file
+## 17. Getting Jarvis to look at a video, article or file
 
 Open the menu → **Content Analysis**, or just send Jarvis something while
 you're talking to it.
@@ -483,8 +458,8 @@ Every answer shows the **sources it checked**, so you can see for yourself.
 tells you *how it took the content in*, and this genuinely matters:
 
 - **"Watched the video"** — a model actually watched it, including what was on
-  screen. This is what you want. It needs a model that can handle video, which
-  today means one of Google's Gemini models (see Model Settings).
+  screen. This is what you want. It needs a model that can handle video, and no
+  model is connected right now.
 - **"Only had the title and description"** — no video-capable model was
   available, so Jarvis is working from what the video *claims* to be. It'll say
   so plainly. A verdict based on this is much weaker, and Jarvis won't pretend
@@ -496,7 +471,7 @@ learned the first time.
 
 ---
 
-## 19. When Jarvis double-checks what it heard
+## 18. When Jarvis double-checks what it heard
 
 You'll notice three different levels of caution, on purpose:
 
@@ -517,17 +492,101 @@ You can adjust how trigger-happy that second layer is from Model Settings →
 
 ---
 
+## 19. Content Management — from finished content to published
+
+Content is made by you, by Jarvis, or by your agents — videos, images, carousels, flyers,
+posts, articles, newsletters, podcasts. **Content Management** (menu → **Content
+Management**) is where you look after it once it's made. It doesn't make anything itself.
+
+**Niches are folders.** The first thing you see is one folder per niche — Psychology,
+Fitness, Cooking… — each showing how many pieces it holds of each kind ("Video 22 · Carousel
+6 · Image 5 · Blog / Article 4") and how many are waiting in Review. Open one and everything
+for that niche is there together, every kind at once; every video, image and carousel is
+still its own separate piece, moving through the steps on its own. **+ New niche** makes a
+folder, even before anything is in it. Inside a niche, **Rename** changes its name (all of
+its content moves with it) and **Delete** removes it — only once it's empty, so deleting a
+folder never deletes content. **All content** shows every niche at once; **No niche** holds
+anything handed in without one — open a piece and type a niche to file it (that's also how
+you move a piece to another niche). If Jarvis or an agent hands something in under a niche
+you don't have yet, its folder appears on its own.
+
+**Adding your own content.** Inside a niche, press **+ Add** and pick what it is (Video,
+Image, Carousel…) — the niche is already filled in. Give it a name, add the actual file — a
+video you made, the slides of a carousel, an image — plus a thumbnail or cover if you have
+one. Tick the platforms it's going to (you can add more later). Then choose **Send to
+Review** or **Add as Ready to Post**. **+ Add → Add several files…** takes many videos (or
+images, flyers, audio) at once: each file becomes its own piece, named after the file —
+change any name before sending. If a file can't be added, it says which one and why, and
+the rest are kept. You can also just give a file to Jarvis in the chat ("put this video in
+Content Management") and it lands in Review.
+
+Inside a niche, across the top is the whole journey, left to right, with how many things are at each
+step — first **All** (everything in the niche that's still in play), then **Review →
+Changes Requested → Ready to Post → Scheduling → Published**, and off to
+the side **Analytics**, **Archived** and the **Recycle Bin**. A dot means something there
+needs you, and the line above it says exactly what ("2 to review · 1 post failed").
+
+One piece of content can go to several platforms, and each platform moves on its own.
+If a video is **scheduled** for YouTube, already **published** on TikTok and still
+**ready** for Instagram, you'll find it under all three — each view highlights the
+platforms it's about.
+
+- **Review** — new content lands here. Click one to see the actual video, image, slides
+  or text first, with its title, caption, hashtags and thumbnail beside it. Fix a caption
+  — or **Change files…** to swap the video or thumbnail — then **Approve** or **Request
+  changes**.
+- **Request changes** — say what needs to change and why, and who does it: the agent
+  that made it, or **Jarvis** (Jarvis can rewrite words, not video or images). You can
+  also do it yourself: **Hand in a revision yourself** lets you change the words and files
+  and send the new version back to Review. Every earlier version is kept.
+- **Ready to Post** — pick the platform (and where on it — e.g. YouTube Shorts), then
+  **Post now** or **Schedule**. Every platform uses the same files and words unless you
+  give it its own: **Show … text** for its own caption, **… files** for its own video,
+  thumbnail or cover (for example a vertical cut for TikTok). Anything you don't change
+  stays shared.
+- **Scheduling** — every scheduled post, as a list or a **calendar**. Pick a date, time
+  and timezone; reschedule or cancel any time before it goes out. You can still change the
+  words or files of something scheduled — the change goes out with it. Click an empty day
+  on the calendar to schedule something for that day; a busy day shows **+ more**.
+- **Published** — what went out, where, when, and the link. If a post fails, it says why
+  and gives you **Retry**. Posted it yourself? Use **I posted it myself** and paste the
+  link. **Add numbers…** records the views, likes and so on the platform shows you.
+- **Analytics** — every published post with its link and the numbers reported for it,
+  with totals. Numbers come from whatever reports them — a publishing tool, an agent,
+  Jarvis, or you. Nothing is made up: a post nobody reported numbers for shows a dash.
+- **Archived** — things you're done with, kept out of the way but still searchable.
+- **Recycle Bin** — anything you delete goes here first. **Restore** puts it back
+  exactly where it was; **Delete forever** really removes it, files and all, and asks
+  you first. Nothing is ever deleted from the bin on its own.
+
+Inside a folder, the row of kinds (**Video**, **Image**, **Carousel**…) narrows it to one
+kind, and **Search** and **Platform** work on every step. Long lists come a page at a time:
+**Show more** at the bottom.
+
+Jarvis can do the same things from the chat — add content, write or change a caption,
+schedule a post, record numbers. Before it changes or schedules anything, it asks you.
+Approving, archiving and deleting are always yours, on this screen.
+
+*Posting itself is done by a publisher* — an agent, or a posting service you connect
+later. It's handed the post, the platform, its words and its files, and reports back
+"posted, here's the link" or "failed, here's why". Which account it posts from is set up
+in that posting service, not here.
+
+---
+
 ## Quick reference
 
 | Want to... | Where |
 |---|---|
-| Add or remove an AI model | Menu → Model Settings → + Add a model |
-| Add several models from one server at once | Model Settings → + Add a model, leave Model blank, use the checklist |
-| Let Jarvis auto-pick, or lock one model | Model Settings, or gear icon on main screen |
+| See what content needs reviewing | Menu → Content Management, or ask "anything to review?" |
+| Make a folder for a niche | Content Management → + New niche |
+| Add content you made yourself | Content Management → open the niche → + Add |
+| Add lots of videos or images at once | Content Management → open the niche → + Add → Add several files… |
+| Schedule a finished post | Content Management → Ready to Post → open it → Schedule… |
+| Get deleted content back | Content Management → Recycle Bin → open it → Restore |
 | Add a Skill (upload, or from a GitHub link) | Menu → Skills → + Add a Skill / Install from a GitHub link |
 | Set a reminder or repeating task | Just ask Jarvis, or Menu → Scheduled Tasks → + New task |
 | Have a scheduled task use a specific ability | Scheduled Tasks → + New task → "Run one specific skill" |
-| Pick which model handles one particular task | Same popup → "Model for this run" |
 | Change what's in your morning briefing | Menu → Morning Briefing |
 | Add weather/news/etc. to your briefing | Morning Briefing → Live info sources → + Add a source |
 | Tell Jarvis something to remember | Just ask Jarvis, or Menu → Profile & Goals |
@@ -536,7 +595,7 @@ You can adjust how trigger-happy that second layer is from Model Settings →
 | Find something from a past conversation | Menu → Chat History, or just ask Jarvis |
 | See or manage notifications, and quiet hours | The bell icon, or Menu → Notifications |
 | Have Jarvis work on something in the background | Just ask, or Menu → Background Jobs |
-| Connect an app or service | Menu → App Control → + Add |
+| Connect an app or service | Menu → Connector → + Add |
 | Let Jarvis operate your computer | Just ask — it always confirms first |
 | Turn Screen Sharing on or off | Header toggle, or just say so |
 | Take a screenshot or record your screen | Just ask |

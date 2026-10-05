@@ -1,0 +1,76 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/connectors",
+    "query": "",
+    "headers": {
+      "host": "127.0.0.1:39118",
+      "connection": "keep-alive",
+      "accept": "*/*",
+      "accept-language": "*",
+      "sec-fetch-mode": "cors",
+      "user-agent": "node",
+      "accept-encoding": "gzip, deflate"
+    },
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "contentType": "application/json; charset=utf-8",
+    "headers": {
+      "x-powered-by": "Express",
+      "content-type": "application/json; charset=utf-8",
+      "content-length": "586",
+      "etag": "W/\"24a-BERv0Lp3g7OMX0DfwpC7MZUc5G4\"",
+      "date": "Fri, 04 Sep 2026 15:34:20 GMT",
+      "connection": "keep-alive",
+      "keep-alive": "timeout=5"
+    },
+    "kind": "json",
+    "body": {
+      "connectors": [
+        {
+          "id": "cmtn448194h3s7o",
+          "type": "files",
+          "label": "Files",
+          "description": null,
+          "enabled": true,
+          "status": {
+            "state": "untested",
+            "checkedAt": null,
+            "detail": null
+          },
+          "source": {
+            "type": "user"
+          },
+          "createdAt": "2026-09-04T15:32:15.405Z",
+          "updatedAt": "2026-09-04T15:32:15.405Z",
+          "config": {
+            "hasSecret": false
+          }
+        },
+        {
+          "id": "cmtn4481987b1it",
+          "type": "browser",
+          "label": "Browser",
+          "description": null,
+          "enabled": true,
+          "status": {
+            "state": "untested",
+            "checkedAt": null,
+            "detail": null
+          },
+          "source": {
+            "type": "user"
+          },
+          "createdAt": "2026-09-04T15:32:15.405Z",
+          "updatedAt": "2026-09-04T15:32:15.405Z",
+          "config": {
+            "hasSecret": false
+          }
+        }
+      ]
+    }
+  },
+  "recordedAt": "2026-09-04T15:34:20.153Z"
+}

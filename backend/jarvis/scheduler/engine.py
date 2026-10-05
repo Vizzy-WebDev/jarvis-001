@@ -286,9 +286,9 @@ def prompt_request(task: dict[str, Any], text: str, session_id: str, spec: Any) 
         autonomy=Autonomy.PRE_CONSENTED,
         turn_id=spec.turn_id,
         allowed_names=_allowed_names(action),
-        # A pin, honoured by ORDER and not exclusion: a task pinned to a model
-        # that has since been deleted falls back to the usual ranking rather
-        # than failing, and the run history says which one actually answered.
+        # A pin: the model client makes it an alias of the same name on first use
+        # (`models/settings.ensure_pin`) — found or refused, never approximated. A
+        # task pinned to a model that is no longer set up fails, saying so.
         model_id=(action.get("modelId") or None),
         operation_scope=spec.operation_scope,
         continuable=spec.continuable,

@@ -296,8 +296,8 @@ class TurnRequest:
     #: connectors). Enforced in the policy layer, not here.
     allowed_names: frozenset[str] | None = None
     #: A one-off model pin — a scheduled task naming the model it wants. Passed to the
-    #: model client as-is, which resolves it against the connected models
-    #: (`models/selection.py`): found or refused, never approximated.
+    #: model client as-is, which makes it an alias of the same name on first use
+    #: (`models/settings.ensure_pin`): found or refused, never approximated.
     model_id: str | None = None
     grants: list[Grant] | None = None
     #: Upload ids attached to this turn. Ids, never paths: what arrives from the

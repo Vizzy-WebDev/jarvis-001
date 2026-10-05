@@ -252,7 +252,12 @@ def discover(conn: ConnInfo) -> list[Discovered]:
                 caps["max_output_tokens"] = row["outputTokenLimit"]
             if isinstance(row.get("thinking"), bool):
                 caps["reasoning_control"] = row["thinking"]
-            found.append(Discovered(model_id=str(row["name"]).removeprefix("models/"),
+            model_id = str(row["name"]).removeprefix("models/")
+            if "tts" in model_id.lower().split("-"):
+                # Speech only: it answers in audio and refuses a text reply. The list says nothing
+                # about output kinds, so the id Google gives these models is the one signal.
+                caps["text_in"] = False
+            found.append(Discovered(model_id=model_id,
                                     label=row.get("displayName") or None, capabilities=caps, family="gemini"))
         token = body.get("nextPageToken")
         if not token:

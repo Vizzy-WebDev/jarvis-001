@@ -87,3 +87,35 @@ def test_the_trace_keeps_the_providers_words_for_diagnosis(layer):
         execute.observers.remove(seen.append)
     assert "Incorrect API key" not in str(caught.value)
     assert "Incorrect API key provided" in seen[-1].attempts[-1].message
+
+
+# --- Gemini discovery: a speech-only model can't answer in text (item 20) -----------------------
+
+def test_gemini_discovery_marks_a_speech_only_model_as_unable_to_answer_in_text(monkeypatch):
+    from jarvis.models.drivers import gemini_generate
+    from jarvis.models.prepared import ConnInfo
+
+    listing = {"models": [
+        {"name": "models/gemini-2.5-flash-preview-tts", "supportedGenerationMethods": ["generateContent"],
+         "inputTokenLimit": 8192, "outputTokenLimit": 16384, "displayName": "Gemini 2.5 Flash Preview TTS"},
+        {"name": "models/gemini-3.8-flash-lite-tts", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
+        {"name": "models/gemini-2.5-flash-image", "supportedGenerationMethods": ["generateContent"]},
+    ]}
+    monkeypatch.setattr(gemini_generate._wire, "get_json", lambda *a, **kw: listing)
+    found = {d.model_id: d.capabilities for d in gemini_generate.discover(ConnInfo("g", "http://g.test", "k", {}))}
+    assert found["gemini-2.5-flash-preview-tts"].get("text_in") is False
+    assert found["gemini-3.8-flash-lite-tts"].get("text_in") is False
+    assert "text_in" not in found["gemini-3.8-flash"] and "text_in" not in found["gemini-2.5-flash-image"]
+
+
+def test_a_speech_only_gemini_model_is_never_routed_a_chat_turn(layer):
+    from jarvis.models import state
+    from jarvis.models.prepared import Discovered
+
+    configure(layer, [{"name": "g", "driver": "gemini_generate", "base_url": "http://g.test", "trust": "standard",
+                       "models": {}}])
+    state.record_discovery("g", [Discovered("gemini-2.5-flash-preview-tts", capabilities={"text_in": False}),
+                                 Discovered("gemini-3.8-flash")])
+    ranked = models.explain_route(ask()).ranked
+    assert ranked == ("g/gemini-3.8-flash",)

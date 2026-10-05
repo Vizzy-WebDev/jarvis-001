@@ -195,3 +195,9 @@ it was deliberately corrected.
   code; both are in `error.detail` (`provider_words`, `status`) and in each trace attempt's
   message, for diagnosis. A 403 whose words say quota or billing reads as billing, not as a
   refused key. A rejection names a missing capability in words ("look at pictures").
+- **Gemini: a speech-only model is marked as unable to answer in text.** Google's model
+  list says nothing about what a model answers in, and its speech models list
+  `generateContent` like any other — found live, Auto routed a scheduled run and a
+  specialist to `gemini-2.5-flash-preview-tts` and both failed. An id with a `tts` part is
+  the one signal Google gives, so discovery records `text_in: false` for it (the same
+  convention as a Chat Completions listing whose outputs exclude text).

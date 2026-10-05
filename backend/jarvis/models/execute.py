@@ -219,6 +219,13 @@ def _same_family(a: Candidate, b: Candidate) -> bool:
     return bool(a.endpoint.family) and a.endpoint.family == b.endpoint.family
 
 
+def _diagnostic(err: ModelError) -> str:
+    """What an attempt's trace records: the plain message, and the provider's own words
+    when it gave any — kept for diagnosis, never shown to the person."""
+    words = err.detail.get("provider_words")
+    return f"{err} [provider: {words}]" if words else str(err)
+
+
 def _note_failure(candidate: Candidate, err: ModelError, cfg: layer_config.Config) -> None:
     """The only use of an error's kind outside the call itself: the connection's
     rate-limit rest and the endpoint's breaker."""
@@ -273,7 +280,7 @@ def run(request: Request, *, streaming: bool) -> Generator[Event, None, Response
             except ModelError as err:
                 err.at(candidate.endpoint.id)
                 last_error = err
-                record.attempts.append(Attempt(candidate.endpoint.id, err.type, str(err),
+                record.attempts.append(Attempt(candidate.endpoint.id, err.type, _diagnostic(err),
                                                int((clock() - attempt_started) * 1000)))
                 _note_failure(candidate, err, cfg)
                 if progress.emitted or not err.retryable:

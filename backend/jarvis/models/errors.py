@@ -2,9 +2,10 @@
 these — including errors that arrive mid-stream and errors inside a successful
 response — so no status code appears anywhere outside the drivers.
 
-`str(error)` is written for a person and keeps the provider's own words where it
-gave any. `retryable` is the only thing the executor reads: a retryable error is
-retried and then falls back; any other error ends the call.
+`str(error)` is written for a person, in plain words: never the provider's own text or
+a status code. Those go in `detail` (`provider_words`, `status`) for the trace.
+`retryable` is the only thing the executor reads: a retryable error is retried and
+then falls back; any other error ends the call.
 """
 
 from __future__ import annotations

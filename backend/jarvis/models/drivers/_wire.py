@@ -114,32 +114,35 @@ def _retry_after(headers: Mapping[str, str] | None, body: Any) -> float | None:
 
 def error_for(status: int, words: str, url: str, *, headers: Mapping[str, str] | None = None,
               body: Any = None) -> errors.ModelError:
-    """One HTTP failure as the canonical error a person can read."""
-    tail = f" {words}" if words else ""
+    """One HTTP failure as the canonical error a person can read: plain words, never the
+    provider's own text or a status code. Those are kept in `detail` (`provider_words`,
+    `status`) for the trace and the logs."""
     host = host_of(url)
-    if status in (401, 403):
-        return errors.Auth(f"{host} didn't accept the key ({status}).{tail}")
+    detail = {"status": status, "provider_words": words}
     if status == 402 or _BILLING.search(words):
-        return errors.Auth(f"{host} refused this for billing or quota reasons ({status}).{tail}")
+        return errors.Auth(f"{host} refused this for billing or quota reasons: the account may be out of credit "
+                           "or over its limit.", detail=detail)
+    if status in (401, 403):
+        return errors.Auth(f"{host} didn't accept the key.", detail=detail)
     if status == 429:
-        return errors.RateLimited(f"{host} is limiting requests right now (429).{tail}",
-                                  retry_after=_retry_after(headers, body))
+        return errors.RateLimited(f"{host} is limiting requests right now.",
+                                  retry_after=_retry_after(headers, body), detail=detail)
     if status == 413 or (status in (400, 422) and _CONTEXT.search(words)):
-        return errors.ContextTooLong(f"The request was too long for this model ({status}).{tail}")
+        return errors.ContextTooLong("The request was too long for this model.", detail=detail)
     if status == 400 and _REFUSED.search(words):
-        return errors.ContentRefused(f"{host} refused this request's content ({status}).{tail}")
+        return errors.ContentRefused(f"{host} refused this request's content.", detail=detail)
     if status in (408, 504):
-        return errors.Timeout(f"{host} took too long to answer ({status}).{tail}")
+        return errors.Timeout(f"{host} took too long to answer.", detail=detail)
     if status >= 500 or status == 409:
-        return errors.Unavailable(f"{host} had a problem on its end ({status}).{tail}",
-                                  retry_after=_retry_after(headers, body))
+        return errors.Unavailable(f"{host} had a problem on its end.", retry_after=_retry_after(headers, body),
+                                  detail=detail)
     if status == 404:
-        return errors.InvalidRequest(f"{host} says it can't find that (404) — check the model id and the "
-                                     f"address.{tail}")
+        return errors.InvalidRequest(f"{host} says it can't find that. Check the model id and the address.",
+                                     detail=detail)
     if 300 <= status < 400:
-        return errors.InvalidRequest(f"{host} redirected the request elsewhere ({status}), which Jarvis won't "
-                                     "follow with a key attached. Use the address it redirects to.")
-    return errors.InvalidRequest(f"{host} couldn't use that request ({status}).{tail}")
+        return errors.InvalidRequest(f"{host} redirected the request elsewhere, which Jarvis won't follow with a "
+                                     "key attached. Use the address it redirects to.", detail=detail)
+    return errors.InvalidRequest(f"{host} couldn't use that request.", detail=detail)
 
 
 def error_in_body(body: Any, url: str) -> errors.ModelError:
@@ -167,7 +170,8 @@ def network_error(err: Exception, url: str) -> errors.ModelError:
                                   "running and that the address is right.")
     if isinstance(err, httpx.TimeoutException):
         return errors.Timeout(f"{host} went silent and the reply was given up on.")
-    return errors.Unavailable(f"The connection to {host} broke: {redact_text(str(err))}")
+    return errors.Unavailable(f"The connection to {host} broke part-way.",
+                              detail={"provider_words": redact_text(str(err))})
 
 
 # --- requests ------------------------------------------------------------------------------

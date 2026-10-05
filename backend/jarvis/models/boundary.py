@@ -133,15 +133,21 @@ def publish_completed(response: Response, *, session_id: str | None, background:
                                                  "modelId": model, "background": background, "usage": units})
 
 
-_STAYED = (" Jarvis stays on the model you picked. Choose Auto in the model list if you'd rather it work "
+_STAYED = ("Jarvis stays on the model you picked{model}. Choose Auto in the model list if you'd rather it work "
            "around problems like this.")
+
+
+def _sentence(text: str) -> str:
+    text = text.strip()
+    return text if not text or text[-1] in ".!?…" else text + "."
 
 
 def failure(err: ModelError, *, pinned_selection: bool) -> NoModelAvailable:
     """A layer error as the plain 'no model could answer' the app already knows how to say."""
-    message = str(err)
+    message = _sentence(str(err))
     if pinned_selection and err.type != "no_eligible_endpoint":
-        message += _STAYED
+        model = f" ({split_endpoint_id(err.endpoint_id)[1]})" if err.endpoint_id and "/" in err.endpoint_id else ""
+        message += " " + _STAYED.format(model=model)
     return NoModelAvailable(message, detail={"reason": err.type, "endpoint": err.endpoint_id})
 
 

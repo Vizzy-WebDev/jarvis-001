@@ -714,7 +714,8 @@ def test_a_failed_message_looks_like_a_failure_names_the_model_and_says_how_auto
     say(page, "hello")
     page.wait_for_selector("[data-testid=turn-error]", timeout=90_000)
     text = page.inner_text("[data-testid=turn-error]")
-    assert "stub-model-a" in text and "does not exist" in text          # the model, and the provider's own words
+    # The model, and what went wrong in plain words — never the provider's own text.
+    assert "stub-model-a" in text and "can't find" in text and "does not exist" not in text
     assert "Jarvis stays on the model you picked" in text and "Auto" in text
     assert page.get_attribute("[data-testid=turn-error]", "role") == "alert"
     assert [r["body"]["model"] for r in stub.posts()] == ["stub-model-a"]  # nothing else was tried

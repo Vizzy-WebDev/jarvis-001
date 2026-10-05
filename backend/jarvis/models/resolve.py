@@ -82,6 +82,14 @@ def estimate_tokens(request: Request, image_tokens: int) -> int:
 
 # --- the filter ------------------------------------------------------------------------------
 
+#: What each capability a request can need means, in the words a rejection is said in.
+_CAN = {"text_in": "answer in text", "image_in": "look at pictures", "pdf_in": "read PDFs", "tools": "use tools",
+        "parallel_tools": "use several tools at once", "embeddings": "make embeddings",
+        "reasoning_control": "take a thinking level", "prompt_caching": "cache prompts",
+        "streaming": "stream its reply", "json_mode": "answer in JSON",
+        "structured_output_strict": "enforce an output format"}
+
+
 def _health(endpoint: Endpoint, connection: Connection) -> Rejection | None:
     down = state.connection_down(connection.name)
     if down:
@@ -121,7 +129,7 @@ def check(request: Request, endpoint: Endpoint, cfg: Config, cat: Catalog, *,
     caps = endpoint.capabilities
     for name in sorted(needed_capabilities(request)):
         if not caps_mod.has(caps, name):
-            return Rejection(endpoint.id, "missing_capability", f"It isn't known to support {name}.")
+            return Rejection(endpoint.id, "missing_capability", f"It isn't known to {_CAN.get(name, f'support {name}')}.")
 
     ceiling = caps_mod.limit(caps, "max_context_tokens")
     wanted = request.requirements.min_context

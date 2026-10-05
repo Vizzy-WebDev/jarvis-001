@@ -185,3 +185,13 @@ it was deliberately corrected.
   memory reviews) into the person's real database and ran migration 36 there.
   `tests/conftest.py` now points `JARVIS_DATA_DIR`/`JARVIS_ENV_PATH` at a temp
   directory before anything is imported.
+
+## After the review (approved fixes)
+
+- **Errors are said in plain words; the provider's own text is kept aside.** Reverses the
+  earlier "`str(error)` keeps the provider's own words": a person saw "…Incorrect API key
+  provided Jarvis stays on the model you picked…" and internal names like `image_in`.
+  `str(error)` now names the host and what went wrong, with no provider text and no status
+  code; both are in `error.detail` (`provider_words`, `status`) and in each trace attempt's
+  message, for diagnosis. A 403 whose words say quota or billing reads as billing, not as a
+  refused key. A rejection names a missing capability in words ("look at pictures").

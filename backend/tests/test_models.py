@@ -270,7 +270,8 @@ def test_a_named_model_that_fails_is_never_replaced_and_says_how_to_change_that(
     add(client, other)
     stub.queue(*[Turn(status=503, message="overloaded")] * 3)
     events, error = run_step()
-    assert error is not None and "overloaded" in str(error) and "stays on the model you picked" in str(error)
+    assert error is not None and "had a problem on its end" in str(error) and "overloaded" not in str(error)
+    assert "stays on the model you picked" in str(error)
     assert other.generations() == []
 
 

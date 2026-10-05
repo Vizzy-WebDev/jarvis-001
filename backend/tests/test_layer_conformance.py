@@ -205,7 +205,8 @@ def test_every_http_error_maps_to_a_canonical_type(wire, status, message, expect
     wire.queue(Turn(status=status, message=message, retry_after="7" if status == 429 else None))
     with pytest.raises(expected) as caught:
         models.generate(ask())
-    assert message.split()[0] in str(caught.value)
+    # Said plainly; the provider's own words are kept aside for the trace, not shown.
+    assert message not in str(caught.value) and message in caught.value.detail["provider_words"]
     if status == 429:
         assert caught.value.retry_after == 7.0
 
@@ -214,7 +215,7 @@ def test_an_error_mid_stream_is_an_error_event_after_the_text(wire):
     wire.queue(Turn(text="Half a sentence and", mid_stream="the upstream fell over", reasoning=False))
     events = list(models.stream(ask()))
     assert isinstance(events[0], TextDelta) and isinstance(events[-1], ErrorEvent)
-    assert events[-1].error.retryable and "fell over" in str(events[-1].error)
+    assert events[-1].error.retryable and "fell over" in events[-1].error.detail["provider_words"]
 
 
 def test_an_error_inside_a_200_is_an_error(wire, layer):
@@ -223,8 +224,9 @@ def test_an_error_inside_a_200_is_an_error(wire, layer):
                            "secret_ref": "stub_key", "quirks": "gateway", "models": {"stub-a": {}}}],
                   settings={"retries": 0})
     wire.queue(Turn(error_in_200={"code": 429, "message": "free tier limit reached"}))
-    with pytest.raises(errors.RateLimited, match="free tier limit"):
+    with pytest.raises(errors.RateLimited) as caught:
         models.generate(ask())
+    assert "free tier limit" in caught.value.detail["provider_words"]
 
 
 def test_a_reply_that_just_stops_is_unavailable(wire):

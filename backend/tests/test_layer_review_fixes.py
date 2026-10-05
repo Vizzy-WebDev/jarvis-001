@@ -25,6 +25,18 @@ def no_waiting(monkeypatch):
     monkeypatch.setattr(execute, "sleep", lambda s: None)
 
 
+@pytest.fixture
+def client_for_models(layer):
+    from fastapi.testclient import TestClient
+
+    from jarvis import assembly
+    from jarvis.main import create_app
+
+    assembly.reset_for_tests()
+    yield TestClient(create_app())
+    assembly.reset_for_tests()
+
+
 # --- plain-language errors (A5) -----------------------------------------------------------------
 
 RAW = "Incorrect API key provided: sk-abc. You can find your API key at https://example.test/keys"
@@ -174,3 +186,92 @@ def test_a_family_alias_resolves_to_gateway_models_and_their_prompt_profile_appl
     response = models.generate(request)
     assert response.provenance.endpoint_id == "gw/anthropic/claude-a"
     assert "<rules>" in fake.calls()[-1].prepared.system[0].text  # the claude profile: XML tags
+
+
+# --- D3a: a connection that refused the key or the account rests, as a whole --------------------
+
+def test_an_auth_refusal_rests_the_whole_connection_so_the_next_call_skips_it(layer):
+    from jarvis.models import state
+
+    configure(layer, [fake_conn("dead", models={"m1": {"capabilities": CHAT}, "m2": {"capabilities": CHAT}}),
+                      fake_conn("ok")], settings={"refused_rest_s": 600})
+    fake.queue("dead", errors.Auth("dead.test didn't accept the key."))
+    fake.queue("ok", fake.reply("one"), fake.reply("two"))
+    models.generate(ask())
+    assert state.connection_refused("dead")
+    ranked = models.explain_route(ask())
+    assert ranked.ranked == ("ok/m",)
+    assert {r.reason for r in ranked.rejected if r.endpoint_id.startswith("dead/")} == {"connection_refused"}
+    assert "dead.test" not in "".join(r.detail for r in ranked.rejected)  # no raw text, plain words
+    models.generate(ask())
+    assert [c.connection for c in fake.calls()] == ["dead", "ok", "ok"]  # one refusal, not one per model
+
+
+def test_the_rest_survives_a_restart_and_ends_after_its_cooldown(layer, monkeypatch):
+    from jarvis.models import state
+
+    configure(layer, [fake_conn("dead"), fake_conn("ok")], settings={"refused_rest_s": 600})
+    fake.queue("dead", errors.Auth("billing"))
+    fake.queue("ok", fake.reply("one"))
+    models.generate(ask())
+    state.flush()
+    state.reset()  # what a restart does: read back from the file
+    assert state.connection_refused("dead")
+    later = state.now() + 601
+    monkeypatch.setattr(state, "now", lambda: later)
+    assert not state.connection_refused("dead")
+
+
+@pytest.mark.parametrize("how", ["edit_key", "test", "discover"])
+def test_editing_the_key_or_reconnecting_clears_the_rest(layer, client_for_models, how):
+    from jarvis.models import state
+
+    configure(layer, [fake_conn("dead", secret_ref="dead_key"), fake_conn("ok")])
+    state.refuse_connection("dead", "dead.test didn't accept the key.", 600)
+    if how == "edit_key":
+        client_for_models.patch("/api/models/dead", json={"apiKey": "a-new-key"})
+    else:
+        client_for_models.post(f"/api/models/dead/{how}")
+    assert not state.connection_refused("dead")
+
+
+# --- D3b: under Auto, a connection-level refusal falls back; a pin still ends the call ----------
+
+def test_under_auto_an_auth_refusal_falls_back_to_another_connection_and_says_why(layer):
+    configure(layer, [fake_conn("dead", models={"m1": {"capabilities": CHAT}, "m2": {"capabilities": CHAT}}),
+                      fake_conn("ok")])
+    fake.queue("dead", errors.Auth("dead.test refused this for billing or quota reasons."))
+    fake.queue("ok", fake.reply("answered"))
+    response = models.generate(ask())
+    assert response.text == "answered" and response.provenance.endpoint_id == "ok/m"
+    assert [c.connection for c in fake.calls()] == ["dead", "ok"]  # the dead connection's other model is skipped
+    moved = response.provenance.fallbacks[0]
+    assert (moved.from_endpoint, moved.to_endpoint) == ("dead/m1", "ok/m")
+    assert "billing or quota" in moved.reason
+
+
+def test_a_pinned_selection_still_ends_the_call_on_an_auth_refusal(layer):
+    configure(layer, [fake_conn("dead"), fake_conn("ok")], aliases={"selected": {"endpoint": "dead/m"}})
+    fake.queue("dead", errors.Auth("dead.test didn't accept the key."))
+    with pytest.raises(errors.Auth):
+        models.generate(ask(requirements=Requirements(pin="selected")))
+    assert [c.connection for c in fake.calls()] == ["dead"]
+
+
+def test_no_auth_fallback_after_the_first_streamed_event(layer):
+    from jarvis.models.types import ErrorEvent, TextDelta
+
+    configure(layer, [fake_conn("a"), fake_conn("b")])
+    fake.queue("a", fake.broken_after("partial", errors.Auth("a.test didn't accept the key.")))
+    fake.queue("b", fake.reply("never"))
+    events = list(models.stream(ask()))
+    assert isinstance(events[0], TextDelta) and isinstance(events[-1], ErrorEvent)
+    assert [c.connection for c in fake.calls()] == ["a"]
+
+
+def test_other_non_retryable_errors_still_end_the_call_under_auto(layer):
+    configure(layer, [fake_conn("a"), fake_conn("b")])
+    fake.queue("a", errors.InvalidRequest("a.test couldn't use that request."))
+    with pytest.raises(errors.InvalidRequest):
+        models.generate(ask())
+    assert [c.connection for c in fake.calls()] == ["a"]

@@ -97,6 +97,7 @@ class Settings:
     breaker_base_s: float = 300.0
     breaker_max_s: float = 7200.0
     unreachable_rest_s: float = 300.0
+    refused_rest_s: float = 3600.0
     trace_content: bool = False
 
 

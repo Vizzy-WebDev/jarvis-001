@@ -1,6 +1,7 @@
 """The state file — what the layer has learned, kept apart from what the person
 configured: the last discovery per connection, probe results, latency, endpoint
-health (the circuit breaker), connection rate-limit rests, and this month's spend.
+health (the circuit breaker), connection rests (rate limits, unreachable, a refused
+key or account), and this month's spend.
 
 Never written to config. Held in memory and written to `data/models_state.json`
 at most once a second (and at exit); losing the last second of latency samples
@@ -305,6 +306,35 @@ def connection_down(connection: str) -> str | None:
         if isinstance(until, (int, float)) and until > now():
             return entry.get("down_reason") or "it didn't answer"
         return None
+
+
+def refuse_connection(connection: str, reason: str, rest_s: float) -> None:
+    """The connection refused the key or the account (billing, quota): every model on it
+    would say the same, so the whole connection rests. Kept in the state file, so a
+    restart doesn't clear it; editing the key, reconnecting or the cooldown does."""
+    with _lock:
+        entry = _state()["connections"].setdefault(connection, {})
+        entry.update({"refused_until": now() + rest_s, "refused_reason": reason[:300]})
+        _touch(force=True)
+
+
+def connection_refused(connection: str) -> str | None:
+    with _lock:
+        entry = _state()["connections"].get(connection) or {}
+        until = entry.get("refused_until")
+        if isinstance(until, (int, float)) and until > now():
+            return entry.get("refused_reason") or "it refused the key"
+        return None
+
+
+def clear_refusal(connection: str) -> None:
+    """The person reconnected it (Test, Discover, or added it again)."""
+    with _lock:
+        entry = _state()["connections"].get(connection)
+        if entry and ("refused_until" in entry or "refused_reason" in entry):
+            entry.pop("refused_until", None)
+            entry.pop("refused_reason", None)
+            _touch(force=True)
 
 
 def rate_limit(connection: str, seconds: float) -> None:

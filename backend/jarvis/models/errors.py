@@ -4,8 +4,8 @@ response — so no status code appears anywhere outside the drivers.
 
 `str(error)` is written for a person, in plain words: never the provider's own text or
 a status code. Those go in `detail` (`provider_words`, `status`) for the trace.
-`retryable` is the only thing the executor reads: a retryable error is retried and
-then falls back; any other error ends the call.
+A retryable error is retried and then falls back; under Auto an `auth` refusal falls
+back too (approved deviation, see execute.py); any other error ends the call.
 """
 
 from __future__ import annotations

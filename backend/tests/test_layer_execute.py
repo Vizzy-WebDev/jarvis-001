@@ -60,14 +60,24 @@ def test_after_retries_it_falls_back_preferring_a_different_upstream(layer):
     assert "vendor-1 down" in response.provenance.fallbacks[0].reason
 
 
-@pytest.mark.parametrize("error", [errors.Auth("key refused"), errors.Auth("quota exhausted (billing)"),
-                                   errors.ContextTooLong("too long"), errors.InvalidRequest("bad"),
+@pytest.mark.parametrize("error", [errors.ContextTooLong("too long"), errors.InvalidRequest("bad"),
                                    errors.ContentRefused("no")])
 def test_a_non_retryable_error_ends_the_call(layer, error):
     configure(layer, [fake_conn("a"), fake_conn("b")])
     fake.queue("a", error)
     with pytest.raises(type(error)):
         models.generate(ask())
+    assert [c.connection for c in fake.calls()] == ["a"]
+
+
+@pytest.mark.parametrize("error", [errors.Auth("key refused"), errors.Auth("quota exhausted (billing)")])
+def test_an_auth_refusal_ends_a_pinned_call(layer, error):
+    """Under Auto it falls back instead — the approved deviation (D3b), pinned in
+    test_layer_review_fixes.py."""
+    configure(layer, [fake_conn("a"), fake_conn("b")], aliases={"pick": {"endpoint": "a/m"}})
+    fake.queue("a", error)
+    with pytest.raises(type(error)):
+        models.generate(ask(requirements=Requirements(pin="pick")))
     assert [c.connection for c in fake.calls()] == ["a"]
 
 

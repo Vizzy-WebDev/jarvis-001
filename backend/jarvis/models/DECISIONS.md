@@ -208,3 +208,18 @@ it was deliberately corrected.
   id is the upstream, so "prefer a different upstream" and `allow_family_change: false`
   work across one gateway's models. A plain server's ids are its own names; nothing is
   read from them, and config still wins over either.
+- **Approved deviation (D3a/D3b): a connection-level refusal rests the connection and,
+  under Auto, falls back.** Replaces "every other error ends the call — including `auth`"
+  above for Auto. Found live: a dead connection with three models cost a failed message
+  per model before Auto reached a healthy one, because `auth` ended the call and the
+  breaker is per endpoint. Now an `auth` error (a refused key, or billing/quota) rests the
+  whole connection (`settings.refused_rest_s`, default an hour), so the next resolve skips
+  it (`connection_refused`). **The rest is kept in the state file, so a restart does not
+  clear it** — the account doesn't recover by restarting Jarvis; editing the key, Test or
+  Discover on the Model Settings screen, or the cooldown ends it. Startup discovery does
+  not: a quota-refused account usually still lists its models. Under Auto only, the call
+  then falls back before the first streamed event to the next endpoint of the
+  already-filtered list, preferring another connection (the same connection's other
+  models go last), and the fallback is reported like any other (the chat's "Switched to"
+  note, with the plain reason). A pinned request — the person's own selection or any
+  other pin — still ends the call.

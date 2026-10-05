@@ -5,13 +5,16 @@
   from the already-filtered list — preferring one with a different upstream.
   Hard requirements and data policy are never relaxed: nothing outside that list
   is ever tried.
-* Any other error ends the call.
+* Approved deviation (D3b): under Auto, a connection-level `auth` refusal (key,
+  billing, quota) also falls back, preferring another connection; a pinned
+  request still ends on it. Any other error ends the call.
 * A fallback that would change model family is skipped when the request says
   `allow_family_change: false`.
 * Streaming: fall back only before the first content event. After that, an error
   event, and stop.
 * Every connection's concurrency and requests-per-minute limits are kept, its
-  rate-limit rest is set after a 429, each endpoint's circuit breaker is fed,
+  rate-limit rest is set after a 429, it rests as a whole after refusing the key or
+  account, each endpoint's circuit breaker is fed,
   and what a call cost is added to the month's spend.
 """
 
@@ -231,7 +234,11 @@ def _note_failure(candidate: Candidate, err: ModelError, cfg: layer_config.Confi
     rate-limit rest and the endpoint's breaker."""
     if isinstance(err, RateLimited):
         state.rate_limit(candidate.connection.name, err.retry_after or DEFAULT_RATE_REST_S)
-    elif err.type in ("unavailable", "timeout", "auth"):
+        return
+    if err.type == "auth":
+        # The key or the account (billing, quota) was refused: true of every model on it.
+        state.refuse_connection(candidate.connection.name, str(err), cfg.settings.refused_rest_s)
+    if err.type in ("unavailable", "timeout", "auth"):
         s = cfg.settings
         state.record_failure(candidate.endpoint.id, str(err), threshold=s.breaker_threshold,
                              base_s=s.breaker_base_s, max_s=s.breaker_max_s)
@@ -254,14 +261,19 @@ def run(request: Request, *, streaming: bool) -> Generator[Event, None, Response
     queue = list(ranked)
     first = queue[0]
     failed_upstreams: set[str] = set()
+    refused_connections: set[str] = set()
     report = adapt.Report()
     progress = _Progress()
     last_error: ModelError | None = None
     previous: Candidate | None = None
 
     while queue:
-        candidate = next((queue.pop(i) for i, c in enumerate(queue) if _upstream(c) not in failed_upstreams),
-                         None) or queue.pop(0)
+        candidate = (next((queue.pop(i) for i, c in enumerate(queue)
+                           if c.connection.name not in refused_connections and _upstream(c) not in failed_upstreams),
+                          None)
+                     or next((queue.pop(i) for i, c in enumerate(queue) if c.connection.name not in refused_connections),
+                             None)
+                     or queue.pop(0))
         if previous is not None and not request.requirements.allow_family_change and not _same_family(first, candidate):
             report.warnings.append(f"{candidate.endpoint.id} was skipped: it's a different model family, and this "
                                    "request doesn't allow switching families.")
@@ -283,12 +295,19 @@ def run(request: Request, *, streaming: bool) -> Generator[Event, None, Response
                 record.attempts.append(Attempt(candidate.endpoint.id, err.type, _diagnostic(err),
                                                int((clock() - attempt_started) * 1000)))
                 _note_failure(candidate, err, cfg)
-                if progress.emitted or not err.retryable:
+                # Approved deviation (D3b): under Auto, a connection-level refusal (key, billing,
+                # quota) falls back too, before anything was streamed — preferring another
+                # connection. A pinned request still ends here.
+                refused = err.type == "auth" and request.requirements.pin is None
+                if progress.emitted or not (err.retryable or refused):
                     record.outcome = err.type
                     record.total_ms = int((clock() - call_started) * 1000)
                     record.endpoint_id = candidate.endpoint.id
                     _publish(record)
                     raise
+                if refused:
+                    refused_connections.add(candidate.connection.name)
+                    break
                 wait = err.retry_after if err.retry_after is not None else waits[min(attempt_no, len(waits) - 1)]
                 if attempt_no >= cfg.settings.retries or wait > LONG_WAIT_S:
                     break

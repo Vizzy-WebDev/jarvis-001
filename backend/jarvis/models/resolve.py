@@ -95,6 +95,11 @@ def _health(endpoint: Endpoint, connection: Connection) -> Rejection | None:
     if down:
         return Rejection(endpoint.id, "connection_unreachable",
                          f"{connection.label or connection.name} didn't answer when Jarvis last checked ({down}).")
+    refused = state.connection_refused(connection.name)
+    if refused:
+        return Rejection(endpoint.id, "connection_refused",
+                         f"{connection.label or connection.name} refused Jarvis's key or account last time, so it's "
+                         "resting. Check it on the Model Settings screen.")
     until = state.rate_limited_until(connection.name)
     if until:
         return Rejection(endpoint.id, "rate_limited",

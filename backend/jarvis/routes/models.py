@@ -91,6 +91,7 @@ def select(body: dict[str, Any] = Body(default_factory=dict)):
 
 def _refresh(name: str) -> dict[str, Any]:
     before = {e.model_id for e in engine.catalog().endpoints.values() if e.connection == name}
+    state.clear_refusal(name)  # the person is reconnecting it: a refusal from before no longer stands
     result = discovery.refresh_one(name)
     after = {e.model_id for e in engine.catalog().endpoints.values() if e.connection == name}
     return {**result, "added": len(after - before), "updated": len(after & before)}

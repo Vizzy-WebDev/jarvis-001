@@ -296,8 +296,13 @@ Kind table, Auto ranking, "proven" models, per-connection strikes, billing holds
   usage + cost; provenance; feature report of native/emulated/dropped).
 - **Execute**: retryable errors (`rate_limited`, `unavailable`, `timeout`) retry with backoff, then fall
   back **only within the filtered list**, preferring a different upstream; a server asking to wait >10s
-  moves straight on. **Every other error ends the call** — including `auth` (billing/quota refusals map
-  to it) and `context_too_long`. `allow_family_change: false` is honoured. **No fallback after the first
+  moves straight on. **Approved deviation from the plan (D3b):** under Auto (no pin), a connection-level
+  `auth` refusal (key, billing, quota) also falls back, before the first streamed event, to the next
+  eligible endpoint of the filtered list, preferring another connection, with a visible plain-language
+  notice; a pinned request still ends the call on it. **Every other error ends the call**, including
+  `context_too_long`. A connection that refused the key or account rests as a whole (`refused_rest_s`,
+  kept in the state file across restarts) until its key is edited, it is reconnected (Test/Discover) or
+  the rest ends (D3a). `allow_family_change: false` is honoured. **No fallback after the first
   streamed content event.** Per-connection concurrency/rpm limits, a 429 rests the connection, the
   breaker rests an endpoint after repeated failures (5 min doubling to 2h).
 - **`data_class` is descriptive, not restrictive by default.** The shipped policy allows every data class

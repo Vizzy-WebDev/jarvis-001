@@ -282,8 +282,11 @@ def test_the_layer_core_never_branches_on_a_driver():
 
 #: Provider and model names. Allowed in drivers, config and profile data — nowhere
 #: else a model layer's logic could branch on them.
-_NAMES = re.compile(r"\b(openai|anthropic|claude|gemini|google|gpt|ollama|lm ?studio|openrouter|mistral|llama|"
-                    r"qwen|deepseek|grok|xai|cohere|vllm|litellm|omniroute)\b", re.IGNORECASE)
+#: Bounded by anything that isn't a letter or digit — an underscore included, so a name
+#: inside `GEMINI_API_KEY` is found (`\b` counts `_` as part of a word).
+_NAMES = re.compile(r"(?<![A-Za-z0-9])(openai|anthropic|claude|gemini|google|gpt|ollama|lm ?studio|openrouter|"
+                    r"mistral|llama|qwen|deepseek|grok|xai|cohere|vllm|litellm|omniroute)(?![A-Za-z0-9])",
+                    re.IGNORECASE)
 
 
 def _logic_strings(path: Path) -> list[str]:
@@ -307,10 +310,16 @@ def test_no_provider_or_model_name_appears_outside_drivers_config_and_profile_da
     (its own wire), in config, and in the shipped data files."""
     shared = [p for p in files_under("models") if "drivers" not in p.parts]
     shared += [PACKAGE / "ai.py", PACKAGE / "routes" / "models.py", PACKAGE / "prompt.py",
-               PACKAGE / "prompt_format.py", *files_under("orchestrator")]
+               PACKAGE / "prompt_format.py", *files_under("orchestrator"),
+               # What things cost and which keys are secrets: no provider is special to either.
+               *files_under("cost"), PACKAGE / "config.py"]
+    from jarvis.models.drivers import DRIVERS
+
     found = []
     for path in shared:
         for text in _logic_strings(path):
+            if text in DRIVERS:  # a wire protocol's name, as config spells it (`driver: openai_chat`)
+                continue
             hit = _NAMES.search(text)
             if hit:
                 found.append(f"{path.relative_to(PACKAGE)}: {hit.group(0)!r} in {text[:60]!r}")

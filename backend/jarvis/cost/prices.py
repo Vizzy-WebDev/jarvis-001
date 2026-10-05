@@ -1,8 +1,8 @@
 """What a unit of usage actually costs — three sources, in write-time precedence.
 
 1. **A price the user set** always wins and is never silently replaced.
-2. **A provider's own published numeric pricing** (OpenRouter publishes real
-   per-token prices at a public endpoint) comes next.
+2. **A provider's own published numeric pricing** comes next: the prices a
+   connected gateway's own model list reported (the model layer's discovery).
 3. **A built-in $0** is seeded for exactly two cases, both of them facts rather
    than guesses: a local model costs nothing to run, and a model id ending
    `:free` is the PROVIDER'S own label for a free variant.
@@ -38,8 +38,6 @@ from . import store
 
 logger = logging.getLogger(__name__)
 
-OPENROUTER_CATALOG_URL = "https://openrouter.ai/api/v1/models"
-
 #: The same interlock every background timer in this build uses: a refresh that
 #: reaches the network must be switched on deliberately, never merely by
 #: importing a module.
@@ -58,46 +56,35 @@ def set_user_price(*, provider: str, model_id: str, unit_kind: str = "tokens",
                     source="user")
 
 
-def refresh_from_openrouter(*, fetch: Any = None) -> dict[str, Any]:
-    """Pull OpenRouter's own published per-token prices.
+def refresh_reported_prices(*, source: Any = None) -> dict[str, Any]:
+    """File the prices connected providers published about their own models.
 
-    Stored exactly as given — USD per single token, not per million — so
-    `calculate()` multiplies against a raw token count with no unit conversion
-    to get wrong. A network failure is reported, never raised: this is a
-    background refresh, and a caller should not have to guard against it.
+    `source` is the model layer's `reported_prices()` — what each connection's model
+    list said at its last discovery, already per single token and named the way the
+    cost ledger names the provider — so `calculate()` multiplies against a raw token
+    count with no unit conversion to get wrong. A failure is reported, never raised:
+    this is a background refresh, and a caller should not have to guard against it.
     """
-    if fetch is None:
-        def fetch() -> Any:
-            import httpx
-            response = httpx.get(OPENROUTER_CATALOG_URL, timeout=20.0)
-            response.raise_for_status()
-            return response.json()
+    if source is None:
+        def source() -> Any:
+            from ..models import settings as model_settings
+            return model_settings.reported_prices()
 
     try:
-        data = fetch()
-    except Exception as err:  # noqa: BLE001 — any transport failure reads the same here
+        rows = source()
+    except Exception as err:  # noqa: BLE001 — any failure reads the same here
         return {"ok": False, "updated": 0, "error": str(err)}
 
-    models = data.get("data") if isinstance(data, dict) else None
-    if not isinstance(models, list):
-        return {"ok": False, "updated": 0, "error": "OpenRouter's catalog was not in the expected shape."}
-
     updated = 0
-    for model in models:
-        if not isinstance(model, dict):
+    for row in rows or []:
+        provider, model_id = row.get("provider"), row.get("model_id")
+        price_in, price_out = _as_price(row.get("price_in")), _as_price(row.get("price_out"))
+        if not provider or not model_id or (price_in is None and price_out is None):
             continue
-        pricing = model.get("pricing")
-        model_id = model.get("id")
-        if not model_id or not isinstance(pricing, dict):
-            continue
-        price_in = _as_price(pricing.get("prompt"))
-        price_out = _as_price(pricing.get("completion"))
-        if price_in is None and price_out is None:
-            continue
-        existing = store.get_price("openrouter", model_id, "tokens")
+        existing = store.get_price(provider, model_id, "tokens")
         if existing and existing.get("source") == "user":
             continue                       # an explicit user price is never replaced
-        store.set_price(provider="openrouter", model_id=model_id, unit_kind="tokens",
+        store.set_price(provider=provider, model_id=model_id, unit_kind="tokens",
                         price_in=price_in, price_out=price_out,
                         source="provider_reported")
         updated += 1
@@ -149,8 +136,8 @@ _timer: threading.Timer | None = None
 def start_price_maintenance() -> bool:
     """The periodic pull of provider-published prices.
 
-    Behind the interlock because it reaches the network. Seeding is NOT: it
-    needs no network, writes a fact rather than a poll, is idempotent and never
+    Behind the cost timers' interlock, like every background clock. Seeding is
+    NOT: it needs no network, writes a fact rather than a poll, is idempotent and never
     overwrites — see `assembly.start_background_work`, which seeds either way.
 
     Without this the refresh existed and was tested but nothing ever called it,
@@ -163,7 +150,7 @@ def start_price_maintenance() -> bool:
 
     def run() -> None:
         global _timer
-        result = refresh_from_openrouter()
+        result = refresh_reported_prices()
         if not result.get("ok"):
             logger.info("price refresh did not run: %s", result.get("error"))
         _timer = threading.Timer(REFRESH_INTERVAL_S, run)

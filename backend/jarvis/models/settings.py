@@ -142,6 +142,19 @@ def ensure_pin(pin: str | None) -> str | None:
     return pin
 
 
+def reported_prices() -> list[dict[str, Any]]:
+    """Every price a connection's own model list reported at its last discovery, per token,
+    filed under the provider name the cost ledger uses. Read from state; nothing is called."""
+    out = []
+    for conn in config.current().connections.values():
+        for found in state.discovered(conn.name):
+            if found.pricing is not None:
+                out.append({"provider": conn.ledger_name, "model_id": found.model_id,
+                            "price_in": found.pricing.input / 1_000_000,
+                            "price_out": found.pricing.output / 1_000_000})
+    return out
+
+
 # --- the screen's views ----------------------------------------------------------------------
 
 def connection_view(name: str) -> dict[str, Any]:

@@ -125,7 +125,7 @@ def publish_completed(response: Response, *, session_id: str | None, background:
     connection, _ = split_endpoint_id(response.provenance.endpoint_id)
     try:
         conn = config.current().connections.get(connection)
-        provider = (conn.preset or conn.driver) if conn else connection
+        provider = conn.ledger_name if conn else connection
     except config.ConfigError:
         provider = connection
     model = reported_model(response)

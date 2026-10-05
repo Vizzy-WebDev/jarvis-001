@@ -35,14 +35,16 @@ would either understate spend or make a `$0` month look like a month with no dat
 ## `prices.py` — write-time precedence
 
 1. A price the user set (`set_user_price()`) always wins and is never silently replaced.
-2. A provider's own published numeric pricing — `refresh_from_openrouter()` pulls OpenRouter's
-   public per-token prices and skips any model whose price is already `source: user`.
+2. A provider's own published numeric pricing — `refresh_reported_prices()` files the prices a
+   connected provider's own model list reported (the model layer's discovery,
+   `models.settings.reported_prices()`, under the ledger's provider name) and skips any model
+   whose price is already `source: user`. No provider is named here.
 
 **No dollar figure is hardcoded for a cloud model** — a plausible-looking invented number is
 exactly the failure this subsystem exists to prevent. The `provider` key must be the same
 one the recorder uses; deriving it a second way writes rows nothing reads.
 
-The network refresh (`start_price_maintenance()`) and balance polling (`balances.start()`,
+The price refresh (`start_price_maintenance()`) and balance polling (`balances.start()`,
 `JARVIS_COST_REFRESH`) are plain periodic timers behind their interlocks. They are
 deliberately NOT heartbeat sources: the heartbeat spends a model call judging whether a
 finding is worth interrupting for, and a silent maintenance refresh has no finding.

@@ -79,10 +79,10 @@ def test_every_gated_subsystem_reports_started_when_every_interlock_is_set(scrat
     for var in main_module._BACKGROUND_INTERLOCKS:
         monkeypatch.setenv(var, "1")
     # `start()` runs its first tick SYNCHRONOUSLY before arming the timer —
-    # for this one subsystem that tick is a real network call to OpenRouter's
-    # public catalog. Testing must never touch a real external service, same
+    # for this one subsystem that tick reads the model layer's discovered
+    # prices and writes them. Testing must never touch a real external service, same
     # rule `test_cost.py`'s own price-maintenance test already follows.
-    monkeypatch.setattr(prices, "refresh_from_openrouter",
+    monkeypatch.setattr(prices, "refresh_reported_prices",
                         lambda **kw: {"ok": True, "updated": 0})
 
     started = assembly.start_background_work()
@@ -124,7 +124,7 @@ def test_main_sets_every_background_interlock_before_building_the_app(scratch, m
     monkeypatch.setenv("PORT", "3999")
     # Same reasoning as the test above: `main()` sets JARVIS_COST_REFRESH too,
     # so `create_app()` would otherwise make a real network call here.
-    monkeypatch.setattr(prices, "refresh_from_openrouter",
+    monkeypatch.setattr(prices, "refresh_reported_prices",
                         lambda **kw: {"ok": True, "updated": 0})
 
     captured: dict = {}

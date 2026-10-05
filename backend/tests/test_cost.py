@@ -83,21 +83,48 @@ def test_a_price_on_record_is_multiplied_by_the_real_count():
 
 
 def test_a_user_price_is_never_replaced_by_a_provider_reported_one():
-    prices.set_user_price(provider="openrouter", model_id="a/b", price_in=9.0, price_out=9.0)
-    result = prices.refresh_from_openrouter(
-        fetch=lambda: {"data": [{"id": "a/b", "pricing": {"prompt": "0.001", "completion": "0.002"}},
-                                {"id": "c/d", "pricing": {"prompt": "0.003", "completion": "0.004"}}]})
+    prices.set_user_price(provider="gw", model_id="a/b", price_in=9.0, price_out=9.0)
+    result = prices.refresh_reported_prices(
+        source=lambda: [{"provider": "gw", "model_id": "a/b", "price_in": 0.001, "price_out": 0.002},
+                        {"provider": "gw", "model_id": "c/d", "price_in": 0.003, "price_out": 0.004}])
     assert result["ok"] and result["updated"] == 1
-    assert store.get_price("openrouter", "a/b")["priceIn"] == 9.0
-    assert store.get_price("openrouter", "c/d")["source"] == "provider_reported"
+    assert store.get_price("gw", "a/b")["priceIn"] == 9.0
+    assert store.get_price("gw", "c/d")["source"] == "provider_reported"
 
 
 def test_a_failed_refresh_is_reported_not_raised():
     def boom():
-        raise RuntimeError("network is down")
+        raise RuntimeError("model settings unreadable")
 
-    assert prices.refresh_from_openrouter(fetch=boom) == {
-        "ok": False, "updated": 0, "error": "network is down"}
+    assert prices.refresh_reported_prices(source=boom) == {
+        "ok": False, "updated": 0, "error": "model settings unreadable"}
+
+
+def test_prices_come_from_what_each_connected_gateway_listed(scratch):
+    """No provider is named in the cost code: a price is whatever a connection's own model
+    list reported, filed under the same provider name the cost ledger records."""
+    import yaml
+
+    from jarvis.models import config as model_config
+    from jarvis.models import state as model_state
+    from jarvis.models.catalog import Pricing
+    from jarvis.models.prepared import Discovered
+
+    (scratch.data_dir / "models.yaml").write_text(yaml.safe_dump({"connections": [
+        {"name": "gw", "driver": "openai_chat", "base_url": "http://gw.test/v1", "trust": "standard",
+         "preset": "openrouter"}]}), encoding="utf-8")
+    model_config.forget()
+    model_state.reset()
+    model_state.record_discovery("gw", [Discovered("vendor/model-x", pricing=Pricing(1.5, 6.0)),
+                                        Discovered("vendor/unpriced")])
+    try:
+        assert prices.refresh_reported_prices() == {"ok": True, "updated": 1}
+        price = store.get_price("openrouter", "vendor/model-x")
+        assert price["priceIn"] == pytest.approx(1.5e-6) and price["priceOut"] == pytest.approx(6e-6)
+        assert store.get_price("openrouter", "vendor/unpriced") is None
+    finally:
+        model_config.forget()
+        model_state.reset()
 
 
 # --- the report keeps its three kinds of number apart -------------------------
@@ -289,7 +316,7 @@ def test_price_maintenance_actually_pulls_when_switched_on(monkeypatch):
     """It existed and was tested, and nothing ever called it."""
     monkeypatch.setenv(prices.ENABLE_ENV, "1")
     pulled = []
-    monkeypatch.setattr(prices, "refresh_from_openrouter",
+    monkeypatch.setattr(prices, "refresh_reported_prices",
                         lambda **kw: pulled.append(1) or {"ok": True, "updated": 0})
     try:
         assert prices.start_price_maintenance() is True

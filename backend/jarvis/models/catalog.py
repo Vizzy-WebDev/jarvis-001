@@ -84,6 +84,11 @@ class Connection:
     label: str | None = None
     preset: str | None = None
 
+    @property
+    def ledger_name(self) -> str:
+        """The provider name the cost ledger files this connection's usage and prices under."""
+        return self.preset or self.driver
+
 
 @dataclass(frozen=True)
 class Alias:

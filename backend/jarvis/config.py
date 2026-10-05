@@ -18,9 +18,10 @@ _DEFAULT_ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
 
 SECRET_PREFIX = "JARVIS_SECRET_"
 
-#: Variables a person may already have set under their conventional names. Nothing
-#: here reads them, but they are secrets all the same, so they are redacted.
-_WELL_KNOWN_KEY_VARS = ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY")
+#: Variables a person may already have set under a provider's conventional name
+#: (`<PROVIDER>_API_KEY`). Nothing here reads them, but they are secrets all the same,
+#: so they are redacted — whichever provider the name is for.
+_KEY_VAR_SUFFIX = "_API_KEY"
 
 
 def env_file_path() -> Path:
@@ -128,7 +129,7 @@ def secret_values() -> list[str]:
     found: list[str] = []
     from_file = _read_env_file()
     for name, value in list(from_file.items()) + list(os.environ.items()):
-        if name in _WELL_KNOWN_KEY_VARS or name.startswith(SECRET_PREFIX):
+        if name.upper().endswith(_KEY_VAR_SUFFIX) or name.startswith(SECRET_PREFIX):
             if value and value not in found:
                 found.append(value)
     return found

@@ -223,3 +223,11 @@ it was deliberately corrected.
   models go last), and the fallback is reported like any other (the chat's "Switched to"
   note, with the plain reason). A pinned request — the person's own selection or any
   other pin — still ends the call.
+- **Only a picture in the current turn needs a model that can see (D2).** The boundary
+  resends every stored picture, so one shared earlier used to make every later turn
+  require `image_in`: pinned to a model that can't see, the chat was stuck. Now `image_in`
+  is required only for a picture in the person's latest message; an earlier one sent to
+  a model without `image_in` is replaced by a one-line note and reported
+  (`image_input: dropped`, a warning). Not done, by decision: learning from a model's
+  refusal of a picture. A model wrongly declared able to see still gets the picture and
+  still refuses it; that is fixed by its capability data, not by guessing from refusals.

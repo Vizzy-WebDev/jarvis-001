@@ -38,11 +38,25 @@ class Candidate:
 
 # --- what a request needs --------------------------------------------------------------------
 
+def current_turn_start(items: tuple[Any, ...]) -> int:
+    """Where the current turn begins: the person's latest message. Everything before it
+    is history."""
+    for index in range(len(items) - 1, -1, -1):
+        item = items[index]
+        if isinstance(item, Message) and item.role == "user":
+            return index
+    return 0
+
+
 def needed_capabilities(request: Request) -> set[str]:
     needed = {"text_in", *request.requirements.capabilities}
     if request.tools:
         needed.add("tools")
-    if any(isinstance(p, ImagePart) for i in request.items if isinstance(i, Message) for p in i.parts):
+    # Only a picture in the current turn needs a model that can see. One shared earlier
+    # reaches a model that can't as a short placeholder (adapt.py), so a conversation is
+    # never stuck because of a picture it moved past.
+    current = request.items[current_turn_start(request.items):]
+    if any(isinstance(p, ImagePart) for i in current if isinstance(i, Message) for p in i.parts):
         needed.add("image_in")
     return needed
 

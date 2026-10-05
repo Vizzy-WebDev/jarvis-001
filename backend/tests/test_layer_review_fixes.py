@@ -275,3 +275,90 @@ def test_other_non_retryable_errors_still_end_the_call_under_auto(layer):
     with pytest.raises(errors.InvalidRequest):
         models.generate(ask())
     assert [c.connection for c in fake.calls()] == ["a"]
+
+
+# --- D2: only a picture in the current turn needs a model that can see (A1-A3) ------------------
+
+SEES = {**CHAT, "image_in": True}
+PICTURE = ImagePart("image/png", "iVBORw0KGgo=")
+
+
+def _after_a_picture(text: str = "and now just text") -> tuple:
+    """A conversation where a picture was shared earlier and the latest message is text."""
+    from jarvis.models.types import TextPart as T
+
+    return (Message("user", (T("what is this?"), PICTURE)), Message("assistant", (T("A cat."),)),
+            Message("user", (T(text),)))
+
+
+def test_a_picture_from_earlier_does_not_require_a_model_that_can_see(layer):
+    """A1/A2: pinned to a model that can't see, every turn after a picture used to fail."""
+    configure(layer, [fake_conn("blind", models={"m": {"capabilities": CHAT}})],
+              aliases={"selected": {"endpoint": "blind/m"}})
+    fake.queue("blind", fake.reply("fine"))
+    response = models.generate(Request(task_class="chat", data_class="personal", items=_after_a_picture(),
+                                       requirements=Requirements(pin="selected")))
+    assert response.text == "fine"
+    sent = fake.calls()[-1].prepared.items
+    parts = [p for i in sent if isinstance(i, Message) for p in i.parts]
+    assert not any(isinstance(p, ImagePart) for p in parts)
+    assert any(isinstance(p, TextPart) and "picture" in p.text for p in parts)  # a short placeholder
+    assert response.report.features["image_input"] == "dropped"
+    assert any("picture" in w for w in response.report.warnings)
+
+
+def test_a_picture_in_the_current_turn_still_needs_a_model_that_can_see(layer):
+    configure(layer, [fake_conn("blind", models={"m": {"capabilities": CHAT}})],
+              aliases={"selected": {"endpoint": "blind/m"}})
+    items = (Message("user", (TextPart("what is this?"), PICTURE)),)
+    with pytest.raises(errors.NoEligibleEndpoint):
+        models.generate(Request(task_class="chat", data_class="personal", items=items,
+                                requirements=Requirements(pin="selected")))
+
+
+def test_a_model_that_can_see_gets_earlier_pictures_unchanged(layer):
+    configure(layer, [fake_conn("eyes", models={"m": {"capabilities": SEES}})])
+    fake.queue("eyes", fake.reply("fine"))
+    response = models.generate(Request(task_class="chat", data_class="personal", items=_after_a_picture()))
+    parts = [p for i in fake.calls()[-1].prepared.items if isinstance(i, Message) for p in i.parts]
+    assert PICTURE in parts and response.report.features["image_input"] == "native"
+
+
+def test_under_auto_the_turn_after_a_picture_is_routed_as_a_text_turn(layer):
+    """A3's routing half: an earlier picture no longer narrows the next turn to models that see."""
+    configure(layer, [fake_conn("blind", models={"m": {"capabilities": CHAT}}),
+                      fake_conn("eyes", models={"m": {"capabilities": SEES}})])
+    with_picture = models.explain_route(Request(task_class="chat", data_class="personal",
+                                                items=(Message("user", (TextPart("look"), PICTURE)),)))
+    assert with_picture.ranked == ("eyes/m",)
+    after = models.explain_route(Request(task_class="chat", data_class="personal", items=_after_a_picture()))
+    assert after.ranked == ("blind/m", "eyes/m")
+
+
+def test_a_failed_request_does_not_change_how_the_next_message_is_routed(layer):
+    configure(layer, [fake_conn("blind", models={"m": {"capabilities": CHAT}}),
+                      fake_conn("eyes", models={"m": {"capabilities": SEES}})])
+    next_message = Request(task_class="chat", data_class="personal", items=_after_a_picture(),
+                           affinity_key="chat-1")
+    before = models.explain_route(next_message)
+    fake.queue("eyes", errors.InvalidRequest("eyes.test couldn't use that request."))
+    with pytest.raises(errors.InvalidRequest):
+        models.generate(Request(task_class="chat", data_class="personal", affinity_key="chat-1",
+                                items=(Message("user", (TextPart("look"), PICTURE)),)))
+    after = models.explain_route(next_message)
+    assert after.ranked == before.ranked and after.rejected == before.rejected
+    fake.queue("blind", fake.reply("text answer"))
+    assert models.generate(next_message).provenance.endpoint_id == "blind/m"
+
+
+def test_the_boundary_resends_a_stored_picture_and_the_layer_makes_it_a_placeholder(layer):
+    """The real path: pictures come back from the stored conversation (`media`)."""
+    configure(layer, [fake_conn("blind", models={"m": {"capabilities": CHAT}})])
+    stored = [{"role": "user", "text": "what is this?",
+               "media": [{"kind": "image", "mimeType": "image/png", "dataBase64": "iVBORw0KGgo="}]},
+              {"role": "assistant", "text": "A cat."},
+              {"role": "user", "text": "thanks"}]
+    fake.queue("blind", fake.reply("you're welcome"))
+    response = models.generate(Request(task_class="chat", data_class="personal",
+                                       items=boundary.items_from_conversation(stored)))
+    assert response.text == "you're welcome"

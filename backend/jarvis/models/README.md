@@ -53,13 +53,15 @@ loop's port; the one module that imports the orchestrator) and `oneshot.py`
 1. **Resolve** (`resolve.py`) — reject every endpoint that is resting, lacks a
    key, is a trust class the policy doesn't allow for this data class, lacks a
    needed capability, is too small for the request, is over budget or max cost,
-   isn't the pin, or can't express a schema. Every reason is recorded. A missing
+   isn't the pin, or can't express a schema. Every reason is recorded. Only a picture
+   in the current turn requires a model that can see. A missing
    strict-schema capability is allowed only for `best_effort` output (emulated).
 2. **Route** (`router.py`) — `prefer` aliases, then the task class's route (else
    `default`), then — if the route allows others — everything else; ordered by
    `optimize`; the affinity key's last endpoint first.
 3. **Adapt** (`adapt.py`) — sections rendered by the family's prompt profile,
-   foreign provider state dropped (and reported), canonical cache/effort hints,
+   foreign provider state dropped (and reported), an earlier picture sent to a model
+   that can't see replaced by a short note (and reported), canonical cache/effort hints,
    default params and this driver's extensions.
 4. **Execute** (`execute.py`) — retry retryable errors, then fall back within the
    filtered list (another upstream first; never across families when forbidden);

@@ -8,10 +8,12 @@
   `reasoning_effort` a canonical level — each only if the endpoint has the
   capability, otherwise reported as dropped. The native encoding is the driver's.
 * Sealed items from any other endpoint are left out, and reported.
+* For a model that can't see, a picture from earlier in the conversation becomes a
+  short placeholder note, reported (only a current-turn picture requires `image_in`).
 * `default_params`, then this driver's `extensions`, become the driver's params.
   An extension for a different driver is ignored with a warning.
 
-Nothing here changes, trims or rewrites the caller's content.
+Nothing else here changes, trims or rewrites the caller's content.
 """
 
 from __future__ import annotations
@@ -25,7 +27,10 @@ from . import capabilities as caps_mod
 from .config import Config
 from .prepared import Prepared, PreparedOutput, RenderedSection, deep_merge
 from .resolve import Candidate
-from .types import FeatureState, ImagePart, Message, Request, Sealed
+from .types import FeatureState, ImagePart, Message, Request, Sealed, TextPart
+
+#: What a model that can't see gets in place of a picture shared earlier in the conversation.
+PICTURE_PLACEHOLDER = "[A picture was shared here. This model can't see pictures.]"
 
 
 @dataclass
@@ -97,16 +102,27 @@ def prepare(request: Request, candidate: Candidate, cfg: Config, *, mint_id: Cal
         report.features["max_output_tokens"] = "native"
     if request.tools:
         report.features["tools"] = "native"
+    sees = caps_mod.has(caps, "image_in")
     if any(isinstance(p, ImagePart) for i in request.items if isinstance(i, Message) for p in i.parts):
-        report.features["image_input"] = "native"
+        report.features["image_input"] = "native" if sees else "dropped"
 
     items = []
     foreign = 0
+    pictures_left_out = 0
     for item in request.items:
         if isinstance(item, Sealed) and item.endpoint_id != endpoint.id:
             foreign += 1
             continue
+        if not sees and isinstance(item, Message) and any(isinstance(p, ImagePart) for p in item.parts):
+            # Only an earlier picture can be here (resolve requires image_in for one in the
+            # current turn): it becomes a short note, so the model knows one was shared.
+            pictures_left_out += sum(isinstance(p, ImagePart) for p in item.parts)
+            item = Message(item.role, tuple(TextPart(PICTURE_PLACEHOLDER) if isinstance(p, ImagePart) else p
+                                            for p in item.parts))
         items.append(item)
+    if pictures_left_out:
+        report.warnings.append(f"{pictures_left_out} earlier picture{'s were' if pictures_left_out != 1 else ' was'} "
+                               "left out, each replaced by a short note: this model can't see pictures.")
     if foreign:
         report.features["foreign_provider_state"] = "dropped"
         report.warnings.append(f"{foreign} piece{'s' if foreign != 1 else ''} of provider state (reasoning or "

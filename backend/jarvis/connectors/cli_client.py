@@ -21,7 +21,6 @@ given that one credential explicitly, never all of them by inheritance.
 
 from __future__ import annotations
 
-import json
 import re
 import shutil
 import subprocess
@@ -287,29 +286,6 @@ DISCOVERY_SYSTEM = (
 )
 
 
-def _json_in(text: str) -> Any:
-    """The JSON object in a model's reply, whether bare, fenced or surrounded by a sentence.
-
-    Found live: a real model answered with the JSON inside a ```json fence, which
-    a plain `json.loads` refuses — and every proposal was lost.
-    """
-    text = (text or "").strip()
-    try:
-        return json.loads(text)
-    except ValueError:
-        pass
-    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
-    candidates = [fenced.group(1)] if fenced else []
-    if "{" in text and "}" in text:
-        candidates.append(text[text.index("{"):text.rindex("}") + 1])
-    for candidate in candidates:
-        try:
-            return json.loads(candidate)
-        except ValueError:
-            continue
-    return None
-
-
 def discover_commands(config: dict[str, Any], *, ask: Callable[..., Any] | None = None
                       ) -> dict[str, Any]:
     """Read `<program> --help` and propose command templates for the person to review.
@@ -339,7 +315,11 @@ def discover_commands(config: dict[str, Any], *, ask: Callable[..., Any] | None 
                  system=DISCOVERY_SYSTEM, want_json=True, data_class="public", task_class="extract")
     data = getattr(answer, "data", None)
     if data is None:
-        data = _json_in(getattr(answer, "text", "") or "")
+        # The model layer's one tolerant reader (a fence, a thinking preamble, prose around it).
+        from ..models.finish import parse_json
+
+        ok, parsed = parse_json(getattr(answer, "text", "") or "")
+        data = parsed if ok else None
     proposed_raw = (data or {}).get("commands") if isinstance(data, dict) else None
     words = set(re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]*", help_text.lower()))
     proposed = []

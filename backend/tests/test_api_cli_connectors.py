@@ -437,3 +437,17 @@ def test_a_proposal_wrapped_in_a_code_fence_is_still_read(stubcli):
     found = cli_client.discover_commands({"command": "stubcli"},
                                          ask=lambda prompt, **kw: Answer(text=fenced))
     assert [c["name"] for c in found["proposed"]] == ["greet"]
+
+
+def test_a_proposal_after_a_thinking_preamble_is_read_with_the_model_layers_one_parser(stubcli):
+    """F16: the CLI reader kept its own JSON fallback beside the model layer's. A reasoning
+    model's `<think>` preamble with a brace in it defeated the private one."""
+    from jarvis.ai import Answer
+
+    reply = ('<think>It wants {commands}; greet takes a name.</think>\n'
+             '{"commands": [{"name": "greet", "argv": ["greet", "{name}"],'
+             ' "args": [{"name": "name", "description": "Who."}]}]}')
+    found = cli_client.discover_commands({"command": "stubcli"},
+                                         ask=lambda prompt, **kw: Answer(text=reply))
+    assert [c["name"] for c in found["proposed"]] == ["greet"]
+    assert not hasattr(cli_client, "_json_in")

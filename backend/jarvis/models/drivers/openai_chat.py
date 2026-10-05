@@ -316,7 +316,17 @@ def _listed(row: dict[str, Any]) -> Discovered:
     prompt, completion = _per_million(price.get("prompt")), _per_million(price.get("completion"))
     if prompt is not None and completion is not None:
         pricing = Pricing(prompt, completion, _per_million(price.get("input_cache_read")))
-    return Discovered(model_id=str(row["id"]), label=row.get("name") or None, capabilities=caps, pricing=pricing)
+    family = upstream = None
+    if arch:
+        # A gateway's rich listing: the tokenizer it reports is the model's family, and the
+        # vendor before the "/" in its id is who serves it. A plain server's ids are its own
+        # names, so nothing is read from them.
+        tokenizer = str(arch.get("tokenizer") or "").strip().lower()
+        family = tokenizer if tokenizer and tokenizer not in {"other", "router"} else None
+        vendor, sep, _ = str(row["id"]).partition("/")
+        upstream = vendor.lower() if sep and vendor else None
+    return Discovered(model_id=str(row["id"]), label=row.get("name") or None, capabilities=caps, pricing=pricing,
+                      family=family, upstream=upstream)
 
 
 def _show(conn: ConnInfo, model_id: str) -> dict[str, Any]:

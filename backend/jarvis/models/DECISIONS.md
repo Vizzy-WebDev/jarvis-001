@@ -201,3 +201,10 @@ it was deliberately corrected.
   specialist to `gemini-2.5-flash-preview-tts` and both failed. An id with a `tts` part is
   the one signal Google gives, so discovery records `text_in: false` for it (the same
   convention as a Chat Completions listing whose outputs exclude text).
+- **A gateway's listing gives each model its family and upstream.** When a Chat
+  Completions listing is a gateway's rich one (it carries `architecture`), the tokenizer
+  it reports is the family (`Claude` → `claude`, so the `claude` prompt profile and family
+  aliases apply; `Router`/`Other` are not families) and the vendor before the `/` in the
+  id is the upstream, so "prefer a different upstream" and `allow_family_change: false`
+  work across one gateway's models. A plain server's ids are its own names; nothing is
+  read from them, and config still wins over either.

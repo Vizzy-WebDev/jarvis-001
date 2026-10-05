@@ -465,3 +465,29 @@ def test_selecting_an_effort_the_model_does_not_take_keeps_none(layer, client_fo
     chosen = client_for_models.post("/api/models/select", json={"providerId": "a", "modelId": "m",
                                                                 "effort": "medium"}).json()
     assert chosen["selection"]["effort"] is None
+
+
+# --- B6: the person's selection pins background work too (CURRENT behaviour, awaiting D4) -------
+
+def test_b6_a_scheduled_or_agent_run_with_no_pin_of_its_own_is_held_to_the_selected_model(layer):
+    """Today: with a model selected (not Auto), a run with no pin of its own is pinned to
+    `selected`, so when that connection is unreachable nothing else is tried. This pins the
+    behaviour the 2026-10-05 scout run showed (trace d82d9470: not_pinned for every other
+    endpoint). D4 decides whether it changes; this test changes with it."""
+    from jarvis.models import client, settings, state
+
+    configure(layer, [fake_conn("chosen"), fake_conn("other")], aliases={"selected": {"endpoint": "chosen/m"}})
+    assert client.pin_for(None) == settings.SELECTED
+    state.mark_connection_down("chosen", "Couldn't reach chosen.test.", 300)
+    explained = models.explain_route(ask(task_class="background", requirements=Requirements(pin=client.pin_for(None))))
+    assert explained.ranked == ()
+    assert {r.reason for r in explained.rejected} == {"connection_unreachable", "not_pinned"}
+
+
+def test_b6_under_auto_the_same_run_moves_on(layer):
+    from jarvis.models import client, state
+
+    configure(layer, [fake_conn("chosen"), fake_conn("other")])
+    assert client.pin_for(None) is None
+    state.mark_connection_down("chosen", "Couldn't reach chosen.test.", 300)
+    assert models.explain_route(ask(task_class="background")).ranked == ("other/m",)

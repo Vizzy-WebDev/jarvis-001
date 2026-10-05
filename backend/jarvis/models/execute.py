@@ -286,7 +286,7 @@ def run(request: Request, *, streaming: bool) -> Generator[Event, None, Response
             attempt_started = clock()
             progress.first_at = None
             try:
-                attempt_report = adapt.Report(dict(report.features), list(report.warnings))
+                attempt_report = report.copy()
                 assembled, usage, data = yield from _one(request, candidate, cfg, attempt_report, progress, record,
                                                          streaming=streaming)
             except ModelError as err:
@@ -329,7 +329,7 @@ def run(request: Request, *, streaming: bool) -> Generator[Event, None, Response
                 items=tuple(assembled.items), stop_reason=fin.stop_reason if fin else "stop", usage=usage,
                 provenance=Provenance(candidate.endpoint.id, fin.reported_model if fin else None,
                                       tuple(record.attempts), tuple(record.fallbacks)),
-                report=FeatureReport(dict(report.features), tuple(report.warnings)),
+                report=FeatureReport(dict(report.features), tuple(report.warnings), dict(report.mapped)),
                 data=data, request_id=request_id)
             record.endpoint_id = candidate.endpoint.id
             record.reported_model = response.provenance.reported_model

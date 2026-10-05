@@ -34,7 +34,10 @@ NAME = "openai_chat"
 QUIRKS = frozenset({"no_parallel_tool_calls", "tool_args_not_streamed", "rejects_strict", "no_stream_usage",
                     "no_system_role", "no_tool_call_ids", "error_envelope_in_text", "reasoning_param",
                     "max_tokens_param", "show_endpoint", "catalog_fields"})
-DEFAULT_CAPABILITIES: dict[str, Any] = {"text_in": True, "tools": True, "parallel_tools": True, "streaming": True}
+DEFAULT_CAPABILITIES: dict[str, Any] = {"text_in": True, "tools": True, "parallel_tools": True, "streaming": True,
+                                        # What a reasoning model behind this format takes, wherever
+                                        # its server says it takes a reasoning control at all.
+                                        "effort_levels": ["low", "medium", "high"]}
 
 _FINISH = {"stop": "stop", "tool_calls": "tool_calls", "function_call": "tool_calls", "length": "length",
            "content_filter": "content_filter"}

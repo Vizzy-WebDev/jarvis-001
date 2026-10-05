@@ -362,3 +362,106 @@ def test_the_boundary_resends_a_stored_picture_and_the_layer_makes_it_a_placehol
     response = models.generate(Request(task_class="chat", data_class="personal",
                                        items=boundary.items_from_conversation(stored)))
     assert response.text == "you're welcome"
+
+
+# --- D1: effort is per-endpoint capability data; a hint is mapped to the nearest level ----------
+
+def _thinker(levels, default=None):
+    caps = {**CHAT, "reasoning_control": True, "effort_levels": levels}
+    if default:
+        caps["effort_default"] = default
+    return caps
+
+
+@pytest.mark.parametrize("levels,asked,sent", [
+    (["low", "medium", "high"], "none", "low"),      # Anthropic: thinking can't be switched off
+    (["low", "medium", "high"], "medium", "medium"),
+    (["none", "high"], "medium", "high"),             # equally near both: the higher one
+    (["none", "low"], "high", "low"),
+])
+def test_an_effort_hint_goes_as_the_nearest_level_the_model_takes_and_the_report_says_so(layer, levels, asked,
+                                                                                         sent):
+    from jarvis.models.types import Hints
+
+    configure(layer, [fake_conn("a", models={"m": {"capabilities": _thinker(levels)}})])
+    fake.queue("a", fake.reply("ok"))
+    response = models.generate(ask(hints=Hints(reasoning_effort=asked)))
+    assert fake.calls()[-1].prepared.effort == sent
+    assert response.report.features["reasoning_effort"] == "native"
+    if sent == asked:
+        assert "reasoning_effort" not in response.report.mapped
+    else:
+        assert response.report.mapped["reasoning_effort"] == {"asked": asked, "sent": sent}
+        assert any(asked in w and sent in w for w in response.report.warnings)
+
+
+def test_an_effort_hint_is_dropped_and_reported_where_no_level_is_known(layer):
+    from jarvis.models.types import Hints
+
+    configure(layer, [fake_conn("a", models={"m": {"capabilities": CHAT}})])
+    fake.queue("a", fake.reply("ok"))
+    response = models.generate(ask(hints=Hints(reasoning_effort="high")))
+    assert fake.calls()[-1].prepared.effort is None
+    assert response.report.features["reasoning_effort"] == "dropped"
+
+
+def test_the_effort_mapping_is_in_the_trace(layer):
+    from jarvis.models import trace
+    from jarvis.models.types import Hints
+
+    configure(layer, [fake_conn("a", models={"m": {"capabilities": _thinker(["low", "high"])}})])
+    fake.queue("a", fake.reply("ok"))
+    response = models.generate(ask(hints=Hints(reasoning_effort="none")))
+    row = trace.recent(1)[0]
+    assert row["request_id"] == response.request_id
+    assert row["detail"]["report"]["mapped"] == {"reasoning_effort": {"asked": "none", "sent": "low"}}
+
+
+def test_each_driver_declares_the_levels_it_takes_and_anthropic_none_is_not_among_them():
+    from jarvis.models.capabilities import EFFORT_DEFAULT, EFFORT_LEVELS
+    from jarvis.models.drivers import anthropic_messages, gemini_generate, openai_chat, openai_responses
+
+    assert anthropic_messages.DEFAULT_CAPABILITIES[EFFORT_LEVELS] == ["low", "medium", "high"]
+    assert anthropic_messages.DEFAULT_CAPABILITIES[EFFORT_DEFAULT] == "high"
+    assert openai_responses.DEFAULT_CAPABILITIES[EFFORT_DEFAULT] == "medium"
+    for driver in (openai_chat, gemini_generate, openai_responses):
+        assert set(driver.DEFAULT_CAPABILITIES[EFFORT_LEVELS]) <= {"none", "low", "medium", "high"}
+
+
+def test_anthropic_discovery_reads_the_levels_each_model_accepts():
+    from jarvis.models.drivers import anthropic_messages
+
+    found = anthropic_messages._listed({"id": "claude-x", "capabilities": {"effort": {
+        "supported": True, "low": {"supported": True}, "medium": {"supported": False},
+        "high": {"supported": True}, "max": {"supported": True}}}})
+    assert found.capabilities["reasoning_control"] is True
+    assert found.capabilities["effort_levels"] == ["low", "high"]  # canonical levels only: no "max"
+    assert found.capabilities["effort_default"] == "high"
+
+
+def test_a_capability_list_of_levels_is_validated():
+    from jarvis.models import capabilities as caps
+
+    caps.check_value("effort_levels", ["low", "high"])
+    for bad in (["max"], [], "high", ["low", "low"]):
+        with pytest.raises(ValueError):
+            caps.check_value("effort_levels", bad)
+    with pytest.raises(ValueError):
+        caps.check_value("effort_default", "max")
+
+
+def test_the_settings_screen_offers_only_the_levels_the_model_takes(layer):
+    from jarvis.models import settings
+
+    configure(layer, [fake_conn("a", models={"m": {"capabilities": _thinker(["low", "high"], "high")},
+                                            "plain": {"capabilities": CHAT}})])
+    view = {m["id"]: m["effort"] for m in settings.connection_view("a")["models"]}
+    assert view["m"] == {"levels": ["low", "high"], "default": "high"}
+    assert view["plain"] is None
+
+
+def test_selecting_an_effort_the_model_does_not_take_keeps_none(layer, client_for_models):
+    configure(layer, [fake_conn("a", models={"m": {"capabilities": _thinker(["low", "high"])}})])
+    chosen = client_for_models.post("/api/models/select", json={"providerId": "a", "modelId": "m",
+                                                                "effort": "medium"}).json()
+    assert chosen["selection"]["effort"] is None

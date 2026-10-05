@@ -202,6 +202,8 @@ FeatureState = Literal["native", "emulated", "dropped"]
 class FeatureReport:
     features: Mapping[str, FeatureState] = field(default_factory=dict, hash=False)
     warnings: tuple[str, ...] = ()
+    #: A hint sent as something other than what was asked: {"reasoning_effort": {"asked", "sent"}}.
+    mapped: Mapping[str, Mapping[str, str]] = field(default_factory=dict, hash=False)
 
 
 @dataclass(frozen=True)

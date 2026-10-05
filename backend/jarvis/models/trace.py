@@ -81,7 +81,8 @@ def write(record: Any) -> None:
         "rejected": [{"endpoint": r.endpoint_id, "reason": r.reason, "detail": r.detail} for r in record.rejected],
         "attempts": [asdict(a) for a in record.attempts],
         "fallbacks": [asdict(f) for f in record.fallbacks],
-        "report": {"features": dict(record.report.features), "warnings": list(record.report.warnings)}
+        "report": {"features": dict(record.report.features), "warnings": list(record.report.warnings),
+                   "mapped": {k: dict(v) for k, v in record.report.mapped.items()}}
         if record.report else None,
         "signals": record.signals,
     }

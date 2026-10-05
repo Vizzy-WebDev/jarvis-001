@@ -33,7 +33,9 @@ from . import _turns, _wire
 NAME = "gemini_generate"
 QUIRKS = frozenset({"unsigned_call_signature", "thinking_param"})
 DEFAULT_CAPABILITIES: dict[str, Any] = {"text_in": True, "tools": True, "parallel_tools": True, "streaming": True,
-                                        "image_in": True, "json_mode": True, "structured_output_strict": True}
+                                        "image_in": True, "json_mode": True, "structured_output_strict": True,
+                                        # A thinking level can't be "off" ("minimal" still thinks).
+                                        "effort_levels": ["low", "medium", "high"]}
 
 _FINISH = {"STOP": "stop", "MAX_TOKENS": "length"}
 _BLOCKED = {"SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY", "LANGUAGE"}

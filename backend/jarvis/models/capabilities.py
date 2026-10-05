@@ -18,7 +18,7 @@ from typing import Any, Literal, Mapping
 
 logger = logging.getLogger(__name__)
 
-VOCABULARY_VERSION = 1
+VOCABULARY_VERSION = 2
 
 FLAGS = frozenset({
     "text_in", "image_in", "pdf_in",
@@ -27,7 +27,10 @@ FLAGS = frozenset({
     "reasoning_control", "prompt_caching", "streaming", "embeddings",
 })
 LIMITS = frozenset({"max_context_tokens", "max_output_tokens"})
-VOCABULARY = FLAGS | LIMITS
+#: v2: the canonical effort levels (`types.EFFORTS`) an endpoint with `reasoning_control`
+#: accepts, in order, and the one it uses when none is sent.
+EFFORT_LEVELS, EFFORT_DEFAULT = "effort_levels", "effort_default"
+VOCABULARY = FLAGS | LIMITS | {EFFORT_LEVELS, EFFORT_DEFAULT}
 
 Source = Literal["declared", "discovered", "probed"]
 _RANK = {"declared": 0, "discovered": 1, "probed": 2}
@@ -55,10 +58,17 @@ def check_name(name: str) -> None:
 
 
 def check_value(name: str, value: Any) -> None:
+    from .types import EFFORTS
+
     if name in FLAGS and not isinstance(value, bool):
         raise ValueError(f"capability {name} must be true or false")
     if name in LIMITS and (not isinstance(value, int) or isinstance(value, bool) or value <= 0):
         raise ValueError(f"capability {name} must be a positive whole number")
+    if name == EFFORT_LEVELS and (not isinstance(value, list) or not value or len(set(value)) != len(value)
+                                  or any(v not in EFFORTS for v in value)):
+        raise ValueError(f"capability {name} must be a list of different levels from: {', '.join(EFFORTS)}")
+    if name == EFFORT_DEFAULT and value not in EFFORTS:
+        raise ValueError(f"capability {name} must be one of: {', '.join(EFFORTS)}")
 
 
 def merge(*, declared: Mapping[str, Any] | None = None, discovered: Mapping[str, Any] | None = None,
@@ -90,3 +100,29 @@ def limit(caps: Mapping[str, CapValue], name: str) -> int | None:
 
 def plain(caps: Mapping[str, CapValue]) -> dict[str, Any]:
     return {k: v.value for k, v in caps.items()}
+
+
+def effort_levels(caps: Mapping[str, CapValue]) -> tuple[str, ...]:
+    """The canonical levels this endpoint accepts, in canonical order: none at all
+    unless it takes a reasoning control and its levels are known. Never assumed."""
+    from .types import EFFORTS
+
+    found = caps.get(EFFORT_LEVELS)
+    if not has(caps, "reasoning_control") or found is None or not isinstance(found.value, (list, tuple)):
+        return ()
+    return tuple(level for level in EFFORTS if level in found.value)
+
+
+def effort_default(caps: Mapping[str, CapValue]) -> str | None:
+    found = caps.get(EFFORT_DEFAULT)
+    return found.value if found is not None and found.value in effort_levels(caps) else None
+
+
+def nearest_effort(asked: str, accepted: tuple[str, ...]) -> str | None:
+    """The accepted level nearest the one asked for; equally near two, the higher."""
+    from .types import EFFORTS
+
+    if not accepted:
+        return None
+    rank = EFFORTS.index(asked)
+    return min(accepted, key=lambda level: (abs(EFFORTS.index(level) - rank), -EFFORTS.index(level)))

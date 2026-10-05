@@ -228,7 +228,9 @@ def test_the_old_tables_move_into_config_and_state_and_pins_become_aliases(layer
     assert listed["shared-model"].capabilities == {"tools": True, "image_in": False}
     assert listed["shared-model"].pricing.free
     claude = state.discovered("anthropic")[0]
-    assert claude.capabilities == {"max_output_tokens": 64000, "reasoning_control": True}
+    # The levels the old listing reported are kept (D1), not just "it takes a reasoning control".
+    assert claude.capabilities == {"max_output_tokens": 64000, "reasoning_control": True,
+                                   "effort_levels": ["low", "high"]}
     assert state.latency_ms("ollama/llama3") == 900
     assert state.health("anthropic/claude-x")["streak"] == 2
 

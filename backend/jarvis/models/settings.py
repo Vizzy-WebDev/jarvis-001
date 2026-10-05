@@ -51,8 +51,8 @@ def effort() -> str | None:
 
 
 def effort_levels(endpoint: Endpoint | None) -> list[str]:
-    """The canonical levels, for an endpoint known to take a reasoning control."""
-    return list(EFFORTS) if endpoint and caps_mod.has(endpoint.capabilities, "reasoning_control") else []
+    """The canonical levels this endpoint accepts — only those, never assumed."""
+    return list(caps_mod.effort_levels(endpoint.capabilities)) if endpoint else []
 
 
 def _has_key(conn: Any) -> bool:
@@ -185,7 +185,8 @@ def connection_view(name: str) -> dict[str, Any]:
             "source": "manual" if e.configured and not e.listed else "discovered",
             # A model the person set up stays theirs whatever a listing says.
             "stillListed": e.listed or e.configured or not discovered_before,
-            "effort": {"levels": effort_levels(e), "default": None} if effort_levels(e) else None,
+            "effort": ({"levels": effort_levels(e), "default": caps_mod.effort_default(e.capabilities)}
+                       if effort_levels(e) else None),
         } for e in endpoints],
     }
 

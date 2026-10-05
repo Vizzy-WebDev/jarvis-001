@@ -25,7 +25,10 @@ QUIRKS = frozenset({"no_encrypted_reasoning"})
 #: The model list says nothing per model, so these are what the protocol takes; a
 #: model that can't see is answered by the server's own refusal.
 DEFAULT_CAPABILITIES: dict[str, Any] = {"text_in": True, "tools": True, "parallel_tools": True, "streaming": True,
-                                        "json_mode": True, "image_in": True}
+                                        "json_mode": True, "image_in": True,
+                                        # What `reasoning.effort` takes on every reasoning model; "medium"
+                                        # is the API's own default.
+                                        "effort_levels": ["low", "medium", "high"], "effort_default": "medium"}
 
 _INCOMPLETE = {"max_output_tokens": "length", "content_filter": "content_filter"}
 

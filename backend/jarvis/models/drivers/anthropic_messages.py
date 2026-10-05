@@ -6,8 +6,8 @@
   the position it arrived and replayed verbatim; any other endpoint never sees it.
 * The stable prefix gets a `cache_control` breakpoint on its last system block.
 * Effort is `output_config.effort`; a strict schema is `output_config.format`.
-  Current models can't turn thinking off, so the canonical "none" is sent as the
-  lowest level rather than as a thinking switch the model would refuse.
+  Current models can't turn thinking off, so "none" isn't among the levels this
+  declares: the adapter sends the nearest accepted level and reports it.
 * `max_tokens` is required: the hint, else the model's reported ceiling (capped),
   else a size every current model accepts.
 """
@@ -26,12 +26,13 @@ NAME = "anthropic_messages"
 QUIRKS: frozenset[str] = frozenset()
 #: What the protocol takes; the model list's own `capabilities` override it per model.
 DEFAULT_CAPABILITIES: dict[str, Any] = {"text_in": True, "tools": True, "parallel_tools": True,
-                                        "streaming": True, "prompt_caching": True, "image_in": True}
+                                        "streaming": True, "prompt_caching": True, "image_in": True,
+                                        # The API's own default is "high" (the same as sending none).
+                                        "effort_levels": ["low", "medium", "high"], "effort_default": "high"}
 VERSION = "2023-06-01"
 PREFERRED_MAX_TOKENS = 64_000
 FALLBACK_MAX_TOKENS = 16_384
 
-_EFFORT = {"none": "low", "low": "low", "medium": "medium", "high": "high"}
 _STOP = {"end_turn": "stop", "stop_sequence": "stop", "pause_turn": "stop", "tool_use": "tool_calls",
          "max_tokens": "length", "model_context_window_exceeded": "length", "refusal": "content_filter"}
 
@@ -129,7 +130,7 @@ def body_for(prepared: Prepared) -> dict[str, Any]:
             body["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": True}
     output_config: dict[str, Any] = {}
     if prepared.effort:
-        output_config["effort"] = _EFFORT[prepared.effort]
+        output_config["effort"] = prepared.effort
     if prepared.output.mode == "strict":
         output_config["format"] = {"type": "json_schema", "schema": dict(prepared.output.schema or {})}
     if output_config:
@@ -246,6 +247,12 @@ def _listed(model: dict[str, Any]) -> Discovered:
         value = _supported(reported, *path)
         if value is not None:
             caps[name] = value
+    # The list says, per model, which effort levels it takes; only canonical ones are kept.
+    levels = [level for level in ("none", "low", "medium", "high") if _supported(reported, "effort", level)]
+    if caps.get("reasoning_control") and levels:
+        caps["effort_levels"] = levels
+        if "high" in levels:
+            caps["effort_default"] = "high"
     return Discovered(model_id=str(model["id"]), label=model.get("display_name") or None, capabilities=caps,
                       family="claude")
 

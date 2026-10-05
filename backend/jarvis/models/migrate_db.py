@@ -95,8 +95,15 @@ def _facts_to_capabilities(facts: dict[str, Any] | None) -> tuple[dict[str, Any]
     caps: dict[str, Any] = {}
     if isinstance(facts.get("maxOutput"), int) and facts["maxOutput"] > 0:
         caps["max_output_tokens"] = facts["maxOutput"]
-    if (facts.get("effort") or {}).get("levels"):
+    effort = facts.get("effort") or {}
+    if effort.get("levels"):
         caps["reasoning_control"] = True
+        # Only canonical levels are kept; a native one (Anthropic's "max") has no canonical name.
+        levels = [level for level in ("none", "low", "medium", "high") if level in effort["levels"]]
+        if levels:
+            caps["effort_levels"] = levels
+            if effort.get("default") in levels:
+                caps["effort_default"] = effort["default"]
     if isinstance(facts.get("tools"), bool):
         caps["tools"] = facts["tools"]
     if isinstance(facts.get("image"), bool):

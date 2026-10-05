@@ -113,7 +113,7 @@ it was deliberately corrected.
 - **A new stub server (`tests/stub_wire.py`) replaces the old one for the
   conformance suite**: the old one couldn't send parallel tool calls, missing ids,
   reasoning items, in-band errors, `/api/show` or embeddings.
-- **Anthropic: canonical effort `none` is sent as `low`.** Current Claude models
+- **(Superseded by D1 below.) Anthropic: canonical effort `none` is sent as `low`.** Current Claude models
   can't switch thinking off (a `disabled` thinking config is a 400 on several), so
   the lowest level is the honest nearest. No thinking config is sent at all — each
   model's own default applies — and foreign thinking is dropped, not faked.
@@ -231,3 +231,17 @@ it was deliberately corrected.
   (`image_input: dropped`, a warning). Not done, by decision: learning from a model's
   refusal of a picture. A model wrongly declared able to see still gets the picture and
   still refuses it; that is fixed by its capability data, not by guessing from refusals.
+- **Effort is per-endpoint capability data (D1).** The hint stays `none|low|medium|high`.
+  Each endpoint now has `effort_levels` (the canonical levels it accepts) and
+  `effort_default` (capability vocabulary v2), declared by its driver — Messages
+  low/medium/high (default high), Responses low/medium/high (default medium), Gemini
+  low/medium/high (a thinking level is never "off"), Chat Completions low/medium/high — and
+  discovered where the provider says (Anthropic's list, per model; the old tables' levels
+  are kept by the migration). `adapt.py` sends the nearest accepted level (equally near
+  two: the higher) and records any difference in the feature report's `mapped` and a
+  warning — so Anthropic's `none` is still sent as `low`, but no longer silently, and the
+  settings screen offers only the levels a model takes. No native level is passed
+  through (Anthropic's `max` has no canonical name) and no canonical value was added. An
+  endpoint whose levels aren't known offers no control and gets no effort. Through a
+  gateway, `none` (OpenRouter's reasoning switch) is no longer offered: its listing doesn't
+  say per model which levels a model takes, so only the driver's declared three are.

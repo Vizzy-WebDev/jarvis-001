@@ -6,7 +6,9 @@
   the endpoint ineligible there, so `explain_route` knows about it too).
 * `stable_prefix_until` becomes a canonical "cache the stable prefix" flag and
   `reasoning_effort` a canonical level — each only if the endpoint has the
-  capability, otherwise reported as dropped. The native encoding is the driver's.
+  capability, otherwise reported as dropped. The level sent is the nearest one the
+  endpoint accepts (`effort_levels`); one other than asked is reported in `mapped`.
+  The native encoding is the driver's.
 * Sealed items from any other endpoint are left out, and reported.
 * For a model that can't see, a picture from earlier in the conversation becomes a
   short placeholder note, reported (only a current-turn picture requires `image_in`).
@@ -37,6 +39,10 @@ PICTURE_PLACEHOLDER = "[A picture was shared here. This model can't see pictures
 class Report:
     features: dict[str, FeatureState] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    mapped: dict[str, dict[str, str]] = field(default_factory=dict)
+
+    def copy(self) -> "Report":
+        return Report(dict(self.features), list(self.warnings), {k: dict(v) for k, v in self.mapped.items()})
 
 
 def _tag(label: str) -> str:
@@ -91,12 +97,14 @@ def prepare(request: Request, candidate: Candidate, cfg: Config, *, mint_id: Cal
         report.features["prompt_caching"] = "native" if cache else "dropped"
 
     effort = None
-    if request.hints.reasoning_effort is not None:
-        if caps_mod.has(caps, "reasoning_control"):
-            effort = request.hints.reasoning_effort
-            report.features["reasoning_effort"] = "native"
-        else:
-            report.features["reasoning_effort"] = "dropped"
+    asked = request.hints.reasoning_effort
+    if asked is not None:
+        effort = caps_mod.nearest_effort(asked, caps_mod.effort_levels(caps))
+        report.features["reasoning_effort"] = "native" if effort else "dropped"
+        if effort and effort != asked:
+            report.mapped["reasoning_effort"] = {"asked": asked, "sent": effort}
+            report.warnings.append(f"Effort “{asked}” isn't a level this model takes; it was sent as "
+                                   f"“{effort}”, the nearest one it does.")
 
     if request.hints.max_output_tokens is not None:
         report.features["max_output_tokens"] = "native"

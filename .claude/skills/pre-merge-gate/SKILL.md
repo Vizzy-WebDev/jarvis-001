@@ -9,13 +9,13 @@ Run this against a scratch instance — never the user's real port or data — b
 merging any branch into `main`, and report each result plainly rather than summarising
 as "passed":
 
-1. **Syntax sweep** — `python -m compileall backend/jarvis` and `cd frontend && npm run
+1. **Syntax sweep** — `python -m compileall -q server conversation intelligence abilities background self_awareness speech content` and `cd frontend && npm run
    typecheck`. Zero failures.
 2. **Fresh-install boot** — start the real `jarvis.main` in the background
    (`run_in_background: true`) with `JARVIS_DATA_DIR`/`JARVIS_ENV_PATH` pointed at empty
    scratch paths and an unusual `PORT`. Must come up with no unhandled exception.
 3. **Migrations + tool loader** — read the scratch `jarvis.db` read-only and confirm
-   `PRAGMA user_version` reached 38: `jarvis/migrations.py`'s `MIGRATION_SQL` (19,
+   `PRAGMA user_version` reached 38: `server/jarvis/migrations.py`'s `MIGRATION_SQL` (19,
    the original schema, never hand-edited) plus
    `migrations_extra.py`'s `EXTRA_MIGRATION_SQL` (19, this build's own — the latest
    being migration 38, memory searched by meaning: `memory_vectors`). Counting only

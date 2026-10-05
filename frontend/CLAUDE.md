@@ -122,7 +122,7 @@ messages, not the screen.
 **All three voice-output paths expose a real `getOutputLevel()` (0..1) for
 `frontend/components/stage/Orb.tsx`'s audio-reactivity** — none of them are a hardcoded 0:
 - `RealtimeEngine` computes RMS inline from each scheduled PCM chunk as it plays.
-- `frontend/lib/voice/audio-player.ts` (server-side TTS — `jarvis/tts/matching.py`'s provider
+- `frontend/lib/voice/audio-player.ts` (server-side TTS — `speech/tts/matching.py`'s provider
   registry, e.g. ElevenLabs; the free `browser` voice is `PipelineEngine`'s
   actual default, not this) reads an
   **offline-decoded amplitude envelope** (`frontend/lib/voice/voice-envelope.ts`'s
@@ -252,7 +252,7 @@ mute-time is always pre-mute content.
 ## Delivering a real image/video into the transcript
 
 A tool result can put a real, visible image or video into the current reply, not just
-describe it in words — see `jarvis/tools/CLAUDE.md`'s own entry on the attachment
+describe it in words — see `abilities/tools/CLAUDE.md`'s own entry on the attachment
 convention for the server side (`take_screenshot.py`/`tools/screen_recording.py`).
 This is ordinary React, not DOM manipulation: `Message.tsx`'s `attachmentOf(event)`
 reads `event.attachment` off a `tool_result` turn event

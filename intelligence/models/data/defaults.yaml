@@ -1,0 +1,137 @@
+# Shipped defaults for Jarvis's model layer.
+#
+# The person's own models.yaml (in the data directory) is merged over this file:
+# a route, quirk profile or prompt profile with the same name there replaces the
+# one here, and `policies` / `settings` keys there win. Connections, aliases and
+# embedding spaces come only from models.yaml.
+#
+# Provider and model names may appear here (and in models.yaml, and in drivers) —
+# nowhere else in the layer's code.
+version: 1
+
+routes:
+  # Used for any task class without a route of its own. `allow_others: true` lets
+  # every eligible endpoint follow the listed aliases, ordered by `optimize`.
+  default: {aliases: [], allow_others: true, optimize: quality}
+
+policies:
+  # data class -> trust classes allowed to receive it. Empty = unrestricted:
+  # a data class never excludes an endpoint unless it is listed here.
+  data_classes: {}
+  # A monthly spend ceiling in US dollars. Once reached, only endpoints with a
+  # known price of zero stay usable. null = no budget.
+  monthly_budget_usd: null
+
+settings:
+  retries: 2              # extra tries of the same endpoint on a retryable error
+  retry_waits_s: [1, 3]   # waits between them (a server's Retry-After wins, up to 30s)
+  repair_attempts: 2      # emulated structured output: re-asks with the validation errors
+  image_tokens: 1600      # context estimate per image
+  breaker_threshold: 3    # failures in a row before an endpoint rests
+  breaker_base_s: 300     # first rest; doubles each time, up to breaker_max_s
+  breaker_max_s: 7200
+  unreachable_rest_s: 300 # how long a connection that didn't answer discovery rests
+  refused_rest_s: 3600    # how long a connection that refused the key or account rests
+  trace_content: false    # traces are metadata only unless this is true
+
+# How instruction sections are written out, per model family ("default" for any
+# family without its own). Where the system prompt goes is the driver's business.
+prompt_profiles:
+  default: {section_format: markdown-headings}
+  claude: {section_format: xml-tags}
+
+# Server differences, as data. `capabilities` are declared defaults for every
+# endpoint on a connection using the profile; `wire` flags are read by the driver.
+quirk_profiles:
+  plain: {}
+  ollama:
+    capabilities: {parallel_tools: false}
+    wire: {no_parallel_tool_calls: true, show_endpoint: true, max_tokens_param: max_tokens}
+  lmstudio:
+    wire: {no_parallel_tool_calls: true, max_tokens_param: max_tokens}
+  vllm:
+    wire: {max_tokens_param: max_tokens}
+  litellm:
+    wire: {error_envelope_in_text: true}
+  openrouter:
+    wire: {error_envelope_in_text: true, reasoning_param: reasoning_object, catalog_fields: rich}
+  gateway:
+    wire: {error_envelope_in_text: true, catalog_fields: rich}
+  gemini:
+    # Newer Gemini models refuse a current-turn function call with no thought
+    # signature; a call made by another endpoint has none. Google documents this
+    # placeholder for exactly that case.
+    wire: {unsigned_call_signature: skip_thought_signature_validator, thinking_param: level}
+
+# What the Model Settings screen's "Add connection" picker offers. Read only by the
+# settings routes, never by routing.
+presets:
+  - id: openai
+    label: OpenAI
+    blurb: GPT models, using your OpenAI API key.
+    driver: openai_responses
+    base_url: https://api.openai.com/v1
+    address: fixed
+    key: required
+    trust: standard
+  - id: anthropic
+    label: Anthropic
+    blurb: Claude models, using your Anthropic API key.
+    driver: anthropic_messages
+    base_url: https://api.anthropic.com/v1
+    address: fixed
+    key: required
+    trust: standard
+  - id: gemini
+    label: Google Gemini
+    blurb: Gemini models, using your Google AI API key.
+    driver: gemini_generate
+    base_url: https://generativelanguage.googleapis.com/v1beta
+    address: fixed
+    key: required
+    trust: standard
+    quirks: gemini
+  - id: openrouter
+    label: OpenRouter
+    blurb: Many providers' models through one OpenRouter key.
+    driver: openai_chat
+    base_url: https://openrouter.ai/api/v1
+    address: fixed
+    key: required
+    trust: standard
+    quirks: openrouter
+    # Routing is Jarvis's job: OpenRouter must not swap in another provider or model.
+    default_params: {provider: {allow_fallbacks: false}}
+  - id: ollama
+    label: Ollama
+    blurb: Models running on this computer through Ollama.
+    driver: openai_chat
+    base_url: http://127.0.0.1:11434/v1
+    address: editable
+    key: none
+    trust: local
+    quirks: ollama
+  - id: lmstudio
+    label: LM Studio
+    blurb: Models running on this computer through LM Studio.
+    driver: openai_chat
+    base_url: http://127.0.0.1:1234/v1
+    address: editable
+    key: optional
+    trust: local
+    quirks: lmstudio
+  - id: custom
+    label: Custom
+    blurb: Any other provider, at an address you give, in a format you choose.
+    driver: null
+    base_url: null
+    address: required
+    key: optional
+    trust: standard
+
+# The wire formats a Custom connection may choose, and what to call them.
+driver_labels:
+  openai_responses: OpenAI (Responses API)
+  openai_chat: OpenAI-compatible (Chat Completions)
+  anthropic_messages: Anthropic (Messages API)
+  gemini_generate: Google Gemini (generateContent)

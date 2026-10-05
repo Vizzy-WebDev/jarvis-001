@@ -1,7 +1,7 @@
 // Shapes the backend actually returns.
 //
 // Hand-written for now, from the recorded contract fixtures in
-// backend/tests/contract/fixtures/ — the same recordings the Python port is held
+// tests/contract/fixtures/ — the same recordings the Python port is held
 // to, so these types describe what the server really sends rather than what it
 // was assumed to send.
 //
@@ -223,7 +223,7 @@ export interface Notification {
 }
 
 /** One event from `GET /api/chat/stream`. The wire vocabulary is deliberately
- *  small and stable — see backend/jarvis/routes/turn.py's `to_wire`. */
+ *  small and stable — see server/jarvis/routes/turn.py's `to_wire`. */
 /** Something a tool produced for the person to see or open. */
 export interface TurnAttachment {
   type: 'attachment';

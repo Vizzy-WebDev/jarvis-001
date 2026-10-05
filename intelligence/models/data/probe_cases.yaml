@@ -1,0 +1,52 @@
+# What a probe asks an endpoint, as data. Each case tests one capability with the
+# smallest request that can show it, and says what a pass looks like. A probe
+# writes what it measured to the state file — never to config.
+#
+# estimate_tokens is a rough total (in + out) used only to show the cost before
+# a paid endpoint is probed.
+version: 1
+cases:
+  streaming:
+    capability: streaming
+    prompt: "Say the word ready."
+    pass: {streamed: true}
+    estimate_tokens: 60
+
+  tool_roundtrip:
+    capability: tools
+    prompt: "Call get_number, then tell me the number it returned."
+    tool:
+      name: get_number
+      description: Returns the number of the day.
+      parameters: {type: object, properties: {}, additionalProperties: false}
+    tool_result: {number: 42}
+    pass: {called: get_number, reply_contains: "42"}
+    estimate_tokens: 500
+
+  parallel_tools:
+    capability: parallel_tools
+    prompt: "Call get_weather for Paris and for Tokyo at the same time, in one step."
+    tool:
+      name: get_weather
+      description: The weather in one city.
+      parameters: {type: object, properties: {city: {type: string}}, required: [city], additionalProperties: false}
+    pass: {calls_at_least: 2}
+    estimate_tokens: 400
+
+  strict_schema:
+    capability: structured_output_strict
+    prompt: "What is 2 plus 3?"
+    schema:
+      type: object
+      properties: {answer: {type: integer}}
+      required: [answer]
+      additionalProperties: false
+    pass: {valid: true}
+    estimate_tokens: 200
+
+  image_input:
+    capability: image_in
+    prompt: "What single colour fills this picture? Answer with one word."
+    image: {mime: image/png, data_b64: "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGO4KyhIEmIY1TCqQXDYagAAXfn/AcnT1g0AAAAASUVORK5CYII="}
+    pass: {reply_contains: "red"}
+    estimate_tokens: 1800

@@ -1,0 +1,9 @@
+# How rows of the model tables that existed before migration 35 map onto this
+# layer — read only by migrate_db.py, once. An old connection's `kind` is the id
+# of the preset it came from (presets live in defaults.yaml); its `format` names
+# the wire format, which maps to a driver here.
+formats:
+  openai-responses: openai_responses
+  openai-chat: openai_chat
+  anthropic-messages: anthropic_messages
+  gemini-generatecontent: gemini_generate

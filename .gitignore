@@ -1,13 +1,15 @@
 .env
 *.log
-data/
+# The person's own data, at the repository root only: a folder named `data` inside the code
+# (`intelligence/models/data/`, the model layer's shipped defaults) is part of Jarvis.
+/data/
 
-# Python backend
+# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
-backend/.venv/
-backend/*.egg-info/
+/.venv/
+*.egg-info/
 
 # Front-end tooling. `frontend/out` is deliberately NOT ignored — it is the built
 # export the backend serves, and committing it is what lets Jarvis run with only

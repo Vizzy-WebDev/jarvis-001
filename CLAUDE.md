@@ -5,26 +5,48 @@ end built to a static export that FastAPI itself serves.** One process, one port
 to `127.0.0.1` only. Non-technical end user — keep error messages and setup steps in
 plain language.
 
-The behaviour this app promises is pinned by `backend/tests/contract/fixtures/` (42
+The behaviour this app promises is pinned by `tests/contract/fixtures/` (42
 recorded HTTP exchanges, replayed on every test run by `test_contract.py`).
 
 ## Run it
 
 ```
 Start Jarvis.bat            # what the user double-clicks: first-run setup + launch + open browser
-cd backend && python -m jarvis.main        # equivalent, for dev
+python -m jarvis.main        # equivalent, for dev
 ```
 
 Serves on `127.0.0.1:3000` (`PORT` overrides). `Start Jarvis.bat` finds Python, creates
-`backend/.venv` and `pip install -e backend` on first run only, waits for the port to
+`.venv` and `pip install -e .` on first run only, waits for the port to
 actually answer, then opens the browser.
+
+## Where things are — one package, several folders
+
+The repository root shows Jarvis's major systems as group folders: `conversation/`, `intelligence/`,
+`abilities/`, `background/`, `self_awareness/`, `speech/`, `content/`, plus `server/` (the server and
+shared plumbing), `frontend/`, `tests/` and `data/`. All the Python is ONE package, `jarvis`: its root
+is `server/jarvis/`, and `server/jarvis/__init__.py` (`GROUPS`) adds each group folder to the
+package's `__path__`, so `jarvis.jobs` is `background/jobs/` and `jarvis.durable` is
+`background/durable.py`. Module names never depend on the folder. Rules that follow from that:
+
+- **A module name may exist in only one folder** — Python takes the first one found, silently.
+  `tests/test_layout.py` fails on a duplicate. Pick a new module's group by responsibility.
+- **A relative import resolves by package name, not by folder**: `from ..db import` in
+  `background/jobs/x.py` is `jarvis.db`, which lives in `server/jarvis/`.
+- **Two folders cut across every group on purpose**: every tool lives in `abilities/tools/` (the
+  loader scans that one folder; the import invariant is enforced on it) and every HTTP route in
+  `server/jarvis/routes/`. `server/jarvis/observers/` is the event-bus wiring for all groups.
+- **Anything that walks source files must ask the package where its folders are**
+  (`jarvis.__path__`) — `tests/test_architecture.py`'s `src()`/`files_under()` do; reading one
+  folder would see a fraction of the package and pass while checking nothing.
+- Folders Jarvis itself needs (`data/`, `.env`, `frontend/out`) come from `server/jarvis/paths.py`.
+- Editors' "go to definition" does not follow imports across group folders; search does.
 
 **Running Jarvis needs only Python.** Node builds the front end, and the build output
 (`frontend/out`) is committed precisely so nobody running the app ever needs Node. When
 the front end changes: `cd frontend && npm run build`, then commit `frontend/out`
 alongside the source change. That is a developer step; a user never builds anything.
 
-`.env` (git-ignored) holds API keys/secrets, written by `jarvis/config.py` — never
+`.env` (git-ignored) holds API keys/secrets, written by `server/jarvis/config.py` — never
 hand-edit the format, use `save_secret()`.
 
 **Before killing/restarting the process, check whether the user already has an instance
@@ -64,7 +86,7 @@ conversation summary (`conversation_summary.py`, subscribed to `ASSISTANT_RESPON
 `observers/recording.py`, run through `background.run_in_background`). Picking up
 background work a restart interrupted is not a clock and has no interlock of its own: it runs
 once inside the job supervisor's `start()` (specialist runs first, then jobs) and the
-scheduler's `start()` (prompt runs), so it is on exactly when they are (`jarvis/durable.py`).
+scheduler's `start()` (prompt runs), so it is on exactly when they are (`background/durable.py`).
 
 ## Conversation context — `orchestrator/context.py` + `conversation_summary.py`
 
@@ -109,8 +131,8 @@ Every failure falls back to keywords and `selection.strategy` says why;
 The project has a real automated suite. Use it.
 
 ```
-cd backend && python -m pytest tests -q          # ~1300 tests
-cd backend && python -m pytest tests/test_shell_e2e.py tests/test_content_e2e.py -q   # ~90 Playwright tests, real browser
+python -m pytest tests -q          # ~1300 tests
+python -m pytest tests/test_shell_e2e.py tests/test_content_e2e.py -q   # ~90 Playwright tests, real browser
 cd frontend && npm run typecheck && npm run build
 ```
 
@@ -121,7 +143,7 @@ cd frontend && npm run typecheck && npm run build
   whole browser suite silently skipped on Windows. Its page-ready waits are tolerant
   (`visit()`/`refresh()`): a strict `networkidle` timed out at 30s in over a third of the
   tests while the same page loaded alone went quiet in under two seconds.
-- `backend/.venv` may lack `pytest` and `playwright`. Do not `pip install` into it — the user's
+- `.venv` may lack `pytest` and `playwright`. Do not `pip install` into it — the user's
   running app uses it. Put a `sitecustomize.py` that *appends* the global site-packages in a
   scratch directory and point `PYTHONPATH` at it; the venv's own packages still win.
 - Seven tests assume "not Windows / no desktop" and fail there regardless of your change
@@ -143,7 +165,7 @@ handful of e2e failures is noise until each is confirmed to fail in isolation to
 
 Three layers, each catching what the others cannot:
 
-- **Unit/integration tests** (`backend/tests/`) over the real modules.
+- **Unit/integration tests** (`tests/`) over the real modules.
 - **The contract harness** (`test_contract.py`) replays 42 recorded HTTP
   exchanges — the durable record of the behaviour the API promises. A route that answers
   differently fails here even when its own tests pass.
@@ -151,8 +173,8 @@ Three layers, each catching what the others cannot:
   against a real FastAPI on a scratch port — this is what catches a screen that renders
   but never calls its route, and any layout regression a component test cannot see.
 
-**Testing must never touch the user's real `data/`/`.env`/port.** `jarvis/store.py` and
-`jarvis/config.py` support `JARVIS_DATA_DIR`/`JARVIS_ENV_PATH`, and `PORT` overrides the
+**Testing must never touch the user's real `data/`/`.env`/port.** `server/jarvis/store.py` and
+`server/jarvis/config.py` support `JARVIS_DATA_DIR`/`JARVIS_ENV_PATH`, and `PORT` overrides the
 port — the `scratch` and `live_server` fixtures (`tests/conftest.py`) already wire all
 three, so use them rather than rolling your own. A module that hardcodes a path relative
 to its own source file bypasses this entirely — use `store.py`'s `data_dir()` for any new
@@ -165,7 +187,7 @@ PKCE-verifying OAuth server. Prefer a real stub server over mocking the module u
 test — every subsystem verified that way found bugs that mocks would have hidden.
 
 **To verify what a model actually DID, not what it said it did, read the real
-`tool_calls`/`tool_results` payloads out of the `messages` table** (`jarvis/db.py`,
+`tool_calls`/`tool_results` payloads out of the `messages` table** (`server/jarvis/db.py`,
 read-only, against `data/jarvis.db`). A model's own account of an action succeeding is
 not evidence on its own; neither is a user's paraphrase of it. Confirmed live: a user's
 summary of an exchange read exactly like a broken confirmation loop, and the stored
@@ -191,7 +213,7 @@ Before merging any branch into `main`, run the `pre-merge-gate` skill (`.claude/
 
 ## The rules that do not bend
 
-**The import invariant.** Nothing under `jarvis/tools/` may import the loader, the
+**The import invariant.** Nothing under `abilities/tools/` may import the loader, the
 executor, the orchestrator or the gateway — directly or transitively. `load_tools()`
 imports every module in that package, so an import back is a cycle that deadlocks
 and looks like a hung server. A tool needing something only
@@ -240,7 +262,7 @@ holding a `<script>` executed in-app when rendered inline. Also `X-Content-Type-
 nosniff`, a sandboxing CSP, and CR/LF stripped from the filename before it reaches a
 header value. Showing such content IN the app is the front end's job and never an inline
 route: it fetches the bytes and renders them as text, through `<img>`, or — a web page — in
-a sandboxed frame without `allow-same-origin`, backed by `jarvis/request_guard.py`, which
+a sandboxed frame without `allow-same-origin`, backed by `server/jarvis/request_guard.py`, which
 refuses any `/api` request a browser labels `Origin: null` or `Sec-Fetch-Site: cross-site`.
 
 **Approval floors never move for convenience.** A memory candidate that conflicts with
@@ -254,7 +276,7 @@ explicit direct/playful/devil's-advocate requests) shape delivery only; they're 
 from a turn with nobody listening (`background=True` — a scheduled task's or a job
 worker's own turn), matching `prompt.py`'s `has_audience` gate on `stable_instruction()`.
 
-## The model layer — `jarvis/models/` (see its `README.md` and `DECISIONS.md`)
+## The model layer — `intelligence/models/` (see its `README.md` and `DECISIONS.md`)
 
 **Callers ask for what they need; the layer picks the model.** A `Request` states a task class, the
 content (canonical items), the output it wants (text, or JSON with `required`/`best_effort`), hard
@@ -263,12 +285,12 @@ optimize. Callers never name a model or provider; to steer they use **aliases** 
 Kind table, Auto ranking, "proven" models, per-connection strikes, billing holds, `FIND_BUDGET_S`,
 `same_model`, `CACHE_BREAK`, JSON-by-prompt and empty-reply-as-failure are gone — **do not recreate them.**
 
-- **Public interface** (`jarvis/models/__init__.py`): `generate`, `stream` (canonical events; ends with
+- **Public interface** (`intelligence/models/__init__.py`): `generate`, `stream` (canonical events; ends with
   `Done` or one `ErrorEvent`), `embed(space, inputs, data_class=)`, `explain_route` (ranked endpoints +
   every rejection reason, no call made — the same code path `generate` uses), `list_endpoints`,
   `refresh_catalog`.
 - **Config is one YAML file**, `data/models.yaml` (in the data dir), merged over the shipped
-  `jarvis/models/data/defaults.yaml`: connections (driver, base URL, `secret_ref`, trust class
+  `intelligence/models/data/defaults.yaml`: connections (driver, base URL, `secret_ref`, trust class
   `local`/`zero_retention`/`standard`, limits, quirk profile, `default_params`, discovery, per-model
   overrides), aliases, routes per task class (+ `default`), policies, embedding spaces, quirk profiles,
   prompt profiles, settings. Validated on load; every problem reported at once, naming where it is.
@@ -341,9 +363,9 @@ The Model Settings screen and the composer's model picker share `lib/useModels.t
 same JSON shapes (connection id = connection name, format = driver name). Speech-service keys
 (`external-services`) are a separate system and must not be disturbed.
 
-Nothing under `jarvis/tools/` may import the orchestrator; `ai.py` is the seam a tool may use.
+Nothing under `abilities/tools/` may import the orchestrator; `ai.py` is the seam a tool may use.
 
-## Durable background work — `jarvis/durable.py`
+## Durable background work — `background/durable.py`
 
 Background work — a job, a scheduled prompt run, a specialist run a restart cut off — runs in
 **rounds**, and every finished round (its outcome and working transcript) is saved in
@@ -372,7 +394,7 @@ through the one turn loop — there is no second agent loop.
 - One call moves work forward whatever its state (`durable.advance`); a waiting piece of work
   continues only with an explicit answer, never from a plain start or recovery. One thread
   advances a piece of work at a time; `durable.stop` interrupts the round in flight.
-- `Start Jarvis.bat` reinstalls when `backend\pyproject.toml` changed since the last install,
+- `Start Jarvis.bat` reinstalls when `pyproject.toml` changed since the last install,
   so an update that adds a package never leaves an existing install unable to start.
 
 **Follow-through — "I'll get back to you" must really come back.** A finished job
@@ -387,7 +409,7 @@ runs, watches) on every person-started turn, capped, so "still on it" is knowled
 that is not on that list was never started. A job runs `Autonomy.PRE_CONSENTED` (the person set it
 going): MEDIUM steps run, HIGH still parks.
 
-## Specialist agents — `jarvis/agents/` (see its own `CLAUDE.md`)
+## Specialist agents — `conversation/agents/` (see its own `CLAUDE.md`)
 
 Jarvis orchestrates; specialist agents (13 built-in, plus any the person creates on the
 Specialists screen) are domain experts it hands work to with the one `ask_specialist`
@@ -399,7 +421,7 @@ be given; agents are split by responsibility, never by tool. Approval floors are
 inside a specialist, and a slow specialist is detached, never cut off, with its result
 delivered when it lands.
 
-## Artifacts — `jarvis/artifacts/` (see its own `CLAUDE.md`)
+## Artifacts — `content/artifacts/` (see its own `CLAUDE.md`)
 
 Real files Jarvis makes: any format (Word, Excel, PowerPoint, PDF, and any text format —
 Markdown, HTML, SVG, CSV, JSON, code). **Asked for → made at once, with no confirmation**
@@ -411,7 +433,7 @@ asked in, a job's to none), so the chat shows it as a card that survives a reloa
 viewer, and the Artifacts page (`#/artifacts`) lists everything with Open in Chat (THAT chat,
 landing on its card), Download, Copy and Delete. Only the person deletes.
 
-## Content Management — `jarvis/content_manager/` (see its own `CLAUDE.md`)
+## Content Management — `content/content_manager/` (see its own `CLAUDE.md`)
 
 Finished content taken through Review, Changes Requested, Ready to Post, Scheduling,
 Published, Archived and a Recycle Bin. **It manages content and its workflow; it never
@@ -431,9 +453,9 @@ hand-off queue — nothing here posts to a platform itself; which account a post
 is the publishing tool's business. Reported numbers are dated snapshots (`cm_metrics`), never
 calculated. Jarvis may hand in, edit text and schedule (the last two confirm first); only
 the person approves, archives and deletes. The Recycle Bin is never emptied automatically.
-Not to be confused with `jarvis/content/` (Content Analysis — unrelated, older).
+Not to be confused with `content/content_analysis/` (Content Analysis — unrelated, older).
 
-## Who Jarvis is — `jarvis/prompt.py`
+## Who Jarvis is — `conversation/prompt.py`
 
 Jarvis is the person's own right hand, and calls them **Boss** the way a real right hand uses a
 form of address: greeting, taking something on, handing over a result or bad news, speaking up
@@ -452,7 +474,7 @@ conversations against the person's own model in a throw-away copy of their model
 flags Boss overuse, markdown, service phrasing, promises with no follow-up really set up, needless
 approval cards and things done unasked — checked from the stored tool calls, never the reply text.
 
-## The Adaptive Communication Register — `jarvis/personality.py`
+## The Adaptive Communication Register — `conversation/personality.py`
 
 The tone/delivery layer. Regex-based
 floors (`detect_floors()`) deliberately biased narrow — a false positive here only costs

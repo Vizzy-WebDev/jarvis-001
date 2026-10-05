@@ -29,7 +29,6 @@ Start Jarvis.bat        # what you'd normally double-click: first-run setup (if
 or, for development:
 
 ```
-cd backend
 python -m jarvis.main
 ```
 
@@ -122,7 +121,7 @@ works either way.
 ## Configuration and data
 
 - **`.env`** (git-ignored) holds every API key/secret. It's written by
-  `backend/jarvis/config.py` — never hand-edit its format.
+  `server/jarvis/config.py` — never hand-edit its format.
 - **`data/`** (git-ignored) holds JSON state (prefs, tasks, connectors, projects) plus
   `jarvis.db`, a SQLite database (Chat History, Memory, Jobs, Self-Improvement,
   Self-Model).
@@ -133,42 +132,52 @@ works either way.
 ## Architecture
 
 ```
-backend/jarvis/
+conversation/      One turn: who Jarvis is, what it decides and says, and the specialists
+  orchestrator/    pipeline.py — the turn loop; context.py — what a turn can hold
+  intent/ assistant/  Fast path and the assistant's own state
+  agents/          Specialist agents — ordinary turns given a brief
+  prompt.py, personality.py, conversation.py, conversation_summary.py, chat_store.py, session.py, ...
+intelligence/      The model layer and Memory
+  models/          Model layer: config, routing, drivers (its own README.md and DECISIONS.md)
+  memory/          Memory Manager: extraction, approval policy, search by meaning
+  ai.py            The one seam a tool may use to ask a model
+abilities/         What Jarvis can do, and whether it may
+  capabilities/    The capability contract, the registry, and the one dispatcher
+  policy/          The permission layer — decided independently of model behaviour
+  tools/           Auto-loaded capabilities for EVERY system (memory_tools, job_tools, ...)
+  skills/ connectors/ control/ sandbox/   Folder Skills, app connectors, computer control, code execution
+  research.py, webtext.py, webrender.py   Looking things up and reading web pages
+background/        Work on its own clock, and speaking up first
+  jobs/ scheduler/ heartbeat/ monitor/    Jobs, Scheduled Tasks, proactive attention, watches
+  durable.py       Rounds saved so a restart resumes background work instead of starting over
+  notifications.py, open_work.py, background.py
+self_awareness/    Jarvis watching itself
+  self/ improvement/ ops/ cost/           Self-model, Self-Improvement, self-diagnosis, spending
+speech/            voice/ (wake word, voice options), stt/, tts/, external_services.py (speech keys)
+content/           Things handed in, made and managed
+  content_analysis/ content_manager/ projects/ artifacts/ documents/   + uploads.py, media.py
+server/jarvis/     The server and the plumbing every system stands on — and the package's root
   main.py          FastAPI app + routers + the static mount that serves the front end
   assembly.py      The composition root — builds the registry/orchestrator once; starts every background clock
-  routes/          One module per area — a surface over the subsystems, no business logic
-  capabilities/    The capability contract, the registry, and the one dispatcher
-  orchestrator/    pipeline.py — the turn loop
-  personality.py   The adaptive delivery register — tone floors, sticky style, real vocal laughter
-  policy/          The permission layer — decided independently of model behaviour
-  events/          Typed event bus; observers/ subscribe (cost, security, verification, improvement)
-  conversation.py  Neutral, model-agnostic transcript format
-  db.py            The one SQLite connection; migrations.py + migrations_extra.py hold the schema
-  chat_store.py    Conversation/message CRUD + full-text search
-  memory/          Memory Manager: extraction, approval policy, checkpoints
-  scheduler/       Scheduled Tasks, recurrence, briefing
-  jobs/            Background Task Orchestration ("Jobs")
-  heartbeat/       Proactive attention — noticing things, deciding whether to speak up
-  improvement/     Self-Improvement — Jarvis reviewing and adjusting its own behaviour
-  self/            Self-Model — grounded, evidence-backed self-knowledge
-  ops/             Self-diagnosis + self-heal, environment awareness, verification
-  cost/            Automatic spend/usage tracking, fed back into model routing
-  artifacts/       Real file generation (.docx/.xlsx/plain text), verified on creation
-  control/         Computer control: perceive/decide/act loop, screen capture, safety
-  connectors/      MCP/API/CLI/browser/files app connectors, the catalogue, OAuth
-  tools/           Auto-loaded executable capabilities (weather, open_app, run_code, ...)
-  skills/          Folder Skills (SKILL.md-based instructions)
-  sandbox/         Isolated code execution backends
-  monitor/         "Watch for X, then act" background checks
-  documents/       Reads .docx/.xlsx/.pptx into Markdown (write support: docx/xlsx only)
-  voice/ tts/ stt/ Voice options, speech synthesis and recognition provider seams
-backend/tests/     ~1300 tests, plus contract/fixtures/ — 45 recorded HTTP exchanges
+  routes/          The HTTP API, one module per area — a surface over the systems, no business logic
+  observers/       Event-bus subscribers: who records what happened (cost, improvement, notifications, ...)
+  events/ db.py migrations*.py store.py config.py prefs.py paths.py ...
+tests/             ~1300 tests, plus contract/fixtures/ — 45 recorded HTTP exchanges
 frontend/
   app/page.tsx     The shell: stage, orb, conversation panel, composer, drawer, router
   components/      screens/ (one per section), ui/ (shared primitives), conversation/
   lib/             api.ts (the one typed client), nav.ts (the SECTIONS registry), voice/ (three engines)
-  out/             The BUILT export the backend serves — committed, so running needs no Node
+  out/             The BUILT export the server hands the browser — committed, so running needs no Node
 ```
+
+**One package, several folders.** Everything above except `frontend/` and `tests/` is ONE Python
+package, `jarvis`. Its root is `server/jarvis/`, and `server/jarvis/__init__.py` adds each group
+folder to the package's search path, so `jarvis.jobs` is `background/jobs/`. The groups are a map
+for people, not walls: they import each other freely, and the rules that really hold are tested in
+`tests/test_architecture.py`. Two consequences worth knowing — a relative import such as
+`from ..db import` means "the `jarvis` package", not the folder above; and a module name may exist
+in only one folder (`tests/test_layout.py` fails otherwise). Editors' "go to definition" does not
+follow imports across group folders; search does.
 
 See `CLAUDE.md` for the full module-by-module design record (this file is the
 condensed version); most subdirectories also carry their own `CLAUDE.md`.
@@ -176,8 +185,8 @@ condensed version); most subdirectories also carry their own `CLAUDE.md`.
 ## How to verify a change
 
 ```
-cd backend && python -m pytest tests -q                      # ~1300 tests
-cd backend && python -m pytest tests/test_shell_e2e.py -q     # 65, in a real browser
+python -m pytest tests -q                      # ~1300 tests
+python -m pytest tests/test_shell_e2e.py -q     # 65, in a real browser
 cd frontend && npm run typecheck && npm run build             # only if the UI changed
 ```
 

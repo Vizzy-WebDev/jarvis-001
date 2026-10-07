@@ -12,23 +12,45 @@ right edge of the stage, reserving no column; and the conversation and composer 
 panel, not two. `tests/test_shell_e2e.py` asserts all four structurally — a redesign
 that quietly breaks one fails there, where a screenshot review would not.
 
-`frontend/lib/nav.ts`'s `SECTIONS` array remains the single source of truth for the
-drawer, the hash router (`lib/useHashRoute.ts`) and voice navigation
-(`open_section`). Adding a section is one entry here plus one screen component plus one
-line in `app/page.tsx`'s `screenFor()`. Only the hash's FIRST segment picks the section; a
-screen may keep its own place in the rest (`#/content/niche/Psychology`), so a refresh stays
-there and Back leaves it.
+`frontend/lib/nav.ts`'s `PAGES` array remains the single source of truth for the
+menu, the hash router (`lib/useHashRoute.ts`) and voice navigation (`open_section`,
+whose names `tests/test_tools.py` checks against it). The menu is eleven rows (design
+9a); five are grouped pages whose sub-pages are pill tabs hanging under the header
+(design 10b): `#/knowledge/memory`. The ids pages had before grouping (`memory`,
+`models`, `app-control`, `tasks`…) are `ALIASES` that still resolve — links, notices
+and tests keep working without the address bar being rewritten. Adding a page or tab
+is one entry there plus one case in `app/page.tsx`'s `screenFor()`. Only the first
+segment (and a grouped page's tab) picks the screen; a screen may keep its own place in
+the rest (`#/content/niche/Psychology`), so a refresh stays there and Back leaves it.
+
+## The redesign (in progress, branch `claude/ui-redesign`)
+
+The approved prototype and its decision log live outside the repo
+(`Downloads/My Jarvis interface/design_handoff_jarvis_ui`); existing behaviour is the
+functional source of truth, the prototype the visual one. Done so far: colours are CSS
+variables (`app/globals.css`, mapped in `tailwind.config.ts`) so Appearance settings can
+re-theme by rewriting variables; Geist/Geist Mono are self-hosted by the `geist`
+package; the 10b page shell; the 9a menu with live badges; "Ask Jarvis" on every page.
+
+**The conversation lives in `components/conversation/useAssistant.ts`**, held by the
+root and never unmounted, so Home's panel and the "Ask Jarvis" dock on every other page
+are the same conversation, not two transcripts kept in step. `app/page.tsx` is layout.
+
+**Performance rules.** Each screen is its own chunk (`next/dynamic` in `app/page.tsx`),
+prefetched once the app is idle. The screen element is memoised on page/tab, because
+the conversation re-renders the root on every streamed word; a screen rebuilt with it
+would make typing and scrolling stutter. Screens are not kept alive between visits on
+purpose: they read fresh data on open, and a kept-alive screen would show stale lists.
 
 ## Screens (`components/screens/`)
 
-One component per section, rendered into `GenericScreen`, which draws the shell chrome:
-its own hamburger, the section's group label, and the `PageHeader` carrying the title
-and blurb.
+One component per page or tab, rendered into `components/shell/PageShell.tsx`, which
+draws the header: the menu button, a mark of the core in Jarvis's current colour, the
+page's name as the screen's one `<h1>`, the pill tabs and the live state label. A
+screen not yet redesigned gets its old one-line blurb above it (`Blurb`).
 
-**A screen must NOT render its own `PageHeader`.** `GenericScreen` already drew it, so
-doing both puts the title on screen twice and double-pads the column — a real bug that
-shipped across seven screens and was caught only by a Playwright strict-mode violation,
-by accident. There is now a test that walks every section and asserts exactly one `<h1>`.
+**A screen must NOT render its own `<h1>`.** The shell already drew it; there is a
+test that walks every page and asserts exactly one.
 
 **The standing rule: if a thing is a thing, it is clickable.** Every list of real
 objects gets a real detail view and real actions. No screen ships as a read-only display
@@ -38,7 +60,7 @@ of rows.
 
 Every screen composes from these, and the sameness is most of what makes twelve screens
 feel like one product: `Card`/`Row`, `Button` (three tones, never more), `Field` +
-`inputClass`, `Toggle`, `Modal`, `Popover`, `EmptyState`, `PageHeader`, `AppIcon`,
+`inputClass`, `Toggle`, `Modal`, `Popover`, `EmptyState`, `AppIcon`,
 `IconButton`, `Icons`. No UI libraries beyond Tailwind.
 
 **`Modal` nests correctly and `Popover` escapes a scrolling modal body** — both were

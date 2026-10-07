@@ -104,6 +104,12 @@ export const ChevronIcon = (p: IconProps) => (
   </Svg>
 );
 
+export const ChevronRightIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m9 6 6 6-6 6" />
+  </Svg>
+);
+
 export const CopyIcon = (p: IconProps) => (
   <Svg {...p}>
     <rect x="9" y="9" width="12" height="12" rx="2" />

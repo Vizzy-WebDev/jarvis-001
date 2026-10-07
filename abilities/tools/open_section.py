@@ -10,26 +10,42 @@ from __future__ import annotations
 
 from ..capabilities import CapabilitySpec, Risk
 
-#: Must stay in step with the interface's own section registry
-#: (`frontend/lib/nav.ts`), which drives the drawer, the router and this. A name
-#: here that is missing there navigates nowhere, and that drift has happened
-#: before — three real sections were absent from this list for a while.
+#: Must stay in step with the interface's own page registry
+#: (`frontend/lib/nav.ts`), which drives the menu, the router and this. Every
+#: name here is a page, a page's tab (`settings/voice`), or one of the
+#: interface's aliases for a tab (`memory` is Knowledge → Memory) — a name it
+#: does not know navigates nowhere, and that drift has happened before.
+#: `tests/test_tools.py` checks every one against nav.ts.
 SECTIONS = {
-    "home": "the assistant",
+    "home": "Home",
     "notifications": "Notifications",
     "chat-history": "Chat History",
     "artifacts": "Artifacts",
-    "models": "Model Settings",
-    "skills": "Skills",
-    "agents": "Specialists",
     "content": "Content Management",
-    "app-control": "Connector",
-    "tasks": "Scheduled Tasks",
+    "abilities": "Abilities",
+    "agents": "Specialists",
     "jobs": "Background Jobs",
+    "routines": "Routines",
+    "tasks": "Scheduling",
     "briefing": "Morning Briefing",
-    "profile": "Profile & Goals",
+    "capabilities": "Capabilities",
+    "capabilities/connectors": "Connectors",
+    "skills": "Skills",
+    "you": "You",
+    "profile": "your Profile",
+    "you/goals": "Goals",
+    "knowledge": "Knowledge",
     "memory": "Memory",
+    "knowledge/graph": "the Knowledge Graph",
     "improvement": "Self-Improvement",
+    "settings": "Settings",
+    "models": "Model settings",
+    "settings/voice": "Voice settings",
+    "settings/appearance": "Appearance settings",
+    "settings/quiet-hours": "Quiet Hours",
+    "settings/presence": "Presence and sound settings",
+    "settings/displays": "Display settings",
+    "settings/jobs": "Background job settings",
 }
 
 
@@ -47,10 +63,11 @@ SPEC = CapabilitySpec(
     id="builtin.open_section",
     name="open_section",
     description=(
-        "Open a section of the Jarvis app for the user — Model Settings, Skills, Specialists, "
-        "Connector, Content Management (reviewing, scheduling and publishing their content), "
-        "Scheduled Tasks, Background Jobs, Morning Briefing, Notifications, Chat History, "
-        "Memory, Self-Improvement, or Profile & Goals. Use it when they say “open…”, "
+        "Open a page of the Jarvis app for the user — Notifications, Chat History, Artifacts, "
+        "Content Management (reviewing, scheduling and publishing their content), Specialists, "
+        "Background Jobs, Scheduling, Morning Briefing, Connectors, Skills, their Profile, Goals, "
+        "Memory, the Knowledge Graph, Self-Improvement, or Settings (models, voice, appearance, "
+        "quiet hours, presence and sound, displays, background jobs). Use it when they say “open…”, "
         "“show me…” or “go to…” one of those. Planning, and looking into something they "
         "shared with you, are not sections: they happen in the conversation, so never try "
         "to open a page for them."),

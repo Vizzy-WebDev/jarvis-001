@@ -201,11 +201,13 @@ def test_every_section_is_reachable_from_the_hamburger(page):
     page.click("[data-testid=menu]")
     page.wait_for_selector("[data-testid=drawer][data-open=true]")
     entries = page.locator("[data-testid=drawer] button[data-testid^=nav-]")
-    assert entries.count() == 15  # Specialists joined Abilities; Content Management has its own group; Artifacts joined Assistant
+    assert entries.count() == 11  # design 9a: grouped rows, sub-pages as pill tabs
 
-    page.click("[data-testid=nav-models]")
-    page.wait_for_url("**#/models")
-    assert page.locator("h1").inner_text() == "Model Settings"
+    page.click("[data-testid=nav-settings]")
+    page.wait_for_url("**#/settings")
+    assert page.locator("h1").inner_text() == "Settings"
+    assert page.get_attribute("[data-testid=tab-models]", "aria-selected") == "true"
+    page.wait_for_selector("[data-testid=models-screen]")
     # And back out again, without a reload.
     page.click("[data-testid=menu]")
     page.click("[data-testid=nav-home]")
@@ -1096,10 +1098,26 @@ def test_the_composers_own_mic_is_live_and_stands_the_engine_down(voice_page):
 
 # --- memory, and the profile notes that are one category of it ------------------
 
+#: The ids pages had before the menu grouped them (frontend/lib/nav.ts ALIASES):
+#: the menu row that holds each, and its tab there.
+GROUPED = {
+    "memory": ("knowledge", "memory"), "improvement": ("knowledge", "improvement"),
+    "models": ("settings", "models"), "skills": ("capabilities", "skills"),
+    "app-control": ("capabilities", "connectors"), "agents": ("abilities", "specialists"),
+    "jobs": ("abilities", "jobs"), "tasks": ("routines", "scheduling"),
+    "briefing": ("routines", "briefing"), "profile": ("you", "profile"),
+}
+
+
 def go_to(page: Page, section: str) -> None:
+    """Reach a page the way a person does: the menu row, then its tab."""
+    row, tab = GROUPED.get(section, (section, None))
     page.click("[data-testid=menu]")
-    page.click(f"[data-testid=nav-{section}]")
-    page.wait_for_url(f"**#/{section}")
+    page.click(f"[data-testid=nav-{row}]")
+    page.wait_for_url(f"**#/{row}")
+    if tab:
+        page.click(f"[data-testid=tab-{tab}]")
+        page.wait_for_url(f"**#/{row}/{tab}")
 
 
 def test_a_candidate_is_reviewed_on_screen_and_really_becomes_a_memory(page):
@@ -1925,7 +1943,7 @@ def oauth_stub():
 def _open_app_control(page):
     page.evaluate("() => { window.location.hash = '#/app-control'; }")
     page.wait_for_url("**#/app-control")
-    assert page.locator("h1").inner_text() == "Connector"
+    assert page.locator("h1").inner_text() == "Capabilities"
 
 
 def test_a_custom_mcp_connector_connects_end_to_end_against_a_real_server(page, oauth_stub):

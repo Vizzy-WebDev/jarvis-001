@@ -15,38 +15,59 @@ const config: Config = {
   content: ['./app/**/*.{ts,tsx}', './components/**/*.{ts,tsx}', './lib/**/*.{ts,tsx}'],
   theme: {
     extend: {
+      // Every colour is a CSS variable holding RGB channels (globals.css), so
+      // the Appearance settings can re-theme the whole app — Dark, Light, the
+      // person's own colours — by rewriting variables, never class names. The
+      // channel form keeps Tailwind's opacity modifiers (`bg-accent/10`) working.
       colors: {
         ink: {
-          DEFAULT: '#e9ecf1',
-          muted: '#98a0ae',
-          faint: '#6a7280',
+          DEFAULT: 'rgb(var(--ink) / <alpha-value>)',
+          strong: 'rgb(var(--ink-strong) / <alpha-value>)',
+          soft: 'rgb(var(--ink-soft) / <alpha-value>)',
+          muted: 'rgb(var(--ink-muted) / <alpha-value>)',
+          faint: 'rgb(var(--ink-faint) / <alpha-value>)',
         },
         surface: {
-          // The page itself. Deeper than the original's #0f1115 so the orb's
-          // own light is the brightest thing on screen.
-          DEFAULT: '#0b0d11',
-          raised: '#141821',
-          // Floating panels are translucent: they sit ON TOP of the stage, and
-          // saying so in the material is more honest than drawing a hard box.
-          panel: 'rgb(20 24 32 / 0.78)',
-          overlay: 'rgb(8 10 14 / 0.72)',
-          border: 'rgb(255 255 255 / 0.08)',
-          'border-strong': 'rgb(255 255 255 / 0.14)',
+          DEFAULT: 'rgb(var(--bg) / <alpha-value>)',
+          raised: 'rgb(var(--raised) / <alpha-value>)',
+          // Floating panels are translucent: they sit ON TOP of the stage.
+          panel: 'rgb(var(--panel) / 0.8)',
+          overlay: 'rgb(var(--bg) / 0.7)',
+          border: 'rgb(var(--line) / 0.16)',
+          'border-strong': 'rgb(var(--line) / 0.26)',
         },
+        line: 'rgb(var(--line) / <alpha-value>)',
         accent: {
-          DEFAULT: '#5b9cff',
-          soft: '#2f4d7d',
-          glow: 'rgb(91 156 255 / 0.28)',
+          DEFAULT: 'rgb(var(--accent) / <alpha-value>)',
+          hover: 'rgb(var(--accent-hover) / <alpha-value>)',
         },
         state: {
-          danger: '#ff6b6b',
-          warn: '#f2b45c',
-          ok: '#6be3a3',
+          danger: 'rgb(var(--danger) / <alpha-value>)',
+          warn: 'rgb(var(--warn) / <alpha-value>)',
+          ok: 'rgb(var(--ok) / <alpha-value>)',
+        },
+        badge: {
+          red: 'rgb(var(--badge-red) / <alpha-value>)',
+          amber: 'rgb(var(--badge-amber) / <alpha-value>)',
+          blue: 'rgb(var(--badge-blue) / <alpha-value>)',
         },
         bubble: {
-          user: 'rgb(91 156 255 / 0.14)',
-          assistant: 'rgb(255 255 255 / 0.05)',
+          user: 'rgb(var(--bubble-user) / 0.28)',
+          assistant: 'rgb(var(--panel) / 0.7)',
         },
+        // Jarvis's states. Fixed by design: never themeable, so a colour always
+        // means the same thing (only Standby deepens in light mode).
+        orb: {
+          standby: 'rgb(var(--orb-standby) / <alpha-value>)',
+          listening: '#22d3ee',
+          thinking: '#a78bfa',
+          processing: '#f5a524',
+          speaking: '#ff3b30',
+        },
+      },
+      fontFamily: {
+        sans: ['var(--font-geist-sans)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        mono: ['var(--font-geist-mono)', 'ui-monospace', 'monospace'],
       },
       borderRadius: {
         sm: '10px',
@@ -57,7 +78,9 @@ const config: Config = {
       },
       boxShadow: {
         panel: '0 24px 60px -20px rgb(0 0 0 / 0.65)',
-        focus: '0 0 0 3px rgb(91 156 255 / 0.28)',
+        modal: '0 40px 90px -20px #000',
+        tab: '0 18px 40px -18px rgb(0 0 0 / 0.9), inset 0 -1px 0 rgb(170 210 240 / 0.12)',
+        focus: '0 0 0 3px rgb(var(--accent) / 0.28)',
       },
       transitionTimingFunction: {
         out: 'cubic-bezier(0.22, 0.61, 0.36, 1)',

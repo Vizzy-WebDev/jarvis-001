@@ -12,6 +12,32 @@
 :root {
   color-scheme: dark;
 
+  /* The palette, as RGB channels (see tailwind.config.ts). These are the
+     approved dark defaults; Appearance settings override them at runtime. */
+  --bg: 2 3 5;
+  --raised: 13 19 27;
+  --panel: 10 15 22;
+  --line: 127 168 201;
+  --ink: 230 236 243;
+  --ink-strong: 238 243 248;
+  --ink-soft: 201 212 224;
+  --ink-muted: 139 152 168;
+  --ink-faint: 111 125 142;
+  --accent: 127 168 201;
+  --accent-hover: 183 211 234;
+  --ok: 95 208 160;
+  --warn: 245 165 36;
+  --danger: 255 122 112;
+  --badge-red: 255 138 130;
+  --badge-amber: 255 197 107;
+  --badge-blue: 169 205 234;
+  --bubble-user: 40 70 100;
+  --orb-standby: 214 222 233;
+
+  /* The page shell (design 10b): a 64px glass header, pill tabs hanging below
+     it as an attached tab. */
+  --shell-header: 64px;
+
   /* The header floats out of flow so nothing it contains — a badge appearing,
      a sharing pill — can push the body or resize the orb. This is the space
      reserved for it in the body's own padding. */
@@ -44,12 +70,15 @@ body {
 }
 
 body {
-  @apply bg-surface text-ink antialiased;
-  /* A single soft light behind the stage, so the orb reads as lit rather than
+  @apply bg-surface font-sans text-ink antialiased;
+  /* A single soft light from the top, so panels read as lit rather than
      pasted onto a flat field. */
-  background-image: radial-gradient(60rem 40rem at 42% 38%, rgb(91 156 255 / 0.07), transparent 70%);
+  background-image: radial-gradient(circle at 50% 0%, rgb(var(--line) / 0.07), transparent 40%);
   background-attachment: fixed;
 }
+
+a { color: rgb(var(--accent)); }
+a:hover { color: rgb(var(--accent-hover)); }
 
 /* The orb's canvas: sized in viewport units so it scales with the window,
    capped so it never dominates a large screen. */
@@ -99,14 +128,14 @@ body {
    attachment row), which is why both axes are sized here. */
 .scroll-quiet {
   scrollbar-width: thin;
-  scrollbar-color: rgb(255 255 255 / 0.12) transparent;
+  scrollbar-color: rgb(var(--line) / 0.28) transparent;
 }
 .scroll-quiet::-webkit-scrollbar {
   width: 10px;
   height: 8px;
 }
 .scroll-quiet::-webkit-scrollbar-thumb {
-  background-color: rgb(255 255 255 / 0.12);
+  background-color: rgb(var(--line) / 0.28);
   border-radius: 999px;
   border: 3px solid transparent;
   background-clip: content-box;
@@ -114,7 +143,7 @@ body {
 
 /* Open in Chat lands on a file's card: a short, visible "this one". */
 .artifact-card[data-focused='true'] {
-  border-color: rgb(91 156 255 / 0.7);
-  box-shadow: 0 0 0 3px rgb(91 156 255 / 0.25);
+  border-color: rgb(var(--accent) / 0.7);
+  box-shadow: 0 0 0 3px rgb(var(--accent) / 0.25);
   transition: box-shadow 200ms ease-out, border-color 200ms ease-out;
 }

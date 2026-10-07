@@ -4,7 +4,7 @@ import { Composer } from '@/components/composer/Composer';
 import { TalkToPicker } from '@/components/conversation/TalkToPicker';
 import { Transcript } from '@/components/conversation/Transcript';
 import type { Turn } from '@/components/conversation/Message';
-import { MenuIcon, NewChatIcon } from '@/components/ui/Icons';
+import { ChevronRightIcon, MenuIcon, NewChatIcon } from '@/components/ui/Icons';
 import { IconButton } from '@/components/ui/IconButton';
 
 /**
@@ -38,6 +38,7 @@ export function ConversationPanel({
   onToggleHistory,
   talkingTo = null,
   onTalkTo,
+  onCollapse,
 }: {
   turns: Turn[];
   notConfigured: boolean;
@@ -69,18 +70,24 @@ export function ConversationPanel({
   /** A specialist the person is talking to directly, or null for Jarvis. */
   talkingTo?: { id: string; name: string } | null;
   onTalkTo?: (next: { id: string; name: string } | null) => void;
+  /** Set when the panel is docked at the side of another page ("Ask Jarvis"):
+   *  it fills that dock instead of floating, and offers a way to fold it away. */
+  onCollapse?: () => void;
 }) {
+  const docked = Boolean(onCollapse);
   return (
     <div
       data-testid="conversation"
-      className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-surface-border
-                 bg-surface-panel shadow-panel backdrop-blur-xl transition-colors duration-150 ease-out
-                 focus-within:border-accent/25"
+      className={docked
+        ? 'flex h-full min-h-0 flex-col overflow-hidden'
+        : `flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-surface-border
+           bg-surface-panel shadow-panel backdrop-blur-xl transition-colors duration-150 ease-out
+           focus-within:border-accent/25`}
     >
       <div className="flex items-center gap-2 px-4 py-2">
         {/* Same area as New chat, on the left: chat history is a sibling
             action on this panel, not a separate destination. */}
-        <IconButton
+        {onToggleHistory && <IconButton
           label="Chat history"
           data-testid="chat-history-menu"
           className="-ml-1 h-8 w-8"
@@ -88,7 +95,7 @@ export function ConversationPanel({
           onClick={onToggleHistory}
         >
           <MenuIcon className="h-[18px] w-[18px]" />
-        </IconButton>
+        </IconButton>}
         <h2 className="min-w-0">
           {onTalkTo ? (
             <TalkToPicker talkingTo={talkingTo} onChange={onTalkTo} />
@@ -107,6 +114,12 @@ export function ConversationPanel({
         >
           <NewChatIcon className="h-[18px] w-[18px]" />
         </IconButton>
+        {onCollapse && (
+          <IconButton label="Collapse" data-testid="ask-jarvis-collapse" className="-mr-1 h-8 w-8"
+                      onClick={onCollapse}>
+            <ChevronRightIcon className="h-4 w-4" />
+          </IconButton>
+        )}
       </div>
 
       <div className="h-px shrink-0 bg-surface-border" />

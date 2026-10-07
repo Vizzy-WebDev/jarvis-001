@@ -60,6 +60,24 @@ def list_kinds() -> dict[str, Any]:
             "formats": [{"id": d, "label": label} for d, label in cfg.driver_labels.items()]}
 
 
+@router.get("/route")
+def explain_route(task: str = "chat") -> Any:
+    """Which models a chat turn would try, in order, and why each of the others is out. Calls no model."""
+    from .. import models as layer
+    from ..models.types import Message, Request, Requirements, TextPart
+
+    try:
+        pin = None if settings.is_auto() else settings.SELECTED
+        explained = layer.explain_route(Request(
+            task_class=task, data_class="personal", items=(Message("user", (TextPart("hello"),)),),
+            requirements=Requirements(pin=pin)))
+    except config.ConfigError as err:
+        return _fail(str(err), 500)
+    return {"pinned": pin is not None, "ranked": list(explained.ranked),
+            "rejected": [{"endpoint": r.endpoint_id, "reason": r.reason, "detail": r.detail}
+                         for r in explained.rejected]}
+
+
 @router.get("")
 def list_connections() -> Any:
     try:
@@ -91,7 +109,8 @@ def select(body: dict[str, Any] = Body(default_factory=dict)):
 
 def _refresh(name: str) -> dict[str, Any]:
     before = {e.model_id for e in engine.catalog().endpoints.values() if e.connection == name}
-    state.clear_refusal(name)  # the person is reconnecting it: a refusal from before no longer stands
+    state.clear_rests(name)  # the person is reconnecting it: a refusal from before no longer stands
+    state.clear_observed(name)  # ...and so does a context window learned from an earlier refusal
     result = discovery.refresh_one(name)
     after = {e.model_id for e in engine.catalog().endpoints.values() if e.connection == name}
     return {**result, "added": len(after - before), "updated": len(after & before)}
@@ -126,6 +145,8 @@ def add(body: dict[str, Any] = Body(default_factory=dict)):
     name = config.unique_name(label, set(cfg.connections))
     entry: dict[str, Any] = {"name": name, "label": label, "preset": preset.id, "driver": driver,
                              "base_url": address, "trust": preset.trust}
+    if preset.free:
+        entry["free"] = True
     if preset.quirks:
         entry["quirks"] = preset.quirks
     if preset.default_params:

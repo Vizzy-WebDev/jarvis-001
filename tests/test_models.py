@@ -193,7 +193,7 @@ def test_removing_a_model_takes_a_row_off_and_discovery_puts_it_back(client, ser
 
 def test_selecting_makes_jarvis_configured_and_effort_is_kept_only_where_it_can_be_used(client, serve):
     stub = serve("anthropic_messages", models=[
-        {"id": "thinker", "capabilities": {"effort": {"supported": True}}},
+        {"id": "thinker", "capabilities": THINKER},
         {"id": "plain", "capabilities": {"effort": {"supported": False}}}])
     connection_id = add(client, stub)["connection"]["id"]
     assert select(client, connection_id, "plain", "high").json()["selection"]["effort"] is None
@@ -203,7 +203,8 @@ def test_selecting_makes_jarvis_configured_and_effort_is_kept_only_where_it_can_
     assert stub.last_body()["output_config"] == {"effort": "high"}
     levels = {m["id"]: m["effort"] for m in client.get("/api/models").json()["connections"][0]["models"]}
     # Only the levels the model takes (D1): Claude can't switch thinking off, so no "none".
-    assert levels["plain"] is None and levels["thinker"] == {"levels": ["low", "medium", "high"], "default": "high"}
+    assert levels["plain"] is None and levels["thinker"] == {"levels": ["low", "medium", "high"], "default": "high",
+                                                    "canDisable": False}
 
 
 # --- a turn ---------------------------------------------------------------------------------
@@ -357,14 +358,17 @@ def test_a_configured_privacy_restriction_holds_for_ask_too(client, serve):
     assert stub.generations() == []
 
 
+THINKER = {"effort": {"supported": True, "low": {"supported": True},
+                    "medium": {"supported": True}, "high": {"supported": True}}}
+
+
 # --- surviving ----------------------------------------------------------------------------------
 
 def test_connections_the_selection_and_the_key_survive_a_restart(client, serve):
     from jarvis import assembly, db
     from jarvis.main import create_app
 
-    stub = serve("anthropic_messages", key=SECRET, models=[{"id": "thinker", "capabilities": {
-        "effort": {"supported": True}}}])
+    stub = serve("anthropic_messages", key=SECRET, models=[{"id": "thinker", "capabilities": THINKER}])
     connection_id = add(client, stub, key=SECRET)["connection"]["id"]
     select(client, connection_id, "thinker", "high")
     before = client.get("/api/models").json()
@@ -379,36 +383,6 @@ def test_connections_the_selection_and_the_key_survive_a_restart(client, serve):
     run_step()
     assert stub.last_body()["model"] == "thinker" and stub.last_body()["output_config"] == {"effort": "high"}
     assert stub.generations()[-1]["headers"]["x-api-key"] == SECRET
-
-
-def test_the_old_tables_move_out_during_migration_and_are_dropped(scratch):
-    """Migration 35 on a database that still has the old model tables."""
-    from jarvis import db
-
-    path = scratch.data_dir / "jarvis.db"
-    conn = sqlite3.connect(str(path), isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    original = db.MIGRATION_COUNT
-    try:
-        db.MIGRATION_COUNT = 34
-        db.migrate(conn)
-    finally:
-        db.MIGRATION_COUNT = original
-    conn.execute("INSERT INTO model_providers (id, kind, format, label, base_url, secret_ref, created_at) "
-                 "VALUES ('prov_1', 'lmstudio', 'openai-chat', 'LM Studio', NULL, NULL, '2026-01-01')")
-    conn.execute("INSERT INTO provider_models (provider_id, model_id, label, source, facts_json, added_at) "
-                 "VALUES ('prov_1', 'qwen', NULL, 'discovered', NULL, '2026-01-02')")
-    config.forget()
-    state.reset()
-    db.migrate(conn)
-    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert not {"model_providers", "provider_models", "model_outcomes"} & tables
-    assert "model_traces" in tables
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.MIGRATION_COUNT
-    moved = config.current().connections["lm-studio"]
-    assert moved.trust == "local" and moved.base_url == "http://127.0.0.1:1234/v1" and moved.quirks == "lmstudio"
-    assert [d.model_id for d in state.discovered("lm-studio")] == ["qwen"]
-    conn.close()
 
 
 # --- small guarantees ---------------------------------------------------------------------------

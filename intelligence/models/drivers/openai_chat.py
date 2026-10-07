@@ -33,11 +33,9 @@ from . import _turns, _wire
 NAME = "openai_chat"
 QUIRKS = frozenset({"no_parallel_tool_calls", "tool_args_not_streamed", "rejects_strict", "no_stream_usage",
                     "no_system_role", "no_tool_call_ids", "error_envelope_in_text", "reasoning_param",
-                    "max_tokens_param", "show_endpoint", "catalog_fields"})
+                    "max_tokens_param", "show_endpoint", "catalog_fields", "listed_reasoning_levels"})
 DEFAULT_CAPABILITIES: dict[str, Any] = {"text_in": True, "tools": True, "parallel_tools": True, "streaming": True,
-                                        # What a reasoning model behind this format takes, wherever
-                                        # its server says it takes a reasoning control at all.
-                                        "effort_levels": ["low", "medium", "high"]}
+                                        "kind": "chat"}
 
 _FINISH = {"stop": "stop", "tool_calls": "tool_calls", "function_call": "tool_calls", "length": "length",
            "content_filter": "content_filter"}
@@ -281,7 +279,17 @@ def _per_million(value: Any) -> float | None:
     return None if number < 0 else number * 1_000_000
 
 
-def _listed(row: dict[str, Any]) -> Discovered:
+def _reasoning(caps: dict[str, Any], takes_control: bool, quirks: dict[str, Any]) -> None:
+    """A server that lists a reasoning control rarely lists its levels: the connection's
+    `listed_reasoning_levels` (data) says which a model it lists takes. No data, no levels."""
+    levels = quirks.get("listed_reasoning_levels")
+    if takes_control and isinstance(levels, list) and levels:
+        caps["reasoning_levels"] = list(levels)
+        if "none" in levels:
+            caps["reasoning_can_disable"] = True
+
+
+def _listed(row: dict[str, Any], quirks: dict[str, Any] | None = None) -> Discovered:
     """Only what the server reported about the model. A plain server says nothing
     beyond the id; a gateway may describe capabilities, modalities and price."""
     caps: dict[str, Any] = {}
@@ -293,17 +301,21 @@ def _listed(row: dict[str, Any]) -> Discovered:
         caps["pdf_in"] = "file" in inputs
     kind = str(row.get("type") or "").lower()
     if kind in {"embedding", "embeddings"}:
-        caps["embeddings"] = True
-        caps["text_in"] = False
-    elif kind in {"video", "image", "audio", "speech", "tts", "stt", "transcription", "rerank", "moderation"} or (
-            isinstance(outputs, list) and outputs and "text" not in outputs):
-        caps["text_in"] = False
+        caps["kind"] = "embedding"
+    elif kind in {"audio", "speech", "tts", "stt", "transcription"}:
+        caps["kind"] = "speech"
+    elif kind in {"video", "image"}:
+        caps["kind"] = "image"
+    elif kind in {"rerank", "moderation"}:
+        caps["kind"] = "other"
+    elif isinstance(outputs, list) and outputs and "text" not in outputs:
+        caps["kind"] = "speech" if "audio" in outputs else ("image" if {"image", "video"} & set(outputs) else "other")
     supported = row.get("supported_parameters")
     if isinstance(supported, list) and supported:
         caps["tools"] = "tools" in supported
         caps["structured_output_strict"] = "structured_outputs" in supported
         caps["json_mode"] = "response_format" in supported
-        caps["reasoning_control"] = "reasoning" in supported or "reasoning_effort" in supported
+        _reasoning(caps, "reasoning" in supported or "reasoning_effort" in supported, quirks or {})
     listed_caps = row.get("capabilities") if isinstance(row.get("capabilities"), dict) else {}
     if isinstance(listed_caps.get("tool_calling"), bool):
         caps["tools"] = listed_caps["tool_calling"]
@@ -339,15 +351,17 @@ def _show(conn: ConnInfo, model_id: str) -> dict[str, Any]:
     return body if isinstance(body, dict) else {}
 
 
-def _from_show(found: Discovered, shown: dict[str, Any]) -> Discovered:
+def _from_show(found: Discovered, shown: dict[str, Any], quirks: dict[str, Any] | None = None) -> Discovered:
     caps = dict(found.capabilities)
     listed = shown.get("capabilities")
     if isinstance(listed, list):
-        caps["text_in"] = "completion" in listed
+        if "embedding" in listed:
+            caps["kind"] = "embedding"
+        elif "completion" not in listed:
+            caps["kind"] = "other"
         caps["tools"] = "tools" in listed
         caps["image_in"] = "vision" in listed
-        caps["reasoning_control"] = "thinking" in listed
-        caps["embeddings"] = "embedding" in listed
+        _reasoning(caps, "thinking" in listed, quirks or {})
     info = shown.get("model_info") if isinstance(shown.get("model_info"), dict) else {}
     for key, value in info.items():
         if key.endswith(".context_length") and _wire.count(value):
@@ -365,12 +379,12 @@ def discover(conn: ConnInfo) -> list[Discovered]:
     rows = body.get("data") if isinstance(body, dict) else body
     if not isinstance(rows, list):
         raise errors.InvalidRequest(f"{_wire.host_of(conn.base_url)} answered, but not with a list of models.")
-    found = [_listed(r) for r in rows if isinstance(r, dict) and r.get("id")]
+    found = [_listed(r, conn.quirks) for r in rows if isinstance(r, dict) and r.get("id")]
     if conn.quirks.get("show_endpoint"):
         described = []
         for item in found:
             try:
-                described.append(_from_show(item, _show(conn, item.model_id)))
+                described.append(_from_show(item, _show(conn, item.model_id), conn.quirks))
             except errors.ModelError:
                 described.append(item)  # one model it won't describe doesn't lose the rest
         found = described

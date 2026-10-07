@@ -96,33 +96,55 @@ def estimate_tokens(request: Request, image_tokens: int) -> int:
 
 # --- the filter ------------------------------------------------------------------------------
 
-#: What each capability a request can need means, in the words a rejection is said in.
+#: What each capability a request can need means, in the words a rejection is said in. Every
+#: flag in the vocabulary has an entry (a test walks them), so no internal name is ever shown.
 _CAN = {"text_in": "answer in text", "image_in": "look at pictures", "pdf_in": "read PDFs", "tools": "use tools",
-        "parallel_tools": "use several tools at once", "embeddings": "make embeddings",
-        "reasoning_control": "take a thinking level", "prompt_caching": "cache prompts",
+        "parallel_tools": "use several tools at once", "prompt_caching": "cache prompts",
         "streaming": "stream its reply", "json_mode": "answer in JSON",
-        "structured_output_strict": "enforce an output format"}
+        "structured_output_strict": "enforce an output format", "reasoning_can_disable": "switch thinking off"}
+
+
+def can_say(name: str) -> str:
+    return _CAN.get(name) or "do something this request needs"
+
+
+def _name(connection: Connection) -> str:
+    return connection.label or connection.name
 
 
 def _health(endpoint: Endpoint, connection: Connection) -> Rejection | None:
     down = state.connection_down(connection.name)
     if down:
         return Rejection(endpoint.id, "connection_unreachable",
-                         f"{connection.label or connection.name} didn't answer when Jarvis last checked ({down}).")
+                         f"{_name(connection)} didn't answer when Jarvis last checked ({down}).")
     refused = state.connection_refused(connection.name)
     if refused:
+        if state.connection_refused_kind(connection.name) == "billing":
+            return Rejection(endpoint.id, "connection_refused",
+                             f"{_name(connection)} says the account is out of credit or quota, so it's resting. "
+                             "Check the account, then Test it on the Model Settings screen.")
         return Rejection(endpoint.id, "connection_refused",
-                         f"{connection.label or connection.name} refused Jarvis's key or account last time, so it's "
+                         f"{_name(connection)} refused Jarvis's key or account last time, so it's "
                          "resting. Check it on the Model Settings screen.")
     until = state.rate_limited_until(connection.name)
     if until:
         return Rejection(endpoint.id, "rate_limited",
-                         f"{connection.label or connection.name} asked Jarvis to slow down; it's resting briefly.")
+                         f"{_name(connection)} asked Jarvis to slow down; it's resting briefly.")
+    rest = state.endpoint_rest(endpoint.id)
+    if rest:
+        if rest["kind"] == "missing":
+            return Rejection(endpoint.id, "model_missing",
+                             f"{_name(connection)} says it has no model by this name. Run Discover on the "
+                             "Model Settings screen to refresh the list.")
+        if rest["kind"] == "reset":
+            return Rejection(endpoint.id, "rate_limited",
+                             f"This model's allowance on {_name(connection)} is used up until it resets.")
+        return Rejection(endpoint.id, "rate_limited", "This model asked Jarvis to slow down; it's resting briefly.")
     until = state.resting_until(endpoint.id)
     if until:
         return Rejection(endpoint.id, "resting", "It failed several times in a row, so it's resting for a while.")
     if connection.secret_ref and not secrets.get_secret(connection.secret_ref):
-        return Rejection(endpoint.id, "no_key", f"{connection.label or connection.name} has no key saved.")
+        return Rejection(endpoint.id, "no_key", f"{_name(connection)} has no key saved.")
     return None
 
 
@@ -131,24 +153,36 @@ def _translate(connection: Connection, cfg: Config, schema: Any) -> Any:
     return driver.translate_schema(schema, dict(cfg.quirks_of(connection).wire))
 
 
+def _tool_schema(connection: Connection, cfg: Config, schema: Any) -> Any:
+    """A tool's parameters are an object on every wire format; an array (or any other
+    top-level type) would be refused by the server for the whole request."""
+    if isinstance(schema, dict) and schema.get("type") not in (None, "object"):
+        raise Unexpressible(f"a tool's parameters must be an object schema, not “{schema.get('type')}”")
+    return _translate(connection, cfg, schema)
+
+
 def check(request: Request, endpoint: Endpoint, cfg: Config, cat: Catalog, *,
           estimate: int, spent: float, pinned: set[str] | None) -> Candidate | Rejection:
     connection = cat.connections[endpoint.connection]
     if pinned is not None and endpoint.id not in pinned:
         return Rejection(endpoint.id, "not_pinned", f"This request is pinned to “{request.requirements.pin}”.")
+    kind = endpoint.kind
+    if kind is not None and kind != "chat":
+        return Rejection(endpoint.id, "not_a_chat_model",
+                         f"It's a {kind} model, not one that answers in text.")
     unhealthy = _health(endpoint, connection)
     if unhealthy:
         return unhealthy
-    if not policy.trust_allows(cfg, request.data_class, connection.trust):
+    if not policy.trust_allows(cfg, request.data_class, endpoint.trust):
         allowed = ", ".join(sorted(policy.allowed_trust(cfg, request.data_class) or ()))
         return Rejection(endpoint.id, "trust_not_allowed",
                          f"Your privacy settings only allow {request.data_class} data to go to {allowed} "
-                         f"connections, and this one is {connection.trust}.")
+                         f"connections, and this one is {endpoint.trust}.")
 
     caps = endpoint.capabilities
     for name in sorted(needed_capabilities(request)):
         if not caps_mod.has(caps, name):
-            return Rejection(endpoint.id, "missing_capability", f"It isn't known to {_CAN.get(name, f'support {name}')}.")
+            return Rejection(endpoint.id, "missing_capability", f"It isn't known to {can_say(name)}.")
 
     ceiling = caps_mod.limit(caps, "max_context_tokens")
     wanted = request.requirements.min_context
@@ -174,8 +208,8 @@ def check(request: Request, endpoint: Endpoint, cfg: Config, cat: Catalog, *,
 
     try:
         tools = tuple(Tool(t.name, t.description,
-                           _translate(connection, cfg, dict(t.parameters) if isinstance(t.parameters, dict)
-                                      else t.parameters))
+                           _tool_schema(connection, cfg, dict(t.parameters) if isinstance(t.parameters, dict)
+                                        else t.parameters))
                       for t in request.tools)
     except Unexpressible as err:
         return Rejection(endpoint.id, "schema_not_expressible", f"A tool's schema can't be expressed here: {err}")
@@ -184,7 +218,9 @@ def check(request: Request, endpoint: Endpoint, cfg: Config, cat: Catalog, *,
     schema = None
     if request.output.kind == "json":
         required = request.output.enforcement == "required"
-        if caps_mod.has(caps, "structured_output_strict"):
+        strict_ok = (caps_mod.has(caps, "structured_output_strict")
+                     and not cfg.quirks_of(connection).wire.get("rejects_strict"))
+        if strict_ok:
             try:
                 schema = _translate(connection, cfg, dict(request.output.schema or {}))
                 mode = "strict"

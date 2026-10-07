@@ -15,9 +15,14 @@ from __future__ import annotations
 
 from types import ModuleType
 
-from . import anthropic_messages, fake, gemini_generate, openai_chat, openai_responses
+from . import _wire, anthropic_messages, fake, gemini_generate, openai_chat, openai_responses
 
 DRIVERS: dict[str, ModuleType] = {m.NAME: m for m in (fake, openai_chat, openai_responses, anthropic_messages, gemini_generate)}
+
+
+def set_silence_ceiling(seconds: float) -> None:
+    """How long a stream may stay silent: a setting, handed down so no driver reads config."""
+    _wire.set_silence_ceiling(seconds)
 
 
 def get(name: str) -> ModuleType:

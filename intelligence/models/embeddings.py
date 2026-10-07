@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .. import config as secrets
-from . import config, drivers, policy, state
+from . import config, drivers, policy, rests, state
 from .catalog import split_endpoint_id
 from .discovery import conn_info
 from .errors import InvalidRequest, ModelError, NoEligibleEndpoint, Unavailable
@@ -31,17 +31,21 @@ def embed(space_name: str, inputs: list[str], *, data_class: str) -> Embeddings:
     cfg = config.current()
     space = cfg.embedding_spaces.get(space_name)
     if space is None:
-        raise InvalidRequest(f"There's no embedding space called “{space_name}”.")
+        raise InvalidRequest(f"There's no embedding space called “{space_name}”. It has to be set up first "
+                             "(Model Settings, or the memory setup).")
     version = space.model_version or split_endpoint_id(space.primary)[1]
     last: ModelError | None = None
     skipped: list[str] = []
     for endpoint_id in (space.primary, *space.backups):
         conn_name, model_id = split_endpoint_id(endpoint_id)
         conn = cfg.connections[conn_name]
-        if not policy.trust_allows(cfg, data_class, conn.trust):
+        trust = trust_of(cfg, conn, endpoint_id, model_id)
+        if not policy.trust_allows(cfg, data_class, trust):
             skipped.append(f"{endpoint_id}: your privacy settings don't allow {data_class} data there")
             continue
-        if state.connection_down(conn_name) or state.resting_until(endpoint_id) or state.rate_limited_until(conn_name):
+        if (state.connection_down(conn_name) or state.connection_refused(conn_name)
+                or state.resting_until(endpoint_id) or state.endpoint_rest(endpoint_id)
+                or state.rate_limited_until(conn_name)):
             skipped.append(f"{endpoint_id}: resting after recent failures")
             continue
         driver = drivers.get(conn.driver)
@@ -51,11 +55,9 @@ def embed(space_name: str, inputs: list[str], *, data_class: str) -> Embeddings:
             vectors = driver.embed(conn_info(conn, cfg), model_id, list(inputs))
         except ModelError as err:
             err.at(endpoint_id)
-            if not err.retryable:
+            rests.note_failure(endpoint_id, conn, err, cfg)
+            if err.scope == "request":
                 raise
-            if err.type in ("unavailable", "timeout"):
-                state.record_failure(endpoint_id, str(err), threshold=cfg.settings.breaker_threshold,
-                                     base_s=cfg.settings.breaker_base_s, max_s=cfg.settings.breaker_max_s)
             last = err
             continue
         wrong = [len(v) for v in vectors if len(v) != space.dimension]
@@ -70,6 +72,18 @@ def embed(space_name: str, inputs: list[str], *, data_class: str) -> Embeddings:
                           f"for it. {last}")
     raise NoEligibleEndpoint(f"The embedding model for “{space_name}” can't be used right now: "
                              + "; ".join(skipped) + ".")
+
+
+def trust_of(cfg: config.Config, conn, endpoint_id: str, model_id: str) -> str:
+    """Same rule as generation: the endpoint's effective trust (the model's own, else its upstream's,
+    else the connection's)."""
+    from . import engine
+
+    endpoint = engine.catalog(cfg).endpoints.get(endpoint_id)
+    if endpoint is not None:
+        return endpoint.trust
+    entry = conn.models.get(model_id)
+    return (entry.trust if entry and entry.trust else None) or conn.trust
 
 
 # --- finding a model to embed with -------------------------------------------------------------
@@ -88,23 +102,24 @@ def candidates(data_class: str, cfg: config.Config | None = None) -> list[tuple[
     cat = engine.catalog(cfg)
     found: list[tuple[int, str, str]] = []
     for endpoint in cat.endpoints.values():
-        if not capabilities.has(endpoint.capabilities, "embeddings"):
+        if not capabilities.is_kind(endpoint.capabilities, "embedding"):
             continue
         conn = cfg.connections.get(endpoint.connection)
         if conn is None:
             continue
         why = ""
-        if not policy.trust_allows(cfg, data_class, conn.trust):
+        if not policy.trust_allows(cfg, data_class, endpoint.trust):
             why = f"your privacy settings don't allow {data_class} data on {conn.label or conn.name}"
         elif conn.secret_ref and not secrets.get_secret(conn.secret_ref):
             why = f"{conn.label or conn.name} has no key saved"
-        found.append((1 if why else 0, _TRUST_ORDER.get(conn.trust, 3), endpoint.id, why))
+        found.append((1 if why else 0, _TRUST_ORDER.get(endpoint.trust, 3), endpoint.id, why))
     found.sort(key=lambda row: (row[0], row[1], row[2]))
     return [(row[2], row[3]) for row in found]
 
 
 def ensure_space(name: str, *, data_class: str) -> config.EmbeddingSpace | None:
-    """The named space, made on first use from an embedding model the person already has.
+    """The named space, made by this explicit step (never by `embed()`) from an embedding model
+    the person already has.
 
     Found or refused, never approximated (the same rule as `settings.ensure_pin`): an existing
     space is returned as it is — even when its model is gone, in which case `embed()` fails and

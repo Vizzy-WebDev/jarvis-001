@@ -5,12 +5,17 @@ key or account), and this month's spend.
 
 Never written to config. Held in memory and written to `data/models_state.json`
 at most once a second (and at exit); losing the last second of latency samples
-to a crash costs nothing.
+to a crash costs nothing. Every refusal and rest is written at once, though.
+
+A file that can't be read as state is never silently replaced by an empty one: it is
+copied to `models_state.json.bak` first, with a warning in the log and a notice.
 """
 
 from __future__ import annotations
 
 import atexit
+import logging
+import shutil
 import threading
 import time
 from datetime import datetime, timezone
@@ -20,8 +25,12 @@ from .. import store
 from .catalog import Pricing
 from .prepared import Discovered
 
+logger = logging.getLogger(__name__)
+
 FILE = "models_state"
-VERSION = 1
+#: 2: capability vocabulary v3 (cached listings are converted on load), and the context
+#: windows learned from refusals are kept as dated `observed` values.
+VERSION = 2
 _FLUSH_EVERY_S = 1.0
 
 #: The clock, named so a test can move time instead of waiting for it.
@@ -49,7 +58,78 @@ def _catalog_changed() -> None:
 
 def _empty() -> dict[str, Any]:
     return {"version": VERSION, "discovery": {}, "probes": {}, "latency": {}, "health": {},
-            "connections": {}, "spend": {"month": None, "usd": 0.0}, "notices": [], "learned": {}}
+            "connections": {}, "spend": {"month": None, "usd": 0.0}, "notices": [], "observed": {}}
+
+
+def _convert_caps(caps: dict[str, Any]) -> dict[str, Any]:
+    """Capabilities cached under vocabulary v2, in v3's terms. A one-time conversion of what
+    a server listed - nothing else reads the old names."""
+    out = dict(caps)
+    controlled = out.pop("reasoning_control", None)
+    levels, default = out.pop("effort_levels", None), out.pop("effort_default", None)
+    if controlled and isinstance(levels, list) and levels:
+        out["reasoning_levels"] = levels
+        if default in levels:
+            out["reasoning_default"] = default
+        if "none" in levels:
+            out["reasoning_can_disable"] = True
+    if out.pop("embeddings", None):
+        out["kind"] = "embedding"
+    if out.get("text_in") is False:
+        out.pop("text_in")
+        out.setdefault("kind", "other")
+    return out
+
+
+def _parse_iso(text: Any) -> float:
+    try:
+        return datetime.strptime(str(text), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return now()
+
+
+def _convert(loaded: dict[str, Any]) -> dict[str, Any]:
+    for entry in (loaded.get("discovery") or {}).values():
+        for row in (entry or {}).get("models") or []:
+            if isinstance(row, dict) and isinstance(row.get("capabilities"), dict):
+                row["capabilities"] = _convert_caps(row["capabilities"])
+    for probe in (loaded.get("probes") or {}).values():
+        if isinstance(probe, dict) and isinstance(probe.get("capabilities"), dict):
+            probe["capabilities"] = _convert_caps(probe["capabilities"])
+    old = loaded.pop("learned", None) or {}
+    observed = loaded.setdefault("observed", {})
+    for eid, row in old.items():
+        if isinstance(row, dict) and isinstance(row.get("max_context_tokens"), int):
+            observed.setdefault(eid, {"ts": _parse_iso(row.get("at")), "at": row.get("at"),
+                                      "max_context_tokens": row["max_context_tokens"]})
+    loaded["version"] = VERSION
+    return loaded
+
+
+def _read_state() -> dict[str, Any]:
+    target = store.data_dir() / (FILE + ".json")
+    loaded = store.read_json(FILE, None)
+    if loaded is None and not target.exists():
+        return _empty()
+    if not isinstance(loaded, dict):
+        backup = target.with_name(target.name + ".bak")
+        try:
+            shutil.copy2(target, backup)
+            where = "A copy was kept as " + backup.name + "."
+        except OSError:
+            where = "A copy of it could not be kept."
+        logger.warning("%s couldn't be read as model state; starting from empty. %s", target.name, where)
+        base = _empty()
+        base["notices"].append({"at": _iso(), "text": "Jarvis's saved model status file was damaged, so it "
+                                                      "started fresh and will re-check your connections. " + where})
+        return base
+    if loaded.get("version") != VERSION:
+        loaded = _convert(loaded)
+    base = _empty()
+    for key in base:
+        if isinstance(loaded.get(key), type(base[key])):
+            base[key] = loaded[key]
+    return base
 
 
 def _state() -> dict[str, Any]:
@@ -57,13 +137,7 @@ def _state() -> dict[str, Any]:
     global _data, _where
     here = str(store.data_dir())
     if _data is None or _where != here:
-        loaded = store.read_json(FILE, None)
-        base = _empty()
-        if isinstance(loaded, dict):
-            for key in base:
-                if isinstance(loaded.get(key), type(base[key])):
-                    base[key] = loaded[key]
-        _data, _where = base, here
+        _data, _where = _read_state(), here
     return _data
 
 
@@ -136,6 +210,9 @@ def record_discovery(connection: str, models: list[Discovered] | None, error: st
         if models is not None:
             entry["models"] = [_discovered_to_json(m) for m in models]
             entry["ok_at"] = entry["at"]
+            for eid, h in _state()["health"].items():
+                if eid.startswith(connection + "/"):
+                    h.pop("missing", None)
         _catalog_changed()
         _touch(force=True)
 
@@ -177,7 +254,7 @@ def forget_connection(connection: str) -> None:
         s["discovery"].pop(connection, None)
         s["connections"].pop(connection, None)
         prefix = f"{connection}/"
-        for key in ("probes", "latency", "health", "learned"):
+        for key in ("probes", "latency", "health", "observed"):
             for eid in [e for e in s[key] if e.startswith(prefix)]:
                 s[key].pop(eid, None)
         _catalog_changed()
@@ -194,12 +271,13 @@ def record_probe(endpoint_id: str, capabilities: dict[str, Any], results: dict[s
 
 
 def probed() -> dict[str, dict[str, Any]]:
-    """What probes measured, with any context window learned from a real refusal folded in
-    (the smaller of the two wins: the model itself said no above it)."""
+    """What probes measured, with any context window observed from a real refusal folded in
+    (the smaller of the two wins: the model itself said no above it). A config value still
+    beats both (catalog.build)."""
     with _lock:
         out = {eid: dict(p.get("capabilities") or {}) for eid, p in _state()["probes"].items()}
-        for eid, learned in _state()["learned"].items():
-            window = learned.get("max_context_tokens")
+        for eid, seen in _state()["observed"].items():
+            window = seen.get("max_context_tokens")
             if isinstance(window, int):
                 caps = out.setdefault(eid, {})
                 known = caps.get("max_context_tokens")
@@ -207,19 +285,51 @@ def probed() -> dict[str, dict[str, Any]]:
         return out
 
 
-def record_learned_context(endpoint_id: str, tokens: int) -> int:
-    """An upper bound on a model's context window, learned when it refused a request as too
-    long. Kept apart from probe results so a later probe run cannot silently drop it, and only
-    ever lowered. Returns the window now on record."""
+def record_observed_context(endpoint_id: str, tokens: int) -> int:
+    """An upper bound on a model's context window, observed when it refused a request as too
+    long. Dated: it expires (`expire_observed`), and Discover or Test clear it. Kept apart from
+    probe results so a later probe run cannot silently drop it, and only ever lowered while it
+    lives. Returns the window now on record."""
     tokens = max(1, int(tokens))
     with _lock:
-        learned = _state()["learned"]
-        previous = (learned.get(endpoint_id) or {}).get("max_context_tokens")
+        observed = _state()["observed"]
+        previous = (observed.get(endpoint_id) or {}).get("max_context_tokens")
         window = min(previous, tokens) if isinstance(previous, int) else tokens
-        learned[endpoint_id] = {"at": _iso(), "max_context_tokens": window}
+        observed[endpoint_id] = {"ts": now(), "at": _iso(), "max_context_tokens": window}
         _catalog_changed()
         _touch(force=True)
         return window
+
+
+def observed_context(endpoint_id: str) -> dict[str, Any] | None:
+    with _lock:
+        seen = _state()["observed"].get(endpoint_id)
+        return dict(seen) if isinstance(seen, dict) else None
+
+
+def expire_observed(ttl_days: float) -> None:
+    """Forget windows observed longer ago than `ttl_days` (a model's limit can be raised)."""
+    with _lock:
+        observed = _state()["observed"]
+        stale = [e for e, row in observed.items()
+                 if not isinstance(row.get("ts"), (int, float)) or now() - row["ts"] > ttl_days * 86400]
+        for eid in stale:
+            observed.pop(eid, None)
+        if stale:
+            _catalog_changed()
+            _touch(force=True)
+
+
+def clear_observed(connection: str | None = None, endpoint_id: str | None = None) -> None:
+    """The person re-checked (Discover, Test): what was observed no longer stands."""
+    with _lock:
+        observed = _state()["observed"]
+        gone = [e for e in observed if e == endpoint_id or (connection and e.startswith(connection + "/"))]
+        for eid in gone:
+            observed.pop(eid, None)
+        if gone:
+            _catalog_changed()
+            _touch(force=True)
 
 
 # --- latency ---------------------------------------------------------------------------------
@@ -275,9 +385,53 @@ def restore_streak(endpoint_id: str, streak: int, last_error: str) -> None:
 
 
 def resting_until(endpoint_id: str) -> float | None:
+    """When the endpoint's circuit breaker lets it be tried again, if it is open."""
     with _lock:
         until = (_state()["health"].get(endpoint_id) or {}).get("open_until")
         return until if isinstance(until, (int, float)) and until > now() else None
+
+
+def endpoint_rest(endpoint_id: str) -> dict[str, Any] | None:
+    """A rest that is about this one endpoint alone: a rate limit (`rate_until`), a daily
+    allowance used up (`reset`), or the server saying it has no such model (`missing`, until
+    the model list is next fetched)."""
+    with _lock:
+        entry = _state()["health"].get(endpoint_id) or {}
+        if entry.get("missing"):
+            return {"kind": "missing", "reason": entry.get("missing_reason") or "it isn't there"}
+        until = entry.get("rate_until")
+        if isinstance(until, (int, float)) and until > now():
+            return {"kind": entry.get("rate_kind") or "rate", "until": until,
+                    "reason": entry.get("rate_reason") or "it asked to slow down"}
+        return None
+
+
+def rest_endpoint(endpoint_id: str, seconds: float, *, reason: str, kind: str = "rate") -> None:
+    """The provider limited this endpoint for `seconds` (kind "reset": until its own reset)."""
+    with _lock:
+        entry = _state()["health"].setdefault(endpoint_id, {})
+        entry.update({"rate_until": max(float(entry.get("rate_until") or 0), now() + seconds),
+                      "rate_kind": kind, "rate_reason": reason[:300]})
+        _touch(force=True)
+
+
+def mark_model_missing(endpoint_id: str, reason: str) -> None:
+    """The server said it has no such model: this endpoint is out until Discover lists it again."""
+    with _lock:
+        entry = _state()["health"].setdefault(endpoint_id, {})
+        entry.update({"missing": True, "missing_reason": reason[:300]})
+        _touch(force=True)
+
+
+def siblings_rate_limited(connection: str, endpoint_id: str) -> bool:
+    """Is another model of this connection resting from a rate limit right now?"""
+    with _lock:
+        for eid, entry in _state()["health"].items():
+            if eid != endpoint_id and eid.startswith(connection + "/") and entry.get("rate_kind") == "rate":
+                until = entry.get("rate_until")
+                if isinstance(until, (int, float)) and until > now():
+                    return True
+        return False
 
 
 def health(endpoint_id: str) -> dict[str, Any]:
@@ -308,13 +462,13 @@ def connection_down(connection: str) -> str | None:
         return None
 
 
-def refuse_connection(connection: str, reason: str, rest_s: float) -> None:
+def refuse_connection(connection: str, reason: str, rest_s: float, kind: str = "auth") -> None:
     """The connection refused the key or the account (billing, quota): every model on it
     would say the same, so the whole connection rests. Kept in the state file, so a
     restart doesn't clear it; editing the key, reconnecting or the cooldown does."""
     with _lock:
         entry = _state()["connections"].setdefault(connection, {})
-        entry.update({"refused_until": now() + rest_s, "refused_reason": reason[:300]})
+        entry.update({"refused_until": now() + rest_s, "refused_reason": reason[:300], "refused_kind": kind})
         _touch(force=True)
 
 
@@ -327,13 +481,27 @@ def connection_refused(connection: str) -> str | None:
         return None
 
 
-def clear_refusal(connection: str) -> None:
-    """The person reconnected it (Test, Discover, or added it again)."""
+def connection_refused_kind(connection: str) -> str:
+    """"auth" (the key) or "billing" (the account's credit or quota)."""
     with _lock:
+        return str((_state()["connections"].get(connection) or {}).get("refused_kind") or "auth")
+
+
+def clear_rests(connection: str) -> None:
+    """The person acted on it (edited the key, Test, Discover, added it again): every rest
+    that was about this connection ends - its own, and each of its endpoints'."""
+    with _lock:
+        changed = False
         entry = _state()["connections"].get(connection)
-        if entry and ("refused_until" in entry or "refused_reason" in entry):
-            entry.pop("refused_until", None)
-            entry.pop("refused_reason", None)
+        if entry:
+            for key in ("refused_until", "refused_reason", "refused_kind", "rate_limited_until"):
+                changed = entry.pop(key, None) is not None or changed
+        for eid, h in _state()["health"].items():
+            if eid.startswith(connection + "/"):
+                for key in ("streak", "open_until", "rate_until", "rate_kind", "rate_reason", "missing",
+                            "missing_reason"):
+                    changed = h.pop(key, None) is not None or changed
+        if changed:
             _touch(force=True)
 
 
@@ -341,7 +509,7 @@ def rate_limit(connection: str, seconds: float) -> None:
     with _lock:
         entry = _state()["connections"].setdefault(connection, {})
         entry["rate_limited_until"] = max(float(entry.get("rate_limited_until") or 0), now() + seconds)
-        _touch()
+        _touch(force=True)
 
 
 def rate_limited_until(connection: str) -> float | None:

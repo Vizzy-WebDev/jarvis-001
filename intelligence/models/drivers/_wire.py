@@ -29,7 +29,12 @@ LIST_TIMEOUT_S = 20.0
 #: An INACTIVITY limit — it restarts on every chunk — never a total-time limit, and
 #: deliberately huge: a reasoning model can think silently for minutes, and a slow
 #: first word is not a failure. TCP keep-alive notices a dead connection far sooner.
-SILENCE_CEILING_S = 600.0
+SILENCE_CEILING_S = 600.0  # the shipped default; the model settings (`silence_ceiling_s`) replace it
+
+
+def set_silence_ceiling(seconds: float) -> None:
+    global SILENCE_CEILING_S
+    SILENCE_CEILING_S = float(seconds)
 USER_AGENT = "Jarvis/1.0 (personal assistant)"
 
 
@@ -77,6 +82,9 @@ _CONTEXT = re.compile(r"context (length|window)|maximum context|too many tokens|
                       r"input is too long|exceeds? the (maximum|context)|reduce the length|token limit", re.I)
 _BILLING = re.compile(r"insufficient[_ ]quota|exceeded your current quota|billing|credit balance|"
                       r"payment required|out of credits|no credits|insufficient credits", re.I)
+_DAILY = re.compile(r"per[ _-]?day|daily|requests?[ _-]?per[ _-]?day|PerDay", re.I)
+_NO_MODEL = re.compile(r"\bmodels?\b.{0,80}(not found|does not exist|doesn'?t exist|no such|unknown|not supported)|"
+                       r"(not found|does not exist|no such|unknown).{0,40}\bmodel\b", re.I)
 _REFUSED = re.compile(r"content (policy|management|filter)|safety|flagged|moderation|prohibited", re.I)
 
 
@@ -119,9 +127,14 @@ def error_for(status: int, words: str, url: str, *, headers: Mapping[str, str] |
     `status`) for the trace and the logs."""
     host = host_of(url)
     detail = {"status": status, "provider_words": words}
+    if status == 429 and _DAILY.search(words):
+        # A daily allowance, not a brief burst: it comes back at the provider's reset, not in seconds.
+        return errors.RateLimited(f"{host} says today's allowance for this model is used up.",
+                                  retry_after=_retry_after(headers, body), detail=detail).with_scope(
+                                      "endpoint", "reset")
     if status == 402 or _BILLING.search(words):
-        return errors.Auth(f"{host} refused this for billing or quota reasons: the account may be out of credit "
-                           "or over its limit.", detail=detail)
+        return errors.Billing(f"{host} refused this for billing or quota reasons: the account may be out of "
+                              "credit or over its limit.", detail=detail)
     if status in (401, 403):
         return errors.Auth(f"{host} didn't accept the key.", detail=detail)
     if status == 429:
@@ -136,6 +149,8 @@ def error_for(status: int, words: str, url: str, *, headers: Mapping[str, str] |
     if status >= 500 or status == 409:
         return errors.Unavailable(f"{host} had a problem on its end.", retry_after=_retry_after(headers, body),
                                   detail=detail)
+    if status == 404 and _NO_MODEL.search(words):
+        return errors.ModelNotFound(f"{host} says it doesn't have that model.", detail=detail)
     if status == 404:
         return errors.InvalidRequest(f"{host} says it can't find that. Check the model id and the address.",
                                      detail=detail)
@@ -221,7 +236,8 @@ def get_json(url: str, *, headers: Mapping[str, str] | None = None, params: Mapp
 
 
 def post_json(url: str, *, headers: Mapping[str, str] | None = None, body: Any,
-              timeout: float = SILENCE_CEILING_S) -> Any:
+              timeout: float | None = None) -> Any:
+    timeout = SILENCE_CEILING_S if timeout is None else timeout
     try:
         with httpx.Client(timeout=httpx.Timeout(timeout, connect=CONNECT_TIMEOUT_S), verify=_verify()) as client:
             response = client.post(url, json=body, headers=_headers({"Content-Type": "application/json",

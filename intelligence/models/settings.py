@@ -19,7 +19,6 @@ from .. import prefs
 from . import capabilities as caps_mod
 from . import config, engine, state
 from .catalog import Endpoint, endpoint_id, split_endpoint_id
-from .types import EFFORTS
 
 SELECTED = "selected"
 
@@ -47,12 +46,12 @@ def chosen(cfg: config.Config | None = None) -> tuple[str | None, str | None]:
 
 def effort() -> str | None:
     value = prefs.get_prefs().get("selectedEffort")
-    return value if value in EFFORTS else None
+    return value if isinstance(value, str) and value.strip() else None
 
 
 def effort_levels(endpoint: Endpoint | None) -> list[str]:
-    """The canonical levels this endpoint accepts — only those, never assumed."""
-    return list(caps_mod.effort_levels(endpoint.capabilities)) if endpoint else []
+    """The levels this endpoint takes, in its own words: only what it is known to list."""
+    return list(caps_mod.accepted_levels(endpoint.capabilities)) if endpoint else []
 
 
 def _has_key(conn: Any) -> bool:
@@ -185,7 +184,9 @@ def connection_view(name: str) -> dict[str, Any]:
             "source": "manual" if e.configured and not e.listed else "discovered",
             # A model the person set up stays theirs whatever a listing says.
             "stillListed": e.listed or e.configured or not discovered_before,
-            "effort": ({"levels": effort_levels(e), "default": caps_mod.effort_default(e.capabilities)}
+            "kind": e.kind or "chat",
+            "effort": ({"levels": effort_levels(e), "default": caps_mod.reasoning_default(e.capabilities),
+                        "canDisable": caps_mod.can_disable(e.capabilities)}
                        if effort_levels(e) else None),
         } for e in endpoints],
     }

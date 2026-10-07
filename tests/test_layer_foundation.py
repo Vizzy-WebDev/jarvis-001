@@ -33,7 +33,7 @@ def test_a_request_is_checked_for_what_cannot_be_honoured():
         Request(task_class="x", data_class="public", items=(),
                 hints=Hints(stable_prefix_until="nope"), instructions=(Section("persona", "p"),))
     with pytest.raises(ValueError):
-        Request(task_class="x", data_class="public", items=(), hints=Hints(reasoning_effort="max"))  # type: ignore[arg-type]
+        Request(task_class="x", data_class="public", items=(), hints=Hints(reasoning_effort=" "))
 
 
 def test_the_vocabulary_is_fixed_and_extensions_are_namespaced():
@@ -85,9 +85,9 @@ def test_config_overrides_are_declared_and_context_becomes_a_capability():
     built = catalog.build({"c": conn}, {}, driver_defaults={"fake": {"tools": True}},
                           quirk_caps={"noisy": {"json_mode": True}}, discovered={}, probed={"c/m": {"tools": True}})
     caps = built.endpoints["c/m"].capabilities
-    assert caps["max_context_tokens"] == capabilities.CapValue(8000, "declared")
+    assert caps["max_context_tokens"] == capabilities.CapValue(8000, "configured")
     assert caps["json_mode"].value is True
-    assert caps["tools"] == capabilities.CapValue(True, "probed")
+    assert caps["tools"] == capabilities.CapValue(False, "configured")  # the person's word beats a probe
 
 
 def test_aliases_point_at_an_endpoint_or_a_family():
@@ -119,5 +119,5 @@ def test_every_error_type_says_whether_it_is_retryable():
     assert retryable == {"rate_limited", "unavailable", "timeout"}
     assert set(errors.BY_TYPE) == {"rate_limited", "unavailable", "timeout", "auth", "invalid_request",
                                    "context_too_long", "content_refused", "no_eligible_endpoint",
-                                   "budget_exceeded", "schema_validation_failed"}
+                                   "budget_exceeded", "schema_validation_failed", "billing", "model_not_found"}
     assert errors.Auth("no").at("c/m").endpoint_id == "c/m"

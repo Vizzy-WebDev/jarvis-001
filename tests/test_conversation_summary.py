@@ -144,9 +144,9 @@ def test_a_second_refusal_in_one_turn_fails_it_plainly(layer):  # noqa: F811
 
 
 def test_a_learned_window_only_ever_shrinks():
-    assert state.record_learned_context("x/m", 5_000) == 5_000
-    assert state.record_learned_context("x/m", 9_000) == 5_000
-    assert state.record_learned_context("x/m", 3_000) == 3_000
+    assert state.record_observed_context("x/m", 5_000) == 5_000
+    assert state.record_observed_context("x/m", 9_000) == 5_000
+    assert state.record_observed_context("x/m", 3_000) == 3_000
 
 
 # --- what gives way when the budget is tight ----------------------------------------------

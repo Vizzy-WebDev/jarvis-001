@@ -5,9 +5,12 @@
   from the already-filtered list — preferring one with a different upstream.
   Hard requirements and data policy are never relaxed: nothing outside that list
   is ever tried.
-* Approved deviation (D3b): under Auto, a connection-level `auth` refusal (key,
-  billing, quota) also falls back, preferring another connection; a pinned
-  request still ends on it. Any other error ends the call.
+* Approved deviation (generalising D3b): every error says how far it reaches (`scope`).
+  Under Auto, before the first streamed event, a failure wider than the request (a
+  refused key, an account out of credit, a model the server doesn't have, a daily limit)
+  moves on along the filtered list, skipping what the failure covers (the whole
+  connection, or just that endpoint). A request-scoped error ends the call, and so does
+  any error on a pinned request.
 * A fallback that would change model family is skipped when the request says
   `allow_family_change: false`.
 * Streaming: fall back only before the first content event. After that, an error
@@ -31,9 +34,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Generator, Iterator
 
 from .. import config as app_secrets
-from . import adapt, drivers, engine, finish, state
+from . import adapt, drivers, engine, finish, rests, state
 from . import config as layer_config
-from .errors import ModelError, RateLimited, SchemaValidationFailed, Unavailable
+from .errors import ModelError, SchemaValidationFailed, Unavailable
 from .finish import Assembled
 from .prepared import ConnInfo
 from .resolve import Candidate
@@ -41,11 +44,6 @@ from .types import (CONTENT_EVENTS, Attempt, Done, ErrorEvent, Event, Fallback, 
                     Provenance, Rejection, Request, Response, TextDelta, TextPart, ToolCall, Usage)
 
 logger = logging.getLogger(__name__)
-
-#: A server asking us to wait longer than this is not retried: the call moves on.
-LONG_WAIT_S = 10.0
-#: How long a connection rests after a 429 that didn't say how long.
-DEFAULT_RATE_REST_S = 20.0
 
 #: The clock and the pause, named so tests drive time instead of waiting for it.
 clock: Callable[[], float] = time.monotonic
@@ -131,7 +129,7 @@ def _publish(record: TraceRecord) -> None:
 def _conn_info(candidate: Candidate, cfg: layer_config.Config) -> ConnInfo:
     conn = candidate.connection
     key = app_secrets.get_secret(conn.secret_ref) if conn.secret_ref else None
-    return ConnInfo(name=conn.name, base_url=conn.base_url, api_key=key, quirks=dict(cfg.quirks_of(conn).wire))
+    return ConnInfo(name=conn.name, base_url=conn.base_url, api_key=key, quirks={**cfg.quirks_of(conn).wire, **candidate.endpoint.wire})
 
 
 @dataclass
@@ -230,18 +228,7 @@ def _diagnostic(err: ModelError) -> str:
 
 
 def _note_failure(candidate: Candidate, err: ModelError, cfg: layer_config.Config) -> None:
-    """The only use of an error's kind outside the call itself: the connection's
-    rate-limit rest and the endpoint's breaker."""
-    if isinstance(err, RateLimited):
-        state.rate_limit(candidate.connection.name, err.retry_after or DEFAULT_RATE_REST_S)
-        return
-    if err.type == "auth":
-        # The key or the account (billing, quota) was refused: true of every model on it.
-        state.refuse_connection(candidate.connection.name, str(err), cfg.settings.refused_rest_s)
-    if err.type in ("unavailable", "timeout", "auth"):
-        s = cfg.settings
-        state.record_failure(candidate.endpoint.id, str(err), threshold=s.breaker_threshold,
-                             base_s=s.breaker_base_s, max_s=s.breaker_max_s)
+    rests.note_failure(candidate.endpoint.id, candidate.connection, err, cfg)
 
 
 def run(request: Request, *, streaming: bool) -> Generator[Event, None, Response]:
@@ -295,21 +282,25 @@ def run(request: Request, *, streaming: bool) -> Generator[Event, None, Response
                 record.attempts.append(Attempt(candidate.endpoint.id, err.type, _diagnostic(err),
                                                int((clock() - attempt_started) * 1000)))
                 _note_failure(candidate, err, cfg)
-                # Approved deviation (D3b): under Auto, a connection-level refusal (key, billing,
-                # quota) falls back too, before anything was streamed — preferring another
-                # connection. A pinned request still ends here.
-                refused = err.type == "auth" and request.requirements.pin is None
-                if progress.emitted or not (err.retryable or refused):
+                # A failure wider than the request moves on under Auto, before anything was
+                # streamed, without retrying what it says cannot heal in a moment. A pinned
+                # request ends here.
+                unpinned = request.requirements.pin is None
+                moves_on = unpinned and err.widens and (not err.retryable or err.recovery != "after")
+                if progress.emitted or not (err.retryable or moves_on):
                     record.outcome = err.type
                     record.total_ms = int((clock() - call_started) * 1000)
                     record.endpoint_id = candidate.endpoint.id
                     _publish(record)
                     raise
-                if refused:
-                    refused_connections.add(candidate.connection.name)
+                if moves_on:
+                    if err.scope == "connection":
+                        refused_connections.add(candidate.connection.name)
                     break
+                if err.recovery != "after":
+                    break  # it heals at a reset, not in a moment: retrying here cannot help
                 wait = err.retry_after if err.retry_after is not None else waits[min(attempt_no, len(waits) - 1)]
-                if attempt_no >= cfg.settings.retries or wait > LONG_WAIT_S:
+                if attempt_no >= cfg.settings.retries or wait > cfg.settings.long_wait_s:
                     break
                 sleep(wait)
                 continue

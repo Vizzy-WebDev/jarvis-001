@@ -18,7 +18,7 @@ from stub_wire import StubWire, Turn
 
 WEATHER = (Tool("get_weather", "Weather in a city.",
                 {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}),)
-CAPS = {"text_in": True, "tools": True, "parallel_tools": True, "reasoning_control": True, "prompt_caching": True}
+CAPS = {"text_in": True, "tools": True, "parallel_tools": True, "reasoning_levels": ["low", "medium", "high"], "prompt_caching": True}
 
 
 @pytest.fixture

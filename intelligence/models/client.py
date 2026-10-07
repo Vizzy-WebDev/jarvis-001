@@ -81,7 +81,7 @@ def _learn_from_refusal(error: Any, request: Request) -> None:
         from .resolve import estimate_tokens
 
         refused = estimate_tokens(request, config.current().settings.image_tokens)
-        state.record_learned_context(error.endpoint_id, refused // 2)
+        state.record_observed_context(error.endpoint_id, refused // 2)
     except Exception:  # noqa: BLE001 — learning must never mask the refusal itself
         logger.exception("could not record the context window %s refused", error.endpoint_id)
 

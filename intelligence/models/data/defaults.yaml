@@ -32,6 +32,11 @@ settings:
   breaker_max_s: 7200
   unreachable_rest_s: 300 # how long a connection that didn't answer discovery rests
   refused_rest_s: 3600    # how long a connection that refused the key or account rests
+  long_wait_s: 10         # a server asking to wait longer than this isn't waited for: the call moves on
+  default_rate_rest_s: 20 # how long an endpoint rests after a 429 that didn't say how long
+  daily_rest_s: 21600     # how long it rests after a daily limit whose reset time isn't known
+  silence_ceiling_s: 600  # a stream silent for this long is treated as dead
+  observed_context_ttl_days: 30  # a context window seen in a refusal is forgotten after this
   trace_content: false    # traces are metadata only unless this is true
 
 # How instruction sections are written out, per model family ("default" for any
@@ -43,25 +48,57 @@ prompt_profiles:
 # Server differences, as data. `capabilities` are declared defaults for every
 # endpoint on a connection using the profile; `wire` flags are read by the driver.
 quirk_profiles:
-  plain: {}
+  plain:
+    wire: {listed_reasoning_levels: [low, medium, high]}
   ollama:
     capabilities: {parallel_tools: false}
-    wire: {no_parallel_tool_calls: true, show_endpoint: true, max_tokens_param: max_tokens}
+    wire: {no_parallel_tool_calls: true, show_endpoint: true, max_tokens_param: max_tokens,
+           listed_reasoning_levels: [low, medium, high]}
   lmstudio:
-    wire: {no_parallel_tool_calls: true, max_tokens_param: max_tokens}
+    wire: {no_parallel_tool_calls: true, max_tokens_param: max_tokens, listed_reasoning_levels: [low, medium, high]}
   vllm:
-    wire: {max_tokens_param: max_tokens}
+    wire: {max_tokens_param: max_tokens, listed_reasoning_levels: [low, medium, high]}
   litellm:
-    wire: {error_envelope_in_text: true}
+    wire: {error_envelope_in_text: true, listed_reasoning_levels: [low, medium, high]}
   openrouter:
-    wire: {error_envelope_in_text: true, reasoning_param: reasoning_object, catalog_fields: rich}
+    wire: {error_envelope_in_text: true, reasoning_param: reasoning_object, catalog_fields: rich,
+           listed_reasoning_levels: [low, medium, high]}
   gateway:
-    wire: {error_envelope_in_text: true, catalog_fields: rich}
+    wire: {error_envelope_in_text: true, catalog_fields: rich, listed_reasoning_levels: [low, medium, high]}
   gemini:
     # Newer Gemini models refuse a current-turn function call with no thought
     # signature; a call made by another endpoint has none. Google documents this
     # placeholder for exactly that case.
-    wire: {unsigned_call_signature: skip_thought_signature_validator, thinking_param: level}
+    wire: {unsigned_call_signature: skip_thought_signature_validator}
+
+# What is known about kinds of model, by the shape of their id. This file is the one place a
+# provider's or a model's name may be written; a driver never knows one. Each entry may be
+# scoped to a driver, later entries win, and everything here ranks below what a server lists,
+# what a probe measured and what the person wrote in their own config. Only what a listing,
+# a probe or this repository has shown goes here.
+model_profiles:
+  # The Messages API takes images on its current models, and its own effort default is "high"
+  # (the same as sending nothing). A model's listing says which levels it has.
+  - match: "*"
+    driver: anthropic_messages
+    family: claude
+    capabilities: {image_in: true, reasoning_default: high}
+  # Gemini takes images and a thinking level (never "off"); its ids name the models that only
+  # speak or only draw.
+  - match: "*"
+    driver: gemini_generate
+    family: gemini
+    capabilities: {image_in: true, reasoning_levels: [low, medium, high]}
+  - match: "*-tts*"
+    driver: gemini_generate
+    capabilities: {kind: speech}
+  - match: "*-image*"
+    driver: gemini_generate
+    capabilities: {kind: image}
+  # Responses models take images; `reasoning.effort` has these levels and defaults to medium.
+  - match: "*"
+    driver: openai_responses
+    capabilities: {image_in: true, reasoning_levels: [low, medium, high], reasoning_default: medium}
 
 # What the Model Settings screen's "Add connection" picker offers. Read only by the
 # settings routes, never by routing.
@@ -110,6 +147,7 @@ presets:
     address: editable
     key: none
     trust: local
+    free: true
     quirks: ollama
   - id: lmstudio
     label: LM Studio
@@ -119,6 +157,7 @@ presets:
     address: editable
     key: optional
     trust: local
+    free: true
     quirks: lmstudio
   - id: custom
     label: Custom

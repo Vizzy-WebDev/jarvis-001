@@ -62,7 +62,6 @@ def _run(period: str = "month") -> dict[str, Any]:
         "calls": data["eventCount"],
         "measured": groups,
         "calculated": data["calculated"],
-        "providerReported": data["providerReported"],
         "pricelessGroups": priceless,
         "freeGroups": free,
         "mostUsed": {"modelId": top["modelId"], "provider": top["provider"],

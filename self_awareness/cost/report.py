@@ -79,7 +79,6 @@ def usage_breakdown(since_iso: str) -> dict[str, Any]:
                        if priced else None),
         "pricelessGroups": priceless,
         "freeGroups": free,
-        "providerReported": store.list_balances(),
     }
 
 

@@ -130,7 +130,6 @@ def start_background_work() -> dict[str, bool]:
     """
     from . import chat_store, notifications
     from .connectors import icons as connector_icons
-    from .cost import balances, prices
     from .heartbeat import engine as heartbeat
     from .heartbeat.triggers import start_triggers
     from .improvement import cadence as improvement_cadence
@@ -139,20 +138,15 @@ def start_background_work() -> dict[str, bool]:
     from .ops.environment import sampler
     from .scheduler import engine as scheduler_engine
 
-    from .models import migrate_db
     from .models import startup as model_startup
 
-    started = {"balances": False, "prices": False, "sampler": False, "heartbeat": False,
+    started = {"model_discovery": False, "sampler": False, "heartbeat": False,
               "scheduler": False, "monitor": False, "job_supervisor": False,
               "improvement_cadence": False, "notification_trash_purge": False,
-              "connector_icons": False, "chat_trash_purge": False, "model_discovery": False}
+              "connector_icons": False, "chat_trash_purge": False}
 
-    # A move of the old model tables that failed at migration time is tried again
-    # each start until it works. Not a clock: it runs once, here, and only if needed.
-    migrate_db.retry_if_pending()
-
-    started["prices"] = prices.start_price_maintenance()
-    started["balances"] = balances.start()
+    # First, so no run the scheduler or job supervisor picks up starts against an empty catalog.
+    started["model_discovery"] = model_startup.start()
     started["sampler"] = sampler.start()
     started["heartbeat"] = heartbeat.start(event_bus=bus)
     if started["heartbeat"]:
@@ -166,7 +160,6 @@ def start_background_work() -> dict[str, bool]:
     started["notification_trash_purge"] = notifications.start_trash_purge()
     started["connector_icons"] = connector_icons.start()
     started["chat_trash_purge"] = chat_store.start_trash_purge()
-    started["model_discovery"] = model_startup.start()
     return started
 
 

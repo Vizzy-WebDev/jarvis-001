@@ -32,33 +32,21 @@ would either understate spend or make a `$0` month look like a month with no dat
   providers bill per character requested, not per chunk played. Speech-to-text is not
   recorded.
 
-## `prices.py` — write-time precedence
+## `prices.py` — a price is read, never stored
 
-1. A price the user set (`set_user_price()`) always wins and is never silently replaced.
-2. A provider's own published numeric pricing — `refresh_reported_prices()` files the prices a
-   connected provider's own model list reported (the model layer's discovery,
-   `models.settings.reported_prices()`, under the ledger's provider name) and skips any model
-   whose price is already `source: user`. No provider is named here.
+There is no price table. `calculate()` finds the model layer's own endpoint for the ledger's
+provider name and model id and multiplies by its `Pricing` (per million tokens): what the person
+wrote in their model settings, else what the connection's own list reported, else $0 for a
+connection that runs on their own machine. Non-token units and unknown prices give `None`.
+Nothing refreshes and nothing can disagree with the model settings. The `provider` key must be
+the same one the recorder uses (`Connection.ledger_name`).
 
 **No dollar figure is hardcoded for a cloud model** — a plausible-looking invented number is
-exactly the failure this subsystem exists to prevent. The `provider` key must be the same
-one the recorder uses; deriving it a second way writes rows nothing reads.
-
-The price refresh (`start_price_maintenance()`) and balance polling (`balances.start()`,
-`JARVIS_COST_REFRESH`) are plain periodic timers behind their interlocks. They are
-deliberately NOT heartbeat sources: the heartbeat spends a model call judging whether a
-finding is worth interrupting for, and a silent maintenance refresh has no finding.
-
-## Reading prices back
-
-`advisor.py`'s `observed_cost_tier()` buckets a recorded price into a 0-4 scale and says
-"no opinion" when none exists, so an unpriced model is neither rewarded nor punished. Nothing
-ranks models on it: there is one selected model and no router, so nothing chooses between
-models by price. The recorder is fed by `models/runtime.py`'s `publish_completed`, which
-publishes `provider` (the connection's kind) and the usage the provider itself reported —
-tokens in (all input, cached being a subset of it), out, and cached — and nothing when the
-provider reported nothing. No balance reader is registered: no provider exposes a reliable
-one, so `provider_balances` stays empty rather than showing a guess.
+exactly the failure this subsystem exists to prevent. The recorder is fed by
+`models/runtime.py`'s `publish_completed`, which publishes `provider` and the usage the
+provider itself reported (tokens in, out, cached) and nothing when it reported nothing. No
+provider exposes a reliable balance, so there is no balance ledger (migration 39 dropped
+`provider_balances` and `model_prices`).
 
 ## `report.py` + `tools/check_spending.py`
 

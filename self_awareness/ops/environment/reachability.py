@@ -36,12 +36,16 @@ def voice() -> dict[str, Any]:
     """Speech in and out. The browser's own voice needs no server component and
     is therefore always available — which is why "no key" never means "cannot
     speak"."""
+    from ...assembly import get_wake_detector
     from ...prefs import get_prefs
 
     prefs = get_prefs()
+    # The detector's own answer. This used to say "available" unconditionally,
+    # while the model was not even on the machine.
+    wake = get_wake_detector().status()
     return {"speechOut": {"provider": prefs.get("ttsProvider") or "browser",
                           "alwaysAvailable": True},
-            "wakeWord": {"available": True, "note": "runs locally; no network needed"}}
+            "wakeWord": {"available": bool(wake["available"]), "note": wake["note"]}}
 
 
 def snapshot() -> dict[str, Any]:

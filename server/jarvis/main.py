@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .routes import (
     agents, approvals, artifacts, automation, connectors, content_manager, control, conversations,
-    core, events,
+    core, events, health,
     external_services, improvement, jobs, memory, models, notifications, realtime,
     sandbox, skills, speech, tasks, turn, uploads, voice,
 )
@@ -68,6 +68,7 @@ def create_app() -> FastAPI:
     app.include_router(automation.router)
     app.include_router(sandbox.router)
     app.include_router(content_manager.router)
+    app.include_router(health.router)
 
     # Everything here is behind its own interlock — off by default so a test's
     # own create_app() never starts a real background thread unasked. `main()`
@@ -98,6 +99,7 @@ _BACKGROUND_INTERLOCKS = (
     "JARVIS_COST_REFRESH", "JARVIS_ENV_SAMPLER", "JARVIS_IMPROVEMENT",
     "JARVIS_NOTIFICATION_TRASH_PURGE", "JARVIS_CONNECTOR_ICONS",
     "JARVIS_CHAT_TRASH_PURGE", "JARVIS_MODEL_DISCOVERY", "JARVIS_CONVERSATION_SUMMARY",
+    "JARVIS_WAKE_MODEL_DOWNLOAD",
 )
 
 

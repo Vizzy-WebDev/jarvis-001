@@ -67,6 +67,10 @@ def test_an_unavailable_model_is_reported_not_faked(monkeypatch):
 # --- the plumbing around detection, with the score forced --------------------
 
 class AlwaysWakes(WakeDetector):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._model = object()  # loaded, as far as status() can tell
+
     def load(self) -> bool:
         return True
 

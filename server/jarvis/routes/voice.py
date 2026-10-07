@@ -47,11 +47,13 @@ async def wake_socket(socket: WebSocket) -> None:
     detector = get_wake_detector()
     mode = get_conversation_mode()
 
-    if not detector.available:
+    state = detector.status()  # never waits: loading happens in the background
+    if not state["available"]:
         # Say so and close, rather than accepting audio that will never be
         # scored — a socket that quietly swallows a microphone is worse than a
-        # refusal.
-        await socket.send_json({"type": "unavailable", **detector.status()})
+        # refusal. "preparing" means: ask again shortly.
+        await socket.send_json({"type": "preparing" if state["preparing"] else "unavailable",
+                                **state})
         await socket.close()
         return
 

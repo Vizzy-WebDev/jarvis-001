@@ -6,11 +6,18 @@ wake word, which matters more here than almost anywhere else in the system: a
 wake word means a microphone is always listening, and the only acceptable answer
 to "where does that audio go?" is "nowhere".
 
-**What is honest about this module when the model is missing.** openWakeWord
-downloads its models on first use. If the package or the model is unavailable,
-`WakeDetector.available` is False and `feed()` returns None forever — it never
-pretends, and never silently degrades into "wakes on any noise", which would be
-far worse than not working. `status()` says which it is.
+**Getting the model.** openWakeWord does NOT fetch its models by itself (an
+earlier note here said it did, and the detector never worked on a fresh install
+because of it). The three small files it needs — the "hey jarvis" model and the
+two feature models — are downloaded once into `data/wakeword/`, in the
+background, the first time anything asks (`prepare()`), and loaded from there.
+Never on the audio path, never into the installed package.
+
+**What is honest about this module when the model is missing.** If the package or
+the model is unavailable, `WakeDetector.available` is False and `feed()` returns
+None forever — it never pretends, and never silently degrades into "wakes on any
+noise", which would be far worse than not working. `status()` says which it is,
+including "still getting ready".
 
 Audio contract: 16 kHz, 16-bit signed little-endian, mono. That is what the model
 was trained on; resampling belongs to whatever captures the audio, not here.
@@ -19,9 +26,11 @@ was trained on; resampling belongs to whatever captures the audio, not here.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +48,10 @@ DEFAULT_THRESHOLD = 0.5
 #: "hey Jarvis" fires several times as the phrase passes through the window,
 #: and the assistant appears to wake up three times to one greeting.
 REFRACTORY_S = 2.0
+#: Fetching the model reaches the network, so it is an interlock like every other
+#: thing Jarvis does on its own: off unless `main()` (the real launch) turns it
+#: on. A test that asks for a detector never downloads anything.
+DOWNLOAD_ENV = "JARVIS_WAKE_MODEL_DOWNLOAD"
 
 
 @dataclass(frozen=True)
@@ -59,44 +72,89 @@ class WakeDetector:
         self._error: str | None = None
         self._last_wake = 0.0
         self._lock = threading.RLock()
+        self._preparing: threading.Thread | None = None
 
     # --- availability --------------------------------------------------------
 
+    @staticmethod
+    def model_dir() -> Path:
+        from ..store import data_dir
+        return data_dir() / "wakeword"
+
+    def _files(self) -> dict[str, Path]:
+        base = self.model_dir()
+        return {"wake": base / f"{self.model_name}.onnx",
+                "melspec": base / "melspectrogram.onnx",
+                "embedding": base / "embedding_model.onnx"}
+
     def load(self) -> bool:
-        """Load the model. Safe to call repeatedly; returns whether it is usable."""
+        """Load the model, fetching its files first if this machine does not
+        have them yet. Blocking — anything that must not wait calls `prepare()`.
+        Safe to call repeatedly; returns whether it is usable."""
         with self._lock:
             if self._model is not None:
                 return True
             if self._error is not None:
                 return False
             try:
+                files = self._files()
+                if not all(path.exists() for path in files.values()):
+                    if os.environ.get(DOWNLOAD_ENV) != "1":
+                        raise FileNotFoundError("the wake model is not on this machine yet")
+                    from openwakeword.utils import download_models
+                    self.model_dir().mkdir(parents=True, exist_ok=True)
+                    download_models(model_names=[self.model_name.split("_v")[0]],
+                                    target_directory=str(self.model_dir()))
                 from openwakeword.model import Model  # imported here: a heavy import
-                self._model = Model(wakeword_models=[self.model_name],
+                self._model = Model(wakeword_models=[str(files["wake"])],
+                                    melspec_model_path=str(files["melspec"]),
+                                    embedding_model_path=str(files["embedding"]),
                                     inference_framework="onnx")
                 return True
             except Exception as err:  # noqa: BLE001
-                # Includes the model simply not being downloaded yet. Recorded
-                # once and reported, never retried on every audio frame.
+                # Includes the files not being reachable to download (no
+                # network). Recorded once and reported, never retried on every
+                # audio frame; a restart tries again.
                 self._error = f"{err.__class__.__name__}: {err}"
                 logger.warning("wake word unavailable: %s", self._error)
                 return False
+
+    def prepare(self) -> None:
+        """Start loading in the background, once. Returns at once."""
+        with self._lock:
+            if self._model is not None or self._error is not None or self._preparing is not None:
+                return
+            self._preparing = threading.Thread(target=self.load, name="wake-word-prepare",
+                                               daemon=True)
+            self._preparing.start()
+
+    @property
+    def preparing(self) -> bool:
+        thread = self._preparing
+        return thread is not None and thread.is_alive() and self._model is None
 
     @property
     def available(self) -> bool:
         return self.load()
 
     def status(self) -> dict[str, object]:
+        """What the detector can do right now, without waiting on it. A detector
+        nobody has asked for yet starts getting ready here."""
+        self.prepare()
+        ready = self._model is not None
         return {
-            "available": self.available,
+            "available": ready,
+            "preparing": self.preparing,
             "model": self.model_name,
             "threshold": self.threshold,
             "sampleRate": SAMPLE_RATE,
             "error": self._error,
             # Said plainly, because "the wake word isn't working" and "the wake
             # word is off" are different problems with different fixes.
-            "note": ("Listening happens on this machine; no audio leaves it."
-                     if self._error is None else
-                     "Wake word is not available — the model could not be loaded."),
+            "note": ("Listening happens on this machine; no audio leaves it." if ready
+                     else "Wake word is getting ready — its model is being fetched once."
+                     if self._error is None
+                     else "Wake word is not available — its model could not be loaded."),
         }
 
     # --- detection -----------------------------------------------------------

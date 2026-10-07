@@ -81,7 +81,7 @@ export function ModelPicker() {
     }
   }
 
-  async function setEffort(level: string) {
+  async function setEffort(level: string | null) {
     if (!selected) return;
     setError(null);
     try {
@@ -97,7 +97,7 @@ export function ModelPicker() {
   }
 
   const effort = selected?.model.effort ?? null;
-  const currentEffort = selection?.effort ?? effort?.default ?? null;
+  const currentEffort = selection?.effort ?? null;
 
   return (
     <>
@@ -220,6 +220,17 @@ export function ModelPicker() {
                 <p className="px-3.5 pb-1 pt-2 text-[12px] leading-relaxed text-ink-faint">
                   More effort means a more thorough answer, but it takes longer and uses more of your allowance.
                 </p>
+                <button
+                  type="button"
+                  data-testid="effort-model-default"
+                  aria-pressed={currentEffort === null}
+                  onClick={() => void setEffort(null)}
+                  className="flex w-full items-center gap-2 px-3.5 py-2 text-left text-[13px] text-ink transition hover:bg-white/[0.05]"
+                >
+                  <span>Model default</span>
+                  {effort.default && <span className="text-[11px] text-ink-muted">{effortLabel(effort.default)}</span>}
+                  {currentEffort === null && <CheckIcon className="ml-auto h-4 w-4 shrink-0 text-accent" />}
+                </button>
                 {effort.levels.map((level) => (
                   <button
                     key={level}

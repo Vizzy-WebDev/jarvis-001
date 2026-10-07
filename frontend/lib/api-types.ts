@@ -125,12 +125,15 @@ export interface ProviderFormat {
 }
 
 /**
- * Reasoning effort as the PROVIDER reported it for one model. Absent means the
- * provider said nothing, and no control is offered — levels are never assumed.
+ * Reasoning effort as this ONE model takes it, in its own words. Absent means nothing is
+ * known about its levels, and no control is offered — levels are never assumed. The person's
+ * alternative to a level is always "Model default", which sends nothing.
  */
 export interface ModelEffort {
   levels: string[];
   default: string | null;
+  /** True when "none" is among the levels because the model can really switch thinking off. */
+  canDisable: boolean;
 }
 
 export interface ProviderModel {

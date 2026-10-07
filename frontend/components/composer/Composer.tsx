@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react';
 
+import { extensionOf, type Turn } from '@/components/conversation/Message';
 import { AttachIcon, CloseIcon, MicIcon, SendIcon } from '@/components/ui/Icons';
-import { IconButton } from '@/components/ui/IconButton';
 import { api, ApiRequestError } from '@/lib/api';
 import { Dictation } from '@/lib/voice/dictation';
 
@@ -22,6 +22,14 @@ export interface Attachment {
    *  `createObjectURL` and revoked when the tile goes — the file is already on
    *  the server, this is only what the user looks at while they type. */
   preview?: string;
+  /** The preview is the server's own copy (a message being edited), not a
+   *  local object URL, so there is nothing to revoke. */
+  kept?: boolean;
+}
+
+/** The upload id a sent attachment's content URL was built from. */
+function uploadIdOf(url: string): string | null {
+  return url.match(/\/api\/uploads\/([^/]+)\/content$/)?.[1] ?? null;
 }
 
 /**
@@ -38,8 +46,11 @@ export interface Attachment {
  *
  * **Attachments scroll SIDEWAYS.** They are one row that never wraps, so
  * attaching a tenth file cannot grow the composer downwards into the
- * conversation. The original wrapped them into a vertical stack with its own
- * scroll cap, which is the behaviour this deliberately replaces.
+ * conversation.
+ *
+ * **Editing (design 1h).** Edit on a sent message loads its words and its files
+ * back in here, tagged "Editing message"; Resend replaces the replies after it,
+ * Cancel (or Escape) leaves it as it was.
  *
  * Anything can be attached; there is no `accept` filter, deliberately. An
  * upload returns an id and only the id ever reaches a turn.
@@ -53,22 +64,23 @@ export function Composer({
   isSpeaking,
   draftText,
   onDraftConsumed,
+  editing,
+  onCancelEdit,
+  placeholder = 'Message Jarvis…',
 }: {
   disabled: boolean;
   busy: boolean;
   /** `attachments` carries just enough to show what was sent in the
    *  sender's own chat bubble (id, name, kind) — never `preview`, which is
-   *  an internal, composer-only concern (a local blob URL, revoked the
-   *  moment this fires). */
-  onSend: (text: string, attachments: { id: string; name: string; kind: string }[]) => void;
+   *  an internal, composer-only concern. `editOf` is the message being
+   *  replaced, when this was an edit. */
+  onSend: (text: string, attachments: { id: string; name: string; kind: string }[], editOf?: string) => void;
   /** Silence anything else that is listening — only one recognition session
    *  runs reliably at a time. */
   onDictationStart?: () => void;
   /** The other direction of that same rule: true while the main voice engine
    *  is running, so this can stand its own dictation down the moment it
-   *  starts — a plain reactive prop rather than an imperative call, since the
-   *  caller has no other way to reach into this component's own `Dictation`
-   *  instance. */
+   *  starts. */
   voiceEngineActive?: boolean;
   /** Whether Jarvis is speaking right now. A backstop: the caller is expected
    *  to have silenced it, and this catches the case where it starts for some
@@ -79,6 +91,10 @@ export function Composer({
    *  send as-is. */
   draftText?: string | null;
   onDraftConsumed?: () => void;
+  /** A sent message loaded back in to be edited. */
+  editing?: Turn | null;
+  onCancelEdit?: () => void;
+  placeholder?: string;
 }) {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -90,8 +106,7 @@ export function Composer({
    *
    * Reading it during render would be read once with no `window` at all, since
    * the production build is a static export prerendered at build time — so the
-   * button would ship permanently disabled in the HTML, and the mismatch when
-   * the page hydrated is a bug React papers over rather than fixes.
+   * button would ship permanently disabled in the HTML.
    */
   const [canDictate, setCanDictate] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -104,9 +119,6 @@ export function Composer({
    * different thing from talking to Jarvis. It never sends anything and never
    * reaches the server — words land in the box and are sent, or edited first,
    * by hand.
-   *
-   * Built once and kept: unlike a voice engine, it holds no device until it is
-   * started, so there is nothing to release between uses.
    */
   const [dictation] = useState(() => new Dictation({
     onText: (spoken) => {
@@ -130,8 +142,7 @@ export function Composer({
       return;
     }
     // Only one recognition session runs reliably at a time, so whatever else is
-    // listening has to stop first. The page owns that decision, because only it
-    // knows what else is running.
+    // listening has to stop first. The page owns that decision.
     setError(null);
     onDictationStart?.();
     dictation.start(text);
@@ -177,6 +188,40 @@ export function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftText]);
 
+  // A message loaded in for editing: its words and its files, focused, the
+  // caret at the end. Leaving edit mode empties the box again.
+  const editingId = editing?.id ?? null;
+  const wasEditing = useRef<string | null>(null);
+  useEffect(() => {
+    const box = textRef.current;
+    if (!editing) {
+      if (wasEditing.current) {
+        setText('');
+        setAttachments((current) => { current.forEach(revoke); return []; });
+        if (box) box.style.height = 'auto';
+      }
+      wasEditing.current = null;
+      return;
+    }
+    wasEditing.current = editing.id;
+    setText(editing.text);
+    setAttachments((current) => {
+      current.forEach(revoke);
+      return (editing.attachments ?? []).flatMap((a) => {
+        const id = uploadIdOf(a.url);
+        return id ? [{ id, name: a.name ?? '', size: 0, kind: a.kind,
+                       preview: a.kind === 'image' ? a.url : undefined, kept: true }] : [];
+      });
+    });
+    if (box) {
+      box.value = editing.text;
+      grow(box);
+      box.focus();
+      box.setSelectionRange(editing.text.length, editing.text.length);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingId]);
+
   async function addFiles(event: ChangeEvent<HTMLInputElement>) {
     const chosen = Array.from(event.target.files ?? []);
     event.target.value = '';
@@ -211,12 +256,16 @@ export function Composer({
   function submit(event?: FormEvent) {
     event?.preventDefault();
     const message = text.trim();
-    if ((!message && attachments.length === 0) || disabled || busy) return;
-    onSend(message, attachments.map((a) => ({ id: a.id, name: a.name, kind: a.kind })));
+    if ((!message && attachments.length === 0) || disabled || (busy && !editing)) return;
+    onSend(message, attachments.map((a) => ({ id: a.id, name: a.name, kind: a.kind })), editing?.id);
     attachments.forEach(revoke);
     setText('');
     setAttachments([]);
     if (textRef.current) textRef.current.style.height = 'auto';
+    if (editing) {
+      wasEditing.current = null;
+      onCancelEdit?.();
+    }
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -225,25 +274,38 @@ export function Composer({
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       submit();
+    } else if (event.key === 'Escape' && editing) {
+      event.preventDefault();
+      event.stopPropagation();
+      onCancelEdit?.();
     }
   }
 
   const nothingToSend = !text.trim() && attachments.length === 0;
 
   return (
-    // No ground and no border of its own: this is the bottom band of the
+    // No ground of its own beyond the input box: this is the bottom band of the
     // conversation panel, not a container sitting beneath one.
-    <div className="shrink-0 px-2.5 pb-2.5 pt-2">
+    <div className="relative shrink-0 px-3 pb-3 pt-2.5">
+      {editing && (
+        <div className="mb-2 flex flex-wrap items-center gap-2" data-testid="editing-tag">
+          <span className="rounded-full border border-[rgb(245_165_36/0.5)] px-[9px] py-[3px] font-mono text-[10.5px] tracking-[0.14em] text-state-warn">
+            EDITING MESSAGE
+          </span>
+          <span className="text-[11.5px] text-ink-muted">Resending replaces the replies after this message.</span>
+        </div>
+      )}
+
       {attachments.length > 0 && (
         <div
           data-testid="attachments"
-          className="scroll-quiet mb-2 flex gap-2 overflow-x-auto overflow-y-hidden pb-1.5"
+          className="scroll-quiet mb-1.5 flex gap-2 overflow-x-auto overflow-y-hidden pb-1.5"
         >
           {attachments.map((file) => (
             <div
               key={file.id}
               title={file.name}
-              className="relative shrink-0 overflow-hidden rounded border border-surface-border bg-surface-raised"
+              className="relative shrink-0 overflow-hidden rounded-lg border border-line/[0.22] bg-[rgb(15_22_31/0.9)]"
               style={{ width: 'var(--composer-tile)', height: 'var(--composer-tile)' }}
             >
               {file.preview ? (
@@ -251,24 +313,25 @@ export function Composer({
                 <img src={file.preview} alt={file.name} className="h-full w-full object-cover" />
               ) : (
                 <>
-                  <p className="line-clamp-3 break-words p-2 pr-6 text-[11px] leading-tight text-ink-muted">
-                    {file.name}
+                  <p className="absolute left-[7px] right-5 top-1.5 max-h-10 overflow-hidden break-all text-[10.5px] leading-tight text-ink-soft">
+                    {file.name || 'Attached file'}
                   </p>
-                  <span className="absolute bottom-1.5 left-2 text-[9px] font-semibold uppercase tracking-[0.1em] text-ink-faint">
+                  <span className="absolute bottom-[5px] left-[7px] font-mono text-[9px] uppercase tracking-[0.1em] text-ink-muted">
                     {extensionOf(file.name)}
                   </span>
                 </>
               )}
               <button
                 type="button"
-                aria-label={`Remove ${file.name}`}
+                aria-label={`Remove ${file.name || 'this file'}`}
+                title={`Remove ${file.name || 'this file'}`}
                 onClick={() => remove(file.id)}
                 // Inside the tile, not hanging off its corner: this row scrolls,
                 // and a scroll container clips anything outside its child.
-                className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full
-                           bg-surface/80 text-ink-muted backdrop-blur transition hover:bg-surface hover:text-ink"
+                className="absolute right-[3px] top-[3px] flex h-[18px] w-[18px] items-center justify-center rounded-full
+                           bg-[rgb(5_7_10/0.8)] text-ink-soft transition hover:text-white"
               >
-                <CloseIcon className="h-3 w-3" />
+                <CloseIcon className="h-2.5 w-2.5" />
               </button>
             </div>
           ))}
@@ -276,12 +339,14 @@ export function Composer({
       )}
 
       {error && (
-        <p data-testid="composer-error" className="px-1 pb-1.5 text-[12px] text-state-danger">
+        <p data-testid="composer-error" className="px-1 pb-1.5 text-[12px] text-badge-red">
           {error}
         </p>
       )}
 
-      <form onSubmit={submit} autoComplete="off">
+      <form onSubmit={submit} autoComplete="off"
+            className="flex flex-col gap-1.5 rounded-xl border bg-[rgb(8_12_18/0.8)] pb-2 pl-3.5 pr-2.5 pt-2.5 transition-colors"
+            style={{ borderColor: editing ? 'rgb(var(--line) / 0.5)' : 'rgb(var(--line) / 0.22)' }}>
         <textarea
           ref={textRef}
           rows={1}
@@ -297,51 +362,78 @@ export function Composer({
             dictation.rebase(event.target.value);
           }}
           onKeyDown={onKeyDown}
-          placeholder={uploading ? 'Attaching…' : 'Message Jarvis…'}
-          className="scroll-quiet block min-h-[34px] w-full resize-none bg-transparent px-1.5 py-1.5
-                     text-[14px] leading-relaxed text-ink outline-none placeholder:text-ink-faint"
+          placeholder={uploading ? 'Attaching…' : editing ? 'Edit your message…' : placeholder}
+          className="scroll-quiet block min-h-[24px] w-full resize-none bg-transparent py-0.5 text-[14px] leading-normal
+                     text-ink-strong outline-none placeholder:text-ink-muted"
           style={{ maxHeight: 'var(--composer-text-max)' }}
         />
 
         {/* Its own line, permanently. See this file's own note on why. */}
-        <div data-testid="composer-controls" className="mt-1 flex items-center gap-1">
-          <IconButton
-            label="Attach a file"
+        <div data-testid="composer-controls" className="flex items-center gap-1">
+          <button
+            type="button"
+            aria-label="Attach a file"
+            title="Attach a file"
             data-testid="attach"
             onClick={() => fileRef.current?.click()}
             disabled={uploading}
+            className="-ml-1.5 inline-flex h-[30px] w-[30px] items-center justify-center rounded-lg text-ink-muted
+                       hover:bg-line/[0.08] hover:text-white disabled:opacity-50"
           >
-            <AttachIcon />
-          </IconButton>
+            <AttachIcon className="h-4 w-4" />
+          </button>
           <input ref={fileRef} type="file" multiple hidden onChange={addFiles} />
           {/* Which model answers, and how hard it works where its provider says
               it can. Sits with the other per-message controls, not in settings:
               it is a choice made while talking. */}
           <ModelPicker />
 
-          <div className="ml-auto flex items-center gap-1">
-            <IconButton
-              label={dictating ? 'Stop dictating' : 'Speak instead of typing'}
-              data-testid="dictate"
-              aria-pressed={dictating}
-              onClick={toggleDictation}
-              disabled={!canDictate}
-              title={canDictate
-                ? (dictating ? 'Stop dictating' : 'Speak instead of typing')
-                : 'This browser has no speech recognition'}
-              className={dictating ? 'border-accent/40 bg-accent/15 text-accent' : undefined}
-            >
-              <MicIcon muted={!dictating} />
-            </IconButton>
-            <IconButton
-              label="Send"
-              type="submit"
-              data-testid="send"
-              disabled={disabled || busy || nothingToSend}
-              className="bg-accent/15 text-accent hover:bg-accent/25 hover:text-accent"
-            >
-              <SendIcon />
-            </IconButton>
+          <div className="ml-auto flex items-center gap-1.5">
+            {editing ? (
+              <>
+                <button type="button" data-testid="cancel-edit" onClick={onCancelEdit}
+                        className="h-[30px] rounded-[9px] border border-line/[0.22] px-[13px] text-[12.5px] text-ink-strong hover:bg-line/[0.08]">
+                  Cancel
+                </button>
+                <button type="submit" data-testid="save-edit" disabled={disabled || nothingToSend}
+                        className="h-[30px] rounded-[9px] border border-line/40 bg-[rgb(63_127_174/0.35)] px-[13px] text-[12.5px]
+                                   text-ink-strong hover:bg-[rgb(63_127_174/0.6)] disabled:opacity-50">
+                  Resend
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  aria-label={dictating ? 'Stop dictating' : 'Speak instead of typing'}
+                  data-testid="dictate"
+                  aria-pressed={dictating}
+                  onClick={toggleDictation}
+                  disabled={!canDictate}
+                  title={canDictate
+                    ? (dictating ? 'Stop dictating' : 'Speak instead of typing')
+                    : 'This browser has no speech recognition'}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-full border transition-colors hover:text-white disabled:opacity-50"
+                  style={dictating
+                    ? { borderColor: 'rgb(127 184 230 / 0.45)', background: 'rgb(127 184 230 / 0.16)', color: '#9fd0f2' }
+                    : { borderColor: 'transparent', color: 'rgb(var(--ink-muted))' }}
+                >
+                  <MicIcon className="h-4 w-4" muted={!dictating} />
+                </button>
+                <button
+                  type="submit"
+                  aria-label="Send"
+                  title="Send"
+                  data-testid="send"
+                  disabled={disabled || busy || nothingToSend}
+                  className="inline-flex h-[34px] w-[34px] items-center justify-center rounded-[9px] border border-line/[0.35]
+                             bg-[rgb(63_127_174/0.55)] text-ink-strong transition hover:bg-[rgb(63_127_174/0.6)]
+                             disabled:cursor-default disabled:bg-[rgb(63_127_174/0.2)] disabled:opacity-50"
+                >
+                  <SendIcon className="h-4 w-4" />
+                </button>
+              </>
+            )}
           </div>
         </div>
       </form>
@@ -359,9 +451,8 @@ export function Composer({
  * Only restores the old caret position when it is still meaningful: pure
  * growth AHEAD of it (`next` starts with the box's old value) means the text
  * up to and around the caret never changed, so its position still points at
- * the same characters. Anything else — a rebase, a fresh draft replacing
- * everything — has no earlier position worth preserving, so the caret goes to
- * the end of the new text, exactly what happens today, just made explicit.
+ * the same characters. Anything else has no earlier position worth
+ * preserving, so the caret goes to the end of the new text.
  */
 function setValuePreservingCaret(box: HTMLTextAreaElement, next: string): void {
   const prevValue = box.value;
@@ -377,10 +468,5 @@ function setValuePreservingCaret(box: HTMLTextAreaElement, next: string): void {
 }
 
 function revoke(file: Attachment) {
-  if (file.preview) URL.revokeObjectURL(file.preview);
-}
-
-function extensionOf(name: string): string {
-  const dot = name.lastIndexOf('.');
-  return dot > 0 ? name.slice(dot + 1).slice(0, 5) : 'file';
+  if (file.preview && !file.kept) URL.revokeObjectURL(file.preview);
 }

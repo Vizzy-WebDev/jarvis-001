@@ -78,7 +78,9 @@ all of them on: the scheduler (`scheduler/engine.py`), the heartbeat
 environment sampler (`ops/environment/sampler.py`), Self-Improvement's own tick
 (`improvement/cadence.py`), and three recycle-bin/logo sweeps added since — the
 notifications trash purge (`notifications.py`), the connector icon resolver
-(`connectors/icons.py`), and the chat-history trash purge (`chat_store.py`).
+(`connectors/icons.py`), and the chat-history trash purge (`chat_store.py`). One more
+reaches the network rather than running on a clock: `JARVIS_WAKE_MODEL_DOWNLOAD` lets the
+wake-word detector fetch its model once into `data/wakeword/` (`voice/wake.py`).
 `assembly.start_background_work()` is the one place "what
 starts itself" is answerable by reading a single function. One interlock gates work that
 is triggered by a reply rather than a clock: `JARVIS_CONVERSATION_SUMMARY`, the running

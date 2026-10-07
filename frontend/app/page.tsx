@@ -3,18 +3,13 @@
 import dynamic from 'next/dynamic';
 import { useEffect, useMemo, useState } from 'react';
 
-import { ChatHistoryDrawer } from '@/components/conversation/ChatHistoryDrawer';
 import { ConversationPanel } from '@/components/conversation/ConversationPanel';
 import { useAssistant } from '@/components/conversation/useAssistant';
+import { HomeScreen } from '@/components/home/HomeScreen';
 import { AskJarvis } from '@/components/shell/AskJarvis';
 import { Drawer } from '@/components/shell/Drawer';
-import { Header } from '@/components/shell/Header';
 import { Blurb, ComingInStage, PageShell } from '@/components/shell/PageShell';
-import { SettingsPanel } from '@/components/shell/SettingsPanel';
-import { MicButton } from '@/components/stage/MicButton';
-import { Orb } from '@/components/stage/Orb';
-import { MicIcon } from '@/components/ui/Icons';
-import { IconButton } from '@/components/ui/IconButton';
+import { ServiceKeys } from '@/components/shell/ServiceKeys';
 import { jarvisState } from '@/lib/jarvis-state';
 import type { Route } from '@/lib/nav';
 import { useHashRoute } from '@/lib/useHashRoute';
@@ -77,8 +72,6 @@ export default function Home() {
   const [route, go] = useHashRoute();
   const onHome = route.page.id === 'home';
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [askOpen, setAskOpen] = useState(false);
   const a = useAssistant(go, onHome);
 
@@ -111,7 +104,8 @@ export default function Home() {
     [pageKey],
   );
 
-  const conversation = (docked: boolean) => (
+  // The "Ask Jarvis" dock on every other page: the same conversation as Home.
+  const docked = (
     <ConversationPanel
       key={a.activeConversationId}
       turns={a.turns}
@@ -120,24 +114,17 @@ export default function Home() {
       onSend={a.send}
       onNewChat={a.newChat}
       onDecide={a.decide}
-      onEditMessage={a.handleEditMessage}
+      editing={a.editing}
+      onStartEdit={(turn) => a.setEditing(a.editing?.id === turn.id ? null : turn)}
+      onCancelEdit={() => a.setEditing(null)}
       onRetryMessage={a.handleRetryMessage}
       draftText={a.composerDraft}
       onDraftConsumed={() => a.setComposerDraft(null)}
-      historyOpen={docked ? undefined : historyOpen}
-      onToggleHistory={docked ? undefined : () => setHistoryOpen((was) => !was)}
       talkingTo={a.talkingTo}
-      onTalkTo={docked ? undefined : a.setTalkingTo}
-      onCollapse={docked ? () => setAskOpen(false) : undefined}
-      // Only one recognition session runs reliably at a time, so the
-      // voice engine stands down when the composer's own mic starts.
-      onDictationStart={() => {
-        if (!a.engine.current) return;
-        void a.toggleListening();
-      }}
-      // The other direction of the same rule: starting the main mic
-      // stands the composer's own dictation down, via a prop it watches
-      // rather than an imperative call — see Composer's own effect.
+      onCollapse={() => setAskOpen(false)}
+      // Only one recognition session runs reliably at a time, so the voice
+      // engine stands down when the composer's own mic starts.
+      onDictationStart={() => { if (a.engine.current) void a.toggleListening(); }}
       voiceEngineActive={a.listening}
       isSpeaking={() => a.engine.current?.state === 'speaking'}
     />
@@ -170,149 +157,17 @@ export default function Home() {
           {screen}
         </PageShell>
         <AskJarvis open={askOpen} onToggle={() => setAskOpen((was) => !was)}>
-          {conversation(true)}
+          {docked}
         </AskJarvis>
       </main>
     );
   }
 
   return (
-    <main className="relative h-screen overflow-hidden">
+    <>
       {drawer}
-
-      {/* Rendered here, not inside ConversationPanel: that panel's own
-          backdrop-blur-xl creates a containing block for position:fixed
-          descendants, which trapped an earlier version of this drawer inside
-          the small floating panel instead of the real viewport. */}
-      <ChatHistoryDrawer
-        open={historyOpen}
-        onClose={() => setHistoryOpen(false)}
-        onViewAll={() => {
-          setHistoryOpen(false);
-          go('chat-history');
-        }}
-        onResume={(id) => {
-          setHistoryOpen(false);
-          void a.resumeConversation(id);
-        }}
-      />
-
-      <Header
-        unread={a.unread}
-        sharing={a.sharing}
-        settingsOpen={settingsOpen}
-        onMenu={() => setDrawerOpen(true)}
-        onToggleSharing={a.toggleSharing}
-        onNotifications={() => go('notifications')}
-        onToggleSettings={() => setSettingsOpen((open) => !open)}
-      />
-
-      <SettingsPanel
-        open={settingsOpen}
-        speakReplies={a.speakReplies}
-        onSpeakReplies={a.setSpeakReplies}
-        engine={a.engineId}
-        onEngine={a.setEngineId}
-        voice={a.voiceId}
-        onVoice={a.setVoiceId}
-        onNavigate={go}
-      />
-
-      {/* The body reserves the floated header's height in its own padding, so
-          nothing in the header can push the stage or resize the orb. */}
-      <div
-        className="relative h-full overflow-hidden px-5 pb-5"
-        style={{ paddingTop: 'var(--header-reserve)' }}
-      >
-        {/* The stage: centred, and sized as if the conversation panel did not
-            exist. Its gutters are fixed values, never the panel's width. */}
-        <section
-          data-testid="stage"
-          className="relative h-full min-h-0 w-full"
-          style={{ paddingLeft: 'var(--rail-gutter)', paddingRight: 'var(--rail-gutter)' }}
-        >
-          <Orb state={a.orbState} />
-
-          {/* Out of flow, pinned to the top of the stage: the orb's box is fixed
-              and nothing here may move or resize it. */}
-          {a.watching.length > 0 && (
-            <div className="pointer-events-none absolute inset-x-0 top-0 flex justify-center">
-              <div
-                data-testid="watching-bar"
-                className="pointer-events-auto flex max-w-[80%] items-center gap-3 rounded-pill
-                           border border-state-warn/30 bg-state-warn/10 px-3.5 py-1.5"
-              >
-                <span className="truncate text-[12px] text-state-warn">
-                  Watching for {a.watching.map((monitor) => monitor.description).join(', ')}
-                </span>
-                {/* One watch gets a Stop; several get a way to see them, because
-                    a single Stop over a list of three would silently pick one. */}
-                {a.watching.length === 1 ? (
-                  <button
-                    type="button"
-                    data-testid="watching-stop"
-                    onClick={() => void a.stopWatching(a.watching[0]!.id)}
-                    className="shrink-0 text-[12px] text-ink-muted hover:text-ink"
-                  >
-                    Stop
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    data-testid="watching-open"
-                    onClick={() => go('tasks')}
-                    className="shrink-0 text-[12px] text-ink-muted hover:text-ink"
-                  >
-                    See all {a.watching.length}
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* The stage's lower band: what Jarvis is doing, and the control for
-              it. Reserved space, so the orb's box above is fixed. */}
-          <div
-            className="absolute inset-x-0 bottom-0 flex flex-col items-center justify-end gap-4 pb-6"
-            style={{ height: 'var(--stage-bottom-reserve)' }}
-          >
-            <p data-testid="status" className="text-[13px] text-ink-faint" aria-live="polite">
-              {a.status}
-            </p>
-            <div className="flex items-center gap-3">
-              <MicButton
-                listening={a.listening}
-                hint={a.listening ? 'Listening — click to stop' : 'Click to talk'}
-                onToggle={() => void a.toggleListening()}
-              />
-              {/* A real, separate mute — never stops or interrupts Jarvis, only
-                  toggles microphone capture (`toggleMute`). Distinct from the
-                  mic button above, which ends the whole session. */}
-              <IconButton
-                label={a.muted ? 'Unmute the microphone' : 'Mute the microphone'}
-                data-testid="mute"
-                active={a.muted}
-                disabled={!a.listening}
-                onClick={a.toggleMute}
-              >
-                <MicIcon className="h-[18px] w-[18px]" muted={a.muted} />
-              </IconButton>
-            </div>
-          </div>
-        </section>
-
-        {/* The conversation floats over the RIGHT edge, out of flow: it reserves
-            no column and never pushes or resizes the stage. It is one panel —
-            the composer is the bottom of it, not a second container. */}
-        <aside
-          data-testid="conversation-rail"
-          className="absolute top-1/2 h-[68%] -translate-y-1/2"
-          style={{ right: 'var(--rail-gutter)', width: 'var(--rail-width)' }}
-        >
-          {conversation(false)}
-        </aside>
-      </div>
-    </main>
+      <HomeScreen a={a} go={go} menuOpen={drawerOpen} onMenu={() => setDrawerOpen(true)} />
+    </>
   );
 }
 
@@ -349,6 +204,9 @@ function screenFor(
       return <ComingInStage what="The Knowledge Graph — a map of how what Jarvis knows connects — arrives with the redesign of Knowledge." />;
     case 'knowledge/improvement': return old(<ImprovementScreen />);
     case 'settings/models': return old(<ModelsScreen />);
+    // The speech-service keys used to sit in Home's gear panel; the design puts
+    // them under Settings → Voice. The full Voice screen comes with Settings.
+    case 'settings/voice': return old(<ServiceKeys />);
     default:
       return <ComingInStage what={`${tab?.label ?? page.label} arrives with the redesign of Settings. Until then, voice choices are under the gear on Home.`} />;
   }

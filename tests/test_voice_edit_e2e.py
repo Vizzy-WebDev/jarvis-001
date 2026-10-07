@@ -90,9 +90,9 @@ def say(page: Page, text: str, replies_expected: int) -> None:
 
 def start_listening(page: Page) -> None:
     page.click("[data-testid=settings]")
-    page.wait_for_selector("[data-testid=engine-options]")
+    page.click("[data-testid=listening-select]")
     page.click("[data-testid=engine-pipeline]")
-    page.click("[data-testid=settings]")
+    page.keyboard.press("Escape")
     page.click("[data-testid=mic]")
     page.wait_for_function("() => window.__recognition && window.__recognition.running", timeout=15_000)
 
@@ -109,11 +109,15 @@ def test_editing_a_spoken_message_really_replaces_it_on_the_server(speaking_page
         """() => [...document.querySelectorAll('[data-testid=edit-message]')].length > 0""", timeout=10_000)
     assert stored_messages(base)[0] == ("user", "what does rain on a tin roof sound like")
 
-    page.click("[data-testid=mic]")  # stop listening, then edit what was said
+    # End the session (Esc; the mic only mutes during one), then edit what was said.
+    page.keyboard.press("Escape")
+    page.wait_for_function("() => document.querySelector('[data-testid=mic]').getAttribute('aria-pressed') === 'false'")
     bubble = message(page, "what does rain on a tin roof sound like")
     bubble.hover()
     bubble.locator("[data-testid=edit-message]").click()
-    page.fill("[data-testid=edit-message-input]", "what does a thunderstorm sound like")
+    # Edit loads the message into the composer (design 1h), tagged as an edit.
+    page.wait_for_selector("[data-testid=editing-tag]")
+    page.fill("[data-testid=composer-input]", "what does a thunderstorm sound like")
     page.click("[data-testid=save-edit]")
     page.wait_for_function(
         """() => !document.querySelector('[data-testid=transcript]').innerText.includes('tin roof')

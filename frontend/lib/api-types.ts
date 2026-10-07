@@ -1100,3 +1100,27 @@ export interface ArtifactPage {
 export type ArtifactPreview =
   | { format: 'markdown'; markdown: string; note?: string }
   | { format: 'sheets'; sheets: { name: string; rows: string[][] }[]; note?: string };
+
+// --- Home's health cards (`GET /api/health`) ------------------------------------
+
+/** Anything that cannot be known is null — never a zero that reads as idle,
+ *  instant or free. */
+export interface Health {
+  system: {
+    cpuPct: number | null;
+    memPct: number | null;
+    diskPct: number | null;
+    netBytesPerSec: number | null;
+  };
+  jarvis: {
+    issues: string[];
+    modelReady: boolean;
+    uptimeSec: number;
+    voice: { wakeWord: boolean; wakeWordNote: string };
+    connectors: { enabled: number; working: number; problems: string[] };
+    jobsRunning: number;
+    responseSec: number | null;
+    spendToday: number | null;
+    unpricedCalls: number;
+  };
+}

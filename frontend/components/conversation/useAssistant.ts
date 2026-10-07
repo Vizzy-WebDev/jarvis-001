@@ -12,7 +12,8 @@ import type { VoiceEngine } from '@/lib/voice/engine';
 import { PipelineEngine } from '@/lib/voice/pipeline-engine';
 import { RealtimeEngine } from '@/lib/voice/realtime-engine';
 import { MODELS_CHANGED } from '@/lib/useModels';
-import type { OrbState } from '@/lib/orb';
+import { usePrefs } from '@/lib/usePrefs';
+import type { OrbState } from '@/lib/jarvis-state';
 
 /**
  * Jarvis's side of the interface: the one conversation, the voice engine, and
@@ -27,7 +28,6 @@ let nextId = 0;
 const newId = () => `t${(nextId += 1)}`;
 
 export function useAssistant(go: (id: string) => void, onHome: boolean) {
-  const [speakReplies, setSpeakReplies] = useState(false);
   const [sharing, setSharing] = useState(false);
   /** What Jarvis is watching for. Shown in the shell rather than only on a
    *  screen because a watch is running whether or not anyone is looking at the
@@ -55,8 +55,14 @@ export function useAssistant(go: (id: string) => void, onHome: boolean) {
    *  engine is doing — see `toggleMute` for why this is kept as its own
    *  concept rather than folded into stopping/interrupting. */
   const [muted, setMuted] = useState(false);
-  const [engineId, setEngineId] = useState('pipeline');
-  const [voiceId, setVoiceId] = useState('browser');
+  // Which recogniser and voice, and whether replies are spoken: saved
+  // settings now (they used to reset on every reload).
+  const prefs = usePrefs();
+  const engineId = prefs.voiceEngine;
+  const voiceId = prefs.voiceOutput;
+  const speakReplies = prefs.speakReplies;
+  /** A sent message loaded back into the composer to be edited (design 1h). */
+  const [editing, setEditing] = useState<Turn | null>(null);
   /** Text handed to the composer from elsewhere (e.g. "Create with Jarvis" on
    *  the Skills screen), landing unsent for the person to edit or send. */
   const [composerDraft, setComposerDraft] = useState<string | null>(null);
@@ -159,7 +165,7 @@ export function useAssistant(go: (id: string) => void, onHome: boolean) {
               ? (late.result || `${late.agentName} finished.`)
               : `${late.agentName} couldn’t finish: ${late.error || 'no reason was given.'}`;
             setTurns((current) => [...current, {
-              id: `late-${late.runId}`, role: 'assistant', text, speaker: late.agentName,
+              id: `late-${late.runId}`, role: 'assistant', text, speaker: late.agentName, at: new Date().toISOString(),
               failed: late.status !== 'done' && late.status !== 'awaiting_approval' }]);
             return;
           }
@@ -250,8 +256,8 @@ export function useAssistant(go: (id: string) => void, onHome: boolean) {
         : current;
       return [
         ...base,
-        { id: userTurnId, role: 'user', text: asked, attachments: sentAttachments },
-        { id: replyId, role: 'assistant', text: '', streaming: true,
+        { id: userTurnId, role: 'user', text: asked, attachments: sentAttachments, at: new Date().toISOString() },
+        { id: replyId, role: 'assistant', text: '', streaming: true, at: new Date().toISOString(),
           speaker: talkingToRef.current?.name },
       ];
     });
@@ -359,15 +365,6 @@ export function useAssistant(go: (id: string) => void, onHome: boolean) {
     const match = url.match(/\/api\/uploads\/([^/]+)\/content$/);
     return match?.[1] ?? null;
   };
-
-  const handleEditMessage = useCallback((turn: Turn, newText: string) => {
-    if (busy) return;
-    const attachments = (turn.attachments ?? [])
-      .map((a) => uploadIdFromAttachment(a.url))
-      .filter((id): id is string => Boolean(id))
-      .map((id) => ({ id, name: '', kind: '' }));
-    send(newText, attachments, turn.id);
-  }, [busy, send]);
 
   const handleRetryMessage = useCallback((userTurn: Turn) => {
     if (busy) return;
@@ -520,7 +517,7 @@ export function useAssistant(go: (id: string) => void, onHome: boolean) {
         : SPOKEN_STATE[state] ?? 'Listening…');
     });
     started.on('transcript', ({ text, final }) => {
-      if (final && text) setTurns((current) => [...current, { id: newId(), role: 'user', text }]);
+      if (final && text) setTurns((current) => [...current, { id: newId(), role: 'user', text, at: new Date().toISOString() }]);
     });
     started.on('chunk', ({ text }) => setTurns((current) => appendToReply(current, text)));
     // The real, stored ids — the same swap `send()` does for a typed message, so
@@ -591,6 +588,24 @@ export function useAssistant(go: (id: string) => void, onHome: boolean) {
     setMuted(next);
   }, []);
 
+  /**
+   * Stop Jarvis speaking (design 1c, and Esc): a spoken reply is cut off by
+   * the engine, which keeps listening; a typed reply still streaming is
+   * stopped where it is and marked interrupted. Never touches the mic.
+   */
+  const interrupt = useCallback(() => {
+    const live = engine.current;
+    if (live && (live.state === 'speaking' || live.state === 'thinking' || live.state === 'tool_running')) {
+      live.interrupt({ keepListening: true });
+      return;
+    }
+    if (running.current) {
+      running.current.cancel();
+      setTurns((current) => current.map((turn) => (turn.streaming
+        ? { ...turn, streaming: false, interrupted: true } : turn)));
+    }
+  }, []);
+
   // Releasing the microphone is not optional cleanup.
   useEffect(() => () => engine.current?.stop(), []);
 
@@ -613,9 +628,9 @@ export function useAssistant(go: (id: string) => void, onHome: boolean) {
 
   return {
     turns, orbState, status, busy, configured, unread, setUnread, sharing, watching,
-    listening, muted, engineId, setEngineId, voiceId, setVoiceId, speakReplies, setSpeakReplies,
+    listening, muted, engineId, voiceId, speakReplies, editing, setEditing, interrupt,
     talkingTo, setTalkingTo, composerDraft, setComposerDraft, activeConversationId, engine,
-    send, handleEditMessage, handleRetryMessage, decide, newChat, resumeConversation,
+    send, handleRetryMessage, decide, newChat, resumeConversation,
     openArtifactInChat, toggleListening, toggleMute, toggleSharing, stopWatching, startChatWith,
   };
 }
@@ -659,7 +674,7 @@ function appendToReply(turns: Turn[], text: string): Turn[] {
   if (last && last.role === 'assistant' && last.streaming) {
     return [...turns.slice(0, -1), { ...last, text: last.text + text }];
   }
-  return [...turns, { id: newId(), role: 'assistant', text, streaming: true }];
+  return [...turns, { id: newId(), role: 'assistant', text, streaming: true, at: new Date().toISOString() }];
 }
 
 /**
@@ -709,7 +724,7 @@ function markReplyFailed(turns: Turn[], errorText: string): Turn[] {
   if (last && last.role === 'assistant' && last.streaming) {
     return [...turns.slice(0, -1), { ...last, text: errorText, streaming: false, failed: true }];
   }
-  return [...turns, { id: newId(), role: 'assistant', text: errorText, failed: true }];
+  return [...turns, { id: newId(), role: 'assistant', text: errorText, failed: true, at: new Date().toISOString() }];
 }
 
 /**
@@ -763,6 +778,7 @@ function toTurn(message: StoredMessage): Turn {
     role: message.role === 'user' ? 'user' : 'assistant',
     text: message.role === 'user' ? withoutModelNote(message.text ?? '') : message.text ?? '',
     interrupted: message.interrupted,
+    at: message.createdAt,
   };
 }
 

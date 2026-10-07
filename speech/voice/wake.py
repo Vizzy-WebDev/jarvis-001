@@ -71,7 +71,9 @@ class WakeDetector:
         self._model = None
         self._error: str | None = None
         self._last_wake = 0.0
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()          # the audio buffer
+        self._load_lock = threading.Lock()      # fetching and building the model
+        self._prepare_lock = threading.Lock()   # starting the background load once
         self._preparing: threading.Thread | None = None
 
     # --- availability --------------------------------------------------------
@@ -90,12 +92,19 @@ class WakeDetector:
     def load(self) -> bool:
         """Load the model, fetching its files first if this machine does not
         have them yet. Blocking — anything that must not wait calls `prepare()`.
-        Safe to call repeatedly; returns whether it is usable."""
-        with self._lock:
-            if self._model is not None:
-                return True
-            if self._error is not None:
-                return False
+        Safe to call repeatedly; returns whether it is usable.
+
+        The download and the model's construction happen under their own lock,
+        never the audio lock: `status()` and `prepare()` are called from the
+        server's event loop, and once waited behind a download — which froze
+        every request until it finished."""
+        if self._model is not None:
+            return True
+        if self._error is not None:
+            return False
+        with self._load_lock:
+            if self._model is not None or self._error is not None:
+                return self._model is not None
             try:
                 files = self._files()
                 if not all(path.exists() for path in files.values()):
@@ -120,8 +129,9 @@ class WakeDetector:
                 return False
 
     def prepare(self) -> None:
-        """Start loading in the background, once. Returns at once."""
-        with self._lock:
+        """Start loading in the background, once. Returns at once — it never
+        waits on a load already running."""
+        with self._prepare_lock:
             if self._model is not None or self._error is not None or self._preparing is not None:
                 return
             self._preparing = threading.Thread(target=self.load, name="wake-word-prepare",

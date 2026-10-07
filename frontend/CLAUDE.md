@@ -5,8 +5,8 @@ Next.js App Router + React + TypeScript + Tailwind, built to a **static export**
 at runtime. `npm run build` produces the export; it is committed, so changing the front
 end means rebuilding and committing `out/` alongside the source change.
 
-**Four anchors are fixed; everything else is free to change.** The hamburger is top
-LEFT and reaches every section; the orb stays centred on the stage with the mic beneath
+**Four anchors are fixed; everything else is free to change.** The menu button is top
+LEFT and reaches every page; the core stays centred on the stage with the mic beneath
 it and nothing on the page may move or resize it; the conversation panel floats OVER the
 right edge of the stage, reserving no column; and the conversation and composer are ONE
 panel, not two. `tests/test_shell_e2e.py` asserts all four structurally — a redesign
@@ -30,7 +30,13 @@ The approved prototype and its decision log live outside the repo
 functional source of truth, the prototype the visual one. Done so far: colours are CSS
 variables (`app/globals.css`, mapped in `tailwind.config.ts`) so Appearance settings can
 re-theme by rewriting variables; Geist/Geist Mono are self-hosted by the `geist`
-package; the 10b page shell; the 9a menu with live badges; "Ask Jarvis" on every page.
+package; the 10b page shell; the 9a menu with live badges; "Ask Jarvis" on every page;
+Home (v6 + voice items 1c–1i, laptop / tablet / phone) in `components/home/`.
+
+**Preview builds.** `JARVIS_BUILD_DIR=../.preview-build npm run build` builds somewhere
+other than `out/`, and a server started with `JARVIS_FRONTEND_DIR` pointing there serves
+it (the e2e suites honour it too). Unfinished work is checked that way, so the build a
+running Jarvis serves from `out/` is only replaced when a stage is done.
 
 **The conversation lives in `components/conversation/useAssistant.ts`**, held by the
 root and never unmounted, so Home's panel and the "Ask Jarvis" dock on every other page
@@ -141,8 +147,8 @@ messages, not the screen.
   depends on hearing the person while its own audio plays, so gating the
   upload would silently disable that entirely.
 
-**All three voice-output paths expose a real `getOutputLevel()` (0..1) for
-`frontend/components/stage/Orb.tsx`'s audio-reactivity** — none of them are a hardcoded 0:
+**All three voice-output paths expose a real `getOutputLevel()` (0..1) for the core's
+audio-reactivity (`lib/core.ts`, fed by `components/home/HomeScreen.tsx`)** — none of them are a hardcoded 0:
 - `RealtimeEngine` computes RMS inline from each scheduled PCM chunk as it plays.
 - `frontend/lib/voice/audio-player.ts` (server-side TTS — `speech/tts/matching.py`'s provider
   registry, e.g. ElevenLabs; the free `browser` voice is `PipelineEngine`'s
@@ -206,55 +212,45 @@ calling `speaker.end()` — now every error path calls it. (3) Chrome's
 `onerror` firing — now has a per-utterance watchdog that force-continues if
 Chrome never confirms.
 
-## The orb (`components/stage/Orb.tsx`)
+## Home (`components/home/`) and the core (`lib/core.ts`)
 
-Jarvis's face — a single 3D sphere, centered in the app screen, reacting to
-`idle`/`listening`/`thinking`/`speaking` (the same four states the voice
-engines emit; `Orb.tsx` consumes them via one call from `app/page.tsx`). Built on
-**three.js** — an ordinary npm dependency, bundled by the build. It is the project's one deliberate front-end 3D dependency,
-chosen over a dependency-free raw-WebGL2 shader after an explicit trade-off
-comparison. A custom `ShaderMaterial`'s **vertex** shader displaces an
-`IcosahedronGeometry`'s surface with domain-warped fBm noise plus an outward
-ripple driven by `getLevel()` (polled once per animated frame, smoothed with
-an attack/release follower) — swirl for `thinking`, pulses for `speaking`,
-not literal rotation of the mesh. `setState()` crossfades between four
-parameter presets over ~600ms. Falls back to a CSS-gradient orb
-(`.orb-fallback`, same four state classes) if three.js/WebGL fails to
-initialize.
+`HomeScreen.tsx` lays Home out (design Home v6) and owns what only Home needs: the
+breakpoints (phone < 700px, tablet upright, laptop < 1400px, desk), presence
+(`presence.tsx`: resting after `restAfterMin` idle minutes, the ~2.8s wake sequence and
+its boot lines, the Night-stand clock), the wake-word listener, push-to-talk and Home's
+keys (Esc stops Jarvis speaking or ends a session; F = Just Jarvis; Space when
+push-to-talk is on). Home's settings — what is shown, rest/activation, wake phrases,
+push-to-talk, speak replies, the engine and voice ids — live in `/api/prefs` through
+`lib/usePrefs.ts` (one module store, optimistic writes); they used to reset on reload.
 
-**Import `three` as a package; never hand-copy vendor files into `public/`.** The bundler resolves the
-import at build time, so a missing piece is a build error rather than a blank page. A hand-served vendor
-file that is missing its sibling parses and serves fine — a syntax check, `curl` and even a same-tab
-`fetch()` all give zero signal — then fails at browser module-resolution time with a content-free
-`TypeError: Failed to fetch dynamically imported module`, taking the entire app down silently, because
-nothing in the shell runs until its static imports resolve.
+**The core is a 2D canvas** (`lib/core.ts`, ported from the approved design: rays,
+drifting dots, rings, ambient light and horizon). It replaced a three.js shader sphere —
+no WebGL context, no 600 KB library, no fallback path. One animation loop draws the core
+AND the two level meters (under the mic, in the header's state pill), capped at ~30fps
+and idle while the canvas is off screen or the tab is hidden. It reads everything per
+frame through an `input()` function backed by refs, so it never re-renders React; a
+real engine level (mic while listening, output while speaking) replaces the designed
+motion when there is one. The five states and their colours are in `lib/jarvis-state.ts`
+(fixed, never themeable; only Standby deepens in light mode).
 
-- `IcosahedronGeometry`'s second argument is subdivision *detail*, not a
-  segment/resolution count. Each `+1` roughly quadruples face count
-  (`20 * 4^detail`) — a "high resolution" guess like `48` attempts on the
-  order of `4^48` faces and hangs the renderer process, indistinguishable
-  from a dead server without checking actual resource behavior. `detail: 5`
-  (~20,480 faces) is already smooth at this render size; keep future tweaks
-  in the single digits and sanity-check the face count before raising it.
+**The mic (`[data-testid=mic]`, design 1c)** starts a voice session when none is running
+— the same as saying the wake word — and mutes/unmutes one that is. It never ends or
+interrupts anything: **Interrupt** is its own red ring to the LEFT of the mic, there only
+while Jarvis is speaking (and Esc), and Esc while listening ends the session. The phone
+layout keeps a separate mute button, as designed. `toggleMute` in `useAssistant.ts`
+touches only microphone capture — never `interrupt()` or `stop()`.
 
-**The mic button (`#mic-button`) is a real Mute/Unmute toggle — it never
-reflects, and never touches, thinking/speaking.** Every engine exposes a real
-`setMuted(bool)`/`.muted` (`engine.ts`'s shared contract) that touches
-ONLY microphone capture — never `speaker`, `currentEventSource`/`ws`, or
-`state`. `PipelineEngine` composes this with the self-listening suspend via
-`_shouldListen()` (`active && !_recSuspended && !muted`), so muting and
-"Jarvis is talking" cooperate instead of racing — muting mid-reply is
-remembered and the echo-tail resume won't turn the mic back on until
-unmuted. `onMicButtonClick()`'s conversation-mode branch (`frontend/app/page.tsx`) is a
-plain two-way toggle (`!engine.active → start()`, else
-`setMuted(!engine.muted)`) — there is no "click mic while speaking =
-barge-in" shortcut, since mute-must-never-interrupt and click-to-interrupt
-can't both live on one click; voice-triggered barge-in (the mic-energy
-sampler above) is a separate mechanism, unaffected. `setMicVisual()` reads
-`engine.muted` directly (not inferred from `state`), since mute is a
-persistent flag independent of what Jarvis is doing — and because
-`setMuted()` deliberately never emits a `'state'` event, callers must repaint
-by calling `setMicVisual(engine.state)` themselves right after toggling it.
+**The wake word** (`lib/voice/wake-listener.ts`) streams 16 kHz PCM to this app's own
+`/api/voice/wake`, scored by the on-device model; the audio never goes further. It runs
+while no voice session is (one recogniser at a time) and while "Hey Jarvis" is in the
+phrase list — the model hears that phrase only; others are kept and marked "not heard
+yet". The server fetches the model once into `data/wakeword/` behind the
+`JARVIS_WAKE_MODEL_DOWNLOAD` interlock and answers `preparing` meanwhile; the listener
+retries.
+
+**Editing (design 1h)** loads a sent message — text and files — into the composer,
+tagged "Editing message"; Resend replaces the replies after it (the same
+truncate-and-resend as before), Cancel or Escape leaves it.
 
 **`setMuted()` never clears `pendingUtterance`/`silenceTimer`/
 `pendingConfidence`, and `_maybeFinalize()` doesn't check `this.muted`

@@ -57,6 +57,7 @@ import type {
   SkillDetail,
   TraceRow,
   UndoResult,
+  Health,
   Prefs,
   SandboxStatus,
   VoiceOptions,
@@ -142,6 +143,7 @@ function query(params: Record<string, string | undefined | null>): string {
 export const api = {
   status: () => request<Status>('/status'),
 
+  health: () => request<Health>('/health'),
   prefs: {
     get: () => request<Prefs>('/prefs'),
     update: (patch: Partial<Prefs>) => request<Prefs>('/prefs', { method: 'POST', ...json(patch) }),

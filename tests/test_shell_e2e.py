@@ -272,7 +272,8 @@ def test_the_controls_sit_on_their_own_line_below_the_text(page):
     send = box(page, "[data-testid=send]")
     # Attach at the left, send at the right, both on the SAME line.
     assert attach["x"] < send["x"]
-    assert abs(attach["y"] - send["y"]) < 2
+    # Same line = same vertical centre (the design sizes them differently).
+    assert abs((attach["y"] + attach["height"] / 2) - (send["y"] + send["height"] / 2)) < 2
 
 
 def test_attachments_scroll_sideways_and_never_stack(page, tmp_path):
@@ -522,8 +523,10 @@ def test_a_connector_chosen_here_is_what_the_task_saves(page):
 def test_a_service_key_is_saved_and_never_shown_again(page):
     from jarvis import config
 
-    page.click("[data-testid=settings]")
-    page.wait_for_selector("[data-testid=settings-panel]")
+    # The keys for speech services live under Settings → Voice (they used to
+    # sit in Home's gear panel, which is now quick settings only — design 1f).
+    page.evaluate("location.hash = '#/settings/voice'")
+    page.wait_for_selector("[data-testid=add-service]")
     page.click("[data-testid=add-service]")
     page.fill("[data-testid=service-label]", "Deepgram")
     page.fill("[data-testid=service-key]", "dg-secret-value-999")
@@ -620,16 +623,23 @@ def test_model_settings_starts_empty_and_offers_every_kind_of_provider(page):
 
 
 def test_a_turn_that_stops_to_ask_shows_the_card_and_no_dropped_connection(
-        page, live_server, serve_provider):
+        page, live_server, serve_provider, tmp_path):
     """A turn that ends by asking for a go-ahead closes its stream with no
     `done`. The page treated that close as a failure: every "Need approval"
     showed "The connection to Jarvis dropped." under the approval card, and the
-    same happened, with no card at all, when the request was spoken."""
-    stub = serve_provider("openai-chat", tool=("remember_about_me", {"text": "I drink green tea"}))
+    same happened, with no card at all, when the request was spoken.
+
+    It asks to open a folder to Jarvis: `allow_folder` is on the owner's
+    keeps-asking list (tests/test_policy.py). It used `remember_about_me`, which
+    the owner has since decided a clear request is enough for — so no card came,
+    and this test failed for a reason that was not a bug."""
+    folder = tmp_path / "shared"
+    folder.mkdir()
+    stub = serve_provider("openai-chat", tool=("allow_folder", {"path": str(folder)}))
     connect_and_select(live_server, stub)
     refresh(page)
 
-    say(page, "remember that I drink green tea")
+    say(page, f"let yourself read the folder {folder}")
     page.wait_for_selector("[data-testid=approval] [data-testid=approve]", timeout=90_000)
     page.wait_for_timeout(2_000)  # long enough for a stream close to have been mis-read
     # The failure showed as the reply bubble turned into an error, not as new text.
@@ -793,7 +803,9 @@ def test_the_composer_picker_offers_effort_only_for_a_model_whose_provider_repor
     levels = page.eval_on_selector_all(
         "[data-testid^=effort-]:not([data-testid=effort-section])",
         "els => els.map(e => e.dataset.testid.replace('effort-', ''))")
-    assert levels == ["none", "low", "medium", "high"]  # the layer's own levels, for a model that takes effort
+    # The levels THIS endpoint accepts (model layer D1): an Anthropic model cannot
+    # switch thinking off, so "none" is not offered — only what it really takes.
+    assert levels == ["low", "medium", "high"]
     page.click("[data-testid=effort-low]")
     page.wait_for_function(
         "() => document.querySelector('[data-testid=effort-low]').getAttribute('aria-pressed') === 'true'")
@@ -869,7 +881,8 @@ def test_a_configured_voice_provider_appears_beside_the_browsers_own(page):
     external_services.add_or_update(label="ElevenLabs", key="k")
     refresh(page)
     page.click("[data-testid=settings]")
-    page.wait_for_selector("[data-testid=voice-options]")
+    page.click("[data-testid=speaking-select]")
+    page.wait_for_selector("[data-testid=speaking-options]")
 
     assert page.locator("[data-testid=voice-browser]").count() == 1
     assert page.locator("[data-testid=voice-elevenlabs]").count() == 1
@@ -908,7 +921,15 @@ def test_mute_is_a_real_separate_control_disabled_with_no_session(page):
     the code instead; a real microphone is the honest way to confirm the
     live behaviour, per the manual check in the project's own testing notes.
     """
-    assert page.is_disabled("[data-testid=mute]")
+    # Design 1c: on a laptop the mic IS the mute control during a session —
+    # there is no second mic button beside it. With no session it starts one
+    # rather than claiming anything is muted, and the Interrupt ring only exists
+    # (to the eye and to the keyboard) while Jarvis is speaking.
+    assert page.get_attribute("[data-testid=mic]", "aria-pressed") == "false"
+    assert page.get_attribute("[data-testid=mic]", "data-muted") == "false"
+    assert page.locator("[data-testid=mute]").count() == 0
+    assert page.get_attribute("[data-testid=interrupt]", "aria-hidden") == "true"
+    assert page.get_attribute("[data-testid=interrupt]", "tabindex") == "-1"
 
 
 # --- the engines that need a microphone ----------------------------------------
@@ -953,12 +974,18 @@ def voice_page(live_server, connected_model):
         browser.close()
 
 
-def start_engine(page: Page, engine: str) -> None:
-    """Pick an engine in Settings, then start listening with it."""
+def open_listening_options(page: Page) -> None:
+    """Quick settings (the gear), then its Listening dropdown (design 1f)."""
     page.click("[data-testid=settings]")
-    page.wait_for_selector("[data-testid=engine-options]")
+    page.click("[data-testid=listening-select]")
+    page.wait_for_selector("[data-testid=listening-options]")
+
+
+def start_engine(page: Page, engine: str) -> None:
+    """Pick an engine in quick settings, then start listening with it."""
+    open_listening_options(page)
     page.click(f"[data-testid=engine-{engine}]")
-    page.click("[data-testid=settings]")  # close it again; it overlaps the stage
+    page.keyboard.press("Escape")  # close it again; it overlaps the stage
     page.click("[data-testid=mic]")
 
 
@@ -1001,7 +1028,8 @@ def test_stopping_tears_the_engine_down_rather_than_leaving_it_open(voice_page):
 
     start_engine(voice_page, "duplex")
     voice_page.wait_for_timeout(1000)
-    voice_page.click("[data-testid=mic]")  # off again
+    # Ending a session is Esc (design 1c: during one, the mic only mutes).
+    voice_page.keyboard.press("Escape")
     voice_page.wait_for_timeout(500)
 
     assert any(url.endswith("/api/duplex") for url in closed), \
@@ -1058,8 +1086,7 @@ def test_the_realtime_engine_is_not_offered_because_nothing_implements_it(voice_
     The other two engines ARE available here (a model is selected), which is what
     keeps this from being a test that passes only because everything is off.
     """
-    voice_page.click("[data-testid=settings]")
-    voice_page.wait_for_selector("[data-testid=engine-options]")
+    open_listening_options(voice_page)
     assert voice_page.is_enabled("[data-testid=engine-pipeline]")
     assert voice_page.is_enabled("[data-testid=engine-duplex]")
     assert voice_page.is_disabled("[data-testid=engine-realtime]")
@@ -2316,4 +2343,132 @@ def test_talking_directly_to_a_specialist_is_a_real_turn_as_it(page, live_server
     page.click("[data-testid=talk-to]")
     page.click("[data-testid=talk-to-jarvis]")
     page.wait_for_function("() => document.querySelector('[data-testid=talk-to]')"
-                           ".innerText.toLowerCase() === 'conversation'")
+                           ".innerText.toLowerCase() === 'jarvis'")
+
+
+# --- Home (design Home v6): health, bell, quick settings, presence, editing -------
+
+def test_the_health_cards_show_real_readings(page, live_server):
+    """Both cards read /api/health — CPU, memory and disk as real percentages,
+    and Jarvis's own side honest about there being no model yet."""
+    page.wait_for_function(
+        "() => /\d+%/.test(document.querySelector('[data-testid=health-system]')?.innerText || '')",
+        timeout=10_000)
+    system = page.inner_text("[data-testid=health-system]")
+    assert "RAM" in system and "DISK" in system
+    jarvis = page.inner_text("[data-testid=health-jarvis]")
+    assert "Not ready" in jarvis  # no model is set up in a fresh scratch install
+
+
+def test_the_bell_opens_a_notification_and_reading_it_lowers_the_count(page):
+    from jarvis import notifications
+
+    notifications.add(kind="system", title="Backup finished", body="All 3 folders were copied.",
+                      action={"label": "Open Scheduling", "section": "tasks"})
+    refresh(page)
+    assert page.inner_text("[data-testid=bell-count]") == "1"
+
+    page.click("[data-testid=bell]")
+    page.wait_for_selector("[data-testid=bell-popover]")
+    page.click("[data-testid=bell-row]")
+    page.wait_for_selector("[data-testid=bell-detail]")
+    assert "All 3 folders were copied." in page.inner_text("[data-testid=bell-detail]")
+    # Opening it marked it read — on the server too, not just on screen.
+    page.wait_for_selector("[data-testid=bell-count]", state="detached")
+    assert notifications.unread_count() == 0
+
+    page.click("[data-testid=bell-action]")
+    page.wait_for_url("**#/routines/scheduling")
+
+
+def test_quick_settings_are_saved_for_the_next_visit(page, live_server):
+    """Voice choices used to live in component state and reset on every reload."""
+    page.click("[data-testid=settings]")
+    page.click("[data-testid=quick-pushToTalk]")
+    page.wait_for_function(
+        "async () => (await (await fetch('/api/prefs')).json()).pushToTalk === true")
+    refresh(page)
+    page.click("[data-testid=settings]")
+    assert page.get_attribute("[data-testid=quick-pushToTalk]", "aria-checked") == "true"
+
+
+def test_a_wake_phrase_nothing_can_hear_is_kept_and_marked(page):
+    """The on-device model hears "Hey Jarvis" only; another phrase is saved but
+    never presented as working."""
+    page.click("[data-testid=settings]")
+    page.click("[data-testid=edit-phrases]")
+    page.fill("[data-testid=wake-phrase-input]", "Computer")
+    page.press("[data-testid=wake-phrase-input]", "Enter")
+    chip = page.locator("[data-testid=wake-phrase]", has_text="Computer")
+    assert "not heard yet" in chip.inner_text()
+    heard = page.locator("[data-testid=wake-phrase]", has_text="Hey Jarvis")
+    assert "not heard yet" not in heard.inner_text()
+
+
+def test_show_on_home_hides_the_conversation_and_f_brings_it_back(page):
+    page.click("[data-testid=home-view]")
+    page.click("[data-testid=show-chat]")
+    page.keyboard.press("Escape")
+    rail = page.locator("[data-testid=conversation-rail]")
+    page.wait_for_function(
+        "() => getComputedStyle(document.querySelector('[data-testid=conversation-rail]')).opacity === '0'")
+    # "Just Jarvis" hides everything; F flips it back to everything shown.
+    page.keyboard.press("f")
+    page.keyboard.press("f")
+    page.wait_for_function(
+        "() => getComputedStyle(document.querySelector('[data-testid=conversation-rail]')).opacity === '1'")
+    assert rail.count() == 1
+
+
+def test_resting_shows_the_clock_and_a_click_wakes_it(page):
+    page.click("[data-testid=home-view]")
+    page.click("[data-testid=rest-now]")
+    page.wait_for_selector("[data-testid=rest-clock]")
+    assert page.inner_text("[data-testid=state-label]") == "RESTING"
+    page.click("[data-testid=wake]")
+    page.wait_for_selector("[data-testid=rest-clock]", state="detached")
+    page.wait_for_function(
+        "() => document.querySelector('[data-testid=state-label]').innerText !== 'RESTING'")
+
+
+def test_editing_a_typed_message_goes_through_the_composer_and_replaces_it(page, live_server, serve_provider):
+    """Design 1h: Edit loads the message into the composer, tagged; Resend
+    replaces the replies after it — here and in what the server keeps."""
+    from jarvis import chat_store
+
+    stub = serve_provider("openai-chat", reply="Noted.")
+    connect_and_select(live_server, stub)
+    refresh(page)
+    say(page, "remind me about the dentist")
+    page.wait_for_function("() => document.body.innerText.includes('Noted.')", timeout=60_000)
+
+    _turn_containing(page, "remind me about the dentist").locator("[data-testid=edit-message]").click()
+    page.wait_for_selector("[data-testid=editing-tag]")
+    assert page.input_value("[data-testid=composer-input]") == "remind me about the dentist"
+    page.fill("[data-testid=composer-input]", "remind me about the vet")
+    page.click("[data-testid=save-edit]")
+    page.wait_for_function(
+        """() => { const t = document.querySelector('[data-testid=transcript]').innerText;
+                   return t.includes('the vet') && !t.includes('the dentist'); }""", timeout=60_000)
+    page.wait_for_selector("[data-testid=editing-tag]", state="detached")
+
+    conversation = chat_store.list_conversations()[0]
+    said = [m["text"] for m in chat_store.get_messages(conversation["id"]) if m["role"] == "user"]
+    assert said == ["remind me about the vet"]
+
+
+def test_archiving_from_the_history_slide_in_moves_it_to_archived(page):
+    from jarvis import chat_store
+
+    convo = chat_store.create_conversation()
+    chat_store.rename_conversation(convo["id"], "Old plans")
+    refresh(page)
+    page.click("[data-testid=chat-history-menu]")
+    row = page.locator("[data-testid=drawer-chat-row]", has_text="Old plans")
+    row.locator("[data-testid=drawer-toggle-archive]").click()
+    page.wait_for_function("() => !document.querySelector('[data-testid=drawer-recent-list]')"
+                           "?.innerText.includes('Old plans')")
+    assert chat_store.get_conversation(convo["id"])["archived"] is True
+    page.click("[data-testid=drawer-toggle-archived]")
+    page.wait_for_selector("[data-testid=drawer-archived-list]")
+    assert "Old plans" in page.inner_text("[data-testid=drawer-archived-list]")

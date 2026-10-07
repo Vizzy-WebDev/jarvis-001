@@ -1,4 +1,13 @@
-import type { OrbState } from './orb';
+/** What the voice engines (and a typed turn) report Jarvis is doing — the
+ *  finer states the five below are folded from. */
+export type OrbState =
+  | 'idle'
+  | 'listening'
+  | 'thinking'
+  | 'speaking'
+  | 'hearing_speech'
+  | 'tool_running'
+  | 'interrupted';
 
 /**
  * What Jarvis is doing, as the person sees it everywhere: the five fixed states

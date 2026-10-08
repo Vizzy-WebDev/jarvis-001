@@ -330,7 +330,17 @@ export function useAssistant(go: (id: string) => void, onHome: boolean) {
             patch((turn) => ({ ...turn, text: event.spokenText, interrupted: true }));
             break;
           case 'error':
-            patch((turn) => ({ ...turn, text: event.error, streaming: false, failed: true }));
+            // Words that already streamed stay as Jarvis's own message; the error sits beside them.
+            setTurns((current) => {
+              const mine = current.find((t) => t.id === replyId);
+              if (!mine || !mine.text.trim() || mine.failed) {
+                return current.map((t) => (t.id === replyId ? { ...t, text: event.error, streaming: false, failed: true } : t));
+              }
+              return [
+                ...current.map((t) => (t.id === replyId ? { ...t, streaming: false } : t)),
+                { id: newId(), role: 'assistant' as const, text: event.error, failed: true, at: new Date().toISOString() },
+              ];
+            });
             break;
           case 'done':
             // Same real-id swap as `routed` above, for the reply's own bubble.

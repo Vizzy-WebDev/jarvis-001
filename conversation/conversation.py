@@ -195,6 +195,16 @@ def push_tool_results(session_id: str, tool_results: list[dict[str, Any]]) -> di
     return _push(session_id, {"role": "tool", "toolResults": tool_results})
 
 
+def record_unfinished_reply(session_id: str, text: str, *, interrupted: bool) -> dict[str, Any]:
+    """Keep words that were shown to the person before the step that was making them ended without
+    completing — cut off by the person (`interrupted`) or by a failure. They are their own assistant
+    message: never merged into an earlier reply, and what the next turn is told Jarvis said."""
+    message: dict[str, Any] = {"role": "assistant", "text": text, "unfinished": True}
+    if interrupted:
+        message.update(interrupted=True, spokenText=text)
+    return _push(session_id, message)
+
+
 def mark_last_assistant_interrupted(session_id: str, spoken_text: str) -> bool:
     """Mark the most recent assistant message as interrupted (barge-in).
 

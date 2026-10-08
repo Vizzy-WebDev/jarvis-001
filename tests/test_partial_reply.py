@@ -87,3 +87,12 @@ def test_interrupting_a_new_reply_never_rewrites_the_one_before_it():
     assert len(assistant) == 2
     assert not assistant[0].get("interrupted") and assistant[0]["text"] == "First answer, complete."
     assert assistant[1]["interrupted"] is True and assistant[1]["spokenText"] == "Second, but cut "
+
+
+def test_a_late_interrupt_with_no_new_reply_yet_never_marks_the_previous_turns_reply():
+    conversation._push("s", {"role": "user", "text": "first"})
+    conversation._push("s", {"role": "assistant", "text": "old answer"})
+    conversation._push("s", {"role": "user", "text": "second"})
+    assert conversation.mark_last_assistant_interrupted("s", "heard") is False
+    old = [m for m in conversation._sessions["s"] if m["role"] == "assistant"][0]
+    assert "interrupted" not in old and "spokenText" not in old

@@ -237,9 +237,10 @@ def install_from_github(link: str, *, reserved: set[str] | None = None,
 
     if fetch is None:
         import httpx
+        from jarvis import tls
 
         def fetch(url: str) -> Any:  # noqa: ANN401
-            with httpx.Client(timeout=30.0, follow_redirects=True,
+            with httpx.Client(verify=tls.context(), timeout=30.0, follow_redirects=True,
                               headers={"User-Agent": "Jarvis"}) as client:
                 response = client.get(url)
                 response.raise_for_status()

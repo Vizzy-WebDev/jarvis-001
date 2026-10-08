@@ -302,8 +302,9 @@ Kind table, Auto ranking, "proven" models, per-connection strikes, billing holds
   later one fails), probe results, latency, the per-endpoint circuit breaker, connection rests, month
   spend. **Traces** are the `model_traces` table (migration 36): one row per call, metadata only unless
   `settings.trace_content`; spend queries by connection / task class / day are GROUP BYs over it.
-- **Endpoint** = one model on one connection, `connection/model-id`. **Capabilities** are a fixed,
-  versioned vocabulary (`capabilities.py`), each value declared (driver default, quirk profile, config),
+- **Endpoint** = one model on one connection, `connection/model-id`. **Capabilities** are an OPEN
+  vocabulary (`capabilities.py`; any well-formed name, known names only add a type check and a plain
+  phrase; `reasoning_default` only from evidence), each value declared (driver default, quirk profile, config),
   discovered or probed — probed beats discovered beats declared. An unknown capability counts as absent.
 - **Drivers** (`drivers/`): `openai_chat` (Chat Completions — OpenRouter, vLLM, LM Studio, Ollama,
   LiteLLM; server differences are quirk-profile **data**), `openai_responses` (stateless, `store:false`,

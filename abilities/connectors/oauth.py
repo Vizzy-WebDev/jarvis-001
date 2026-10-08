@@ -64,6 +64,8 @@ from urllib.parse import urlencode, urlparse
 
 import httpx
 
+from jarvis import tls
+
 from ..config import delete_secret, get_secret, save_secret
 from ..store import read_json, write_json
 from . import store
@@ -444,7 +446,7 @@ async def start_connect(connector_id: str, mcp_url: str, *, manual_client_id: st
     past failure never forecloses trying again: the very next Connect click
     re-attempts the full chain from scratch.
     """
-    async with httpx.AsyncClient(timeout=TIMEOUT_S, follow_redirects=True) as client:
+    async with httpx.AsyncClient(verify=tls.context(), timeout=TIMEOUT_S, follow_redirects=True) as client:
         discovery = await _discover_auth_server(client, mcp_url)
         connector = store.get_connector(connector_id)
         existing_flow = ((connector or {}).get("config") or {}).get("connectFlow") or {}
@@ -590,7 +592,7 @@ async def handle_callback(query: dict[str, Any]) -> dict[str, Any]:
                 "connectorId": flow["connectorId"]}
 
     try:
-        async with httpx.AsyncClient(timeout=TIMEOUT_S) as client:
+        async with httpx.AsyncClient(verify=tls.context(), timeout=TIMEOUT_S) as client:
             tokens = await _exchange_code_for_tokens(client, flow, code)
     except (httpx.HTTPError, RuntimeError, ValueError) as err:
         return {"ok": False, "error": str(err) or "Could not finish connecting to the service.",
@@ -627,7 +629,7 @@ async def _refresh_token_set(token_set: dict[str, Any]) -> dict[str, Any]:
     if token_set.get("resource"):
         body["resource"] = token_set["resource"]
 
-    async with httpx.AsyncClient(timeout=TIMEOUT_S) as client:
+    async with httpx.AsyncClient(verify=tls.context(), timeout=TIMEOUT_S) as client:
         response = await client.post(token_set["tokenEndpoint"], data=body)
     if response.status_code >= 400:
         raise RuntimeError("This connection expired and could not be refreshed — reconnect it.")
@@ -695,7 +697,7 @@ async def recheck_no_auth_connectors() -> None:
     gating only actual tool calls) — demoted back to needing a real connect,
     rather than sitting as "working" with a tools list that stays empty
     forever with no path back to Connect. Best-effort, never blocks startup."""
-    async with httpx.AsyncClient(timeout=TIMEOUT_S, follow_redirects=True) as client:
+    async with httpx.AsyncClient(verify=tls.context(), timeout=TIMEOUT_S, follow_redirects=True) as client:
         for connector in store.list_connectors("mcp"):
             flow = (connector.get("config") or {}).get("connectFlow") or {}
             if flow.get("kind") != "none" or not flow.get("url"):

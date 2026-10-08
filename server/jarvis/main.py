@@ -15,7 +15,9 @@ checked against the recorded contract fixtures.
 
 from __future__ import annotations
 
+import logging
 import os
+import threading
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -103,6 +105,23 @@ _BACKGROUND_INTERLOCKS = (
 )
 
 
+def _warm_up() -> None:
+    """Build the tool registry and load the model layer now, while the person is still opening the
+    browser: left to the first message, that one-off import work (desktop-control libraries, the
+    schema validator) was ~2 s of silence before the first reply of every launch."""
+    try:
+        from .assembly import get_orchestrator
+        from . import tls
+        from .models import execute  # noqa: F401
+        from .models.drivers import _wire
+
+        tls.context()
+        _wire._verify()
+        get_orchestrator()
+    except Exception:  # noqa: BLE001 — a failed warm-up only means the first message does the work
+        logging.getLogger(__name__).exception("warm-up failed")
+
+
 def main() -> None:
     import uvicorn
 
@@ -113,7 +132,9 @@ def main() -> None:
         os.environ.setdefault(var, "1")
 
     port = int(os.environ.get("PORT", "3000"))
-    uvicorn.run(create_app(), host="127.0.0.1", port=port, log_level="info")
+    app = create_app()
+    threading.Thread(target=_warm_up, name="warm-up", daemon=True).start()
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
 
 
 if __name__ == "__main__":

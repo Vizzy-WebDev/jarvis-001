@@ -74,12 +74,13 @@ def _message(body: str, status: int) -> str:
 
 def _default_voice_id(api_key: str) -> str:
     import httpx
+    from jarvis import tls
 
     cached = _default_voice.get(api_key)
     if cached and time.time() - cached[1] < DEFAULT_VOICE_CACHE_S:
         return cached[0]
 
-    response = httpx.get(f"{API_BASE}/v1/voices", headers={"xi-api-key": api_key}, timeout=30.0)
+    response = httpx.get(f"{API_BASE}/v1/voices", headers={"xi-api-key": api_key}, timeout=30.0, verify=tls.context())
     if response.status_code != 200:
         raise (NoKey if response.status_code == 401 else RuntimeError)(
             _message(response.text, response.status_code))
@@ -101,6 +102,7 @@ def stream(text: str, *, voice: str | None = None,
     later needs no change in any caller.
     """
     import httpx
+    from jarvis import tls
 
     found = _find_ref()
     api_key = external_services.get_key(found) if found else None
@@ -113,7 +115,7 @@ def stream(text: str, *, voice: str | None = None,
         f"{API_BASE}/v1/text-to-speech/{voice_id}",
         headers={"xi-api-key": api_key, "Content-Type": "application/json",
                  "Accept": "audio/mpeg"},
-        json={"text": text, "model_id": "eleven_multilingual_v2"}, timeout=120.0)
+        json={"text": text, "model_id": "eleven_multilingual_v2"}, timeout=120.0, verify=tls.context())
     if response.status_code != 200:
         message = _message(response.text, response.status_code)
         raise (NoKey if response.status_code == 401 else RuntimeError)(message)
@@ -125,12 +127,13 @@ def test_key(key: str, ref: str | None = None) -> dict[str, Any]:
     """A real auth check that costs no synthesis — the same "handshake only"
     discipline every other provider's test uses."""
     import httpx
+    from jarvis import tls
 
     trimmed = str(key or "").strip()
     if not trimmed:
         return {"ok": False, "error": "No key provided."}
     try:
-        response = httpx.get(f"{API_BASE}/v1/user", headers={"xi-api-key": trimmed}, timeout=30.0)
+        response = httpx.get(f"{API_BASE}/v1/user", headers={"xi-api-key": trimmed}, timeout=30.0, verify=tls.context())
     except Exception:  # noqa: BLE001 — unreachable is an answer
         return {"ok": False, "error": "Could not reach ElevenLabs."}
     if response.status_code == 200:

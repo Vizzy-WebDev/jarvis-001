@@ -45,7 +45,10 @@ loop's port; the one module that imports the orchestrator) and `oneshot.py`
   — found or refused, never approximated, and an existing space is never
   re-pointed. `embeddings.candidates()` lists what it could choose from and why
   each is unusable (policy, missing key).
-- **Capabilities** — a fixed, versioned vocabulary (`capabilities.py`); each value
+- **Capabilities** — an OPEN vocabulary (`capabilities.py`): any well-formed name is accepted, so a
+  capability nobody has seen needs no code change; known names only add a type check and a plain
+  phrase for rejections. A model's own default effort (`reasoning_default`) is accepted only from
+  evidence (discovered, probed, configured), never a family guess. Each value
   records its source: declared < model profile < discovered < probed < configured.
   Model facts (what an `o`-series or `claude-*` id can do, its kind, family, reasoning
   levels) live in `defaults.yaml` `model_profiles`, never in code. `kind` is a value too

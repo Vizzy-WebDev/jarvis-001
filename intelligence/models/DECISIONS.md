@@ -276,3 +276,11 @@ it was deliberately corrected.
   breaker thresholds are settings data. `optimize` is reached through a task class's route
   in config; `prefer` is a layer-API field the boundary does not set today;
   `explain_route` is served at `GET /api/models/route`.
+- **Open vocabulary, evidence-only effort default (final pass).** Capability and kind names are
+  open; "Default" effort is the model's own, shown only when a server listed it, it was probed or
+  the person wrote it. A reply cut off by a failure or interruption keeps its streamed words as its
+  own assistant message (`unfinished`), the error is separate, and an interruption can only mark a
+  reply of the current turn. The turn stream's heartbeat runs on the event loop with a real clock
+  (it used to ride the shared thread pool). Every outbound HTTP call shares one TLS context
+  (`jarvis/tls.py`; building one cost ~1 s per call on Windows), and `main()` warms the tool registry
+  and model layer in the background so the first message of a launch is not slow.

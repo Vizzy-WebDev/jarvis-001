@@ -225,6 +225,8 @@ def mark_last_assistant_interrupted(session_id: str, spoken_text: str) -> bool:
     if not messages:
         return False
     for message in reversed(messages):
+        if message["role"] == "user":
+            return False
         if message["role"] == "assistant" and message.get("text"):
             message["interrupted"] = True
             message["spokenText"] = spoken_text

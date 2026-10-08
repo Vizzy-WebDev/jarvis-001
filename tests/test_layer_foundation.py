@@ -36,11 +36,13 @@ def test_a_request_is_checked_for_what_cannot_be_honoured():
         Request(task_class="x", data_class="public", items=(), hints=Hints(reasoning_effort=" "))
 
 
-def test_the_vocabulary_is_fixed_and_extensions_are_namespaced():
+def test_the_vocabulary_is_open_but_a_name_must_be_a_name():
     capabilities.check_name("tools")
     capabilities.check_name("x-someprovider:thing")
+    capabilities.check_name("vision")
+    capabilities.check_name("hologram_out")
     with pytest.raises(capabilities.UnknownCapability):
-        capabilities.check_name("vision")
+        capabilities.check_name("Not A Name!")
     with pytest.raises(ValueError):
         capabilities.check_value("max_context_tokens", "big")
     with pytest.raises(ValueError):

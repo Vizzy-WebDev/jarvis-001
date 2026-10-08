@@ -297,19 +297,21 @@ def _listed(row: dict[str, Any], quirks: dict[str, Any] | None = None) -> Discov
     inputs = row.get("input_modalities") or arch.get("input_modalities")
     outputs = row.get("output_modalities") or arch.get("output_modalities")
     if isinstance(inputs, list) and inputs:
+        # Every input kind the server lists is a capability of the same shape (`<kind>_in`), whether
+        # or not this version has heard of it.
+        for modality in inputs:
+            if isinstance(modality, str) and modality.strip():
+                caps[f"{modality.strip().lower()}_in"] = True
         caps["image_in"] = "image" in inputs
         caps["pdf_in"] = "file" in inputs
     kind = str(row.get("type") or "").lower()
     if kind in {"embedding", "embeddings"}:
         caps["kind"] = "embedding"
-    elif kind in {"audio", "speech", "tts", "stt", "transcription"}:
-        caps["kind"] = "speech"
-    elif kind in {"video", "image"}:
-        caps["kind"] = "image"
-    elif kind in {"rerank", "moderation"}:
-        caps["kind"] = "other"
+    elif kind and kind not in {"chat", "text", "language", "llm"}:
+        caps["kind"] = kind
     elif isinstance(outputs, list) and outputs and "text" not in outputs:
-        caps["kind"] = "speech" if "audio" in outputs else ("image" if {"image", "video"} & set(outputs) else "other")
+        # What it makes, in the server's words: one output is its kind; several are named together.
+        caps["kind"] = "-".join(sorted(str(o).strip().lower() for o in outputs if str(o).strip())) or "other"
     supported = row.get("supported_parameters")
     if isinstance(supported, list) and supported:
         caps["tools"] = "tools" in supported

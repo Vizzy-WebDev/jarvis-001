@@ -1,13 +1,19 @@
-"""The capability vocabulary — fixed and versioned — and how the three sources of a
-capability's value are merged.
+"""The capabilities the layer knows how to read, and how the sources of a capability's value
+are merged.
+
+The vocabulary is open. A capability is a name and a value; a name this version has never seen
+is carried, merged, required and reported exactly like a known one, and counts as present only
+on an endpoint that declares, lists or proves it. Known names only add a type check and a plain
+phrase for rejections.
 
 A value comes from a driver's wire default, a model profile or the person's config
 (`declared`), from what a server listed about its models (`discovered`), or from actually
 trying it (`probed`). Probed beats discovered beats declared, and a disagreement is logged: it usually
 means a config entry or a server's own listing is wrong.
 
-A provider-specific capability is written `x-<provider>:<name>` and may hold any
-value; the layer never interprets one, only a driver does.
+A name the layer never interprets (anything outside the known set, including the
+`x-<provider>:<name>` spelling) may hold any plain value; only a driver or the caller who asked
+for it gives it meaning.
 """
 
 from __future__ import annotations
@@ -19,6 +25,9 @@ from typing import Any, Literal, Mapping
 logger = logging.getLogger(__name__)
 
 VOCABULARY_VERSION = 3
+import re
+
+_NAME = re.compile(r"^[a-z][a-z0-9_.:\-]*$")
 
 FLAGS = frozenset({
     "text_in", "image_in", "pdf_in",
@@ -28,7 +37,8 @@ FLAGS = frozenset({
     "reasoning_can_disable",
 })
 LIMITS = frozenset({"max_context_tokens", "max_output_tokens"})
-#: v3: what a model is for. Generation routing only ever considers `chat`; embeddings only `embedding`.
+#: v3: what a model is for. Generation routing only ever considers `chat`; embeddings only
+#: `embedding`. Any other word is a kind too (the ones below are only the ones met so far).
 KIND = "kind"
 KINDS = ("chat", "embedding", "speech", "image", "other")
 #: v3: the thinking levels this endpoint takes (its own names, in its own order), the one it
@@ -60,10 +70,11 @@ def is_extension(name: str) -> bool:
 
 
 def check_name(name: str) -> None:
-    if name not in VOCABULARY and not is_extension(name):
+    """Any plain lower-case name will do; only something that can't be a name is refused."""
+    if not isinstance(name, str) or not _NAME.match(name):
         raise UnknownCapability(
-            f"“{name}” isn't a capability this version knows (vocabulary v{VOCABULARY_VERSION}). "
-            f"Use one of: {', '.join(sorted(VOCABULARY))}, or x-<provider>:<name>.")
+            f"“{name}” can't be a capability name: use lower-case letters, digits and _ (for example "
+            "video_in).")
 
 
 def check_value(name: str, value: Any) -> None:
@@ -71,8 +82,8 @@ def check_value(name: str, value: Any) -> None:
         raise ValueError(f"capability {name} must be true or false")
     if name in LIMITS and (not isinstance(value, int) or isinstance(value, bool) or value <= 0):
         raise ValueError(f"capability {name} must be a positive whole number")
-    if name == KIND and value not in KINDS:
-        raise ValueError(f"capability {name} must be one of: {', '.join(KINDS)}")
+    if name == KIND and (not isinstance(value, str) or not _NAME.match(value)):
+        raise ValueError(f"capability {name} must be a one-word kind, like chat or embedding")
     if name == REASONING_LEVELS and (not isinstance(value, list) or not value or len(set(value)) != len(value)
                                      or any(not isinstance(v, str) or not v.strip() for v in value)):
         raise ValueError(f"capability {name} must be a list of different, non-empty level names")
@@ -121,9 +132,17 @@ def reasoning_levels(caps: Mapping[str, CapValue]) -> tuple[str, ...]:
     return tuple(str(v) for v in found.value)
 
 
+#: Where a model's own default may come from. A default is a fact about one model that only the
+#: server that lists it, a measurement or the person can state; a wire default or a profile
+#: shared by a family could only guess it, and a wrong one would be shown as the model's own.
+DEFAULT_EVIDENCE = frozenset({"discovered", "probed", "configured"})
+
+
 def reasoning_default(caps: Mapping[str, CapValue]) -> str | None:
     found = caps.get(REASONING_DEFAULT)
-    return found.value if found is not None and found.value in reasoning_levels(caps) else None
+    if found is None or found.source not in DEFAULT_EVIDENCE:
+        return None
+    return found.value if found.value in reasoning_levels(caps) else None
 
 
 def can_disable(caps: Mapping[str, CapValue]) -> bool:
@@ -132,7 +151,7 @@ def can_disable(caps: Mapping[str, CapValue]) -> bool:
 
 def kind_of(caps: Mapping[str, CapValue]) -> str | None:
     found = caps.get(KIND)
-    return found.value if found is not None and found.value in KINDS else None
+    return found.value if found is not None and isinstance(found.value, str) and found.value else None
 
 
 def is_kind(caps: Mapping[str, CapValue], kind: str) -> bool:

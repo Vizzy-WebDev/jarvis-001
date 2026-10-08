@@ -105,7 +105,9 @@ _CAN = {"text_in": "answer in text", "image_in": "look at pictures", "pdf_in": "
 
 
 def can_say(name: str) -> str:
-    return _CAN.get(name) or "do something this request needs"
+    """A known capability in its plain phrase; any other in its own name, so a rejection always
+    says what was missing."""
+    return _CAN.get(name) or f"support “{name.removeprefix('x-').replace('_', ' ')}”"
 
 
 def _name(connection: Connection) -> str:

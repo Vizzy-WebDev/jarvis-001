@@ -230,7 +230,8 @@ def stream(conn: ConnInfo, prepared: Prepared) -> Iterator[Any]:
 # --- discovery -------------------------------------------------------------------------------
 
 def discover(conn: ConnInfo) -> list[Discovered]:
-    """Only models Google itself says can `generateContent`."""
+    """Every model Google lists. One that can't `generateContent` is kept with the kind its methods
+    suggest, so it is never offered a chat turn but is there for what it is for."""
     found: list[Discovered] = []
     token: str | None = None
     for _ in range(20):
@@ -245,9 +246,12 @@ def discover(conn: ConnInfo) -> list[Discovered]:
             if not isinstance(row, dict) or not row.get("name"):
                 continue
             methods = row.get("supportedGenerationMethods")
-            if isinstance(methods, list) and "generateContent" not in methods:
-                continue
             caps: dict[str, Any] = {}
+            if isinstance(methods, list) and "generateContent" not in methods:
+                if any("embed" in str(m).lower() for m in methods):
+                    caps["kind"] = "embedding"
+                else:
+                    caps["kind"] = str(methods[0]).lower() if methods else "other"
             if _wire.count(row.get("inputTokenLimit")):
                 caps["max_context_tokens"] = row["inputTokenLimit"]
             if _wire.count(row.get("outputTokenLimit")):

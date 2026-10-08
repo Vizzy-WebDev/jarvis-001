@@ -77,12 +77,12 @@ quirk_profiles:
 # what a probe measured and what the person wrote in their own config. Only what a listing,
 # a probe or this repository has shown goes here.
 model_profiles:
-  # The Messages API takes images on its current models, and its own effort default is "high"
-  # (the same as sending nothing). A model's listing says which levels it has.
+  # The Messages API takes images on its current models. A model's listing says which effort
+  # levels it has; what it does when none is sent is its own business, so no default is named.
   - match: "*"
     driver: anthropic_messages
     family: claude
-    capabilities: {image_in: true, reasoning_default: high}
+    capabilities: {image_in: true}
   # Gemini takes images and a thinking level (never "off"); its ids name the models that only
   # speak or only draw.
   - match: "*"
@@ -95,10 +95,11 @@ model_profiles:
   - match: "*-image*"
     driver: gemini_generate
     capabilities: {kind: image}
-  # Responses models take images; `reasoning.effort` has these levels and defaults to medium.
+  # Responses models take images and `reasoning.effort`; what a model does when none is sent is
+  # its own default, so none is named here.
   - match: "*"
     driver: openai_responses
-    capabilities: {image_in: true, reasoning_levels: [low, medium, high], reasoning_default: medium}
+    capabilities: {image_in: true, reasoning_levels: [low, medium, high]}
 
 # What the Model Settings screen's "Add connection" picker offers. Read only by the
 # settings routes, never by routing.

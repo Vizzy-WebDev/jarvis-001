@@ -108,7 +108,9 @@ def test_a_rich_gateway_listing_becomes_discovered_capabilities_and_prices(layer
         by_id = {e.id: e for e in models.list_endpoints()}
         smart = by_id["gw/vendor/smart"]
         caps = capabilities.plain(smart.capabilities)
-        assert caps["image_in"] and caps["structured_output_strict"] and caps["json_mode"] and caps["reasoning_levels"]
+        assert caps["image_in"] and caps["structured_output_strict"] and caps["json_mode"]
+        # The listing says the model reasons but not at which levels: no levels, no default, no guess.
+        assert "reasoning_levels" not in caps and "reasoning_default" not in caps
         assert caps["max_context_tokens"] == 200000 and caps["max_output_tokens"] == 64000
         assert smart.capabilities["tools"].source == "discovered"
         assert smart.pricing.input == pytest.approx(3.0) and smart.pricing.output == pytest.approx(15.0)

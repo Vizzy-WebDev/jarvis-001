@@ -803,9 +803,13 @@ def test_the_composer_picker_offers_effort_only_for_a_model_whose_provider_repor
     levels = page.eval_on_selector_all(
         "[data-testid^=effort-]:not([data-testid=effort-section])",
         "els => els.map(e => e.dataset.testid.replace('effort-', ''))")
+    # Only the model's own levels are rows. Its default is not known (Anthropic lists none), so
+    # nothing is marked and nothing is invented; there is no "Model default" row.
+    assert page.locator("[data-testid=effort-model-default]").count() == 0
+    assert page.locator("[data-testid^=effort-][aria-pressed=true]").count() == 0
     # The levels THIS endpoint accepts (model layer D1): an Anthropic model cannot
     # switch thinking off, so "none" is not offered — only what it really takes.
-    assert levels == ["low", "medium", "high"]
+    assert levels == ["low", "medium", "high", "max"]  # exactly what the provider listed (xhigh: not supported)
     page.click("[data-testid=effort-low]")
     page.wait_for_function(
         "() => document.querySelector('[data-testid=effort-low]').getAttribute('aria-pressed') === 'true'")
@@ -2472,3 +2476,36 @@ def test_archiving_from_the_history_slide_in_moves_it_to_archived(page):
     page.click("[data-testid=drawer-toggle-archived]")
     page.wait_for_selector("[data-testid=drawer-archived-list]")
     assert "Old plans" in page.inner_text("[data-testid=drawer-archived-list]")
+
+
+def test_the_picker_checks_the_models_own_default_level_and_has_no_model_default_row(
+        page, live_server, serve_provider):
+    stub = serve_provider("anthropic-messages", models=[OPUS_LIKE, PLAIN_ONE], reply="ok")
+    connect(live_server, stub)
+
+    def with_a_known_default(route):
+        body = route.fetch().json()
+        for connection in body["connections"]:
+            for model in connection["models"]:
+                if model.get("effort"):
+                    model["effort"]["default"] = "high"
+        route.fulfill(json=body)
+
+    page.route("**/api/models", with_a_known_default)
+    page.reload(wait_until="load")
+    page.wait_for_selector("[data-testid=model-picker]")
+    page.click("[data-testid=model-picker]")
+    page.click("[data-testid=pick-model][data-model-id=opus-x]")
+    page.wait_for_selector("[data-testid=effort-section]")
+    assert page.locator("[data-testid=effort-model-default]").count() == 0
+    assert page.get_attribute("[data-testid=effort-high]", "aria-pressed") == "true"
+    for other in ("low", "medium", "max"):
+        assert page.get_attribute(f"[data-testid=effort-{other}]", "aria-pressed") == "false"
+    page.click("[data-testid=effort-low]")
+    page.wait_for_function(
+        "() => document.querySelector('[data-testid=effort-low]').getAttribute('aria-pressed') === 'true'")
+    assert page.get_attribute("[data-testid=effort-high]", "aria-pressed") == "false"
+    page.click("[data-testid=effort-high]")  # back to the model's own default: nothing is sent
+    page.wait_for_function(
+        "() => document.querySelector('[data-testid=effort-high]').getAttribute('aria-pressed') === 'true'")
+    assert backend_models(live_server)["selection"]["effort"] is None

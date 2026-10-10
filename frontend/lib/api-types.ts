@@ -126,8 +126,10 @@ export interface ProviderFormat {
 
 /**
  * Reasoning effort as this ONE model takes it, in its own words. Absent means nothing is
- * known about its levels, and no control is offered — levels are never assumed. The person's
- * alternative to a level is always "Model default", which sends nothing.
+ * known about its levels, and no control is offered — levels are never assumed. With no choice
+ * made nothing is sent and the model uses its own default: when that default is known it is one
+ * of the levels (shown as the chosen one); when it is unknown nothing is marked. The picker lists
+ * only these levels: "no override" is how a request behaves, never a row.
  */
 export interface ModelEffort {
   levels: string[];

@@ -33,7 +33,7 @@ from . import _turns, _wire
 NAME = "openai_chat"
 QUIRKS = frozenset({"no_parallel_tool_calls", "tool_args_not_streamed", "rejects_strict", "no_stream_usage",
                     "no_system_role", "no_tool_call_ids", "error_envelope_in_text", "reasoning_param",
-                    "max_tokens_param", "show_endpoint", "catalog_fields", "listed_reasoning_levels"})
+                    "max_tokens_param", "show_endpoint", "catalog_fields"})
 DEFAULT_CAPABILITIES: dict[str, Any] = {"text_in": True, "tools": True, "parallel_tools": True, "streaming": True,
                                         "kind": "chat"}
 
@@ -279,16 +279,6 @@ def _per_million(value: Any) -> float | None:
     return None if number < 0 else number * 1_000_000
 
 
-def _reasoning(caps: dict[str, Any], takes_control: bool, quirks: dict[str, Any]) -> None:
-    """A server that lists a reasoning control rarely lists its levels: the connection's
-    `listed_reasoning_levels` (data) says which a model it lists takes. No data, no levels."""
-    levels = quirks.get("listed_reasoning_levels")
-    if takes_control and isinstance(levels, list) and levels:
-        caps["reasoning_levels"] = list(levels)
-        if "none" in levels:
-            caps["reasoning_can_disable"] = True
-
-
 def _listed(row: dict[str, Any], quirks: dict[str, Any] | None = None) -> Discovered:
     """Only what the server reported about the model. A plain server says nothing
     beyond the id; a gateway may describe capabilities, modalities and price."""
@@ -317,7 +307,6 @@ def _listed(row: dict[str, Any], quirks: dict[str, Any] | None = None) -> Discov
         caps["tools"] = "tools" in supported
         caps["structured_output_strict"] = "structured_outputs" in supported
         caps["json_mode"] = "response_format" in supported
-        _reasoning(caps, "reasoning" in supported or "reasoning_effort" in supported, quirks or {})
     listed_caps = row.get("capabilities") if isinstance(row.get("capabilities"), dict) else {}
     if isinstance(listed_caps.get("tool_calling"), bool):
         caps["tools"] = listed_caps["tool_calling"]
@@ -363,7 +352,6 @@ def _from_show(found: Discovered, shown: dict[str, Any], quirks: dict[str, Any] 
             caps["kind"] = "other"
         caps["tools"] = "tools" in listed
         caps["image_in"] = "vision" in listed
-        _reasoning(caps, "thinking" in listed, quirks or {})
     info = shown.get("model_info") if isinstance(shown.get("model_info"), dict) else {}
     for key, value in info.items():
         if key.endswith(".context_length") and _wire.count(value):

@@ -241,8 +241,11 @@ it was deliberately corrected.
     A provider level outside the scale is kept in the provider's own words, selectable by
     name and sent exactly; mapping never chooses one.
   - Drivers say only how a level is encoded on the wire (Gemini's level/budget tables are
-    data). The picker shows "Model default" plus that endpoint's own levels with its default
-    marked.
+    data). The shipped defaults name no level list for any provider or model: levels come only
+    from what a provider lists, a probe, or `reasoning_levels` in `models.yaml`. The picker shows
+    that endpoint's own levels and nothing else: its own default, when known, is the checked one;
+    when unknown nothing is checked. "Model default" is never a row (sending no hint is request
+    behaviour, not a level); choosing the default level, or the chosen level again, sends none.
 - **Approved deviation, generalised (D3a/D3b -> scope and recovery).** Every error carries a
   `scope` (request, endpoint, upstream, connection) and a `recovery` (after N seconds, until the
   provider's reset, until the Discover refresh, needs the person). Status-code reading stays in

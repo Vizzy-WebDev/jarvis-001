@@ -203,7 +203,8 @@ def test_selecting_makes_jarvis_configured_and_effort_is_kept_only_where_it_can_
     assert stub.last_body()["output_config"] == {"effort": "high"}
     levels = {m["id"]: m["effort"] for m in client.get("/api/models").json()["connections"][0]["models"]}
     # Only the levels the model takes (D1): Claude can't switch thinking off, so no "none".
-    assert levels["plain"] is None and levels["thinker"] == {"levels": ["low", "medium", "high"], "default": "high",
+    # No default: this server listed none, and a default is only ever the model's own, never a guess.
+    assert levels["plain"] is None and levels["thinker"] == {"levels": ["low", "medium", "high"], "default": None,
                                                     "canDisable": False}
 
 

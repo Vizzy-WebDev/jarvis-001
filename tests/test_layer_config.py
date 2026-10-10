@@ -45,7 +45,7 @@ def test_every_problem_is_reported_at_once_and_says_where(layer):
             {"name": "a", "driver": "nope", "base_url": "http://x", "trust": "local"},
             {"name": "b", "driver": "fake", "base_url": "ftp://x", "trust": "public",
              "default_params": {"headers": {"Authorization": "Bearer sk-123"}},
-             "models": {"m": {"capabilities": {"vision": True}, "pricing": {"input": -1, "output": 2}}}},
+             "models": {"m": {"capabilities": {"Bad Cap": True}, "pricing": {"input": -1, "output": 2}}}},
         ],
         "aliases": {"x": {"endpoint": "ghost/m"}, "y": {}},
         "routes": {"chat": {"aliases": ["missing"], "optimize": "fastest"}},
@@ -56,7 +56,7 @@ def test_every_problem_is_reported_at_once_and_says_where(layer):
         config.current()
     text = str(caught.value)
     for needle in ("connections[0].name", "connections.a.driver", "connections.b.base_url", "connections.b.trust",
-                   "Authorization: looks like a secret", "“vision” isn't a capability", "pricing.input",
+                   "Authorization: looks like a secret", "“Bad Cap” can't be a capability name", "pricing.input",
                    "aliases.y", "routes.chat.aliases", "routes.chat.optimize",
                    "policies.data_classes.sensitive", "surprise"):
         assert needle in text, needle
@@ -155,3 +155,12 @@ def test_spend_rolls_over_with_the_month(layer, monkeypatch):
     assert state.month_spend() == pytest.approx(1.5)
     clock[0] += 40 * 86400
     assert state.month_spend() == 0.0
+
+
+def test_the_shipped_defaults_name_no_effort_levels_for_any_provider_or_model():
+    from pathlib import Path
+    text = (Path(__file__).resolve().parent.parent / "intelligence" / "models" / "data" / "defaults.yaml").read_text(
+        encoding="utf-8")
+    code = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+    assert "reasoning_levels" not in code and "reasoning_default" not in code
+    assert "listed_reasoning_levels" not in code

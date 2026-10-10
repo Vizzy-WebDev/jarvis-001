@@ -48,23 +48,20 @@ prompt_profiles:
 # Server differences, as data. `capabilities` are declared defaults for every
 # endpoint on a connection using the profile; `wire` flags are read by the driver.
 quirk_profiles:
-  plain:
-    wire: {listed_reasoning_levels: [low, medium, high]}
+  plain: {}
   ollama:
     capabilities: {parallel_tools: false}
-    wire: {no_parallel_tool_calls: true, show_endpoint: true, max_tokens_param: max_tokens,
-           listed_reasoning_levels: [low, medium, high]}
+    wire: {no_parallel_tool_calls: true, show_endpoint: true, max_tokens_param: max_tokens}
   lmstudio:
-    wire: {no_parallel_tool_calls: true, max_tokens_param: max_tokens, listed_reasoning_levels: [low, medium, high]}
+    wire: {no_parallel_tool_calls: true, max_tokens_param: max_tokens}
   vllm:
-    wire: {max_tokens_param: max_tokens, listed_reasoning_levels: [low, medium, high]}
+    wire: {max_tokens_param: max_tokens}
   litellm:
-    wire: {error_envelope_in_text: true, listed_reasoning_levels: [low, medium, high]}
+    wire: {error_envelope_in_text: true}
   openrouter:
-    wire: {error_envelope_in_text: true, reasoning_param: reasoning_object, catalog_fields: rich,
-           listed_reasoning_levels: [low, medium, high]}
+    wire: {error_envelope_in_text: true, reasoning_param: reasoning_object, catalog_fields: rich}
   gateway:
-    wire: {error_envelope_in_text: true, catalog_fields: rich, listed_reasoning_levels: [low, medium, high]}
+    wire: {error_envelope_in_text: true, catalog_fields: rich}
   gemini:
     # Newer Gemini models refuse a current-turn function call with no thought
     # signature; a call made by another endpoint has none. Google documents this
@@ -88,7 +85,7 @@ model_profiles:
   - match: "*"
     driver: gemini_generate
     family: gemini
-    capabilities: {image_in: true, reasoning_levels: [low, medium, high]}
+    capabilities: {image_in: true}
   - match: "*-tts*"
     driver: gemini_generate
     capabilities: {kind: speech}
@@ -99,7 +96,7 @@ model_profiles:
   # its own default, so none is named here.
   - match: "*"
     driver: openai_responses
-    capabilities: {image_in: true, reasoning_levels: [low, medium, high]}
+    capabilities: {image_in: true}
 
 # What the Model Settings screen's "Add connection" picker offers. Read only by the
 # settings routes, never by routing.

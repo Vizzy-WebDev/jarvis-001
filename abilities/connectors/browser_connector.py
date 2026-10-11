@@ -59,7 +59,9 @@ TOOLS: tuple[dict[str, Any], ...] = (
             "browser keeps its sign-ins between uses, and Boss can watch it and take over from "
             "the card in the chat (to sign in, solve a CAPTCHA or approve a payment, which you "
             "must never do for them): when you hit one of those, say so, and carry on with "
-            "browser_read_page once they tell you it is done."),
+            "browser_read_page once they tell you it is done. All the browser_* tools act on ONE "
+            "shared page, so call them one at a time and look at each result before the next "
+            "- never several together."),
         "parameters": {"type": "object",
                        "properties": {"url": {"type": "string",
                                               "description": "The address to open."}},

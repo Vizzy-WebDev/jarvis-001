@@ -708,6 +708,9 @@ class BrowserManager:
             except Exception:  # noqa: BLE001
                 pass
             self._playwright = None
+            # The driver's pipes close on the loop's next turns; stopping the loop at once
+            # leaves them to be collected after it is gone (a noisy, harmless warning).
+            await asyncio.sleep(0.25)
         await self._proxy.close()
 
 

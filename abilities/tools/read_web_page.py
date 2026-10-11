@@ -15,12 +15,19 @@ pops one up is the behaviour this ordering exists to prevent.
 from __future__ import annotations
 
 import re
+import time
 
 from ..capabilities import CapabilitySpec, Risk
 from ..webtext import title_of, to_text
 from ._http import get_text
 
 MAX_CHARS = 20000
+#: How long one read may take in all, and the least a headless render is worth starting with.
+#: Measured on the owner's install, 17 of 118 reads ended as "didn't finish within 25s": a
+#: plain fetch may take 15s and the render after it 25s more, so the tool's old 25s limit cut
+#: off the very reads that needed the render — and threw away the page the fetch HAD read.
+BUDGET_S = 45.0
+MIN_RENDER_S = 8.0
 #: Below this, what came back is almost certainly a page shell rather than an
 #: article — worth rendering properly before reporting there is nothing there.
 THIN_CHARS = 600
@@ -28,13 +35,15 @@ def _run(url: str = "") -> dict:
     target = str(url or "").strip()
     if not re.match(r"^https?://", target, re.I):
         return {"ok": False, "error": "That doesn't look like a web address."}
+    started = time.monotonic()
     try:
         markup = get_text(target)
     except Exception as err:  # noqa: BLE001
         return {"ok": False, "error": f"Couldn't read that page ({err.__class__.__name__})."}
     text = to_text(markup)
     rendered = False
-    if len(text) < THIN_CHARS:
+    left = BUDGET_S - (time.monotonic() - started)
+    if len(text) < THIN_CHARS and left >= MIN_RENDER_S:
         # Almost nothing came back. That is usually a page that builds itself in
         # the browser rather than a page with nothing on it, so it is worth
         # actually running — headlessly, invisibly. A plain fetch that came back
@@ -42,7 +51,8 @@ def _run(url: str = "") -> dict:
         # the shell of a page is worse than taking the extra second.
         from ..webrender import render
 
-        attempt = render(target)
+        # Within what is left of this read's own time, less the few seconds a page gets to settle.
+        attempt = render(target, timeout_ms=int(max(MIN_RENDER_S - 5, left - 7) * 1000))
         if attempt.ok:
             fuller = to_text(attempt.html)
             if len(fuller) > len(text):
@@ -73,5 +83,6 @@ SPEC = CapabilitySpec(
         "required": ["url"]},
     risk=Risk.LOW,
     handler=_run,
-    timeout_s=25.0,
+    # Above the read's own deadline (`BUDGET_S`), which is what normally ends it.
+    timeout_s=55.0,
 )

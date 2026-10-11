@@ -283,18 +283,23 @@ def answered_since(session_id: str, since_iso: str) -> list[tuple[Approval, dict
     return out
 
 
-def expire_older_than(cutoff_iso: str, event_bus: EventBus | None = None) -> int:
-    """Mark stale pending approvals as TIMEOUT (§8's fourth outcome).
+def expire_older_than(cutoff_iso: str, event_bus: EventBus | None = None, *,
+                      keep_session_prefixes: tuple[str, ...] = ()) -> list[Approval]:
+    """Mark stale pending approvals as TIMEOUT (§8's fourth outcome). Returns the ones it
+    timed out.
 
     A real sweep, rather than a TTL noticed only if someone happens to redeem the
     token. An unanswered question should visibly time out, not linger forever
-    holding its arguments.
+    holding its arguments. `keep_session_prefixes` leaves alone the questions of sessions
+    that are themselves waiting on the answer (a background job's): those are raised again
+    until answered, never dropped.
     """
     db = get_db()
-    rows = db.execute(
+    rows = [row for row in db.execute(
         "SELECT * FROM approvals WHERE status = 'pending' AND requested_at < ?",
         (cutoff_iso,),
-    ).fetchall()
+    ).fetchall() if not (keep_session_prefixes
+               and str(row["session_id"] or "").startswith(keep_session_prefixes))]
     for row in rows:
         db.execute(
             "UPDATE approvals SET status = ?, resolved_at = ?, resolved_by = ? WHERE id = ?",
@@ -305,7 +310,7 @@ def expire_older_than(cutoff_iso: str, event_bus: EventBus | None = None) -> int
             {"id": row["id"], "capability": row["capability"],
              "resolution": Resolution.TIMEOUT.value, "sessionId": row["session_id"]},
         )
-    return len(rows)
+    return [_row_to_approval(row) for row in rows]
 
 
 # --- standing grants (§8) ----------------------------------------------------

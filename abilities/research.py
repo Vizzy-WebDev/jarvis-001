@@ -16,6 +16,14 @@ where an answer came from changes what it is worth.
 **Search with keywords, not with the question.** A raw question can return
 nothing where the same subject reduced to keywords returns dozens of results;
 `to_search_query()` is that reduction, and it is not cosmetic.
+
+**A lookup has its own deadline, and what it found is never thrown away.** Measured on the
+owner's install, 31 of 158 lookups ended as "didn't finish within 90s" and returned nothing:
+the pages were read one after another (up to 12s each) and then a model was asked to
+summarise with no limit on how long that could take. Now the pages are read at the same
+time, the whole lookup works to `BUDGET_S`, and when the summary cannot be had — no model
+could answer, or it would not come in time — the result is the relevant part of each page
+itself (`via: "web-excerpts"`), which the model that asked can read as well as any summary.
 """
 
 from __future__ import annotations
@@ -23,6 +31,9 @@ from __future__ import annotations
 import html
 import logging
 import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
@@ -40,6 +51,13 @@ MAX_SOURCES = 4
 #: Below this much fetched text, the free path is "thin" and worth escalating.
 THIN_CHARS = 600
 FETCH_TIMEOUT_S = 12.0
+#: How long one lookup may take in all — under `look_it_up`'s own timeout, so a lookup that
+#: runs short of time still hands back what it read instead of being cut off with nothing.
+BUDGET_S = 75.0
+#: The least time the summarising call is given, however long the reading took.
+MIN_SUMMARY_S = 10.0
+#: How much of each page is handed back when there is no summary.
+EXCERPT_CHARS = 1500
 #: A browser UA: several of these endpoints serve an anti-bot page to anything
 #: that announces itself as a script, which is a fetch that succeeds and returns
 #: nothing useful — the worst kind of failure to debug.
@@ -64,21 +82,34 @@ class Source:
 class Research:
     ok: bool
     answer: str = ""
-    via: str = "web"                 # 'web' | 'model-search'
+    via: str = "web"                 # 'web' | 'web-excerpts' | 'model-search'
     sources: list[Source] = field(default_factory=list)
     error: str | None = None
     query: str = ""
+    #: Why there is no summary, when the pages themselves are the result (`web-excerpts`).
+    note: str | None = None
     #: Which model actually answered. Recorded because a plan built by a weak
     #: fallback should not be indistinguishable from one built by the good model.
     model_id: str | None = None
 
+    @property
+    def summarised(self) -> bool:
+        """True when there is a written answer — what a caller that wants prose to keep (a
+        project's research note, an analysis) must check, rather than `ok`: page excerpts are a
+        fine result for a model mid-turn and no use as a finished document."""
+        return self.ok and bool(self.answer)
+
     def as_result(self) -> dict[str, Any]:
+        excerpts = self.via == "web-excerpts"
         return {
             "ok": self.ok,
             "answer": self.answer,
             "via": self.via,
             "query": self.query,
-            "sources": [{"title": s.title, "url": s.url} for s in self.sources],
+            "sources": [{"title": s.title, "url": s.url,
+                         **({"excerpt": s.text[:EXCERPT_CHARS]} if excerpts and s.text else {})}
+                        for s in self.sources],
+            **({"note": self.note} if self.note else {}),
             **({"error": self.error} if self.error else {}),
         }
 
@@ -189,6 +220,39 @@ def fetch_source(source: Source) -> Source:
     return source
 
 
+def fetch_all(sources: list[Source]) -> list[Source]:
+    """Read every source at the same time: four pages cost the slowest one, not their sum."""
+    if len(sources) < 2:
+        return [fetch_source(s) for s in sources]
+    with ThreadPoolExecutor(max_workers=len(sources), thread_name_prefix="research-fetch") as pool:
+        return list(pool.map(fetch_source, sources))
+
+
+def _synthesise_within(question: str, sources: list[Source],
+                       seconds: float) -> tuple[str, str | None, str | None]:
+    """(answer, model id, why not). The summary, if it comes within `seconds`; otherwise why
+    there is none. The call itself cannot be stopped, so it is left to finish unheard."""
+    box: dict[str, Any] = {}
+
+    def go() -> None:
+        try:
+            box["answer"], box["model"] = _synthesise(question, sources)
+        except NoModelAvailable as err:
+            box["why"] = f"I couldn't summarise them: {err}"
+        except Exception as err:  # noqa: BLE001 — the pages are still worth handing back
+            logger.exception("summarising the sources failed")
+            box["why"] = f"I couldn't summarise them ({err.__class__.__name__})."
+
+    thread = threading.Thread(target=go, name="research-summary", daemon=True)
+    thread.start()
+    thread.join(max(0.0, seconds))
+    if thread.is_alive():
+        return "", None, "The summary was taking too long, so here is what the pages say."
+    if box.get("answer"):
+        return box["answer"], box.get("model"), None
+    return "", None, box.get("why") or "The summary came back empty."
+
+
 def _synthesise(question: str, sources: list[Source]) -> tuple[str, str | None]:
     body = "\n\n".join(f"[{i + 1}] {s.title} — {s.url}\n{s.text}"
                        for i, s in enumerate(sources) if s.text)
@@ -220,28 +284,28 @@ def _model_search(question: str) -> Research:
 
 # --- the entry point ---------------------------------------------------------
 
-def research(question: str, search_query: str | None = None) -> Research:
+def research(question: str, search_query: str | None = None, *,
+             budget_s: float = BUDGET_S) -> Research:
     """Look something up. Free path first, model-native search only if it is thin."""
     asked = (question or "").strip()
     if not asked:
         return Research(ok=False, error="There's nothing to look up.")
 
+    started = time.monotonic()
     query = (search_query or to_search_query(asked)).strip()
-    sources = [fetch_source(s) for s in search(query)]
+    sources = fetch_all(search(query))
     readable = [s for s in sources if s.text]
     total = sum(len(s.text) for s in readable)
 
     if readable and total >= THIN_CHARS:
-        try:
-            answer, model_id = _synthesise(asked, readable)
-        except NoModelAvailable as err:
-            # The pages were fetched; only the summarising failed. Say so, and
-            # hand back the sources — they are still worth something.
-            return Research(ok=False, via="web", query=query, sources=readable,
-                            error=f"I found sources but couldn't summarise them: {err}")
+        left = budget_s - (time.monotonic() - started)
+        answer, model_id, why_not = _synthesise_within(asked, readable, max(MIN_SUMMARY_S, left))
         if answer:
             return Research(ok=True, answer=answer, via="web", sources=readable, query=query,
                             model_id=model_id)
+        # The pages were read; only the summarising failed or ran out of time. What they say
+        # is the result: whoever asked can read it as well as a summary.
+        return Research(ok=True, via="web-excerpts", query=query, sources=readable, note=why_not)
 
     escalated = _model_search(asked)
     if escalated.ok:

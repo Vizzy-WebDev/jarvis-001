@@ -24,7 +24,10 @@ SPEC = CapabilitySpec(
     id="builtin.look_it_up", name="look_it_up",
     description=("Research something on the web and answer from what you find — how something "
                  "works, background, typical costs, anything that calls for finding "
-                 "information. Works invisibly; nothing opens on the user's screen."),
+                 "information. Works invisibly; nothing opens on the user's screen. Usually "
+                 "returns an answer with its sources; when it could not summarise in time it "
+                 "returns the relevant part of each page instead (via: web-excerpts) — answer "
+                 "from those."),
     input_schema={"type": "object", "properties": {
         "question": {"type": "string", "description": "What to find out."},
         "search_terms": {"type": "string",
@@ -34,6 +37,7 @@ SPEC = CapabilitySpec(
     risk=Risk.LOW,
     handler=_run,
     # A search, several page fetches and a model call. The default 30s is not
-    # enough, and a timeout here means the whole lookup is wasted.
+    # enough. The lookup works to its own, shorter deadline (`research.BUDGET_S`) and hands
+    # back what it read when the summary will not come in time, so this is rarely reached.
     timeout_s=90.0,
 )

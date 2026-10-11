@@ -191,9 +191,11 @@ def register_default_sources() -> None:
     from .sources.commitments_source import source as commitments_source
     from .sources.jobs_source import source as jobs_source
     from .sources.registry import register
+    from .sources.stale_questions_source import source as stale_questions_source
 
     register(jobs_source)
     register(commitments_source)
+    register(stale_questions_source)
     register(environment_source)
     # Registered before the diagnosis source, so its very first tick has real
     # checks to run rather than an empty list.

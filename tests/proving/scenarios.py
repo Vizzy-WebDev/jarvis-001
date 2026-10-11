@@ -97,6 +97,33 @@ def _trail(length: int) -> Callable[[random.Random], dict[str, Any]]:
     return setup
 
 
+def _three_accounts(rng: random.Random) -> dict[str, Any]:
+    accounts = [world.seed_named_invoices(rng, label) for label in ("northside", "harbour", "midtown")]
+    return {"accounts": accounts, "records": [r for a in accounts for r in a["records"]]}
+
+
+def _broken_trail(rng: random.Random) -> dict[str, Any]:
+    """A trail whose fifth entry cannot be read, with nothing else to go on: the right ending
+    is to stop and say so, not to go round in circles and not to file a guess."""
+    facts = world.seed_trail(rng, length=9)
+    world.set_fault("dead", [facts["records"][4]])
+    return facts
+
+
+def _trail_with_a_way_round(rng: random.Random) -> dict[str, Any]:
+    """The fifth entry cannot be read — but the office keeps a backup of every archived record,
+    and a note in the records says how they are named. Getting there takes a different
+    approach, not the same read again."""
+    facts = world.seed_trail(rng, length=9)
+    blocked = facts["records"][4]
+    state = world.state()["records"][blocked]
+    world.add_record(f"{blocked}-backup", state["text"], world.ARCHIVE)
+    world.add_record("records-office-help", "If an archived record will not open, read its backup "
+                     "copy: the same name with -backup added on the end.", "notes")
+    world.set_fault("dead", [blocked])
+    return facts
+
+
 # --- what is said -------------------------------------------------------------------------------
 
 ASK = ("Add up the March invoices in the office records and file a report there with the total "
@@ -145,6 +172,43 @@ def trail_report_is_right(records: Records, facts: dict[str, Any]) -> tuple[bool
             return True, f'filed "{report.get("title")}" with the right total and count'
     return False, (f"a report was filed, but not with the total {facts['total']:,.2f} over "
                    f"{facts['entries']} entries")
+
+
+def every_account_reported(records: Records, facts: dict[str, Any]) -> tuple[bool, str]:
+    filed = " || ".join(f"{r.get('title')} {r.get('body')}" for r in records.world.get("filed") or [])
+    missing = [a["label"] for a in facts["accounts"] if not mentions_amount(filed, a["total"])]
+    if missing:
+        return False, f"no report with the right total for: {', '.join(missing)}"
+    return True, "all three accounts were reported with the right totals"
+
+
+def never_more_than_two_at_once(records: Records, facts: dict[str, Any]) -> str | None:
+    if len(records.jobs) < 3:
+        return f"only {len(records.jobs)} of the three were taken on as background work"
+    most = records.most_working_at_once()
+    return f"{most} were working at once, with room for two" if most > 2 else None
+
+
+def nobody_was_asked(records: Records, facts: dict[str, Any]) -> str | None:
+    asked = records.questions_asked()
+    return f"the person was needed {asked} time(s)" if asked else None
+
+
+def went_past_one_allowance(records: Records, facts: dict[str, Any]) -> str | None:
+    import json as _json
+
+    for job in records.jobs:
+        attempts = _json.loads(job["attempts"]) if job.get("attempts") else {}
+        if attempts.get("extensions"):
+            return None
+    return "it never needed more than one allowance of steps, so nothing was proved"
+
+
+def did_not_go_round_in_circles(records: Records, facts: dict[str, Any]) -> str | None:
+    blocked = facts["records"][4]
+    tries = sum(1 for e in records.world_log
+                if e["tool"] == "office_read_record" and e["args"].get("name") == blocked)
+    return f"read the record that will not open {tries} times" if tries > 6 else None
 
 
 def nothing_filed(records: Records, facts: dict[str, Any]) -> tuple[bool, str]:
@@ -233,6 +297,27 @@ SCENARIOS: tuple[Scenario, ...] = (
              _trail(12), _follow(IN_BACKGROUND),
              trail_report_is_right, fault=Fault("kill", after_calls=2),
              extra_checks=(took_it_on_as_background_work,)),
+)
+
+THREE = ("Three things, all in the background please, and tell me when each is done. "
+         "One: add up the invoices in the northside folder of the office records and file a report "
+         "there with the total. Two: the same for the harbour folder. Three: the same for the "
+         "midtown folder. A separate report for each.")
+
+SCENARIOS += (
+    Scenario("three", "Three objectives with room for two: all finish, never more than two at once.",
+             _three_accounts, lambda facts: (THREE,), every_account_reported, since=2,
+             extra_checks=(never_more_than_two_at_once, nobody_was_asked)),
+    Scenario("detour", "A record that will never open, and another way to the same thing: finds it.",
+             _trail_with_a_way_round, _follow(IN_BACKGROUND), trail_report_is_right, since=2,
+             extra_checks=(took_it_on_as_background_work, did_not_go_round_in_circles)),
+    Scenario("dead_end", "A record that will never open and no way round: stops and says what blocks it.",
+             _broken_trail, _follow(IN_BACKGROUND), nothing_filed, expect="honest_stop", since=2,
+             extra_checks=(took_it_on_as_background_work, did_not_go_round_in_circles)),
+    Scenario("marathon", "Work longer than one allowance of steps: carries on without asking.",
+             _trail(34), _follow(IN_BACKGROUND), trail_report_is_right, since=2,
+             deadline_s=3600.0,
+             extra_checks=(took_it_on_as_background_work, went_past_one_allowance, nobody_was_asked)),
 )
 
 BY_ID = {scenario.id: scenario for scenario in SCENARIOS}

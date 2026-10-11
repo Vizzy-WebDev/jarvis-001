@@ -94,7 +94,9 @@ HANDOFF_NOTE = ("This is your last step for this reply. If the work is finished,
 #: work is not over, so what is asked for is where it stands, not a final answer.
 ROUND_END_NOTE = ("This round of the work ends here: there is nothing more to call right now. "
                   "Write a short progress note — what you have done so far, what you found, and "
-                  "exactly what is left to do. You will continue from it in the next round.")
+                  "exactly what is left to do. Put in it every figure, name and running total "
+                  "you will need: you continue from this note in the next round, and your "
+                  "earlier messages will not stay in front of you.")
 
 
 #: Above this many capabilities, a turn is declared its CORE set plus whatever

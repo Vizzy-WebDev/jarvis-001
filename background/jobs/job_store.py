@@ -35,6 +35,8 @@ def _row(row: Any) -> dict[str, Any] | None:
         "plan": json.loads(row["plan"]) if row["plan"] else None,
         # What the work is for (`jobs/objective.py`); None on a job made with only a goal.
         "brief": json.loads(row["brief"]) if row["brief"] else None,
+        # Why it was set going again, counted by cause, and its allowance extensions.
+        "attempts": json.loads(row["attempts"]) if row["attempts"] else {},
         "resource": row["resource"], "recovery": row["recovery"],
         "result": row["result"], "error": row["error"], "retries": row["retries"],
         "createdAt": row["created_at"], "startedAt": row["started_at"],
@@ -96,7 +98,7 @@ _PATCH_COLUMNS = {
 
 
 #: Kept as JSON.
-_JSON_COLUMNS = {"plan": "plan", "brief": "brief"}
+_JSON_COLUMNS = {"plan": "plan", "brief": "brief", "attempts": "attempts"}
 
 
 def update_job(job_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:

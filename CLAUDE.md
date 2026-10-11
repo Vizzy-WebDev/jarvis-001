@@ -469,6 +469,35 @@ non-verb word. Found live: asked about "the office records" a real model never c
 `find_capability`, 3 runs of 3. `find_capability` remains for everything else and shares the
 same ranking.
 
+## The executive — `background/jobs/orchestrator.py` + `policy.py`
+
+The ONE place that decides what background work runs next, with no model call of its own.
+Woken by what happens (`settle`: work admitted, a worker finishing — `worker.after_run`) and by a
+slow clock (`supervise`, 60 s) for what nothing announces (a hung worker, a wait for a model that
+is over).
+
+- **Work waits in line; it is not refused.** `admit` queues, `dispatch` starts what is next —
+  most important first, then first come — as far as `maxBackgroundJobs` allows. A job waiting on
+  the PERSON holds no place (`policy.holds_a_slot`). Only a full line (`MAX_WAITING_JOBS`) or a
+  taken exclusive resource raises `AtCapacity`. A restart starts no more at once than may run.
+- **Work is set going again by WHY it stopped** (`policy.RECOVERY_LIMITS`, counted in
+  `jobs.attempts`, migration 41): `approach` (going round in circles or a failed round — told NOT
+  to repeat it and to change its plan), `check` (a finished result sent back with the reason —
+  `continuation`'s `sentBack`), `crash` (hung or died). Two of each. The old single retry shared
+  by everything left both jobs the owner ever ran "stuck". No model able to answer is none of
+  these: the work waits (`durable.model_wait`).
+- **Repetition is looked for between rounds** (`worker._halt_before_round` → `diagnose_stall`),
+  not only on the clock: a fast model can burn an allowance repeating itself inside one tick.
+- **When it goes to the person, it is specific** (`_stuck_summary`): what stopped it, how many
+  ways round were tried, what is done so far.
+- **The step allowance follows the work.** Out of steps while really moving (`policy.may_extend`:
+  a plan step done, something found, or 3 more distinct successful actions since the last mark —
+  `objective.progress_mark`, from the ledger and the trace) → another allowance without asking, at
+  most `MAX_AUTO_EXTENSIONS` (3). Going nowhere, or extensions used up → "keep going?" as before.
+- **Every round's progress note is kept** (`objective.note_round`, the last few): a job's working
+  transcript holds only its newest 60 messages, and on long work the notes are what is left of
+  the rounds that scrolled out. `ROUND_END_NOTE` asks for every figure and running total.
+
 ## Specialist agents — `conversation/agents/` (see its own `CLAUDE.md`)
 
 Jarvis orchestrates; specialist agents (13 built-in, plus any the person creates on the

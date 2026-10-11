@@ -24,6 +24,7 @@ from jarvis.orchestrator.model_port import StepComplete, TextChunk, ToolCall
 AMOUNT = re.compile(r"Amount due:\s*([\d,]+\.\d+)")
 TRAIL_AMOUNT = re.compile(r"Amount:\s*([\d,]+\.\d+)")
 NEXT = re.compile(r"next entry is the record named (\S+?)\.")
+TALLY = re.compile(r"Trail so far: (\d+) entries, running total ([\d.]+), next is (\S+)\.")
 SUPPLIER = re.compile(r"From:\s*(.+)")
 
 
@@ -47,9 +48,12 @@ def _value(entry: dict[str, Any]) -> dict[str, Any]:
 
 class OfficeWorker:
     def __init__(self, *, month: str = "march", lies: bool = False, obeys_notices: bool = False,
-                 background: bool = False, deletes: str | None = None) -> None:
+                 background: bool = False, deletes: str | None = None,
+                 finds_another_way: bool = True) -> None:
         self.month, self.lies, self.obeys_notices = month, lies, obeys_notices
         self.background, self.deletes = background, deletes
+        #: False: a stubborn model that reads a record that will not open again and again.
+        self.finds_another_way = finds_another_way
         self.calls: list[dict[str, Any]] = []
         self._ids = 0
         self._lock = threading.Lock()
@@ -83,6 +87,17 @@ class OfficeWorker:
                 return ("call", "office_delete_record", {"name": self.deletes})
             return ("say", "That needs your go-ahead before I delete it — shall I?")
 
+        if in_chat and "Three things" in asked:
+            started = [r for r in results if r.get("name") == "work_in_background"]
+            labels = ("northside", "harbour", "midtown")
+            if len(started) < len(labels) and may_call:
+                label = labels[len(started)]
+                return ("call", "work_in_background",
+                        {"goal": f"Add up the invoices in the {label} folder of the office records "
+                                 "and file a report there with the total.",
+                         "title": f"{label} invoices", "done_when": ["a report with the total is filed"]})
+            return ("say", "All three are taken on, Boss — I'll tell you as each one is done.")
+
         if in_chat and self.background:
             started = [r for r in results if r.get("name") == "work_in_background"]
             if not started and may_call:
@@ -90,10 +105,19 @@ class OfficeWorker:
             return ("say", "On it, Boss — I'll tell you when the report is filed.")
 
         if not may_call:
+            if any("ledger trail" in (m.get("text") or "") for m in messages if m.get("role") == "user"):
+                count, total, name = self._trail_position(messages, results)
+                return ("say", f"Trail so far: {count} entries, running total {total:.2f}, next is "
+                               f"{name or 'none'}. The report is not filed yet.")
             return ("say", "Progress: still reading the records; the report is not filed yet.")
 
         if any("ledger trail" in (m.get("text") or "") for m in messages if m.get("role") == "user"):
-            return self._follow_trail(results)
+            return self._follow_trail(messages, results)
+
+        account = re.search(r"invoices in the (\w+) folder", " ".join(
+            m.get("text") or "" for m in messages if m.get("role") == "user"))
+        if account:
+            return self._total_account(account.group(1), results)
 
         listing = next((_value(r) for r in results if r.get("name") == "office_list_records"), None)
         if listing is None:
@@ -137,22 +161,68 @@ class OfficeWorker:
         return ("say", f"I worked out the total ({total:,.2f} USD, largest from {supplier}) but could "
                        "not file the report: the filing system is closed for maintenance.")
 
-    def _follow_trail(self, results: list[dict[str, Any]]) -> tuple:
-        """Read the entry the last one named, until one names none; then total and file."""
+    def _total_account(self, label: str, results: list[dict[str, Any]]) -> tuple:
+        listing = next((_value(r) for r in results if r.get("name") == "office_list_records"), None)
+        if listing is None:
+            return ("call", "office_list_records", {"folder": label})
         read = {_value(r).get("name"): _value(r) for r in results
                 if r.get("name") == "office_read_record" and _value(r).get("ok")}
-        name, amounts = "ledger-start", []
-        while name in read:
-            text = read[name]["text"]
-            amounts.append(float(TRAIL_AMOUNT.search(text).group(1).replace(",", "")))
+        for name in listing.get("records") or []:
+            if name not in read:
+                return ("call", "office_read_record", {"name": name})
+        total = round(sum(float(AMOUNT.search(v["text"]).group(1).replace(",", ""))
+                          for v in read.values()), 2)
+        if not any(r.get("name") == "office_file_report" for r in results):
+            return ("call", "office_file_report",
+                    {"title": f"{label} invoices", "body": f"Total for {label}: {total:,.2f} USD."})
+        return ("say", f"Filed the {label} report: {total:,.2f} USD.")
+
+    def _trail_position(self, messages: list[dict[str, Any]],
+                        results: list[dict[str, Any]]) -> tuple[int, float, str]:
+        """(entries counted, running total, the next record's name or "") — starting from the
+        tally in its own latest progress note, as a model working from its notes would, and
+        going on through whatever reads came after it. Without the note, long work loses its
+        early reads when they scroll out of the transcript and starts again from the top."""
+        count, total, name, since = 0, 0.0, "ledger-start", 0
+        for index, message in enumerate(messages):
+            tally = TALLY.search(message.get("text") or "") if message.get("role") == "assistant" else None
+            if tally:
+                count, total, name, since = int(tally.group(1)), float(tally.group(2)), tally.group(3), index
+        read = {_value(r).get("name"): _value(r) for m in messages[since:] if m.get("role") == "tool"
+                for r in m.get("toolResults") or []
+                if r.get("name") == "office_read_record" and _value(r).get("ok")}
+        if name == "none":
+            return count, total, ""
+        while name in read or f"{name}-backup" in read:
+            text = (read.get(name) or read[f"{name}-backup"])["text"]
+            total += float(TRAIL_AMOUNT.search(text).group(1).replace(",", ""))
+            count += 1
             following = NEXT.search(text)
             if following is None:
-                name = ""
-                break
+                return count, round(total, 2), ""
             name = following.group(1)
+        return count, round(total, 2), name
+
+    def _follow_trail(self, messages: list[dict[str, Any]], results: list[dict[str, Any]]) -> tuple:
+        """Read the entry the last one named, until one names none; then total and file. An
+        entry that will not open is tried again once; then its backup copy is (the office keeps
+        one) — unless this stand-in is the stubborn kind, which just keeps asking."""
+        failed: dict[str, int] = {}
+        for r in results:
+            if r.get("name") == "office_read_record" and not _value(r).get("ok"):
+                wanted = re.search(r'"([^"]+)"', str(_value(r).get("error") or ""))
+                if wanted:
+                    failed[wanted.group(1)] = failed.get(wanted.group(1), 0) + 1
+        count, total, name = self._trail_position(messages, results)
+        amounts = [0.0] * count
         if name:
+            if self.finds_another_way and failed.get(name, 0) >= 2:
+                if failed.get(f"{name}-backup", 0) >= 1:
+                    return ("say", f"I could not finish: the record {name} will not open and neither "
+                                   "will its backup, so the trail cannot be followed past it. "
+                                   "Nothing was filed.")
+                return ("call", "office_read_record", {"name": f"{name}-backup"})
             return ("call", "office_read_record", {"name": name})
-        total = round(sum(amounts), 2)
         filing = [_value(r) for r in results if r.get("name") == "office_file_report"]
         if not filing:
             return ("call", "office_file_report",

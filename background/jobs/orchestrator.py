@@ -1,18 +1,25 @@
-"""Admission, supervision, and the one automatic retry.
+"""The executive: the one place that decides what background work runs next.
 
-The Conversation Manager (a live turn) decides WHETHER to background something
-and does all the talking. This decides HOW the work actually gets done: whether
-there is room for it, whether it needs a resource someone else holds, whether a
-running job has stopped making progress, and whether a failure is worth one more
-attempt or has to go to the user.
+The Conversation Manager (a live turn) decides WHETHER to take something on and does all the
+talking. This decides everything after that, with no model call of its own: what starts now
+and what waits its turn (`dispatch`), what a job that has stopped getting anywhere is told to
+do differently and when that stops being worth trying (`_recover`), and what goes back to the
+person. It is woken by what happens — work admitted, a worker finishing, a restart — and by a
+slow clock (`supervise`) for what nothing announces: a hung worker, a wait for a model that
+is over.
 
-**Capacity is checked BEFORE anything is spent on planning**, so a full queue
-does not cost a model call to discover. And a job is never silently queued past
-capacity: the user is told and asked what should give way, because a queue nobody
-can see is worse than a refusal they can answer.
+**Work waits in line; it is not refused.** Only so many jobs work at once (the person's
+`maxBackgroundJobs`), and the rest are queued — visibly (Jobs screen, "what you have going"),
+most important first — and started as room appears. A job waiting on the PERSON holds no
+place: an unanswered question must not stop other work from starting. Refusing at capacity
+made the person the scheduler ("which should I drop?"); an agent that owns its work queues
+it. The line itself is bounded (`MAX_WAITING_JOBS`), and past that the refusal is still plain.
 
-**One automatic retry, total.** A crash retry and a stall retry share the same
-counter, so a job cannot get two attempts by failing in two different ways.
+**Work is set going again by WHY it stopped** (`policy.RECOVERY_LIMITS`): told to take a
+different approach, sent back by the check with the reason, or picked up after a crash —
+each a couple of times. One retry shared by every kind of trouble left both jobs the owner
+ever ran "stuck" after their first hiccup. When the allowance for a cause is used up, the
+person gets a specific account: what was tried, where it stands, what is in the way.
 """
 
 from __future__ import annotations
@@ -28,8 +35,9 @@ from ..events.bus import EventBus
 from ..jscompat import now_iso
 from . import job_store, worker
 from .policy import (
-    DIAGNOSE_TAIL_SIZE, can_auto_retry, classify_recovery, diagnose_stall, has_capacity,
-    is_hung, open_external_intents, resource_available,
+    DIAGNOSE_TAIL_SIZE, RECOVERY_LIMITS, classify_recovery, diagnose_stall, holds_a_slot,
+    is_hung, may_recover, next_in_line, open_external_intents, recovery_kind,
+    resource_available,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,6 +58,12 @@ def is_enabled() -> bool:
 #: purpose: these compete for the same models as the conversation the user is
 #: having.
 MAX_ACTIVE_JOBS = 3
+
+#: How many more may wait in line behind those. A bound, so a model that keeps taking things
+#: on cannot build an endless queue; past it the person is told plainly.
+MAX_WAITING_JOBS = 8
+
+_dispatch_lock = threading.Lock()
 
 #: No heartbeat for this long on a running job means the process is gone.
 HANG_TIMEOUT_MS = 5 * 60 * 1000
@@ -80,15 +94,88 @@ class AtCapacity(RuntimeError):
         self.active = active
 
 
+def _waiting_for_model(job_id: str) -> bool:
+    from .. import durable
+
+    try:
+        work = durable.peek(job_id) or {}
+    except Exception:  # noqa: BLE001
+        return False
+    return work.get("status") == "waiting" and (work.get("waiting_on") or {}).get("reason") == "model"
+
+
+def _holds_a_slot(job: dict[str, Any]) -> bool:
+    return holds_a_slot(job, live=worker.is_live(job["id"]),
+                        waiting_for_model=job.get("status") == "queued" and _waiting_for_model(job["id"]))
+
+
+def working(active: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """The jobs that count against how many may work at once."""
+    return [j for j in (active if active is not None else job_store.list_active_jobs())
+            if _holds_a_slot(j)]
+
+
+def in_line(active: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Jobs admitted and not yet started, in the order they will be."""
+    return next_in_line([j for j in (active if active is not None else job_store.list_active_jobs())
+                         if j.get("status") == "queued" and not _holds_a_slot(j)])
+
+
+def dispatch(event_bus: EventBus | None = None) -> list[str]:
+    """Start whatever is next in line, as far as there is room. The ONE place background work
+    is started from cold; called when work is admitted, when a worker finishes, at startup and
+    on the supervisor's clock. Returns the ids started."""
+    started: list[str] = []
+    with _dispatch_lock:
+        active = job_store.list_active_jobs()
+        busy = working(active)
+        room = active_job_limit() - len(busy)
+        for job in in_line(active):
+            if room <= 0:
+                break
+            if not resource_available(busy, job.get("resource")):
+                continue
+            worker.run_in_background(job["id"], event_bus=event_bus)
+            busy.append(job)
+            room -= 1
+            started.append(job["id"])
+    return started
+
+
+_settle_lock = threading.Lock()
+
+
+def settle(event_bus: EventBus | None = None) -> list[dict[str, Any]]:
+    """Deal with what has just changed, without waiting for the clock: a job that stalled is
+    set going again or handed to the person (`_recover`), and whatever is next in line starts.
+    Called whenever a worker finishes with a job; the supervisor's pass does the same and more."""
+    ebus = event_bus or default_bus
+    actions: list[dict[str, Any]] = []
+    with _settle_lock:
+        for job in job_store.list_jobs(status="stalled"):
+            actions.append(_recover(job, job.get("error") or "it stopped making progress", ebus,
+                                    cause=_why_stalled(job["id"])))
+    actions += [{"job": job_id, "action": "started", "cause": "its turn in line"}
+                for job_id in dispatch(ebus)]
+    return [a for a in actions if a]
+
+
+# A worker that finishes with a job changes what should happen next — room for the next in
+# line, or a stall to deal with — and that is acted on at once, not at the next tick.
+worker.after_run = settle
+
+
 def admit(*, title: str, goal: str, kind: str = "generic", priority: int = 2,
           conversation_id: str | None = None, parent_id: str | None = None,
           agent_id: str | None = None, brief: dict[str, Any] | None = None,
           event_bus: EventBus | None = None) -> dict[str, Any]:
-    """Create a job if there is room for it, and start it unless it must not start. `brief` is
-    what the work is for (`jobs/objective.py`); without one it is made of the goal."""
+    """Take a job on: it starts now if there is room, and otherwise waits in line (the
+    returned job then carries `waitingBehind`, the titles ahead of it). Refused only when the
+    line itself is full, or it needs something only one job may hold. `brief` is what the work
+    is for (`jobs/objective.py`); without one it is made of the goal."""
     ebus = event_bus or default_bus
     active = job_store.list_active_jobs()
-    if not has_capacity(active, active_job_limit()):
+    if len(in_line(active)) >= MAX_WAITING_JOBS:
         raise AtCapacity(active)
 
     resource = RESOURCE_BY_KIND.get(kind)
@@ -113,7 +200,14 @@ def admit(*, title: str, goal: str, kind: str = "generic", priority: int = 2,
         return job
 
     ebus.publish(EventType.JOB_CREATED, {"id": job["id"], "title": title, "kind": kind})
-    worker.run_in_background(job["id"], event_bus=ebus)
+    started = dispatch(ebus)
+    job = job_store.get_job(job["id"]) or job
+    if job["id"] not in started and job.get("status") == "queued":
+        ahead = [j["title"] for j in working()] + \
+                [j["title"] for j in in_line() if j["id"] != job["id"]
+                 and (j.get("priority") or 2, str(j.get("createdAt") or ""))
+                 <= (job.get("priority") or 2, str(job.get("createdAt") or ""))]
+        job = {**job, "waitingBehind": ahead}
     return job
 
 
@@ -212,7 +306,8 @@ def supervise(now_ms: float | None = None, event_bus: EventBus | None = None) ->
 
     for job in job_store.list_active_jobs():
         if job["status"] == "running" and is_hung(job, now_ms=now_ms, timeout_ms=HANG_TIMEOUT_MS):
-            actions.append(_recover(job, "no heartbeat — the work looks hung", ebus, live=True))
+            actions.append(_recover(job, "no heartbeat — the work looks hung", ebus,
+                                    cause="hung", live=True))
             continue
         if job["status"] == "running":
             stall = diagnose_stall(job_store.get_trace_tail(job["id"], DIAGNOSE_TAIL_SIZE))
@@ -220,39 +315,84 @@ def supervise(now_ms: float | None = None, event_bus: EventBus | None = None) ->
                 actions.append(_recover(job, stall["detail"], ebus, cause=stall["cause"],
                                         live=True))
 
-    for job in job_store.list_jobs(status="stalled"):
-        actions.append(_recover(job, job.get("error") or "it stopped making progress", ebus))
+    # Anything that stalled, and whatever is next in line if a place came free unannounced.
+    actions += settle(ebus)
     return [a for a in actions if a]
+
+
+def _why_stalled(job_id: str) -> str:
+    """What the job's own record says it stalled on: the cause of its last "stalled: …" note."""
+    for row in reversed(job_store.get_trace_tail(job_id, DIAGNOSE_TAIL_SIZE)):
+        summary = str(row.get("summary") or "")
+        if row.get("kind") == "note" and summary.startswith("stalled: "):
+            return summary[len("stalled: "):]
+    return "stalled"
 
 
 def _recover(job: dict[str, Any], detail: str, ebus: EventBus,
              cause: str = "stalled", live: bool = False) -> dict[str, Any]:
-    """Spend the single automatic retry, or hand it to the user.
+    """Set the job going again in the way its trouble calls for — or, when that has been
+    tried as often as it is worth (`policy.RECOVERY_LIMITS`), hand it to the person with a
+    specific account.
 
     A job still running (hung, or going round in circles) is stopped first, so it never
-    runs twice at once. The retry continues from its last finished round — nothing about
-    pausing and resuming discards what the work has already done — and is told why.
+    runs twice at once. It continues from its last finished round — nothing about pausing and
+    resuming discards what the work has already done — and is told why, in words that fit:
+    take a DIFFERENT approach; put right exactly what the check sent back; or just pick up
+    where the plan stands after a crash.
     """
     from .. import durable
 
     job_id = job["id"]
     if live:
         durable.stop(job_id)
-    if can_auto_retry(job):
-        job_store.update_job(job_id, {"retries": 1, "status": "queued", "error": None})
+    job = job_store.get_job(job_id) or job
+    kind = recovery_kind(cause)
+    if may_recover(job, kind):
+        attempts = dict(job.get("attempts") or {})
+        attempts[kind] = int(attempts.get(kind) or 0) + 1
+        total = sum(int(attempts.get(k) or 0) for k in RECOVERY_LIMITS)
+        job_store.update_job(job_id, {"attempts": attempts, "retries": total,
+                                      "status": "queued", "error": None})
         job_store.append_trace(job_id, phase="intent", effect="read", kind="nudge",
                                summary=f"retrying after {cause}", detail=detail)
-        worker.run_in_background(job_id, event_bus=ebus, answer={"note": detail})
-        return {"job": job_id, "action": "retried", "cause": cause}
+        if kind == "check":
+            answer = {"sentBack": detail}
+        elif kind == "crash":
+            answer = {"guidance": "The work stopped unexpectedly. Pick it up from where your "
+                                  "plan and notes stand."}
+        else:
+            answer = {"note": f"{detail} That way is not working, so do NOT repeat it: update "
+                              "your plan with a different way to get there first."}
+        worker.run_in_background(job_id, event_bus=ebus, answer=answer)
+        return {"job": job_id, "action": "retried", "cause": cause, "kind": kind}
 
     job_store.update_job(job_id, {"status": "awaiting_decision",
                                   "error": detail, "currentStep": None})
-    summary = f'"{job["title"]}" is stuck: {detail}'
+    summary = _stuck_summary(job, kind, detail)
     entry = job_store.add_outbox(tier=1, job_id=job_id, reason="stuck", summary=summary)
     ebus.publish(EventType.JOB_UPDATED, {"id": job_id, "status": "awaiting_decision",
                                          "error": detail})
     worker._ask_aloud(job_id, entry, summary, "A background job is stuck.")
     return {"job": job_id, "action": "escalated", "cause": cause}
+
+
+def _stuck_summary(job: dict[str, Any], kind: str, detail: str) -> str:
+    """What the person is told when the work cannot get further by itself: what stopped it,
+    how often a way round was tried, and where it stands — enough to answer without opening
+    anything."""
+    from . import objective
+
+    tried = int((job.get("attempts") or {}).get(kind) or 0)
+    how = {"approach": f"I tried {tried} different way{'s' if tried != 1 else ''} round it",
+           "check": f"its result was checked and sent back {tried} time{'s' if tried != 1 else ''}",
+           "crash": f"it stopped unexpectedly {tried + 1} times"}.get(kind, "")
+    ledger = objective.ledger_of(job)
+    done = [s["text"] for s in ledger["steps"] if s["status"] == "done"]
+    stands = (f" Done so far: {'; '.join(done)[:200]}." if done else
+              (f" Where it stands: {ledger['note'][:200]}" if ledger["note"] else ""))
+    return (f'"{job["title"]}" is stuck: {detail}' + (f" ({how}.)" if how and tried else "")
+            + stands + " Tell me how to go on, or to stop.")
 
 
 def recover_orphans(event_bus: EventBus | None = None) -> list[dict[str, Any]]:
@@ -269,9 +409,8 @@ def recover_orphans(event_bus: EventBus | None = None) -> list[dict[str, Any]]:
     """
     ebus = event_bus or default_bus
     out: list[dict[str, Any]] = []
-    for job in job_store.list_jobs(status="queued", limit=500):
-        worker.run_in_background(job["id"], event_bus=ebus)
-        out.append({"job": job["id"], "recovery": "started"})
+    # Jobs still `queued` are started below with everything else that is in line, as far as
+    # there is room (`dispatch`) — a restart must not start more at once than may work at once.
     for job in job_store.list_jobs(status="running", limit=500):
         trace = job_store.get_trace(job["id"])
         verdict = classify_recovery(job, trace, recorded=_recorded_operations(trace))
@@ -293,8 +432,8 @@ def recover_orphans(event_bus: EventBus | None = None) -> list[dict[str, Any]]:
             logger.exception("could not record the crash of job %s for Self-Improvement",
                              job["id"])
         if verdict == "resumable":
+            # Work that was under way goes first: it is put back at the front of its priority.
             job_store.update_job(job["id"], {"status": "queued"})
-            worker.run_in_background(job["id"], event_bus=ebus)
         else:
             unsure = open_external_intents(trace, _recorded_operations(trace)) or \
                 [{"name": a["capability"], "operationId": a["operationId"]} for a in in_doubt]
@@ -310,6 +449,16 @@ def recover_orphans(event_bus: EventBus | None = None) -> list[dict[str, Any]]:
                                          detail={"unsure": unsure}, summary=crashed_summary)
             worker._ask_aloud(job["id"], entry, crashed_summary, "A background job stopped.")
         out.append({"job": job["id"], "recovery": verdict})
+    # Work whose wait for a model ended while Jarvis was closed carries on now, not a tick later.
+    try:
+        from .. import durable
+
+        durable.wake_due()
+    except Exception:  # noqa: BLE001
+        logger.exception("could not continue work that was waiting for a model")
+    reported = {entry["job"] for entry in out}
+    out += [{"job": job_id, "recovery": "started"} for job_id in dispatch(ebus)
+            if job_id not in reported]
     return out
 
 

@@ -40,6 +40,8 @@ CONTEXT_CHARS = 2000
 SAID_CHARS = 600
 ALREADY_CHARS = 4000
 NOTE_CHARS = 1500
+#: How many earlier rounds' notes are kept behind the latest one.
+EARLIER_NOTES = 5
 
 SESSION_PREFIX = "job:"
 
@@ -123,7 +125,9 @@ def ledger_of(job: dict[str, Any] | None) -> dict[str, Any]:
                           **({"note": _short(entry["note"], ITEM_CHARS)} if entry.get("note") else {})})
     return {"steps": steps[:MAX_STEPS], "found": _lines(raw.get("found"), MAX_FOUND),
             "open": _lines(raw.get("open"), MAX_OPEN),
-            "note": str(raw.get("note") or "")[:NOTE_CHARS], "updatedAt": raw.get("updatedAt")}
+            "note": str(raw.get("note") or "")[:NOTE_CHARS],
+            "earlier": [str(n)[:NOTE_CHARS] for n in (raw.get("earlier") or [])][-EARLIER_NOTES:],
+            "updatedAt": raw.get("updatedAt")}
 
 
 def _save(job_id: str, ledger: dict[str, Any]) -> dict[str, Any]:
@@ -169,12 +173,18 @@ def update_ledger(job_id: str, *, steps: Any = None, found: Any = None,
 
 def note_round(job_id: str, text: str) -> None:
     """Keep a round's own progress note — written by code at the end of every round that ran
-    out of room, so the ledger has where the work stands even if the worker never updates it."""
+    out of room, so the ledger has where the work stands even if the worker never updates it.
+    The notes before it are kept too (a few): a job's working transcript holds only its newest
+    messages, and on long work the notes are what is left of the rounds that scrolled out.
+    Found by the proving run: a stand-in following a 34-record trail lost its early reads from
+    the transcript and started again from the first record, for ever."""
     job = job_store.get_job(job_id)
     note = clean(text)
     if job is None or not note:
         return
-    _save(job_id, {**ledger_of(job), "note": note[:NOTE_CHARS]})
+    ledger = ledger_of(job)
+    earlier = ledger["earlier"] + ([ledger["note"]] if ledger["note"] and ledger["note"] != note else [])
+    _save(job_id, {**ledger, "note": note[:NOTE_CHARS], "earlier": earlier[-EARLIER_NOTES:]})
 
 
 def _activity(job_id: str) -> str:
@@ -198,6 +208,34 @@ def _activity(job_id: str) -> str:
     parts = [f"{name} ×{ran}" + (f" ({failed} failed)" if failed else "")
              for name, (ran, failed) in counts.items()]
     return ", ".join(parts)
+
+
+def progress_mark(job_id: str) -> dict[str, int]:
+    """Where the work stands, as numbers that only go up when it really moves: plan steps
+    done, findings kept, and distinct actions that succeeded (from the trace — the same call
+    made five times is one)."""
+    job = job_store.get_job(job_id)
+    ledger = ledger_of(job)
+    started: dict[str, str] = {}
+    worked: set[str] = set()
+    for row in job_store.get_trace(job_id):
+        if row.get("kind") != "tool":
+            continue
+        detail = row.get("detail")
+        if isinstance(detail, str):
+            try:
+                detail = json.loads(detail)
+            except ValueError:
+                continue
+        if not isinstance(detail, dict):
+            continue
+        operation = str(detail.get("operationId") or "")
+        if row.get("phase") == "intent":
+            started[operation] = f"{detail.get('name')}:{json.dumps(detail.get('args') or {}, sort_keys=True, default=str)}"
+        elif detail.get("ok") and operation in started:
+            worked.add(started[operation])
+    return {"done": sum(1 for s in ledger["steps"] if s["status"] == "done"),
+            "found": len(ledger["found"]), "calls": len(worked)}
 
 
 # --- in front of the worker ---------------------------------------------------------------------
@@ -244,6 +282,9 @@ def worker_sections(session_id: str) -> list[tuple[str, str]]:
         progress.append("What you have found so far:\n" + "\n".join(f"- {line}" for line in ledger["found"]))
     if ledger["open"]:
         progress.append("Still open:\n" + "\n".join(f"- {line}" for line in ledger["open"]))
+    if ledger["earlier"]:
+        progress.append("Your notes from earlier rounds, oldest first:\n"
+                        + "\n".join(f"- {note}" for note in ledger["earlier"]))
     if ledger["note"]:
         progress.append(f"Your note at the end of the last round:\n{ledger['note']}")
     try:

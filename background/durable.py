@@ -518,6 +518,10 @@ def continuation(answer: dict[str, Any] | None, goal: str = "") -> str:
         text += f"\n\nThe work you are doing: {goal.strip()}"
     guidance = str(answer.get("guidance") or "").strip()
     note = str(answer.get("note") or "").strip()
+    sent_back = str(answer.get("sentBack") or "").strip()
+    if sent_back:
+        text += (f"\n\nYour result was checked against what was asked and sent back: {sent_back} "
+                 "Put exactly that right, then give the finished result.")
     if note:
         text += f"\n\nThe last round did not get anywhere: {note} Try a different approach."
     if guidance:

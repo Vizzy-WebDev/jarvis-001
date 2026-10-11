@@ -133,6 +133,18 @@ def seed_invoices(rng: random.Random, *, month: str = "March", suppliers: int = 
                                     if s.lower().replace(" & ", "-").replace(" ", "-") in largest)}
 
 
+def seed_named_invoices(rng: random.Random, label: str, *, count: int = 3) -> dict[str, Any]:
+    """A small folder of invoices of its own (`label`), for objectives that run side by side."""
+    amounts: dict[str, float] = {}
+    for n in range(1, count + 1):
+        amount = round(rng.uniform(120, 3900), 2)
+        name = f"{label}-invoice-{n}"
+        add_record(name, f"INVOICE {n} for the {label} account\nAmount due: {amount:,.2f} USD", label)
+        amounts[name] = amount
+    return {"label": label, "records": list(amounts), "amounts": amounts,
+            "total": round(sum(amounts.values()), 2)}
+
+
 #: Records here are reachable only by their exact name: they are in no listing and no search.
 ARCHIVE = "archive"
 

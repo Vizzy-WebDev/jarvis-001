@@ -224,6 +224,73 @@ def resource_available(active_jobs: list[dict[str, Any]], resource: str | None) 
 
 
 def can_auto_retry(job: dict[str, Any] | None) -> bool:
-    """One automatic attempt, full stop — a crash retry and a stall retry share
-    the same counter, so a job cannot get two goes by failing in two ways."""
+    """Whether a job has never been set going again. Kept for readers that only ask that;
+    whether it MAY be is `may_recover`, which counts by cause."""
     return ((job or {}).get("retries") or 0) == 0
+
+
+# --- setting work going again, by why it stopped ----------------------------------------------
+#
+# One automatic retry shared by every kind of trouble was the old rule, and on the owner's
+# install it left both jobs ever run "stuck": the single retry went on the first hiccup and
+# the next one — a different problem entirely — went straight to the person. Three different
+# things stop work, and each gets its own short allowance:
+
+#: `approach` — it is going round in circles or its round failed: told why, and to take a
+#: DIFFERENT way. `check` — it finished, the result was checked against what was asked and
+#: sent back with the reason. `crash` — it hung or died. (No model being able to answer is none
+#: of these: the work simply waits — `durable.model_wait`.)
+RECOVERY_LIMITS = {"approach": 2, "check": 2, "crash": 2}
+
+
+def recovery_kind(cause: str | None) -> str:
+    cause = str(cause or "")
+    if cause == "did not match the request":
+        return "check"
+    if cause in ("hung", "crashed"):
+        return "crash"
+    return "approach"
+
+
+def may_recover(job: dict[str, Any] | None, kind: str) -> bool:
+    spent = ((job or {}).get("attempts") or {}).get(kind) or 0
+    return spent < RECOVERY_LIMITS.get(kind, 0)
+
+
+def holds_a_slot(job: dict[str, Any] | None, *, live: bool, waiting_for_model: bool) -> bool:
+    """Whether a job counts against how many may work at once: it is running, about to (a
+    worker has it), or only paused until a model can answer. A job waiting on the PERSON does
+    not — an unanswered question must not stop other work from starting — and neither does one
+    still in line."""
+    status = (job or {}).get("status")
+    return status == "running" or (status == "queued" and (live or waiting_for_model))
+
+
+def next_in_line(waiting: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The order work in line is started in: most important first, then first come."""
+    return sorted(waiting, key=lambda job: (job.get("priority") or 2, str(job.get("createdAt") or "")))
+
+
+# --- a step allowance that follows the work ---------------------------------------------------
+
+#: How many times a job's step allowance is extended by itself when it runs out while making
+#: real progress. Past that — or with no progress — the person is asked.
+MAX_AUTO_EXTENSIONS = 3
+#: This many more distinct successful actions than at the last mark is progress by itself.
+PROGRESS_CALLS = 3
+
+
+def made_progress(before: dict[str, Any] | None, now: dict[str, Any] | None) -> bool:
+    """Has the work moved since the last mark? A plan step finished, something new found, or
+    several distinct actions that worked — read from the ledger and the trace, never asked of
+    the work itself."""
+    before, now = before or {}, now or {}
+    return ((now.get("done") or 0) > (before.get("done") or 0)
+            or (now.get("found") or 0) > (before.get("found") or 0)
+            or (now.get("calls") or 0) >= (before.get("calls") or 0) + PROGRESS_CALLS)
+
+
+def may_extend(job: dict[str, Any] | None, mark_now: dict[str, Any] | None) -> bool:
+    attempts = (job or {}).get("attempts") or {}
+    return ((attempts.get("extensions") or 0) < MAX_AUTO_EXTENSIONS
+            and made_progress(attempts.get("mark"), mark_now))

@@ -105,6 +105,9 @@ def test_work_longer_than_one_turn_carries_on_in_rounds_and_finishes():
 
 
 def test_the_step_budget_is_never_overshot_and_parks_with_a_question(monkeypatch):
+    # With no extensions left to give (they are tested in test_executive.py): the allowance
+    # itself is exact, and running out of it is a question for the person.
+    monkeypatch.setattr("jarvis.jobs.policy.MAX_AUTO_EXTENSIONS", 0)
     monkeypatch.setitem(worker.STEP_BUDGET_BY_KIND, "generic", 11)
     brain = install(Brain())
     job = new_job()

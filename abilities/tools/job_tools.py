@@ -88,11 +88,18 @@ def _start(goal: str = "", title: str = "", kind: str = "generic", priority: int
                     priority=max(1, min(3, int(priority or 2))),
                     conversation_id=conversation_id, brief=brief)
     except AtCapacity as err:
-        # Never a silent queue: name what is already running so the user can say
-        # which should give way.
+        # The line itself is full (or the one computer is taken): name what is already going
+        # so the user can say which should give way.
         running = ", ".join(f'"{j["title"]}"' for j in err.active) or "other work"
-        return {"ok": False, "error": f"I'm already working on {running}. "
+        return {"ok": False, "error": f"I've already got {running} going or waiting. "
                                       "Which of those should I drop to take this on?"}
+    if job.get("waitingBehind"):
+        # Taken on, and waiting its turn: said plainly, never a silent queue.
+        ahead = ", ".join(f'"{title}"' for title in job["waitingBehind"][:3])
+        return {"ok": True, "id": job["id"], "title": job["title"], "status": "queued",
+                "waitingBehind": job["waitingBehind"],
+                "speak": f"I've taken on {job['title']}. It starts as soon as {ahead} "
+                         f"{'is' if len(job['waitingBehind']) == 1 else 'are'} out of the way."}
     if job["status"] == "awaiting_decision":
         return {"ok": True, "id": job["id"], "status": job["status"],
                 "speak": f"{job['title']} would take over the computer — say the word and "

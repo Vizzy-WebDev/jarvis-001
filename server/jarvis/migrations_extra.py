@@ -619,4 +619,11 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
     40: [
         "ALTER TABLE jobs ADD COLUMN brief TEXT;",
     ],
+    # 41: How often a job has been set going again, by WHY (`jobs/policy.py`): a different
+    # approach after getting nowhere, a result sent back by the check, a crash — each with its
+    # own limit — and how many times its step allowance was extended because it was making
+    # progress. JSON. `retries` stays as the plain total older readers show.
+    41: [
+        "ALTER TABLE jobs ADD COLUMN attempts TEXT;",
+    ],
 }

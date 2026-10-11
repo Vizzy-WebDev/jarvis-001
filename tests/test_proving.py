@@ -217,6 +217,53 @@ def test_a_process_killed_mid_work_is_taken_over_and_nothing_is_done_twice(_isol
     assert len(score.collect(root).world["filed"]) == 1
 
 
+# --- stage 2: managing the work -------------------------------------------------------------------
+
+def test_three_objectives_with_room_for_two_all_finish_and_never_more_than_two_work_at_once(_isolate):
+    from jarvis.prefs import set_prefs
+
+    set_prefs({"maxBackgroundJobs": 2})
+    verdict = play(_isolate, "three", OfficeWorker(), deadline_s=60)
+    assert verdict["passed"], verdict
+    assert [j["status"] for j in verdict["jobs"]] == ["done", "done", "done"]
+    assert verdict["questionsAsked"] == 0
+
+
+def test_a_record_that_never_opens_is_got_round_another_way(_isolate):
+    verdict = play(_isolate, "detour", OfficeWorker(background=True), deadline_s=60)
+    assert verdict["passed"], verdict
+
+
+def test_a_dead_end_is_reported_plainly_and_nothing_is_filed(_isolate):
+    verdict = play(_isolate, "dead_end", OfficeWorker(background=True), deadline_s=60)
+    assert verdict["outcome"] == "honest_stop" and verdict["passed"], verdict
+
+
+def test_a_stubborn_worker_is_stopped_told_to_change_course_and_then_the_person_is_told(_isolate):
+    """A model that keeps reading the record that will not open: the executive sees the
+    repetition, tells it twice to take a different way, and then stops it and says so — with
+    what it tried and where it stands — instead of letting it run for ever."""
+    verdict = play(_isolate, "dead_end", OfficeWorker(background=True, finds_another_way=False),
+                   deadline_s=90)
+    assert verdict["outcome"] == "honest_stop" and verdict["violations"] == [], verdict
+    [job] = verdict["jobs"]
+    assert job["status"] == "awaiting_decision" and job["retries"] == 2
+    assert "is stuck" in verdict["lastWords"] and "different way" in verdict["lastWords"]
+    # It was stopped, not left running: the record that will not open was tried a bounded
+    # number of times (three to be seen repeating, for the first go and each of two more).
+    tries = verdict["toolsCalled"].count("office_read_record")
+    assert tries <= 4 + 3 * 5, tries
+    # (The scenario's own bar — at most six tries — is for a model that changes course; this
+    # stand-in is the one that never does, which is why the run as a whole does not pass.)
+    assert not verdict["passed"]
+
+
+def test_work_longer_than_one_allowance_carries_on_without_asking(_isolate):
+    verdict = play(_isolate, "marathon", OfficeWorker(background=True), deadline_s=120)
+    assert verdict["passed"], verdict
+    assert verdict["questionsAsked"] == 0
+
+
 def test_a_run_that_is_still_going_when_time_is_up_is_not_called_anything_else(_isolate):
     world.install()
     slow = OfficeWorker(background=True)

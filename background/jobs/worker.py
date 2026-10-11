@@ -123,6 +123,10 @@ def run_job(job_id: str, *, event_bus: EventBus | None = None,
         # what done looks like. The rest of its brief rides in the prompt (`worker_sections`).
         reached = durable.advance(job_id, KIND, objective.opening_text(job), budget=budget,
                                   answer=answer)
+        # Out of steps while really getting somewhere: carry on without asking (`_extend`).
+        while _extend(job_id, reached):
+            reached = durable.advance(job_id, KIND, objective.opening_text(job), budget=budget,
+                                      answer={"extended": True})
     finally:
         _buses.pop(job_id, None)
     report = _report({"status": reached["state"], "result": reached.get("result"),
@@ -259,6 +263,28 @@ def _observe(job_id: str, event_type: str, payload: dict[str, Any]) -> None:
 
 def _stopped(job_id: str) -> bool:
     return (job_store.get_job(job_id) or {}).get("status") == "cancelled"
+
+
+def _halt_before_round(job_id: str) -> bool:
+    """Read at the start of every round: True ends it before any model call. The job was
+    stopped — or its own record shows it going round in circles (`policy.diagnose_stall`: the
+    same action three times, an oscillation, three failures in a row), which is then recorded
+    as a stall for the executive to deal with. Looked at HERE, between rounds, and not only on
+    the supervisor's clock: a fast model can spend a whole allowance of steps repeating itself
+    inside one tick."""
+    if _stopped(job_id):
+        return True
+    from .policy import DIAGNOSE_TAIL_SIZE, diagnose_stall
+
+    try:
+        stall = diagnose_stall(job_store.get_trace_tail(job_id, DIAGNOSE_TAIL_SIZE))
+    except Exception:  # noqa: BLE001 — not knowing is not a reason to stop the work
+        logger.exception("could not look at job %s's record for repetition", job_id)
+        return False
+    if stall is None:
+        return False
+    _stall(job_id, stall["detail"], _bus_for(job_id), cause=stall["cause"])
+    return True
 
 
 def _finish(job_id: str, outcome: dict[str, Any]) -> dict[str, Any]:
@@ -438,7 +464,42 @@ def _park_for_approval(job_id: str, approval: dict[str, Any]) -> None:
     _ask_aloud(job_id, entry, summary, "A background job needs a go-ahead.")
 
 
+def _would_extend(job_id: str) -> bool:
+    from . import objective
+    from .policy import may_extend
+
+    try:
+        return may_extend(job_store.get_job(job_id), objective.progress_mark(job_id))
+    except Exception:  # noqa: BLE001 — not knowing means asking, as before
+        logger.exception("could not tell whether job %s is making progress", job_id)
+        return False
+
+
+def _extend(job_id: str, reached: dict[str, Any]) -> bool:
+    """A job that ran out of steps is given another allowance by itself when it has really
+    moved since the last one (`policy.may_extend`) — a few times, never without limit. Asking
+    "keep going?" every thirty steps made the person the job's clock; now they are asked only
+    when it has stopped getting anywhere or has had its extensions. Returns whether it was."""
+    from . import objective
+
+    if reached.get("state") != "waiting" or (reached.get("why") or {}).get("reason") != "budget":
+        return False
+    if _stopped(job_id) or not _would_extend(job_id):
+        return False
+    job = job_store.get_job(job_id) or {}
+    attempts = dict(job.get("attempts") or {})
+    attempts["extensions"] = int(attempts.get("extensions") or 0) + 1
+    attempts["mark"] = objective.progress_mark(job_id)
+    job_store.update_job(job_id, {"attempts": attempts, "status": "running", "error": None})
+    job_store.append_trace(job_id, phase="outcome", effect="read", kind="extend",
+                           summary=f"making progress — carrying on (extension {attempts['extensions']})",
+                           detail=attempts["mark"])
+    return True
+
+
 def _park_for_budget(job_id: str, steps: int) -> None:
+    if _would_extend(job_id):
+        return  # not a question for the person: `run_job` carries it on (`_extend`)
     job = job_store.get_job(job_id) or {}
     job_store.update_job(job_id, {"status": "awaiting_decision", "currentStep": None})
     summary = f'"{job.get("title")}" is still not done after {steps} steps. Keep going?'
@@ -507,6 +568,18 @@ def _stall(job_id: str, detail: str, ebus: EventBus, cause: str = "failed") -> d
     return {"status": "stalled", "error": detail, "cause": cause}
 
 
+#: Jobs a worker thread has been started for and has not finished with — what "about to run"
+#: means to whoever counts how many are working at once (`orchestrator.dispatch`).
+_live: set[str] = set()
+#: Called (with nothing) each time a worker finishes with a job, so the next in line can start.
+after_run: Any = None
+
+
+def is_live(job_id: str) -> bool:
+    with _threads_lock:
+        return job_id in _live
+
+
 #: Live worker threads. Tracked rather than fire-and-forgotten so shutdown can
 #: wait for them: a worker still writing to the database while the process tears
 #: it down is a segfault, not an exception — found exactly that way, by a test
@@ -527,11 +600,20 @@ def run_in_background(job_id: str, event_bus: EventBus | None = None, *,
                 job_store.update_job(job_id, {"status": "stalled", "error": "The work crashed."})
             except Exception:  # noqa: BLE001 — the database may already be gone
                 logger.warning("could not record the crash of job %s", job_id)
+        finally:
+            with _threads_lock:
+                _live.discard(job_id)
+            if after_run is not None:
+                try:
+                    after_run()
+                except Exception:  # noqa: BLE001 — the next in line waits for the clock instead
+                    logger.exception("could not start the next job in line")
 
     thread = threading.Thread(target=_go, name=f"job-{job_id}", daemon=True)
     with _threads_lock:
         _threads[:] = [t for t in _threads if t.is_alive()]
         _threads.append(thread)
+        _live.add(job_id)
     thread.start()
     return thread
 
@@ -555,7 +637,8 @@ def _register() -> None:
 
     durable.register(durable.Kind(
         name=KIND, session_for=session_for, turn=_turn, finish=_finish, park=_park,
-        continuable=True, on_event=_on_event, observe=_observe, stopped=_stopped, wake=_wake))
+        continuable=True, on_event=_on_event, observe=_observe, stopped=_halt_before_round,
+        wake=_wake))
 
 
 _register()

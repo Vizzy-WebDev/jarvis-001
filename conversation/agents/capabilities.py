@@ -78,6 +78,10 @@ def _in_background(ctx: Any, agent: str, task: str, context: str | None) -> dict
     except AtCapacity as err:
         running = ", ".join(f'"{j["title"]}"' for j in err.active) or "other work"
         return {"ok": False, "error": f"Already working on {running}. Which should give way?"}
+    if job.get("waitingBehind"):
+        return {"ok": True, "background": True, "jobId": job["id"], "agent": target["name"],
+                "status": "queued", "waitingBehind": job["waitingBehind"],
+                "speak": f"{target['name']} will start on that as soon as there is room."}
     return {"ok": True, "background": True, "jobId": job["id"], "agent": target["name"],
             "status": job["status"],
             "speak": f"{target['name']} is working on that in the background."}

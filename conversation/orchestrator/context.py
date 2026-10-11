@@ -427,6 +427,19 @@ def _answered_approvals(session_id: str) -> str:
         return ""
 
 
+def _work_in_hand(session_id: str) -> list[tuple[str, str]]:
+    """The objective and the ledger of the background job this session is the working turn of
+    (`jobs/objective.py`), as prompt sections — empty for any other session. A READ, like the
+    notices above; a failure returns nothing."""
+    try:
+        from ..jobs import objective
+
+        return objective.worker_sections(session_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("could not read the objective for %s", session_id)
+        return []
+
+
 def _history(session_id: str) -> tuple[list[dict[str, Any]], str, int | None]:
     """The conversation as it is sent: the running summary (rendered) and the messages it
     does not already cover. Unbound sessions (jobs, scheduled runs) have no summary."""
@@ -470,12 +483,20 @@ class RelevanceContext:
         memories_text = memory_store.approved_memories_text(chosen)
         history, summary_text, covered = _history(session_id)
         so_far = prompt.conversation_so_far_section(summary_text)
+        # What this turn is working on, when it is a background job's own turn: put in front
+        # of the worker on every round, so it cannot scroll out of a long transcript.
+        work = _work_in_hand(session_id) if background else []
 
         if agent is not None:
             return self._specialist(agent, session_id=session_id, memories_text=memories_text,
                                     chosen=chosen, selection=selection,
                                     low_confidence=low_confidence, budget_tokens=budget_tokens,
-                                    history=history, so_far=so_far, covered=covered)
+                                    history=history, so_far=so_far, covered=covered, work=work)
+
+        if work:
+            return self._worker(session_id=session_id, memories_text=memories_text, chosen=chosen,
+                                selection=selection, budget_tokens=budget_tokens, history=history,
+                                work=work)
 
         # Rules Jarvis has learned about its own work ride in the volatile half:
         # they change as it learns, and they apply to a background job's turn as
@@ -545,11 +566,41 @@ class RelevanceContext:
             },
         )
 
+    def _worker(self, *, session_id: str, memories_text: str, chosen: list[dict[str, Any]],
+                selection: dict[str, Any], budget_tokens: int | None,
+                history: list[dict[str, Any]], work: list[tuple[str, str]]) -> AssembledContext:
+        """A background job's own prompt: who Jarvis is while working alone, the objective and
+        where it stands, the same learned rules — and none of what is for talking to someone
+        (no delivery register, no waiting notices, no list of other open work)."""
+        from ..improvement.store import active_rules_text
+
+        rules = prompt.rules_section(active_rules_text())
+        answered = _answered_approvals(session_id)
+        system = prompt.worker_instruction(
+            memories=memories_text,
+            extra=[*work, *[p for p in (("learned_rules", rules),
+                                        ("answered_approvals", answered)) if p[1]]])
+        remaining = (max(0, budget_tokens - estimate_tokens(system))
+                     if budget_tokens is not None else None)
+        messages = fit_messages(history, remaining)
+        included = ("worker_instruction", "objective")
+        if rules:
+            included += ("learned_rules",)
+        if chosen:
+            included += ("memory",)
+        if messages:
+            included += ("conversation",)
+        return AssembledContext(
+            system=system, messages=messages, included=included,
+            notes={"budgetTokens": budget_tokens, "memory": selection,
+                   "messagesKept": len(messages), "messagesAvailable": len(history)})
+
     def _specialist(self, agent: AgentBrief, *, session_id: str, memories_text: str,
                     chosen: list[dict[str, Any]], selection: dict[str, Any],
                     low_confidence: bool, budget_tokens: int | None,
                     history: list[dict[str, Any]], so_far: str,
-                    covered: int | None) -> AssembledContext:
+                    covered: int | None,
+                    work: list[tuple[str, str]] | None = None) -> AssembledContext:
         """A specialist's own prompt: its identity and doctrine in place of Jarvis's,
         the same honesty rules, and the same learned rules. No waiting notices —
         those are delivered by Jarvis to the person, never to a specialist."""
@@ -559,8 +610,10 @@ class RelevanceContext:
         answered = _answered_approvals(session_id)
         system = prompt.specialist_instruction(
             agent, memories=memories_text, low_confidence=low_confidence,
-            extra=[p for p in (("conversation_so_far", so_far), ("learned_rules", rules),
-                               ("answered_approvals", answered)) if p[1]] or None)
+            # A specialist doing a background job sees that job's objective and ledger too.
+            extra=[*(work or []), *[p for p in (("conversation_so_far", so_far),
+                                                ("learned_rules", rules),
+                                                ("answered_approvals", answered)) if p[1]]] or None)
         remaining = (max(0, budget_tokens - estimate_tokens(system))
                      if budget_tokens is not None else None)
         messages = fit_messages(history, remaining)

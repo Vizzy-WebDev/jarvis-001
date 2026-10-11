@@ -85,4 +85,6 @@ SPEC = CapabilitySpec(
     handler=_run,
     # Above the read's own deadline (`BUDGET_S`), which is what normally ends it.
     timeout_s=55.0,
+    # `core`, like look_it_up: the second most used ability (118 calls).
+    tags=frozenset({"core"}),
 )

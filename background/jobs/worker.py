@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 #: A worker's own tools, added to every restricted kind. A narrow, repetitive
 #: job is exactly the one most likely to turn out to be three jobs, so leaving
 #: these out of the fenced kinds would let only unrestricted work ask to split.
-JOB_OWN_TOOLS = ["request_job_split"]
+JOB_OWN_TOOLS = ["request_job_split", "update_plan"]
 
 TOOLS_BY_KIND: dict[str, list[str] | None] = {
     "generic": None,
@@ -116,8 +116,13 @@ def run_job(job_id: str, *, event_bus: EventBus | None = None,
     ebus.publish(EventType.JOB_UPDATED, {"id": job_id, "status": "running"})
 
     budget = STEP_BUDGET_BY_KIND.get(job["kind"], STEP_BUDGET_BY_KIND["generic"])
+    from . import objective
+
     try:
-        reached = durable.advance(job_id, KIND, job["goal"], budget=budget, answer=answer)
+        # What the work is first told, and what every later round restates: the outcome and
+        # what done looks like. The rest of its brief rides in the prompt (`worker_sections`).
+        reached = durable.advance(job_id, KIND, objective.opening_text(job), budget=budget,
+                                  answer=answer)
     finally:
         _buses.pop(job_id, None)
     report = _report({"status": reached["state"], "result": reached.get("result"),
@@ -215,10 +220,16 @@ def _turn(job_id: str, text: str, spec: Any, cancel: threading.Event) -> Iterato
 
 
 def _on_event(job_id: str, event: Any) -> None:
-    from ..orchestrator import ToolRan
+    from ..orchestrator import Done, ToolRan
 
     if isinstance(event, ToolRan):
         job_store.heartbeat(job_id, step=f"using {event.capability}")
+    elif isinstance(event, Done) and event.final_step:
+        # A round that ran out of room ends on a progress note. It is kept on the job's ledger
+        # by code, so where the work stands is on record whether or not the worker wrote it down.
+        from . import objective
+
+        objective.note_round(job_id, event.text)
 
 
 def _effect_of(capability: str) -> str:
@@ -252,8 +263,12 @@ def _stopped(job_id: str) -> bool:
 
 def _finish(job_id: str, outcome: dict[str, Any]) -> dict[str, Any]:
     """The work says it is finished: check that, then record it once."""
+    from . import objective
+
     job = job_store.get_job(job_id) or {}
-    answer = outcome.get("text") or ""
+    # Without a leading thinking block some models leave in their reply: what is delivered is
+    # the result, not the reasoning that led to it.
+    answer = objective.clean(outcome.get("text") or "")
     # "It finished" is not the same as "it did what was asked". A checked
     # mismatch is treated exactly like a stall — the SAME single retry, the same
     # counter, the same escalation — rather than a second recovery mechanism

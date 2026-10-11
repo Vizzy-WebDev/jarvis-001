@@ -33,6 +33,8 @@ def _row(row: Any) -> dict[str, Any] | None:
         "conversationId": row["conversation_id"], "title": row["title"],
         "goal": row["goal"], "kind": row["kind"], "status": row["status"],
         "plan": json.loads(row["plan"]) if row["plan"] else None,
+        # What the work is for (`jobs/objective.py`); None on a job made with only a goal.
+        "brief": json.loads(row["brief"]) if row["brief"] else None,
         "resource": row["resource"], "recovery": row["recovery"],
         "result": row["result"], "error": row["error"], "retries": row["retries"],
         "createdAt": row["created_at"], "startedAt": row["started_at"],
@@ -49,14 +51,16 @@ def create_job(*, title: str, goal: str, kind: str = "generic",
                conversation_id: str | None = None, parent_id: str | None = None,
                plan: dict[str, Any] | None = None, resource: str | None = None,
                priority: int = 2, status: str = "queued",
-               agent_id: str | None = None) -> dict[str, Any]:
+               agent_id: str | None = None,
+               brief: dict[str, Any] | None = None) -> dict[str, Any]:
     job_id = f"job_{uuid.uuid4().hex[:12]}"
     get_db().execute(
         "INSERT INTO jobs (id, parent_id, conversation_id, title, goal, kind, status, plan, "
-        "resource, retries, created_at, priority, agent_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+        "resource, retries, created_at, priority, agent_id, brief) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)",
         (job_id, parent_id, conversation_id, title, goal, kind, status,
-         json.dumps(plan) if plan else None, resource, now_iso(), priority, agent_id))
+         json.dumps(plan) if plan else None, resource, now_iso(), priority, agent_id,
+         json.dumps(brief) if brief else None))
     return get_job(job_id)  # type: ignore[return-value]
 
 
@@ -91,8 +95,14 @@ _PATCH_COLUMNS = {
 }
 
 
+#: Kept as JSON.
+_JSON_COLUMNS = {"plan": "plan", "brief": "brief"}
+
+
 def update_job(job_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
     columns = [(_PATCH_COLUMNS[k], v) for k, v in patch.items() if k in _PATCH_COLUMNS]
+    columns += [(_JSON_COLUMNS[k], json.dumps(v) if v is not None else None)
+                for k, v in patch.items() if k in _JSON_COLUMNS]
     if columns:
         assignments = ", ".join(f"{name} = ?" for name, _ in columns)
         get_db().execute(f"UPDATE jobs SET {assignments} WHERE id = ?",

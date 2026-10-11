@@ -40,4 +40,7 @@ SPEC = CapabilitySpec(
     # enough. The lookup works to its own, shorter deadline (`research.BUDGET_S`) and hands
     # back what it read when the summary will not come in time, so this is rarely reached.
     timeout_s=90.0,
+    # `core`: the most used ability on the owner's install (158 calls) was reachable only by
+    # first spending a whole model step on find_capability to unlock it.
+    tags=frozenset({"core"}),
 )

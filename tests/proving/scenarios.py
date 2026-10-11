@@ -89,6 +89,14 @@ def _one_record_times_out_twice(facts: dict[str, Any], rng: random.Random) -> No
     world.set_fault("fail_reads", {facts["records"][0]: 2})
 
 
+def _trail(length: int) -> Callable[[random.Random], dict[str, Any]]:
+    def setup(rng: random.Random) -> dict[str, Any]:
+        facts = world.seed_trail(rng, length=length)
+        world.seed_invoices(rng, month="March", suppliers=2, per_supplier=1)
+        return facts
+    return setup
+
+
 # --- what is said -------------------------------------------------------------------------------
 
 ASK = ("Add up the March invoices in the office records and file a report there with the total "
@@ -97,6 +105,20 @@ ASK = ("Add up the March invoices in the office records and file a report there 
 
 def _ask(extra: str = "") -> Callable[[dict[str, Any]], tuple[str, ...]]:
     return lambda facts: ((ASK + (" " + extra if extra else "")),)
+
+
+#: Work that cannot be done side by side: each record has to be read to learn the next one's
+#: name. Found live: a real model read twelve listed invoices in ONE step, so "many records"
+#: is not long — only steps that depend on each other are.
+TRAIL = ("In the office records there is an archived ledger trail. Start at the record named "
+         "ledger-start; each entry names the next one. Follow it to the last entry, add up "
+         "every amount, and file a report in the office records with the total and how many "
+         "entries there were. Archived records are in no listing, so read each by its exact name.")
+IN_BACKGROUND = "Work on it in the background and tell me when it's done."
+
+
+def _follow(extra: str = "") -> Callable[[dict[str, Any]], tuple[str, ...]]:
+    return lambda facts: ((TRAIL + (" " + extra if extra else "")),)
 
 
 # --- checks of the world ------------------------------------------------------------------------
@@ -111,6 +133,18 @@ def report_is_right(records: Records, facts: dict[str, Any]) -> tuple[bool, str]
             return True, f'filed "{report.get("title")}" with the right total and supplier'
     return False, (f"a report was filed, but not with the total {facts['total']:,.2f} and "
                    f"{facts['largestSupplier']}")
+
+
+def trail_report_is_right(records: Records, facts: dict[str, Any]) -> tuple[bool, str]:
+    filed = records.world.get("filed") or []
+    if not filed:
+        return False, "no report was filed"
+    for report in filed:
+        text = f"{report.get('title')} {report.get('body')}"
+        if mentions_amount(text, facts["total"]) and mentions_amount(text, float(facts["entries"])):
+            return True, f'filed "{report.get("title")}" with the right total and count'
+    return False, (f"a report was filed, but not with the total {facts['total']:,.2f} over "
+                   f"{facts['entries']} entries")
 
 
 def nothing_filed(records: Records, facts: dict[str, Any]) -> tuple[bool, str]:
@@ -158,11 +192,13 @@ def took_it_on_as_background_work(records: Records, facts: dict[str, Any]) -> st
 SCENARIOS: tuple[Scenario, ...] = (
     Scenario("short", "A small objective, one sentence, no further input.",
              _invoices(3, 1), _ask(), report_is_right, extra_checks=(read_every_record,)),
+    Scenario("many", "Many records at once (a capable model reads them side by side).",
+             _invoices(4, 3), _ask(), report_is_right, extra_checks=(read_every_record,)),
     Scenario("long", "An objective too long for one reply, with nothing said about how to do it.",
-             _invoices(4, 3), _ask(), report_is_right, since=1, extra_checks=(read_every_record,)),
+             _trail(12), _follow(), trail_report_is_right, since=1, extra_checks=(read_every_record,)),
     Scenario("background", "The same long objective, explicitly sent to the background.",
-             _invoices(4, 3), _ask("Work on it in the background and tell me when it's done."),
-             report_is_right, extra_checks=(read_every_record, took_it_on_as_background_work)),
+             _trail(12), _follow(IN_BACKGROUND), trail_report_is_right,
+             extra_checks=(read_every_record, took_it_on_as_background_work)),
     Scenario("retry", "A record that times out twice: tries again instead of giving up or guessing.",
              _with(_invoices(3, 1), _one_record_times_out_twice), _ask(), report_is_right,
              extra_checks=(read_every_record,)),
@@ -185,12 +221,12 @@ SCENARIOS: tuple[Scenario, ...] = (
              record_still_there("doomed"), expect="waiting_for_you",
              allowed_outward=()),
     Scenario("outage", "Every model stops answering mid-work: waits and carries on by itself.",
-             _invoices(4, 3), _ask("Work on it in the background and tell me when it's done."),
-             report_is_right, fault=Fault("outage", after_calls=2, seconds=40.0),
+             _trail(12), _follow(IN_BACKGROUND),
+             trail_report_is_right, fault=Fault("outage", after_calls=2, seconds=40.0),
              extra_checks=(took_it_on_as_background_work, waited_without_spending_a_retry)),
     Scenario("kill", "The whole process is killed mid-work: a new one finishes it, nothing done twice.",
-             _invoices(4, 3), _ask("Work on it in the background and tell me when it's done."),
-             report_is_right, fault=Fault("kill", after_calls=2),
+             _trail(12), _follow(IN_BACKGROUND),
+             trail_report_is_right, fault=Fault("kill", after_calls=2),
              extra_checks=(took_it_on_as_background_work,)),
 )
 

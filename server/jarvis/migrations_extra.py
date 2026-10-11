@@ -611,4 +611,12 @@ EXTRA_MIGRATION_SQL: dict[int, list[str]] = {
         "DROP TABLE IF EXISTS provider_balances;",
         "DROP TABLE IF EXISTS model_prices;",
     ],
+    # 40: What a piece of background work is FOR (`jobs/objective.py`): the outcome wanted, what
+    # will be true when it is done, what the conversation settled and the person's own words.
+    # JSON, written once when the work is taken on; a job without one is read as a brief made
+    # of its goal. Where the work has got to — its plan, findings and last progress note — goes
+    # in the `plan` column, which has existed since the table did and was never written.
+    40: [
+        "ALTER TABLE jobs ADD COLUMN brief TEXT;",
+    ],
 }

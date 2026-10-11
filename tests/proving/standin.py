@@ -22,6 +22,8 @@ from typing import Any, Iterator
 from jarvis.orchestrator.model_port import StepComplete, TextChunk, ToolCall
 
 AMOUNT = re.compile(r"Amount due:\s*([\d,]+\.\d+)")
+TRAIL_AMOUNT = re.compile(r"Amount:\s*([\d,]+\.\d+)")
+NEXT = re.compile(r"next entry is the record named (\S+?)\.")
 SUPPLIER = re.compile(r"From:\s*(.+)")
 
 
@@ -88,7 +90,10 @@ class OfficeWorker:
             return ("say", "On it, Boss — I'll tell you when the report is filed.")
 
         if not may_call:
-            return ("say", "Progress: still reading the invoices; the report is not filed yet.")
+            return ("say", "Progress: still reading the records; the report is not filed yet.")
+
+        if any("ledger trail" in (m.get("text") or "") for m in messages if m.get("role") == "user"):
+            return self._follow_trail(results)
 
         listing = next((_value(r) for r in results if r.get("name") == "office_list_records"), None)
         if listing is None:
@@ -131,3 +136,25 @@ class OfficeWorker:
             return ("say", f"Done — the report is filed. The total is {total:,.2f} USD.")
         return ("say", f"I worked out the total ({total:,.2f} USD, largest from {supplier}) but could "
                        "not file the report: the filing system is closed for maintenance.")
+
+    def _follow_trail(self, results: list[dict[str, Any]]) -> tuple:
+        """Read the entry the last one named, until one names none; then total and file."""
+        read = {_value(r).get("name"): _value(r) for r in results
+                if r.get("name") == "office_read_record" and _value(r).get("ok")}
+        name, amounts = "ledger-start", []
+        while name in read:
+            text = read[name]["text"]
+            amounts.append(float(TRAIL_AMOUNT.search(text).group(1).replace(",", "")))
+            following = NEXT.search(text)
+            if following is None:
+                name = ""
+                break
+            name = following.group(1)
+        if name:
+            return ("call", "office_read_record", {"name": name})
+        total = round(sum(amounts), 2)
+        filing = [_value(r) for r in results if r.get("name") == "office_file_report"]
+        if not filing:
+            return ("call", "office_file_report",
+                    {"title": "Ledger trail", "body": f"Total: {total:,.2f} USD over {len(amounts)} entries."})
+        return ("say", f"Filed the report: the trail totals {total:,.2f} USD over {len(amounts)} entries.")

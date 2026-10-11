@@ -133,6 +133,26 @@ def seed_invoices(rng: random.Random, *, month: str = "March", suppliers: int = 
                                     if s.lower().replace(" & ", "-").replace(" ", "-") in largest)}
 
 
+#: Records here are reachable only by their exact name: they are in no listing and no search.
+ARCHIVE = "archive"
+
+
+def seed_trail(rng: random.Random, *, length: int = 12, start: str = "ledger-start") -> dict[str, Any]:
+    """A trail of ledger entries, each naming the next. They are archived — in no listing and
+    no search — so the only way to the end is to read one, then the one it names: work that
+    cannot be done side by side, and so cannot be finished in one reply's worth of steps."""
+    names = [start] + [f"ledger-{rng.randrange(16 ** 6):06x}" for _ in range(length - 1)]
+    amounts: dict[str, float] = {}
+    for position, name in enumerate(names):
+        amount = round(rng.uniform(40, 950), 2)
+        amounts[name] = amount
+        following = (f"The next entry is the record named {names[position + 1]}."
+                     if position + 1 < len(names) else "This is the last entry in the trail.")
+        add_record(name, (f"LEDGER ENTRY {position + 1}\nAmount: {amount:,.2f} USD\n{following}"), ARCHIVE)
+    return {"start": start, "records": names, "amounts": amounts, "entries": length,
+            "total": round(sum(amounts.values()), 2)}
+
+
 # --- the tools ----------------------------------------------------------------------------------
 
 def _list(folder: str = "") -> dict[str, Any]:
@@ -140,9 +160,10 @@ def _list(folder: str = "") -> dict[str, Any]:
         world = _read()
     wanted = (folder or "").strip().lower()
     names = sorted(name for name, record in world["records"].items()
-                   if not wanted or record["folder"].lower() == wanted)
+                   if record["folder"] != ARCHIVE
+                   and (not wanted or record["folder"].lower() == wanted))
     _log("office_list_records", {"folder": folder}, True)
-    folders = sorted({r["folder"] for r in world["records"].values()})
+    folders = sorted({r["folder"] for r in world["records"].values()} - {ARCHIVE})
     return {"ok": True, "records": names, "folders": folders}
 
 
@@ -152,6 +173,8 @@ def _search(query: str = "") -> dict[str, Any]:
     terms = [t for t in (query or "").lower().split() if t]
     hits = []
     for name, record in sorted(world["records"].items()):
+        if record["folder"] == ARCHIVE:
+            continue
         text = f"{name} {record['folder']} {record['text']}".lower()
         if terms and all(term in text for term in terms):
             hits.append({"name": name, "folder": record["folder"]})

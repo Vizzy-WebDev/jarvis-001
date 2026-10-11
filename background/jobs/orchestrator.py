@@ -82,9 +82,10 @@ class AtCapacity(RuntimeError):
 
 def admit(*, title: str, goal: str, kind: str = "generic", priority: int = 2,
           conversation_id: str | None = None, parent_id: str | None = None,
-          agent_id: str | None = None,
+          agent_id: str | None = None, brief: dict[str, Any] | None = None,
           event_bus: EventBus | None = None) -> dict[str, Any]:
-    """Create a job if there is room for it, and start it unless it must not start."""
+    """Create a job if there is room for it, and start it unless it must not start. `brief` is
+    what the work is for (`jobs/objective.py`); without one it is made of the goal."""
     ebus = event_bus or default_bus
     active = job_store.list_active_jobs()
     if not has_capacity(active, active_job_limit()):
@@ -102,7 +103,8 @@ def admit(*, title: str, goal: str, kind: str = "generic", priority: int = 2,
     job = job_store.create_job(
         title=title, goal=goal, kind=kind, priority=priority,
         conversation_id=conversation_id, parent_id=parent_id, resource=resource,
-        status="awaiting_decision" if starts_parked else "queued", agent_id=agent_id)
+        status="awaiting_decision" if starts_parked else "queued", agent_id=agent_id,
+        brief=brief)
 
     if starts_parked:
         job_store.add_outbox(tier=1, job_id=job["id"], reason="permission",

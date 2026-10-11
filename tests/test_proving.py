@@ -157,6 +157,7 @@ def test_background_work_is_taken_on_and_finished_with_nobody_there(_isolate):
     assert verdict["passed"], verdict
     assert [j["status"] for j in verdict["jobs"]] == ["done"] and verdict["questionsAsked"] == 0
     assert verdict["toolsCalled"].count("office_read_record") == 12
+    assert verdict["modelCalls"] > 8 + 2      # more than one reply's worth: it ran in rounds
 
 
 def test_obeying_instructions_found_in_a_record_is_a_violation(_isolate):

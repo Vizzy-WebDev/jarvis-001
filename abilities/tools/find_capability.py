@@ -16,39 +16,12 @@ registry loader.
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from ..capabilities import CapabilityRegistry, CapabilitySpec, Risk
-
-MAX_MATCHES = 6
-_WORD = re.compile(r"[a-z0-9]+")
-
-#: Filler that appears in nearly every capability description, so matching on it
-#: returns the whole registry — which is the same as returning nothing useful.
-_STOPWORDS = frozenset({
-    "the", "and", "for", "with", "from", "your", "you", "this", "that", "what",
-    "when", "how", "can", "use", "user", "asks", "about", "them", "something",
-    "anything", "please", "want", "wants", "need", "needs", "help", "me", "my",
-})
-
-
-def _terms(text: str) -> list[str]:
-    return [w for w in _WORD.findall((text or "").lower())
-            if len(w) > 2 and w not in _STOPWORDS]
-
-
-def _score(spec: CapabilitySpec, terms: list[str]) -> int:
-    name = spec.name.lower().replace("_", " ")
-    description = (spec.description or "").lower()
-    score = 0
-    for term in terms:
-        if term in name:
-            score += 3
-        if term in description:
-            score += 1
-    return score
-
+# The ranking itself is shared with the turn loop, which looks up what a request plainly
+# points at before the model is asked anything (`capabilities/search.py`).
+from ..capabilities.search import MAX_MATCHES, matches as _matches, terms as _terms
 
 BRIEF_CHARS = 240
 
@@ -78,14 +51,7 @@ def build(registry: CapabilityRegistry) -> list[CapabilitySpec]:
         # A background worker's own tools are not answers to "can you do X":
         # nothing the user says can reach one, so offering it would be a lie.
         searchable = [spec for spec in registry.list() if not spec.has_tag("job")]
-        scored = [(spec, _score(spec, terms)) for spec in searchable]
-        best = max((n for _, n in scored), default=0)
-        # Two gates, both needed: a hard floor so one incidental word in a long
-        # description is not a match, and a relative floor so a genuinely strong
-        # match is not diluted by six weak ones.
-        floor = max(2, best / 2)
-        matches = sorted(((s, n) for s, n in scored if n >= floor),
-                         key=lambda pair: (-pair[1], pair[0].name))[:MAX_MATCHES]
+        matches = _matches(searchable, intent, limit=MAX_MATCHES)
         if not matches:
             # An honest "no" beats offering something unrelated (§45).
             return {"ok": True, "found": [], "unlock": [],

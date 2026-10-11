@@ -65,6 +65,18 @@ def _child(scenario_id: str, phase: str, scratch: Path, seed: int) -> subprocess
                             stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
 
 
+def kill_hard(child: subprocess.Popen) -> None:
+    """Kill a child and everything under it, with no chance to clean up. On Windows a virtual
+    environment's `python.exe` is a small launcher that starts the real interpreter as its own
+    child: killing only the launcher (found the hard way — 28 of them had piled up) leaves the
+    real process running, which for a "kill it mid-work" proof means nothing was killed."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(child.pid)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    else:
+        child.kill()
+
+
 def _run_phase(scenario, phase: str, scratch: Path, seed: int, kill: bool) -> str:
     """Run one phase to its end — or, for a kill, until it says it reached the point to be
     killed at. Returns "ended", "killed" or "timed out"."""
@@ -87,11 +99,11 @@ def _run_phase(scenario, phase: str, scratch: Path, seed: int, kill: bool) -> st
     how = "ended"
     while child.poll() is None:
         if kill and marked.is_set():
-            child.kill()            # no clean-up, no goodbye: exactly what a crash is
+            kill_hard(child)        # no clean-up, no goodbye: exactly what a crash is
             how = "killed"
             break
         if time.monotonic() > deadline:
-            child.kill()
+            kill_hard(child)
             how = "timed out"
             break
         time.sleep(0.2)

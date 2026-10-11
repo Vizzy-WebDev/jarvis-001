@@ -394,7 +394,13 @@ def test_a_job_killed_for_real_mid_round_resumes_in_a_new_process_without_repeat
     # A hard kill on every platform: SIGKILL on POSIX, TerminateProcess on Windows (which has no
     # SIGKILL — this test could never run on the one platform Jarvis is used on). Either way the
     # process gets no chance to clean up, which is the point.
-    first.kill()
+    if os.name == "nt":
+        # The whole tree: a virtual environment's python.exe is a launcher whose child is the
+        # real interpreter, and killing only the launcher leaves that one running for ever.
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(first.pid)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    else:
+        first.kill()
     first.wait(10)
     assert first.returncode not in (0, 3), "the first process ended by itself instead of being killed"
 

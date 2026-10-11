@@ -97,6 +97,10 @@ def run_job(job_id: str, *, event_bus: EventBus | None = None,
     else:
         work = durable.get(job_id)
         settled = (work or {}).get("status")
+        if settled == "waiting" and answer is None and durable.model_due(work):
+            # It was only waiting for a model, and that wait is over: starting it IS the retry.
+            # (Any other wait is a question for the person, never answered from here.)
+            answer = {"model": True}
         if settled == "finished" or (settled == "waiting" and answer is None):
             # Nothing to run: it already finished, or it is waiting on an answer that a
             # plain start or recovery must never supply on the person's behalf. If the job's
@@ -127,7 +131,7 @@ def run_job(job_id: str, *, event_bus: EventBus | None = None,
 
 def _status_of(report: dict[str, Any]) -> str:
     status = report.get("status")
-    return status if status in ("done", "awaiting_decision", "stalled", "cancelled") \
+    return status if status in ("done", "awaiting_decision", "stalled", "cancelled", "queued") \
         else "awaiting_decision"
 
 
@@ -144,6 +148,10 @@ def _report(work: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
         return {"status": "awaiting_decision", "reason": "budget", "steps": why.get("steps")}
     if reason in ("failed", "rejected"):
         return {"status": "stalled", "error": _stall_detail(why), "cause": _stall_cause(why)}
+    if reason == "model":
+        # Not stuck and not the person's problem: it goes on by itself at `retryAt`.
+        return {"status": "queued", "reason": "model", "retryAt": why.get("retryAt"),
+                "error": why.get("error")}
     job = job_store.get_job(job_id or work.get("id") or "") or {}
     return {"status": job.get("status"), "reason": reason}
 
@@ -347,7 +355,44 @@ def _park(job_id: str, why: dict[str, Any]) -> None:
         _park_for_budget(job_id, int(why.get("steps") or 0))
     elif reason in ("failed", "rejected"):
         _stall(job_id, _stall_detail(why), _bus_for(job_id), cause=_stall_cause(why))
+    elif reason == "model":
+        _park_for_model(job_id, why)
     # "stopped": whoever stopped it (the person cancelling, the supervisor) already said why.
+
+
+def _park_for_model(job_id: str, why: dict[str, Any]) -> None:
+    """No model could answer just now. The job is not stuck and nothing is asked of the person:
+    it waits and carries on by itself (`durable.wake_due`, on the supervisor's clock). Shown as
+    still going, saying what it is waiting for and until when."""
+    if _stopped(job_id):
+        return
+    when = _local_clock(why.get("retryAt"))
+    job_store.update_job(job_id, {
+        "status": "queued", "error": None,
+        "currentStep": "waiting for a model to be available" + (f" — trying again at {when}" if when else "")})
+    # Its own kind, never a `note`: two identical notes in a row read as a job repeating itself
+    # (`policy.diagnose_stall`), and waiting is not that.
+    job_store.append_trace(job_id, phase="outcome", effect="read", kind="wait",
+                           summary=f"waiting for a model (try {why.get('attempt')})",
+                           detail=why.get("error"))
+    _bus_for(job_id).publish(EventType.JOB_UPDATED, {"id": job_id, "status": "queued"})
+
+
+def _local_clock(iso: Any) -> str:
+    from datetime import datetime
+
+    try:
+        moment = datetime.fromisoformat(str(iso).replace("Z", "+00:00")).astimezone()
+    except ValueError:
+        return ""
+    hour = moment.hour % 12 or 12
+    return f"{hour}:{moment.minute:02d} {'AM' if moment.hour < 12 else 'PM'}"
+
+
+def _wake(job_id: str) -> None:
+    """Its wait for a model is over (`durable.wake_due`): carry on, unless it was stopped."""
+    if not _stopped(job_id):
+        run_in_background(job_id, answer={"model": True})
 
 
 def _stall_detail(why: dict[str, Any]) -> str:
@@ -495,7 +540,7 @@ def _register() -> None:
 
     durable.register(durable.Kind(
         name=KIND, session_for=session_for, turn=_turn, finish=_finish, park=_park,
-        continuable=True, on_event=_on_event, observe=_observe, stopped=_stopped))
+        continuable=True, on_event=_on_event, observe=_observe, stopped=_stopped, wake=_wake))
 
 
 _register()

@@ -501,21 +501,64 @@ def test_selecting_an_effort_the_model_does_not_take_keeps_none(layer, client_fo
     assert chosen["selection"]["effort"] is None
 
 
-# --- B6: the person's selection pins background work too (CURRENT behaviour, awaiting D4) -------
+# --- B6 / D4: the person's selection is a pin for a turn they are in, a preference for work nobody is watching ---
 
-def test_b6_a_scheduled_or_agent_run_with_no_pin_of_its_own_is_held_to_the_selected_model(layer):
-    """Today: with a model selected (not Auto), a run with no pin of its own is pinned to
-    `selected`, so when that connection is unreachable nothing else is tried. This pins the
-    behaviour the 2026-10-05 scout run showed (trace d82d9470: not_pinned for every other
-    endpoint). D4 decides whether it changes; this test changes with it."""
+def _steered(role, model_id=None, **kw):
+    from jarvis.models import client
+
+    pin, prefer = client.steer_for(model_id, role)
+    return ask(task_class=client.TASK_CLASS.get(role, role), requirements=Requirements(pin=pin), prefer=prefer, **kw)
+
+
+def test_b6_unattended_work_prefers_the_selected_model_and_moves_on_when_it_is_down(layer):
+    """D4, decided by the owner on 2026-10-11: a job's round or a scheduled run with no pin of its
+    own tries the selected model first and then anything else connected and fit. Before, it was
+    pinned to `selected`, so one unreachable connection failed 8 of 11 scheduled runs (the
+    2026-10-05 scout run, trace d82d9470: not_pinned for every other endpoint)."""
+    from jarvis.models import client, settings, state
+
+    configure(layer, [fake_conn("other"), fake_conn("chosen")], aliases={"selected": {"endpoint": "chosen/m"}})
+    assert client.steer_for(None, "background") == (None, (settings.SELECTED,))
+    assert models.explain_route(_steered("background")).ranked[0] == "chosen/m"  # theirs first, when it can answer
+    state.mark_connection_down("chosen", "Couldn't reach chosen.test.", 300)
+    assert models.explain_route(_steered("background")).ranked == ("other/m",)
+
+
+def test_b6_a_turn_the_person_is_in_stays_on_the_model_they_chose(layer):
     from jarvis.models import client, settings, state
 
     configure(layer, [fake_conn("chosen"), fake_conn("other")], aliases={"selected": {"endpoint": "chosen/m"}})
-    assert client.pin_for(None) == settings.SELECTED
+    for role in ("conversation", "voice", "control"):
+        assert client.steer_for(None, role) == (settings.SELECTED, ())
     state.mark_connection_down("chosen", "Couldn't reach chosen.test.", 300)
-    explained = models.explain_route(ask(task_class="background", requirements=Requirements(pin=client.pin_for(None))))
+    explained = models.explain_route(_steered("conversation"))
     assert explained.ranked == ()
     assert {r.reason for r in explained.rejected} == {"connection_unreachable", "not_pinned"}
+
+
+def test_b6_a_pin_a_task_names_itself_is_never_loosened(layer):
+    from jarvis.models import client
+
+    configure(layer, [fake_conn("chosen"), fake_conn("other")], aliases={"selected": {"endpoint": "chosen/m"}})
+    # A model a task or specialist names becomes an alias of that name and stays a pin, whatever
+    # the role: found or refused, never approximated.
+    assert client.steer_for("m", "background") == ("m", ())
+    assert client.steer_for("m", "conversation") == ("m", ())
+
+
+def test_b6_a_check_nobody_is_waiting_on_moves_on_too(layer):
+    """`ai.ask` for a judge / reflection / summary: the same rule. Measured on the real install,
+    judge calls got an answer 8 times in 18 while pinned, so most finished work went unchecked."""
+    from jarvis import ai
+    from jarvis.models import state
+
+    configure(layer, [fake_conn("chosen"), fake_conn("other")], aliases={"selected": {"endpoint": "chosen/m"}})
+    state.mark_connection_down("chosen", "Couldn't reach chosen.test.", 300)
+    fake.queue("other", fake.reply('{"matches": true}'))
+    answer = ai.ask("Does it match?", data_class="personal", task_class="judge", want_json=True)
+    assert answer.data == {"matches": True}
+    with pytest.raises(ai.NoModelAvailable):  # a question asked on the person's behalf, live: still theirs
+        ai.ask("What is on screen?", data_class="personal", task_class="screen_text")
 
 
 def test_b6_under_auto_the_same_run_moves_on(layer):

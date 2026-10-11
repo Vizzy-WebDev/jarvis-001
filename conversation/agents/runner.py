@@ -148,6 +148,9 @@ class RunOutcome:
     #: Files the run produced (its tools' attachments, a helper's included) —
     #: handed up so they reach the person, not just the model.
     files: list[dict[str, Any]] = field(default_factory=list)
+    #: Set when the run failed only because no model could answer just then: how long the
+    #: server asked to wait (0.0 when it did not say). None for every other ending.
+    wait: float | None = None
 
     def as_result(self) -> dict[str, Any]:
         """What a delegating turn is told — plain data a model can reason over."""
@@ -379,7 +382,8 @@ def run_agent(which: str, task: str, *, requested_by: str = "jarvis",
     files: list[dict[str, Any]] = []
 
     def go() -> None:
-        from ..orchestrator import ToolRan
+        from .. import durable
+        from ..orchestrator import Failed, ToolRan
 
         try:
             with _lock_for(session):
@@ -388,6 +392,8 @@ def run_agent(which: str, task: str, *, requested_by: str = "jarvis",
                                         surface=_surface_for(surface), event_bus=event_bus):
                     if isinstance(event, ToolRan) and event.ok:
                         files.extend(a for a in event.attachments if a not in files)
+                    elif isinstance(event, Failed):
+                        holder["wait"] = durable.model_wait(event.code, event.detail)
         except Exception as err:  # noqa: BLE001 — reported through the run record
             holder["error"] = str(err)
         finally:
@@ -417,7 +423,7 @@ def run_agent(which: str, task: str, *, requested_by: str = "jarvis",
     return RunOutcome(run=final, status=final["status"], result=final.get("result") or "",
                       error=final.get("error") or holder.get("error"), approval=approval,
                       model_id=final.get("modelId"), tools_used=final.get("toolsUsed") or [],
-                      files=files)
+                      files=files, wait=holder.get("wait") if final["status"] == "failed" else None)
 
 
 # --- delegation ---------------------------------------------------------------

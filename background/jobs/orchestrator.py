@@ -199,6 +199,15 @@ def supervise(now_ms: float | None = None, event_bus: EventBus | None = None) ->
     now_ms = now_ms if now_ms is not None else datetime.now(timezone.utc).timestamp() * 1000
     actions: list[dict[str, Any]] = []
 
+    # Work that stopped only because no model could answer carries on once its wait is over.
+    try:
+        from .. import durable
+
+        actions += [{"job": work_id, "action": "continued", "cause": "a model to try again"}
+                    for work_id in durable.wake_due()]
+    except Exception:  # noqa: BLE001 — never let this stop the rest of the pass
+        logger.exception("could not continue work that was waiting for a model")
+
     for job in job_store.list_active_jobs():
         if job["status"] == "running" and is_hung(job, now_ms=now_ms, timeout_ms=HANG_TIMEOUT_MS):
             actions.append(_recover(job, "no heartbeat — the work looks hung", ebus, live=True))

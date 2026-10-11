@@ -5,7 +5,8 @@ be imported from anywhere a tool can reach. `assembly.py` builds it.
 
 It turns the stored conversation into a typed request — task class and data class
 from the kind of turn, the session as affinity key, the person's selection as a
-pin (Auto: none), their effort as a hint — streams it, and maps the result back:
+pin (Auto: none; unattended work: a preference, so it can move on when that model is
+down), their effort as a hint — streams it, and maps the result back:
 text as it comes, every fallback as a `ModelSwitched`, the cost ledger event, and
 one `StepComplete` carrying what the server said answered.
 """
@@ -55,8 +56,21 @@ def pin_for(model_id: str | None) -> str | None:
         return None
 
 
+def steer_for(model_id: str | None, role: str) -> tuple[str | None, tuple[str, ...]]:
+    """(pin, prefer) for a turn. Someone talking to Jarvis gets exactly the model they chose
+    (a pin). Work nobody is waiting on (a job's round, a scheduled run) only PREFERS it: that
+    model first, then whatever else is connected and fit — the owner's decision, because
+    unattended work that stops whenever one model is down never finishes anything. A pin a
+    task or specialist names itself is still a pin: found or refused, never approximated."""
+    pin = pin_for(model_id)
+    if pin == settings.SELECTED and not model_id and role in BACKGROUND_ROLES:
+        return None, (settings.SELECTED,)
+    return pin, ()
+
+
 def _request(*, messages: list[dict[str, Any]], system: Any, tools: list[dict[str, Any]], session_id: str,
-             pin: str | None, role: str, need: dict[str, bool] | None) -> Request:
+             pin: str | None, role: str, need: dict[str, bool] | None,
+             prefer: tuple[str, ...] = ()) -> Request:
     sections, stable = instructions_of(system)
     return Request(
         task_class=TASK_CLASS.get(role, role), data_class=DATA_CLASS.get(role, "personal"),
@@ -65,6 +79,7 @@ def _request(*, messages: list[dict[str, Any]], system: Any, tools: list[dict[st
                          t.get("parameters") or {"type": "object", "properties": {}}) for t in tools),
         requirements=Requirements(capabilities=frozenset({"image_in"} if (need or {}).get("vision") else ()),
                                   pin=pin),
+        prefer=prefer,
         hints=Hints(stable_prefix_until=stable,
                     reasoning_effort=settings.effort() if pin == settings.SELECTED else None),
         affinity_key=session_id)
@@ -97,8 +112,9 @@ class JarvisModelClient:
         from .engine import route
 
         try:
+            pin, prefer = steer_for(model_id, role or "conversation")
             request = _request(messages=[], system="", tools=list(tools or []), session_id=session_id,
-                               pin=pin_for(model_id), role=role or "conversation", need=need)
+                               pin=pin, role=role or "conversation", need=need, prefer=prefer)
             ranked, _ = route(request)
         except Exception:  # noqa: BLE001 — not knowing is an answer; it must never fail a turn
             logger.exception("could not work out the answering model's capacity")
@@ -112,9 +128,9 @@ class JarvisModelClient:
                session_id: str, model_id: str | None = None, role: str | None = None,
                need: dict[str, bool] | None = None) -> Iterator[ModelEvent]:
         role = role or "conversation"
-        pin = pin_for(model_id)
+        pin, prefer = steer_for(model_id, role)
         request = _request(messages=messages, system=system, tools=tools, session_id=session_id,
-                           pin=pin, role=role, need=need)
+                           pin=pin, role=role, need=need, prefer=prefer)
 
         response = None
         for event in layer_stream(request):

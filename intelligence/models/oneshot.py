@@ -4,7 +4,9 @@ Kept apart from `client.py` because tools reach this (through `ai.py`) and must
 not be led, by way of it, into the orchestrator.
 
 Each caller states its task class and how sensitive its data is; the person's
-selection, if they named one, is the pin, exactly as in a chat turn. A JSON answer
+selection, if they named one, is the pin, exactly as in a chat turn — except for work
+nobody is waiting on (`UNATTENDED`, or a caller saying `background=True`), which only
+prefers it and moves on to another connected model when that one cannot answer. A JSON answer
 is asked for as structured output (best effort: enforced where the model can,
 emulated, validated and repaired where it can't).
 """
@@ -21,6 +23,11 @@ from .types import Hints, ImagePart, Message, OutputSpec, Request, Requirements,
 #: What "reply with JSON" means when the caller gives no schema of its own.
 ANY_OBJECT = {"type": "object"}
 
+#: Task classes nobody is sitting waiting on: a check on finished work, learning in the
+#: background, a running summary, a briefing composed on a clock.
+UNATTENDED = frozenset({"judge", "reflection", "memory_review", "summarize", "briefing",
+                        "content_analysis"})
+
 
 def ask(prompt: str, *, data_class: str, task_class: str, system: str = "", want_json: bool = False,
         schema: dict[str, Any] | None = None, media: list[dict[str, Any]] | None = None,
@@ -33,6 +40,9 @@ def ask(prompt: str, *, data_class: str, task_class: str, system: str = "", want
         pin = None if settings.is_auto() else settings.SELECTED
     except config.ConfigError:
         pin = None
+    prefer: tuple[str, ...] = ()
+    if pin is not None and (background or task_class in UNATTENDED):
+        pin, prefer = None, (settings.SELECTED,)
     request = Request(
         task_class=task_class, data_class=data_class,  # type: ignore[arg-type]
         items=(Message("user", tuple(parts)),),
@@ -40,6 +50,7 @@ def ask(prompt: str, *, data_class: str, task_class: str, system: str = "", want
         output=OutputSpec("json", schema or ANY_OBJECT, "best_effort") if (want_json or schema) else OutputSpec(),
         requirements=Requirements(capabilities=frozenset({"image_in"} if (need or {}).get("vision") else ()),
                                   pin=pin),
+        prefer=prefer,
         hints=Hints(reasoning_effort=settings.effort() if pin else None))
     try:
         response = generate(request)

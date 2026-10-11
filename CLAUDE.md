@@ -438,6 +438,20 @@ asked in, a job's to none), so the chat shows it as a card that survives a reloa
 viewer, and the Artifacts page (`#/artifacts`) lists everything with Open in Chat (THAT chat,
 landing on its card), Download, Copy and Delete. Only the person deletes.
 
+## Jarvis's own browser — `abilities/browser/` (see its own `CLAUDE.md`)
+
+A headless Chromium (the person's own Chrome or Edge — Jarvis never downloads one) with a profile of
+its own, driven by Jarvis's agent tools and shown in the chat as a live card the person can take over
+("Take control" opens a console page; they sign in, solve CAPTCHAs and approve payments, which Jarvis
+never does for them). **Ported from OpenMuse's browser (MIT, `NOTICE`)**, kept structurally the same,
+in Python because running Jarvis needs only Python. **It may only reach public web addresses on ports
+80/443 and there is no switch for anything else** — Jarvis's own API is on loopback, and a page must
+not be able to reach it; tests inject a resolver and connector instead (`tests/browser_site.py`). The
+agent reads a page through its own elements (text plus a selector list), page text is untrusted, and
+`browser_click`/`browser_type` ask first. PDFs a site sends (inline ones too) are caught and kept as
+artifacts by `browser_save_downloads` or the card's "Keep it" button. `playwright` is a normal
+dependency; `Start Jarvis.bat` installs it when `pyproject.toml` changes.
+
 ## Content Management — `content/content_manager/` (see its own `CLAUDE.md`)
 
 Finished content taken through Review, Changes Requested, Ready to Post, Scheduling,

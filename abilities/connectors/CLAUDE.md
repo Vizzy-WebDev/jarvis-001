@@ -88,14 +88,19 @@ confirmation, a false "safe" sends the email). Pure: no I/O, no state.
   model asks, and only after an explicit yes does `tools/allow_folder.py` remember the folder. Every
   path is resolved and checked BEFORE any filesystem call (a relative path and `..` look like they stay
   put and do not; a symlink is only caught by resolving it).
-- **`browser_connector.py`** (`browser`) — a real, VISIBLE browser window Jarvis drives when a page
-  has to be interacted with (`browser_navigate`, `browser_read_page`, `browser_click`, ...), through
-  Playwright as an optional import: no browser installed means a plain answer, not a stack trace. **Its
-  own window and profile under the data folder, never the user's** — a task that borrows someone's
-  browser inherits their logins and open work. A page is read by running a script against it (real
-  text and elements), never by looking at a picture and guessing coordinates. It is separate from
-  `webrender.py`, which renders a page headlessly for a background lookup and closes it; a background
-  lookup must never navigate a page the user is watching. `NAV_TIMEOUT_MS` and `MAX_TEXT_CHARS` bound it.
+- **`browser_connector.py`** (`browser`) — Jarvis's own browser as agent tools (`browser_navigate`,
+  `browser_read_page`, `browser_click`, `browser_type`, `browser_scroll`, `browser_save_downloads`,
+  `browser_close`). The browser itself is `abilities/browser/` (see its own `CLAUDE.md`): a HEADLESS
+  Chromium with a profile of its own under the data folder, never the person's, shown in the chat as
+  a live card the person can take over. **A page is read through the page itself** — its text plus a
+  list of the clickable/typeable elements, each with a selector, which `browser_click`/`browser_type`
+  take — never by looking at a picture and guessing coordinates (those exist only for the person's
+  Take control). Page text is untrusted and every result says so. Clicking and typing are declared
+  `risky` (MEDIUM, ask first); reading, scrolling and saving are LOW. One window
+  (`AGENT_SESSION_ID`), so "the current page" means something. Only the browser's handler takes the
+  call context (`wants_context`), so a saved PDF belongs to the chat that asked for it. It replaced a
+  visible-window Playwright connector that looked for Chrome on PATH only and so, on Windows, never
+  found one.
 - **`mcp_client.py`** (`mcp`) — an MCP server over stdio or HTTP, using the official MCP client library
   (already a dependency). **It connects per call, not once and kept**: a held-open subprocess is a
   lifecycle to get wrong, so a call is slower than against a warm process, and that trade is stated

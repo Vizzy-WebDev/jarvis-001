@@ -6,6 +6,7 @@ import { CloseIcon } from '@/components/ui/Icons';
 import { IconButton } from '@/components/ui/IconButton';
 import { isTopmost, popOverlay, pushOverlay } from '@/components/ui/overlay-stack';
 import { ArtifactCard } from '@/components/artifacts/ArtifactCard';
+import { BrowserCard } from '@/components/browser/BrowserCard';
 import type { TurnEvent } from '@/lib/api-types';
 import { artifactIdFromUrl } from '@/lib/artifacts';
 
@@ -16,6 +17,8 @@ export type Attachment = {
   kind: string; url: string; mimeType?: string; name?: string;
   /** A saved artifact: the card opens it in the viewer instead of only downloading. */
   artifactId?: string; title?: string; artifactKind?: string; size?: number;
+  /** A browser window (`kind: 'browser'`): which one, and the page it was on. */
+  sessionId?: string; pageUrl?: string;
 };
 
 export type Turn = {
@@ -57,8 +60,8 @@ export function attachmentOf(event: TurnEvent): Turn['attachment'] {
   return pick(event.attachment);
 }
 
-function pick({ kind, url, mimeType, name, artifactId, title, artifactKind, size }: Attachment): Attachment {
-  return { kind, url, mimeType, name, artifactId, title, artifactKind, size };
+function pick({ kind, url, mimeType, name, artifactId, title, artifactKind, size, sessionId, pageUrl }: Attachment): Attachment {
+  return { kind, url, mimeType, name, artifactId, title, artifactKind, size, sessionId, pageUrl };
 }
 
 /** Every attachment a tool result carried, one or several. */
@@ -313,16 +316,28 @@ export function Message({
   const mine = turn.role === 'user';
   // Normalised to one list either way: `attachments` (the user's) when set,
   // else `attachment` (a tool's, at most one), then everything else it made.
-  const shown = [
+  const everything = [
     ...(turn.attachments ?? (turn.attachment ? [turn.attachment] : [])),
     ...(turn.files ?? []).filter((file) => file.url !== turn.attachment?.url),
   ];
+  // One card per browser window: every step Jarvis takes in it names the same window, and the
+  // card is live, so a card per step would only repeat it.
+  const windows = new Set<string>();
+  const shown = everything.filter((attachment) => {
+    if (attachment.kind !== 'browser') return true;
+    const window = attachment.sessionId ?? attachment.url;
+    if (windows.has(window)) return false;
+    windows.add(window);
+    return true;
+  });
   const media = shown.length > 0 && (
     <div className="flex flex-wrap gap-1.5 pt-0.5">
       {shown.map((attachment, index) => (
         attachment.kind === 'image' || attachment.kind === 'video'
           ? <AttachmentTile key={`${attachment.url}-${index}`} attachment={attachment} />
-          : <FileTile key={`${attachment.url}-${index}`} attachment={attachment} />
+          : attachment.kind === 'browser'
+            ? <BrowserCard key={`${attachment.url}-${index}`} card={attachment} />
+            : <FileTile key={`${attachment.url}-${index}`} attachment={attachment} />
       ))}
     </div>
   );

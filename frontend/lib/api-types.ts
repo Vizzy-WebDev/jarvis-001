@@ -242,6 +242,32 @@ export interface TurnAttachment {
   title?: string;
   artifactKind?: string;
   size?: number;
+  /** Set when it is a browser window (`kind: 'browser'`): which one, and where it was. */
+  sessionId?: string;
+  pageUrl?: string;
+}
+
+/** One of Jarvis's own browser windows, as `GET /api/browsers/{id}` describes it. */
+export interface BrowserSessionInfo {
+  ok: true;
+  id: string;
+  title: string;
+  url: string;
+  status: 'active' | 'closed' | 'error';
+  updatedAt: string;
+  /** Whether the window is open right now (a closed one reopens, still signed in). */
+  running: boolean;
+  /** PDFs the window has caught that nobody has kept yet. */
+  downloads: number;
+}
+
+/** What keeping a window's PDFs made: files on the Artifacts page. */
+export interface BrowserImport {
+  ok: true;
+  files: { id: string; name: string; title: string; url: string }[];
+  /** Only the ones made just now; asking again makes none. */
+  created: { id: string }[];
+  failures: { message: string }[];
 }
 
 export type TurnEvent =

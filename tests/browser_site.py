@@ -56,6 +56,19 @@ TALL = ("<!doctype html><title>Tall</title><body style='margin:0'>"
         "<div style='height:3000px'>top</div><button id='low'>Low button</button></body>").encode()
 
 
+#: A small but real PDF (header, one page, cross-reference table, end marker).
+PDF = (b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+       b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+       b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\n"
+       b"trailer<</Root 1 0 R/Size 4>>\nstartxref\n9\n%%EOF\n")
+
+DOWNLOADS = b"""<!doctype html><title>Downloads</title><body>
+<a id="pdf" href="/report.pdf">Download the report</a>
+<a id="csv" href="/data.csv">Download the data</a>
+<a id="fake" href="/fake.pdf">Download the fake</a>
+<a id="big" href="/big.pdf">Download the huge one</a></body>"""
+
+
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     port = 0                            # set on the subclass
@@ -85,6 +98,22 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(LONG)
         if path == "/tall":
             return self._send(TALL)
+        if path == "/downloads":
+            return self._send(DOWNLOADS)
+        if path == "/report.pdf":
+            return self._send(PDF, "application/pdf",
+                              extra={"Content-Disposition": 'attachment; filename="report.pdf"'})
+        if path == "/inline.pdf":
+            return self._send(PDF, "application/pdf")
+        if path == "/data.csv":
+            return self._send(b"a,b\n1,2\n", "text/csv",
+                              extra={"Content-Disposition": 'attachment; filename="data.csv"'})
+        if path == "/fake.pdf":
+            return self._send(b"<html>this is not a pdf</html>", "application/pdf",
+                              extra={"Content-Disposition": 'attachment; filename="fake.pdf"'})
+        if path == "/big.pdf":
+            return self._send(b"%PDF-1.4\n" + b"0" * (11 * 1024 * 1024), "application/pdf",
+                              extra={"Content-Disposition": 'attachment; filename="big.pdf"'})
         if path == "/to-private":
             return self._send(b"", status=302,
                               extra={"Location": f"http://127.0.0.1:{self.port}/"})

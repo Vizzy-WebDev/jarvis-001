@@ -81,7 +81,10 @@ def one(session_id: str):
     try:
         host = get_host()
         session = host.session(session_id)
-        return {"ok": True, **session, "running": host.is_running(session_id)}
+        caught = host.downloads(session_id)
+        return {"ok": True, **session, "running": host.is_running(session_id),
+                # PDFs the window has caught and nobody has kept yet.
+                "downloads": len(caught["downloads"])}
     except BrowserError as err:
         return _fail(err)
 
@@ -129,6 +132,32 @@ def preview(session_id: str):
         host.session(session_id)                      # 404 for one that never existed
         return Response(host.screenshot(session_id), media_type="image/png",
                         headers=_OUTSIDE_CONTENT)
+    except BrowserError as err:
+        return _fail(err)
+
+
+@router.get("/{session_id}/downloads")
+def downloads(session_id: str):
+    """The PDFs this window has caught and not yet kept, and the recent ones it refused."""
+    try:
+        caught = get_host().downloads(session_id)
+        return {"ok": True, "downloads": caught["downloads"], "failures": caught["failures"]}
+    except BrowserError as err:
+        return _fail(err)
+
+
+@router.post("/{session_id}/import-downloads")
+def import_downloads_route(session_id: str):
+    """Keep every waiting PDF as a file Jarvis holds (it appears on the Artifacts page).
+
+    The same download is never kept twice: asking again returns the same files.
+    """
+    from ..browser.imports import import_downloads
+
+    try:
+        kept = import_downloads(get_host(), session_id)
+        return {"ok": True, "files": kept["files"], "created": kept["created"],
+                "failures": kept["failures"]}
     except BrowserError as err:
         return _fail(err)
 

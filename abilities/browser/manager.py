@@ -33,12 +33,13 @@ import re
 import shutil
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from ..childenv import scrubbed_environment
+from . import downloads as downloads_store
 from .errors import BrowserError
 from .network import Resolver, validate_public_url
 from .proxy import EgressProxy, start_egress_proxy
@@ -179,7 +180,8 @@ class _Running:
     page: Any
     touched: float
     temp_dir: Path | None = None
-    download_error: bool = False
+    #: Downloads still arriving; awaited before an agent's step reports, and at close.
+    pending: set = field(default_factory=set)
 
 
 ProxyFactory = Callable[[], Awaitable[EgressProxy]]
@@ -202,7 +204,6 @@ class BrowserManager:
         self._create_lock = asyncio.Lock()
         self._playwright: Any = None
         self._sweeper: asyncio.Task | None = None
-        self._download_hooks: list[Callable[..., Any]] = []
 
     # --- construction -----------------------------------------------------------------
 
@@ -226,6 +227,11 @@ class BrowserManager:
                 continue                       # an incomplete first launch has nothing to restore
             if isinstance(raw, dict):
                 self._sessions[entry.name] = Session.from_dict(raw, entry.name)
+                try:
+                    # A transfer the last run was in the middle of becomes a recorded failure.
+                    downloads_store.read_failures(entry, recover_interrupted=True)
+                except (OSError, ValueError):
+                    logger.debug("could not recover downloads for %s", entry.name, exc_info=True)
 
     # --- small helpers ----------------------------------------------------------------
 
@@ -321,6 +327,7 @@ class BrowserManager:
         profile.mkdir(parents=True, exist_ok=True)
         temp_dir.mkdir(parents=True, exist_ok=True)
         playwright = await self._playwright_handle()
+        _prime_profile(profile)
         try:
             context = await playwright.chromium.launch_persistent_context(
                 str(profile), executable_path=self._executable, headless=self._headless,
@@ -353,8 +360,7 @@ class BrowserManager:
             self._running[session_id] = running
             context.on("page", lambda popup: asyncio.ensure_future(self._close_quietly(popup)))
             page.on("dialog", lambda dialog: asyncio.ensure_future(self._dismiss(dialog)))
-            for hook in self._download_hooks:
-                hook(session_id, page, running)
+            page.on("download", lambda download: self._on_download(session_id, running, download))
             initial = Session(id=session_id, title=previous.title if previous else "New session",
                               url=url, status="active", updated_at=_now())
             self._sessions[session_id] = initial
@@ -483,6 +489,7 @@ class BrowserManager:
                     path=str(self.directory(session_id) / "storage.json"))
             except Exception:  # noqa: BLE001 - saving cookies is best effort during teardown
                 pass
+            await self._finish_downloads(running, 10)
             await self._discard(running.context)
             self._running.pop(session_id, None)
             if running.temp_dir:
@@ -516,7 +523,12 @@ class BrowserManager:
             return await self._read(session_id, elements=elements)
 
     async def _read(self, session_id: str, *, elements: bool = False) -> dict[str, Any]:
-        page = self._active(session_id).page
+        running = self._active(session_id)
+        page = running.page
+        if elements:
+            # An agent's step reports what it caused, and a download is something a click
+            # can cause: give a transfer that has started a moment to land.
+            await self._finish_downloads(running, 10)
         if page.url != "about:blank":
             await self._validate(page.url)
         # The script is fixed by this module; nothing a caller sends is ever evaluated.
@@ -628,6 +640,58 @@ class BrowserManager:
             pass
         await asyncio.sleep(0.4)
 
+    # --- downloads --------------------------------------------------------------------
+
+    def _on_download(self, session_id: str, running: _Running, download: Any) -> None:
+        directory = self.directory(session_id)
+        held = len(downloads_store.list_downloads(directory)) + len(running.pending)
+        task = asyncio.ensure_future(downloads_store.capture_pdf_download(
+            directory=directory, temp_dir=running.temp_dir or Path(tempfile.gettempdir()),
+            download=download, limit_reached=held >= downloads_store.MAX_PER_SESSION))
+        running.pending.add(task)
+        task.add_done_callback(running.pending.discard)
+
+    @staticmethod
+    async def _finish_downloads(running: _Running, timeout: float) -> None:
+        if running.pending:
+            await asyncio.wait(set(running.pending), timeout=timeout)
+
+    def downloads(self, session_id: str) -> dict[str, Any]:
+        """The PDFs this window has caught, and the recent ones it refused."""
+        session_id = validate_session_id(session_id)
+        if session_id not in self._sessions:
+            raise BrowserError("SESSION_NOT_FOUND", "Browser session not found.", 404)
+        directory = self.directory(session_id)
+        imported = self._imported(directory)
+        return {"downloads": [d for d in downloads_store.list_downloads(directory)
+                              if d["id"] not in imported],
+                "imported": imported,
+                "failures": downloads_store.read_failures(directory)}
+
+    def download_file(self, session_id: str, download_id: str) -> Path:
+        session_id = validate_session_id(session_id)
+        path = downloads_store.download_path(self.directory(session_id), download_id)
+        if path is None:
+            raise BrowserError("DOWNLOAD_NOT_FOUND", "That download is no longer there.", 404)
+        return path
+
+    @staticmethod
+    def _imported(directory: Path) -> dict[str, str]:
+        try:
+            found = json.loads((directory / "imported.json").read_text("utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return found if isinstance(found, dict) else {}
+
+    def mark_imported(self, session_id: str, download_id: str, artifact_id: str) -> None:
+        """Remember that a download became an artifact, so asking again returns the same one."""
+        directory = self.directory(session_id)
+        known = self._imported(directory)
+        known[download_id] = artifact_id
+        temp = directory / "imported.json.tmp"
+        temp.write_text(json.dumps(known), "utf-8")
+        os.replace(temp, directory / "imported.json")
+
     # --- shutting down ----------------------------------------------------------------
 
     async def close(self) -> None:
@@ -645,6 +709,33 @@ class BrowserManager:
                 pass
             self._playwright = None
         await self._proxy.close()
+
+
+def _prime_profile(profile: Path) -> None:
+    """Make a PDF a site serves inline arrive as a download instead.
+
+    Chrome and Edge show a PDF in a built-in viewer, which a page read sees as an empty
+    document and which leaves nothing to keep - and most real invoice and report links
+    are served that way. This setting, which both browsers honour, makes every PDF a
+    download, so it takes the same road as one a site marked as an attachment
+    (`downloads.py`). Written into the profile before the browser starts; anything else
+    already in it is left alone.
+    """
+    path = profile / "Default" / "Preferences"
+    try:
+        found = json.loads(path.read_text("utf-8")) if path.exists() else {}
+        if not isinstance(found, dict):
+            found = {}
+        plugins = found.setdefault("plugins", {})
+        if plugins.get("always_open_pdf_externally") is True:
+            return
+        plugins["always_open_pdf_externally"] = True
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name("Preferences.tmp")
+        temp.write_text(json.dumps(found), "utf-8")
+        os.replace(temp, path)
+    except (OSError, ValueError):
+        logger.info("could not set the PDF preference in the profile", exc_info=True)
 
 
 def _is_number(value: Any) -> bool:

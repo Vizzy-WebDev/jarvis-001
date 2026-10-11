@@ -198,6 +198,16 @@ class BrowserHost:
     def scroll(self, session_id: str, direction: str) -> dict[str, Any]:
         return self.run(lambda m: m.scroll(session_id, direction))
 
+    def downloads(self, session_id: str) -> dict[str, Any]:
+        """PDFs the window has caught and not yet imported, and the recent refusals."""
+        return self.run(lambda m: _value(m.downloads(session_id)))
+
+    def download_file(self, session_id: str, download_id: str) -> Path:
+        return self.run(lambda m: _value(m.download_file(session_id, download_id)))
+
+    def mark_imported(self, session_id: str, download_id: str, artifact_id: str) -> None:
+        self.run(lambda m: _value(m.mark_imported(session_id, download_id, artifact_id)))
+
 
 async def _value(value: T) -> T:
     return value

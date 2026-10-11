@@ -113,6 +113,15 @@ TOOLS: tuple[dict[str, Any], ...] = (
                        "required": ["direction"]},
     },
     {
+        "name": "browser_save_downloads",
+        "description": ("Keep the PDFs the browser has downloaded as files Boss can open: they "
+                        "appear in the chat and on the Artifacts page. A page result says when "
+                        "a PDF is waiting (a click on a download link, a report, an invoice). "
+                        "Only PDFs are caught; anything else is reported as refused."),
+        "risk": "safe",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    {
         "name": "browser_close",
         "description": "Close Jarvis's browser window. Its sign-ins are kept for next time.",
         "risk": "safe",
@@ -155,20 +164,75 @@ def _page(page: dict[str, Any], limit: int) -> dict[str, Any]:
     return result
 
 
+def _with_downloads(result: dict[str, Any], host: BrowserHost) -> dict[str, Any]:
+    """Say so when a step brought a PDF down, or one was refused, so a task that ends in a
+    file does not end with the model not knowing it got one."""
+    try:
+        caught = host.downloads(AGENT_SESSION_ID)
+    except BrowserError:
+        return result
+    waiting = [{"name": d["name"], "size": d["size"]} for d in caught["downloads"]]
+    if waiting:
+        result["downloads"] = waiting
+        result["downloadNote"] = ("A PDF was downloaded and is waiting. Use "
+                                  "browser_save_downloads to keep it for Boss.")
+    from datetime import datetime, timedelta, timezone
+
+    recent = datetime.now(timezone.utc) - timedelta(seconds=120)
+    problems = []
+    for failure in caught["failures"][:3]:
+        try:
+            when = datetime.fromisoformat(str(failure["createdAt"]).replace("Z", "+00:00"))
+        except (KeyError, ValueError):
+            continue
+        if when >= recent:
+            problems.append(failure["message"])
+    if problems:
+        result["downloadProblems"] = problems
+    return result
+
+
+def _saved(host: BrowserHost, session_id: str | None) -> dict[str, Any]:
+    from ..browser.imports import import_downloads
+
+    kept = import_downloads(host, AGENT_SESSION_ID, conversation_session=session_id)
+    result: dict[str, Any] = {
+        "ok": True,
+        "saved": [{"name": f["name"], "title": f["title"], "url": f["url"], "id": f["id"]}
+                  for f in kept["files"]]}
+    if not kept["files"]:
+        result["note"] = "There is no downloaded PDF waiting."
+    problems = [f["message"] for f in kept["failures"][:3]]
+    if problems:
+        result["downloadProblems"] = problems
+    if kept["created"]:
+        # Shown in the chat as files to open, like anything else Jarvis makes.
+        result["ui_action"] = {"type": "attachments", "items": [
+            {"type": "attachment", "kind": "file", "url": f["url"],
+             "mimeType": f.get("mimeType") or "application/pdf", "name": f["name"],
+             "artifactId": f["id"], "title": f["title"], "artifactKind": f["kind"],
+             "size": f["size"]} for f in kept["created"]]}
+    return result
+
+
 def _failure(err: BrowserError) -> dict[str, Any]:
     return {"ok": False, "error": err.message, "code": err.code}
 
 
 def dispatch(name: str, args: dict[str, Any], config: dict[str, Any] | None = None, *,
-             host: BrowserHost | None = None) -> dict[str, Any]:
+             host: BrowserHost | None = None, session_id: str | None = None) -> dict[str, Any]:
     live = host or get_host()
     try:
-        return _run(name, args or {}, live)
+        result = _run(name, args or {}, live, session_id)
+        if name != "browser_save_downloads" and result.get("ok") and "elements" in result:
+            _with_downloads(result, live)
+        return result
     except BrowserError as err:
         return _failure(err)
 
 
-def _run(name: str, args: dict[str, Any], host: BrowserHost) -> dict[str, Any]:
+def _run(name: str, args: dict[str, Any], host: BrowserHost,
+         session_id: str | None = None) -> dict[str, Any]:
     if name == "browser_close":
         was_open = host.started and host.is_running(AGENT_SESSION_ID)
         if was_open:
@@ -184,6 +248,11 @@ def _run(name: str, args: dict[str, Any], host: BrowserHost) -> dict[str, Any]:
             return {"ok": False, "error": available["reason"]}
         host.open(AGENT_SESSION_ID, _address(url))
         return _page(host.read(AGENT_SESSION_ID, elements=True), NAV_TEXT_CHARS)
+
+    if name == "browser_save_downloads":
+        if not host.started:
+            return {"ok": True, "saved": [], "note": "There is no downloaded PDF waiting."}
+        return _saved(host, session_id)
 
     if name not in ("browser_read_page", "browser_click", "browser_type", "browser_scroll"):
         return {"ok": False, "error": f"{name} is not something the browser can do."}

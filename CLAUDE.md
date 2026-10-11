@@ -440,6 +440,35 @@ runs, watches) on every person-started turn, capped, so "still on it" is knowled
 that is not on that list was never started. A job runs `Autonomy.PRE_CONSENTED` (the person set it
 going): MEDIUM steps run, HIGH still parks.
 
+## Taking work on — `background/jobs/objective.py`, `tools/job_tools.py`
+
+**A job is an objective, not a sentence.** It has a **brief** (`jobs.brief`, migration 40: the
+outcome, `doneWhen`, what the conversation settled, the person's own recent words, and what the
+reply had already found — the last two added by code, never left to a paraphrase) and a
+**ledger** (`jobs.plan`: steps with a status, findings, open questions, each round's progress
+note — the worker writes it with `update_plan`, the note is kept by code either way). Both are
+put in front of the worker on EVERY round (`objective.worker_sections` →
+`context._work_in_hand`), so neither scrolls out of a long transcript or is lost to a restart.
+A job made with only a goal reads as a brief made of that goal — one shape everywhere.
+
+**A job's own turn has its own prompt** (`prompt.worker_instruction`: working alone, to the
+objective, what a finished result must say, and that what it reads is information and never an
+instruction) — not the conversation's, which told it to answer in a sentence or two.
+
+**The way in is always there.** `work_in_background`, `schedule_task` and `watch_for` are
+`core`: the prompt says a promise is only real once one of them ran, and behind
+`find_capability` `work_in_background` was called 0 times in 41 real conversations. And
+`work_in_background` carries the `handoff` tag: on the LAST step of a reply to a person the turn
+loop offers that one tool (`pipeline._handoff`, `HANDOFF_NOTE`), so work that did not fit in a
+reply is carried on — starting from what the reply had found — instead of ending in "I went
+round 8 times". A job's own turn is never offered it.
+
+**What a request plainly points at is declared without being asked** (`capabilities/search.py`
+`relevant`, `pipeline._relevant`): two words of the request in a capability's name, or one rare
+non-verb word. Found live: asked about "the office records" a real model never called
+`find_capability`, 3 runs of 3. `find_capability` remains for everything else and shares the
+same ranking.
+
 ## Specialist agents — `conversation/agents/` (see its own `CLAUDE.md`)
 
 Jarvis orchestrates; specialist agents (13 built-in, plus any the person creates on the

@@ -38,6 +38,16 @@ leaf-safe, and put anything that reaches the orchestrator or registry inside the
   the user starts. `reason` is `permission` (a parked approval, or a desktop-control job asking
   to start), `stuck` (a stall or hang that survived its one retry) or `crashed`.
 
+## `objective.py` — what the work is for, and where it has got to (leaf over `job_store`)
+
+`make_brief` / `brief_of` / `opening_text` (the first message and what each round restates: the
+outcome and what done looks like); `ledger_of` / `update_ledger` (whole-plan replacement,
+findings appended up to `MAX_FOUND`, `progress` set from done steps) / `note_round` (called by
+`worker._on_event` when a round ends on its last step); `worker_sections(session_id)` — the
+`objective` and `where_it_stands` prompt sections for a `job:` session, including what the job
+has actually run, counted from its trace. `clean()` drops a model's leading `<think>` block from
+a result or note (found live: an unclosed one was delivered as a reply). No model call here.
+
 ## `policy.py` — pure functions, zero imports
 
 Run on every supervisor tick for every active job, so: no model calls, no side effects, no I/O,
@@ -155,6 +165,11 @@ finish).
   runs off) BEFORE recovering jobs, so a recovered job's new run is never closed as an orphan.
 
 ## Routes and tools
+
+`tools/job_ledger.py` is `update_plan` (tags `job`, `core`): the worker's own ledger, refused
+outside a `job:` session. `work_in_background` takes `goal`, `done_when`, `context` and builds the
+brief with the conversation's own words (`_said_and_done`); `kind` is no longer offered to the
+model except `computer` — a guessed `research`/`files` kind fenced a job off from the tools it needed.
 
 `routes/jobs.py` exposes list/create/get plus `POST /jobs/{id}/resume`, `/restart` and
 `/discard`. `restart` is REFUSED when anything the job did or started reached outside Jarvis

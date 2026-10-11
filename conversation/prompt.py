@@ -63,7 +63,7 @@ SELF_KNOWLEDGE = """Knowing yourself: before claiming how reliable you are at so
 USING_THE_COMPUTER = """Their computer and screen:
 - control_computer does a task by clicking and typing: call it once for a plan, read the plan back, and call it again with confirmed only after they say yes. Then tell them in your own words that you are taking over the mouse and keyboard and to keep hands off.
 - look_at_screen answers a question about what is on screen; take_screenshot gives them the picture.
-- To look something up, use look_it_up or read_web_page. Open a visible browser only for a page that must be interacted with, or when they ask to browse."""
+- To look something up, use look_it_up or read_web_page. Use your own browser (browser_navigate, then browser_click and browser_type from the page's element list) only for something that must be done on a page, or when they ask to browse. They can watch it in the chat and take over; leave sign-ins, CAPTCHAs and payments to them."""
 
 #: The last thing in the prompt on a turn with someone listening: who Jarvis is, restated where a
 #: long conversation's newest messages would otherwise outweigh the identity at the top.

@@ -217,7 +217,8 @@ def _one_attachment(action: Any) -> dict[str, Any] | None:
         out["name"] = str(action["name"])
     # A saved artifact also says which one it is, so the chat card can open it in
     # the viewer and "Open in Chat" can find the card again.
-    for key in ("artifactId", "title", "artifactKind"):
+    # A browser window says which one it is (so its card can show it live) and where it is.
+    for key in ("artifactId", "title", "artifactKind", "sessionId", "pageUrl"):
         if action.get(key):
             out[key] = str(action[key])
     if isinstance(action.get("size"), int):

@@ -140,8 +140,8 @@ def collect(scratch: Path) -> Records:
                                            "outcome, error FROM operations ORDER BY completed_at")
             records.traces = _rows(db, "SELECT task_class, outcome, endpoint_id, total_ms FROM "
                                        "model_traces ORDER BY at")
-            records.job_trace = _rows(db, "SELECT source_ref, seq, phase, kind, summary FROM trace "
-                                          "WHERE source = 'job' ORDER BY source_ref, seq")
+            records.job_trace = _rows(db, "SELECT source_ref, seq, phase, kind, summary, detail "
+                                          "FROM trace WHERE source = 'job' ORDER BY source_ref, seq")
             records.agent_runs = _rows(db, "SELECT id, agent_id, status, error FROM agent_runs")
         finally:
             db.close()

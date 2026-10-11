@@ -178,8 +178,13 @@ def read_every_record(records: Records, facts: dict[str, Any]) -> str | None:
 def waited_without_spending_a_retry(records: Records, facts: dict[str, Any]) -> str | None:
     if not any(row.get("kind") == "wait" for row in records.job_trace):
         return "the outage never reached the job (nothing waited)"
-    if any((job.get("retries") or 0) > 0 for job in records.jobs):
-        return "the outage cost the job its retry"
+    # A retry spent because a finished result was checked and sent back is the check working
+    # (found live: the first result did not state the total, and the retry's did). What must
+    # not happen is a retry spent on the outage itself.
+    for row in records.job_trace:
+        if row.get("kind") == "nudge" and "retrying after" in str(row.get("summary")) \
+                and "did not do what was asked" not in str(row.get("detail")):
+            return f"the job's retry was spent on something other than a checked result: {row.get('detail')}"
     return None
 
 

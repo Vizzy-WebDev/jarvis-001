@@ -213,6 +213,32 @@ def test_work_that_does_not_fit_in_a_reply_is_carried_on_not_abandoned():
     assert stored[-1]["role"] == "assistant" and stored[-1]["text"] == done.text
 
 
+def test_work_still_under_way_at_the_last_step_is_handed_over_even_if_the_model_does_not_ask():
+    """Found live: offered only the hand-off on its last step, a real model asked for one more
+    read instead, and the reply ended empty with eleven records read and nothing filed."""
+    brain = install(Brain())
+    session = chat()
+    lookups = [("call", "look_up_fact", {"q": f"f{i}"}) for i in range(MAX_STEPS)]   # never stops reading
+    brain.plan("job:", [[("say", "All found, and filed.")]])
+    brain.plan("", [lookups])
+
+    events = say(session, "Find all the facts and file them.")
+
+    done = next(e for e in events if isinstance(e, Done))
+    assert "in the background" in done.text and not any(isinstance(e, Failed) for e in events)
+    assert worker.join_all(timeout=20)
+    [job] = job_store.list_jobs()
+    assert job["status"] == "done" and job["goal"] == "Find all the facts and file them."
+    assert job["brief"]["said"] == ["Find all the facts and file them."]
+    assert job["brief"]["already"].count("look_up_fact(") == MAX_STEPS - 1
+    assert job["conversationId"] == session
+    # The read it asked for on its last step was never run, and the transcript is still valid:
+    # every stored call has its result.
+    calls = [c["id"] for m in conversation.get_messages(session) for c in m.get("toolCalls") or []]
+    results = [r["id"] for m in conversation.get_messages(session) for r in m.get("toolResults") or []]
+    assert sorted(calls) == sorted(results) and len(calls) == MAX_STEPS
+
+
 def test_a_reply_that_is_finished_on_its_last_step_just_answers():
     brain = install(Brain())
     session = chat()

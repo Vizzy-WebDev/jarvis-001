@@ -716,6 +716,19 @@ class Orchestrator:
                                and completed.tool_calls[0].name == handoff.name)
             if handing_off:
                 completed = replace(completed, tool_calls=completed.tool_calls[:1])
+            elif handoff is not None and completed.tool_calls:
+                # Out of room, and still reaching for another tool: it was mid-work. Found
+                # live — offered only the hand-off, a real model asked for one more read
+                # instead, and eleven reads' worth of work ended as an empty reply. Whether
+                # unfinished work is carried on must not depend on the model choosing to: the
+                # loop hands it over itself, with the person's own words as the outcome (the
+                # brief is built from the conversation, including everything found so far).
+                # `raw` is dropped: it holds the call the model actually made, which never ran.
+                handing_off = True
+                completed = replace(
+                    completed, raw=None, text="",
+                    tool_calls=(ToolCall(id=f"handoff-{request.turn_id[:12]}", name=handoff.name,
+                                         args={"goal": request.text}),))
 
             if final and completed.tool_calls and not handing_off:
                 # Offered nothing to call, it asked to call something anyway — found
@@ -741,6 +754,9 @@ class Orchestrator:
                 # gets the same stripping before it ever reaches the
                 # transcript or gets said back as words.
                 reply = strip_reaction_markers(completed.text) or "".join(spoken_so_far)
+                if step > ceiling and not reply.strip():
+                    # The firmer second attempt said nothing at all: that is not an answer.
+                    break
                 pushed_reply = conversation.push_assistant_text(
                     request.session_id, reply, completed.model_id, completed.raw
                 )

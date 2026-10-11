@@ -181,6 +181,16 @@ it was deliberately corrected.
 
 ## After the review (approved fixes)
 
+- **D4 — work nobody is waiting on prefers the selected model; it is not pinned to it.**
+  Decided by the owner on 2026-10-11. With a model selected, a job's round, a scheduled run and
+  the one-shot calls nobody waits on (judge, reflection, memory review, summary, briefing,
+  content analysis) send `prefer=("selected",)` and no pin (`client.steer_for`,
+  `oneshot.UNATTENDED`), so the selected model is tried first and the rest of the filtered list
+  follows. Evidence: pinned, the owner's daily scheduled task failed 8 of 11 runs on its one
+  model's outages, and judge calls were answered 8 times in 18 — so most finished work went
+  unchecked. A turn the person is in stays pinned (they chose that model for what they read),
+  and a pin a task or specialist names itself is still found or refused, never approximated.
+
 - **Errors are said in plain words; the provider's own text is kept aside.** Reverses the
   earlier "`str(error)` keeps the provider's own words": a person saw "…Incorrect API key
   provided Jarvis stays on the model you picked…" and internal names like `image_in`.

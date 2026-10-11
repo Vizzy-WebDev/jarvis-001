@@ -135,7 +135,11 @@ finish).
 - `cancel(job_id)` — works from any status, stops the round in flight (`durable.stop`, the
   turn's cancel event) and marks pending outbox rows delivered, so a cancelled job's old
   question never resurfaces. No later round starts (`worker._stopped`); "keep going" continues it.
-- `supervise()` — the periodic pass (`TICK_SECONDS` 60, gated by `JARVIS_JOBS`). A `running`
+- `supervise()` — the periodic pass (`TICK_SECONDS` 60, gated by `JARVIS_JOBS`). It first
+  continues any work whose wait for a model is over (`durable.wake_due`): a job that met an
+  outage is `queued` with `currentStep` "waiting for a model … trying again at …", a `wait`
+  trace row (never a `note`, which `diagnose_stall` would read as repetition), no outbox row and
+  its retry unspent (`worker._park_for_model`, `_wake`). A `running`
   job with no heartbeat for `HANG_TIMEOUT_MS` (5 min) is hung; otherwise `diagnose_stall()` runs
   on its trace tail. `_recover()` stops a live one first (never two runs at once — the durable
   per-work lock also guarantees it), then spends the job's one retry — a RESUME from its last

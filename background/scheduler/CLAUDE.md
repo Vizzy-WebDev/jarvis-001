@@ -14,6 +14,12 @@
   - **The schedule advances BEFORE the run**, so a task that throws, or a restart
     mid-run, can never re-fire the same due timestamp forever. A run missed for days
     catches up exactly once and is flagged `late` (more than `LATE_THRESHOLD` past due).
+  - **A run that ended only because no model could answer is tried again the same day**
+    (`settle` → `_retry_later`, `RETRY_WAITS_S`: 5, 15, 30, 60, 120 minutes). Nothing is recorded
+    until it succeeds or the tries are used up ("I tried 6 times and none could"); the pending
+    retry is the task's own `retry` field, the next occurrence replaces it, and `complete_run`
+    clears it. A run done by a specialist is retried the same way (`RunOutcome.wait`). Any other
+    failure is recorded at once, as before.
   - **A `prompt` run is one round of durable work** (`durable_runs.py`, kind `task_run`,
     `background/durable.py`). If Jarvis stops part-way, the next start (`engine.start()` →
     `recover_interrupted()`, before the first tick) picks it up ONCE: finished tool calls are

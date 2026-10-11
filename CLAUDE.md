@@ -128,6 +128,20 @@ Every failure falls back to keywords and `selection.strategy` says why;
 `GET /api/memories/search-status` feeds the Memory screen's one-line status. Memory text is
 `personal` data on every call. Past chats are still never searched — only memories are indexed.
 
+## Proving autonomy — `tests/proving/` (see its `__init__.py`)
+
+Whether Jarvis can really take an objective and finish it is measured, not assumed. `tests/proving/`
+holds a small world with facts nobody could know without looking (`world.py`: a records office,
+every action logged on disk), objectives with deliberate faults (`scenarios.py`: a failed last
+step, an impossible ask, instructions planted in a record, an outage, a killed process) and a
+scorer that reads ONLY what a run left on disk (`score.py`) — never Jarvis's account of itself.
+`tests/test_proving.py` runs it with a stand-in model that really does the work (and can be made
+to lie, to prove the scorer catches it). `python tests/proving/live.py --real-root <folder Jarvis
+runs from>` runs the same scenarios against the person's real models in throw-away folders and
+counts every model call. One real call takes 35–45 s on the owner's setup; run a few scenarios at a
+time (`--only`). A stage of the autonomy work is done when its scenarios pass there, not when its
+unit tests do.
+
 ## Testing
 
 The project has a real automated suite. Use it.
@@ -352,7 +366,11 @@ Kind table, Auto ranking, "proven" models, per-connection strikes, billing holds
   selection to a pin, effort to a hint; maps fallbacks to `ModelSwitched` and usage to the cost-ledger
   event) and `oneshot.py` (behind `ai.ask`, whose callers must pass `data_class` and `task_class`).
   `settings.py` serves the Model Settings routes. **The person's chosen model is the alias `selected`
-  (pinned); Auto is no `selected` alias**, so the task class's route applies. Effort is the
+  (pinned); Auto is no `selected` alias**, so the task class's route applies. **Work nobody is
+  waiting on only PREFERS `selected`** (`client.steer_for`: a job's round, a scheduled run;
+  `oneshot.UNATTENDED`: a judge, reflection, summary or briefing call): that model first, then any
+  other connected one that fits — the owner's decision (D4), because a pin had failed 8 of 11
+  scheduled runs. A turn the person is in stays pinned, and so does a pin a task or specialist names. Effort is the
   `selectedEffort` preference, sent per request only when the person chose one (no choice = the
   model's own default); levels are per-endpoint data on a canonical ordered scale, mapped and reported. A specialist's or scheduled task's model pin becomes an
   alias of the same name on first use (found or refused, never approximated).
@@ -399,6 +417,14 @@ through the one turn loop — there is no second agent loop.
 - One call moves work forward whatever its state (`durable.advance`); a waiting piece of work
   continues only with an explicit answer, never from a plain start or recovery. One thread
   advances a piece of work at a time; `durable.stop` interrupts the round in flight.
+- **No model able to answer is not the work failing.** A round that ends because every model was
+  down, resting or out of quota (`durable.model_wait`, read from the failure's own `scope` and what
+  ruled the endpoints out) leaves a job WAITING — shown as still going, "waiting for a model …
+  trying again at 2:05 PM" — with a growing wait (`MODEL_WAITS_S`, up to `MODEL_WAIT_LIMIT_S` 12h).
+  `durable.wake_due()` on the job supervisor's clock continues it. It spends no retry and asks
+  nothing; a model call nobody answered is not counted as a step. A request the model refused
+  (too long, invalid) is still a failure. A scheduled prompt run in the same position is tried again
+  later the same day (`scheduler/engine.settle`, `RETRY_WAITS_S`) before a failure is recorded.
 - `Start Jarvis.bat` reinstalls when `pyproject.toml` changed since the last install,
   so an update that adds a package never leaves an existing install unable to start.
 

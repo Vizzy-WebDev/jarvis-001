@@ -98,7 +98,14 @@ def _trail(length: int) -> Callable[[random.Random], dict[str, Any]]:
 
 
 def _three_accounts(rng: random.Random) -> dict[str, Any]:
-    accounts = [world.seed_named_invoices(rng, label) for label in ("northside", "harbour", "midtown")]
+    """Three trails, one per account. Found live: given three small folders "in the
+    background", a real model simply read all nine records side by side and filed three
+    reports in one reply — nothing was ever queued, so nothing about queueing was tested.
+    Each of these has to be followed entry by entry, so each has to be taken on."""
+    accounts = []
+    for label in ("northside", "harbour", "midtown"):
+        trail = world.seed_trail(rng, length=7, start=f"{label}-ledger-start")
+        accounts.append({"label": label, **trail})
     return {"accounts": accounts, "records": [r for a in accounts for r in a["records"]]}
 
 
@@ -299,10 +306,12 @@ SCENARIOS: tuple[Scenario, ...] = (
              extra_checks=(took_it_on_as_background_work,)),
 )
 
-THREE = ("Three things, all in the background please, and tell me when each is done. "
-         "One: add up the invoices in the northside folder of the office records and file a report "
-         "there with the total. Two: the same for the harbour folder. Three: the same for the "
-         "midtown folder. A separate report for each.")
+THREE = ("Three separate jobs, each in the background please, and tell me when each is done. "
+         "The office records hold three archived ledger trails, one per account: they start at "
+         "the records named northside-ledger-start, harbour-ledger-start and midtown-ledger-start, "
+         "and each entry names the next. For each account, follow its trail to the last entry, "
+         "add up every amount, and file its own report in the office records with that account's "
+         "name and total. Archived records are in no listing, so read each by its exact name.")
 
 SCENARIOS += (
     Scenario("three", "Three objectives with room for two: all finish, never more than two at once.",

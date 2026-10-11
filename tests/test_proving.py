@@ -250,9 +250,10 @@ def test_a_stubborn_worker_is_stopped_told_to_change_course_and_then_the_person_
     assert job["status"] == "awaiting_decision" and job["retries"] == 2
     assert "is stuck" in verdict["lastWords"] and "different way" in verdict["lastWords"]
     # It was stopped, not left running: the record that will not open was tried a bounded
-    # number of times (three to be seen repeating, for the first go and each of two more).
+    # number of times (at most a round's worth for the first go and each of two more, since
+    # repetition is looked for between rounds).
     tries = verdict["toolsCalled"].count("office_read_record")
-    assert tries <= 4 + 3 * 5, tries
+    assert tries <= 4 + 3 * 7, tries
     # (The scenario's own bar — at most six tries — is for a model that changes course; this
     # stand-in is the one that never does, which is why the run as a whole does not pass.)
     assert not verdict["passed"]

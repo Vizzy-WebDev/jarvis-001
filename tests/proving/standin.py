@@ -87,15 +87,17 @@ class OfficeWorker:
                 return ("call", "office_delete_record", {"name": self.deletes})
             return ("say", "That needs your go-ahead before I delete it — shall I?")
 
-        if in_chat and "Three things" in asked:
+        if in_chat and "Three separate jobs" in asked:
             started = [r for r in results if r.get("name") == "work_in_background"]
             labels = ("northside", "harbour", "midtown")
             if len(started) < len(labels) and may_call:
                 label = labels[len(started)]
                 return ("call", "work_in_background",
-                        {"goal": f"Add up the invoices in the {label} folder of the office records "
-                                 "and file a report there with the total.",
-                         "title": f"{label} invoices", "done_when": ["a report with the total is filed"]})
+                        {"goal": f"There is an archived ledger trail for the {label} account in the "
+                                 f"office records, starting at the record named {label}-ledger-start. "
+                                 "Follow it to the last entry, add up every amount and file a report "
+                                 f"there naming {label} and the total.",
+                         "title": f"{label} ledger", "done_when": ["a report with the total is filed"]})
             return ("say", "All three are taken on, Boss — I'll tell you as each one is done.")
 
         if in_chat and self.background:
@@ -114,10 +116,6 @@ class OfficeWorker:
         if any("ledger trail" in (m.get("text") or "") for m in messages if m.get("role") == "user"):
             return self._follow_trail(messages, results)
 
-        account = re.search(r"invoices in the (\w+) folder", " ".join(
-            m.get("text") or "" for m in messages if m.get("role") == "user"))
-        if account:
-            return self._total_account(account.group(1), results)
 
         listing = next((_value(r) for r in results if r.get("name") == "office_list_records"), None)
         if listing is None:
@@ -161,21 +159,11 @@ class OfficeWorker:
         return ("say", f"I worked out the total ({total:,.2f} USD, largest from {supplier}) but could "
                        "not file the report: the filing system is closed for maintenance.")
 
-    def _total_account(self, label: str, results: list[dict[str, Any]]) -> tuple:
-        listing = next((_value(r) for r in results if r.get("name") == "office_list_records"), None)
-        if listing is None:
-            return ("call", "office_list_records", {"folder": label})
-        read = {_value(r).get("name"): _value(r) for r in results
-                if r.get("name") == "office_read_record" and _value(r).get("ok")}
-        for name in listing.get("records") or []:
-            if name not in read:
-                return ("call", "office_read_record", {"name": name})
-        total = round(sum(float(AMOUNT.search(v["text"]).group(1).replace(",", ""))
-                          for v in read.values()), 2)
-        if not any(r.get("name") == "office_file_report" for r in results):
-            return ("call", "office_file_report",
-                    {"title": f"{label} invoices", "body": f"Total for {label}: {total:,.2f} USD."})
-        return ("say", f"Filed the {label} report: {total:,.2f} USD.")
+    @staticmethod
+    def _label(messages: list[dict[str, Any]]) -> str:
+        said = " ".join(m.get("text") or "" for m in messages if m.get("role") == "user")
+        start = re.search(r"record named (\w+)-ledger-start", said)
+        return start.group(1) if start else ""
 
     def _trail_position(self, messages: list[dict[str, Any]],
                         results: list[dict[str, Any]]) -> tuple[int, float, str]:
@@ -183,7 +171,9 @@ class OfficeWorker:
         tally in its own latest progress note, as a model working from its notes would, and
         going on through whatever reads came after it. Without the note, long work loses its
         early reads when they scroll out of the transcript and starts again from the top."""
-        count, total, name, since = 0, 0.0, "ledger-start", 0
+        said = " ".join(m.get("text") or "" for m in messages if m.get("role") == "user")
+        start = re.search(r"record named (\S*ledger-start)", said)
+        count, total, name, since = 0, 0.0, (start.group(1).rstrip(".") if start else "ledger-start"), 0
         for index, message in enumerate(messages):
             tally = TALLY.search(message.get("text") or "") if message.get("role") == "assistant" else None
             if tally:
@@ -226,5 +216,6 @@ class OfficeWorker:
         filing = [_value(r) for r in results if r.get("name") == "office_file_report"]
         if not filing:
             return ("call", "office_file_report",
-                    {"title": "Ledger trail", "body": f"Total: {total:,.2f} USD over {len(amounts)} entries."})
+                    {"title": f"Ledger trail {self._label(messages)}".strip(),
+                     "body": f"Total: {total:,.2f} USD over {len(amounts)} entries."})
         return ("say", f"Filed the report: the trail totals {total:,.2f} USD over {len(amounts)} entries.")

@@ -27,12 +27,24 @@ def main(argv: list[str]) -> int:
     if phase == "start":
         # The app finds its models at startup, which this process never runs: ask the
         # connections what they offer now (a model list, not a model call).
-        try:
-            from jarvis.models import refresh_catalog
+        # A provider that does not answer at that moment is rested for minutes, and a run
+        # started then would fail in seconds for a reason that is nothing to do with Jarvis
+        # (found live). So: wait until a model would actually take a chat turn, or give up
+        # saying so.
+        import time
 
-            refresh_catalog()
-        except Exception as err:  # noqa: BLE001 — the copied list is still there to try with
-            print(f"(could not refresh the model list: {err})", flush=True)
+        for attempt in range(6):
+            try:
+                from jarvis.models import refresh_catalog
+                from jarvis.models.client import JarvisModelClient
+
+                refresh_catalog()
+                if JarvisModelClient().context_capacity(session_id="proving-check") is not None:
+                    break
+                print(f"(no model would answer yet — try {attempt + 1}; waiting)", flush=True)
+            except Exception as err:  # noqa: BLE001 — the copied list is still there to try with
+                print(f"(could not refresh the model list: {err})", flush=True)
+            time.sleep(30)
 
     def kill_point() -> None:
         print(harness.KILL_MARK, flush=True)

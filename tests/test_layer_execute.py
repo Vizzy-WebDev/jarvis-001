@@ -135,6 +135,48 @@ def test_stream_events_arrive_in_order_and_end_with_done(layer):
     assert done.tool_calls[0].id == events[1].id and done.tool_calls[0].arguments == {"q": "x"}
 
 
+def _unreachable() -> errors.ModelError:
+    from jarvis.models.drivers import _wire
+    import httpx
+
+    return _wire.network_error(httpx.ConnectError("refused"), "http://gateway.test/v1/chat/completions")
+
+
+def _gateway(count: int) -> dict:
+    return fake_conn("gateway", models={f"m{i}": {"capabilities": CHAT} for i in range(count)})
+
+
+def test_a_server_that_cannot_be_reached_is_asked_once_not_once_per_model(layer, no_waiting):
+    """Found live: with the working provider rate-limited for a moment, one call walked a dead
+    local gateway's 1,404 models one connection attempt at a time — over ten minutes in which
+    a background job looked hung and was restarted twice."""
+    configure(layer, [_gateway(40), fake_conn("ok")],
+              routes={"default": {"aliases": [], "allow_others": True}},
+              settings={"retries": 0})
+    for _ in range(40):
+        fake.queue("gateway", _unreachable())
+    fake.queue("ok", fake.reply("still here"))
+
+    response = models.generate(ask())
+
+    assert response.text == "still here"
+    tried = [endpoint for endpoint, _ in attempted(response)]
+    assert len([e for e in tried if e.startswith("gateway/")]) <= 1
+    assert state.connection_down("gateway")           # ...and the next call does not try it at all
+    fake.queue("ok", fake.reply("again"))
+    assert [e for e, _ in attempted(models.generate(ask()))] == ["ok/m"]
+
+
+def test_when_the_only_server_cannot_be_reached_the_call_ends_at_once_and_says_so(layer, no_waiting):
+    configure(layer, [_gateway(40)], settings={"retries": 0})
+    for _ in range(40):
+        fake.queue("gateway", _unreachable())
+    with pytest.raises(errors.Unavailable) as caught:
+        models.generate(ask())
+    assert "Couldn't reach" in str(caught.value) and caught.value.scope == "connection"
+    assert len(fake.calls("gateway")) == 1
+
+
 def test_a_stream_falls_back_before_its_first_event(layer):
     configure(layer, [fake_conn("a"), fake_conn("b")], settings={"retries": 0})
     fake.queue("a", errors.Unavailable("down"))

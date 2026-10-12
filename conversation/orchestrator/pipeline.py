@@ -95,6 +95,12 @@ HANDOFF_NOTE = ("This is your last step for this reply. If the work is finished,
 #: reply, which was then accepted as a background job's finished result).
 EMPTY_REPLY_NOTE = ("Your last reply was empty: no words and nothing called. Reply now — either "
                     "call what you need next, or say your answer in words.")
+#: The same, when the reply was cut off by the server's own length limit before any answer —
+#: found live: a model adding up 34 amounts "in its head" hit the limit five replies running.
+CUT_OFF_NOTE = ("Your last reply was cut off before you answered: you used all your room "
+                "thinking. Do not work the whole thing out at once. Take ONE small step now — "
+                "call what you need next, or write down the part you have worked out — and keep "
+                "your thinking short.")
 #: The last step of one ROUND of longer background work (`TurnRequest.continuable`): the
 #: work is not over, so what is asked for is where it stands, not a final answer.
 ROUND_END_NOTE = ("This round of the work ends here: there is nothing more to call right now. "
@@ -596,6 +602,7 @@ class Orchestrator:
         # Set once a step has come back with nothing at all: the next one is told so, and a
         # second empty reply ends the turn as a failure rather than as an "answer".
         empty_before = False
+        cut_off = False
         # What the model that will answer can hold — asked once per turn, and again
         # only after it refuses a request as too long (one refit per turn).
         capacity: tuple[int | None, int | None] | None = None
@@ -620,6 +627,13 @@ class Orchestrator:
                 # On the last step of a reply to a person, the one thing still on offer is
                 # carrying the work on in the background (never on the firmer second attempt).
                 handoff = self._handoff(request) if (final and step == ceiling) else None
+                if handoff is not None and handoff.name in tools_used:
+                    # This reply already handed the work over. Found live: a model started
+                    # the background job, kept reading the records itself anyway, and at its
+                    # last step the loop handed the SAME request over again — two jobs on one
+                    # piece of work, each about to file its own report. Once is once: the
+                    # last step is then an ordinary one, with nothing to call.
+                    handoff = None
                 if final:
                     # The last step this turn gets. Found live: a specialist made 22
                     # successful lookups across its steps, never wrote its answer, and
@@ -639,7 +653,8 @@ class Orchestrator:
                     if step > ceiling:
                         system = with_section(system, "no_tools_now", INSIST_NOTE)
                 if empty_before:
-                    system = with_section(system, "empty_reply", EMPTY_REPLY_NOTE)
+                    system = with_section(system, "empty_reply",
+                                          CUT_OFF_NOTE if cut_off else EMPTY_REPLY_NOTE)
 
                 self._bus.publish(
                     EventType.MODEL_CALL_STARTED,
@@ -785,7 +800,16 @@ class Orchestrator:
                     # then a plain failure.
                     if not empty_before and step < ceiling:
                         empty_before = True
+                        cut_off = completed.finish_reason == "length"
                         continue
+                    if final and request.continuable:
+                        # The closing step of a ROUND of longer work asks only for a progress
+                        # note. Getting none is the round running out of room, nothing worse:
+                        # what the round did is on record and the next round carries on from
+                        # it. (Found live: a 34-record trail was stopped as "stuck" twice
+                        # over, because a model with more reading to do answered the request
+                        # for a note with nothing.)
+                        break
                     state.fail("the model returned nothing")
                     yield Failed("I didn't get an answer from the model just then. Ask me again.",
                                  code="empty_reply")
@@ -992,7 +1016,7 @@ class Orchestrator:
             detail.get("scope") in ("endpoint", "upstream", "connection")
             or (detail.get("reason") == "no_eligible_endpoint" and detail.get("rejected")))
         handoff = self._handoff(request) if (outage and tools_used) else None
-        if handoff is None:
+        if handoff is None or handoff.name in tools_used:   # already handed over: never twice
             return None
         call = ToolCall(id=f"handoff-{request.turn_id[:12]}", name=handoff.name,
                         args={"goal": request.text})

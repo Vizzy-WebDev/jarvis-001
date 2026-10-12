@@ -265,6 +265,50 @@ def test_an_empty_reply_is_never_taken_for_an_answer():
     assert not any(isinstance(e, Done) for e in events)
 
 
+def test_no_progress_note_at_the_end_of_a_round_is_the_round_running_out_not_a_failure():
+    """Found live: the closing step of a round asks only for a progress note; a model with
+    more reading to do answered with nothing, the round was failed as an empty reply, and a
+    34-record trail was declared stuck after two of those."""
+    register_effects()
+    brain = install(Brain())
+    brain.plan("", [[("call", "look_up_fact", {"q": "a"}), ("say", "")]])
+    events = list(assembly.get_orchestrator().run_turn(TurnRequest(
+        text="Follow the trail.", session_id=chat(), surface=Surface.JOB,
+        autonomy=Autonomy.PRE_CONSENTED, continuable=True, max_steps=2)))
+    assert [e.code for e in events if isinstance(e, Failed)] == ["out_of_steps"]   # → carries on
+
+    # ...and outside a round of longer work, the same silence is still never an answer.
+    brain = install(Brain())
+    brain.plan("", [[("call", "look_up_fact", {"q": "a"}), ("say", "")]])
+    events = list(assembly.get_orchestrator().run_turn(TurnRequest(
+        text="Follow the trail.", session_id=chat(), surface=Surface.TEXT,
+        autonomy=Autonomy.INTERACTIVE, max_steps=2)))
+    assert [e.code for e in events if isinstance(e, Failed)] == ["empty_reply"]
+    assert not any(isinstance(e, Done) for e in events)
+
+
+def test_a_reply_cut_off_while_thinking_is_told_to_take_one_small_step():
+    """Found live: a model adding up 34 amounts in its head hit the server's length limit
+    five replies running, each one coming back with nothing."""
+    from jarvis.orchestrator.model_port import StepComplete
+
+    class CutOff(Brain):
+        def stream(self, **kw):
+            if not self.calls:
+                self.calls.append({"session": kw["session_id"], "round": 0, "step": 0,
+                                   "system": kw["system"], "tools": [], "messages": kw["messages"]})
+                yield StepComplete(text="", finish_reason="length", model_id="brain")
+                return
+            yield from super().stream(**kw)
+
+    brain = install(CutOff())
+    brain.plan("", [[("say", "The total is 42.")]])
+    events = say(chat(), "Add them up.")
+    assert next(e for e in events if isinstance(e, Done)).text == "The total is 42."
+    assert "cut off before you answered" in system_of(brain.calls[1])
+    assert "Your last reply was empty" not in system_of(brain.calls[1])
+
+
 def test_a_job_that_ends_without_a_word_is_not_done():
     from jarvis.jobs import orchestrator
 
@@ -380,6 +424,27 @@ def test_work_still_under_way_at_the_last_step_is_handed_over_even_if_the_model_
     calls = [c["id"] for m in conversation.get_messages(session) for c in m.get("toolCalls") or []]
     results = [r["id"] for m in conversation.get_messages(session) for r in m.get("toolResults") or []]
     assert sorted(calls) == sorted(results) and len(calls) == MAX_STEPS
+
+
+def test_work_already_handed_over_in_a_reply_is_never_handed_over_twice():
+    """Found live: a model started the background job, carried on reading the records itself,
+    and at its last step the loop handed the same request over AGAIN — two jobs, one piece of
+    work, each about to file its own report."""
+    brain = install(Brain())
+    session = chat()
+    steps = [("call", "work_in_background", {"goal": "Find all the facts and file them."})]
+    steps += [("call", "look_up_fact", {"q": f"f{i}"}) for i in range(MAX_STEPS)]   # keeps going anyway
+    brain.plan("job:", [[("say", "All found, and filed.")]])
+    brain.plan("", [steps])
+
+    events = say(session, "Find all the facts and file them.")
+
+    assert next(e for e in events if isinstance(e, Done)).text
+    assert not any(isinstance(e, Failed) for e in events)
+    assert worker.join_all(timeout=20)
+    assert len(job_store.list_jobs()) == 1
+    last = [c for c in brain.calls if not c["session"].startswith("job:")][-1]
+    assert last["tools"] == []                       # the last step had nothing to call
 
 
 def _outage():

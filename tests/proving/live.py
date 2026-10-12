@@ -68,6 +68,21 @@ def _child(scenario_id: str, phase: str, scratch: Path, seed: int) -> subprocess
                             stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
 
 
+def stay_awake() -> None:
+    """Ask Windows not to put the computer to sleep while this process runs (nothing is
+    changed in its settings; the request ends with the process). Found live: the machine
+    slept three hours into a twelve-minute run, whose jobs were then recorded as "hung"."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+        ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+    except Exception:  # noqa: BLE001 — then a sleep shows up as a run that did not end in time
+        pass
+
+
 def kill_hard(child: subprocess.Popen) -> None:
     """Kill a child and everything under it, with no chance to clean up. On Windows a virtual
     environment's `python.exe` is a small launcher that starts the real interpreter as its own
@@ -165,6 +180,8 @@ def summary(verdicts: list[dict]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     from proving.scenarios import BY_ID, SCENARIOS
+
+    stay_awake()
 
     parser = argparse.ArgumentParser(description="Prove what Jarvis does on its own, live.")
     parser.add_argument("--real-root", required=True,

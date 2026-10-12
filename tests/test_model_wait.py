@@ -225,6 +225,52 @@ def test_a_request_one_model_refuses_is_tried_again_and_never_blamed_on_the_appr
     assert stored["status"] == "done" and not stored["attempts"] and stored["retries"] == 0
 
 
+class SilentBrain(Brain):
+    """Answers its first `silent` calls with no words and nothing to call."""
+
+    def __init__(self, silent: int) -> None:
+        super().__init__()
+        self.silent = silent
+
+    def stream(self, **kw):  # type: ignore[override]
+        from jarvis.orchestrator.model_port import StepComplete
+
+        if self.silent > 0:
+            self.silent -= 1
+            yield StepComplete(text="", model_id="brain")
+            return
+        yield from super().stream(**kw)
+
+
+def test_a_model_that_answers_with_nothing_is_tried_again_and_never_blamed_on_the_approach(monkeypatch):
+    """Found live: two empty replies used up both "try a different approach" recoveries and
+    the job was declared stuck, two-thirds of the way through its work."""
+    monkeypatch.setattr(durable, "MODEL_WAITS_S", (0,))
+    install(SilentBrain(silent=2))                             # a step's own retry, both empty
+    job = new_job()
+
+    assert run(job["id"])["reason"] == "model"                 # waiting, not stalled
+    assert orchestrator.supervise(event_bus=EventBus())[0]["action"] == "continued"
+    assert worker.join_all(timeout=20)
+    stored = job_store.get_job(job["id"])
+    assert stored["status"] == "done" and not stored["attempts"] and stored["retries"] == 0
+    assert "nudge" not in trace_kinds(job["id"])
+
+
+def test_a_model_that_never_answers_stops_after_a_few_tries_and_says_so(monkeypatch):
+    monkeypatch.setattr(durable, "MODEL_WAITS_S", (0,))
+    install(SilentBrain(silent=10_000))
+    job = new_job()
+
+    assert run(job["id"])["reason"] == "model"
+    for _ in range(durable.MODEL_REFUSAL_TRIES):
+        durable.wake_due(now="9999-01-01T00:00:00.000Z")
+        assert worker.join_all(timeout=20)
+    stalls = [row["detail"] for row in job_store.get_trace(job["id"])
+              if str(row.get("summary") or "").startswith("stalled")]
+    assert stalls and "gave no answer at all" in str(stalls[0])
+
+
 def test_a_request_refused_every_time_stops_after_a_few_tries_and_says_so(monkeypatch):
     monkeypatch.setattr(durable, "MODEL_WAITS_S", (0,))
     brain = install(OutageBrain())

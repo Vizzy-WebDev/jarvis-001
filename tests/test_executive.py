@@ -359,6 +359,32 @@ def test_background_work_cannot_start_more_background_work_through_a_specialist(
     assert len(job_store.list_jobs()) == 1
 
 
+def test_a_model_being_asked_or_answering_is_a_sign_of_life_not_a_hung_job(monkeypatch):
+    """Found live: only a finished tool call counted, so a job whose model took 100 seconds a
+    reply was declared hung, counted as a crash and restarted while still working."""
+    from jarvis.events.bus import EventType
+    from jarvis.jobs.policy import is_hung
+
+    job = job_store.create_job(title="T", goal="g")
+    job_store.update_job(job["id"], {"status": "running", "heartbeatAt": "2020-01-01T00:00:00.000Z"})
+    now_ms = __import__("time").time() * 1000
+    assert is_hung(job_store.get_job(job["id"]), now_ms=now_ms, timeout_ms=orchestrator.HANG_TIMEOUT_MS)
+
+    worker._last_alive.clear()
+    worker._observe(job["id"], EventType.MODEL_CALL_STARTED.value, {"sessionId": f"job:{job['id']}"})
+    assert not is_hung(job_store.get_job(job["id"]), now_ms=now_ms, timeout_ms=orchestrator.HANG_TIMEOUT_MS)
+
+    # ...written sparingly: a streamed reply is hundreds of events.
+    beats = []
+    monkeypatch.setattr(job_store, "heartbeat", lambda job_id, **kw: beats.append(job_id))
+    for _ in range(50):
+        worker._on_event(job["id"], object())
+    assert beats == []
+    worker._last_alive.clear()
+    worker._on_event(job["id"], object())
+    assert beats == [job["id"]]
+
+
 def test_cannot_finish_is_a_workers_tool_and_needs_a_reason():
     from jarvis.policy import Autonomy, CallContext, Surface
 

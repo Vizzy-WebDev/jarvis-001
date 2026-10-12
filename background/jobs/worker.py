@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from typing import Any, Iterator
 
 from ..events import EventType, bus as default_bus
@@ -254,9 +255,28 @@ def _refuse_repeat(job_id: str, name: str, args: dict[str, Any]) -> str | None:
     return refusal
 
 
+#: A sign of life is written to the job at most this often (each one is a database write, and
+#: a streamed reply is hundreds of events).
+ALIVE_EVERY_S = 20.0
+_last_alive: dict[str, float] = {}
+
+
+def _alive(job_id: str) -> None:
+    """The work is doing something — a model has been asked, is answering, or answered. Found
+    live: only a finished tool call used to count, so a job whose model took 100 seconds a
+    reply (and spent three replies thinking) was declared hung, counted as a crash and
+    restarted while it was still working."""
+    now = time.monotonic()
+    if now - _last_alive.get(job_id, 0.0) < ALIVE_EVERY_S:
+        return
+    _last_alive[job_id] = now
+    job_store.heartbeat(job_id)
+
+
 def _on_event(job_id: str, event: Any) -> None:
     from ..orchestrator import Done, ToolRan
 
+    _alive(job_id)
     if isinstance(event, ToolRan):
         job_store.heartbeat(job_id, step=f"using {event.capability}")
     elif isinstance(event, Done) and event.final_step:
@@ -279,6 +299,7 @@ def _observe(job_id: str, event_type: str, payload: dict[str, Any]) -> None:
     """The write-ahead trace, from what really happened: an `intent` row BEFORE an action
     runs and an `outcome` row after it, both carrying the operation id that ties them."""
     name = str(payload.get("capability") or "")
+    _alive(job_id)                 # a model call starting or ending is a sign of life too
     if event_type == EventType.TOOL_STARTED.value:
         job_store.append_trace(job_id, phase="intent", effect=_effect_of(name), kind="tool",
                                summary=f"{name} starting",

@@ -105,7 +105,10 @@ def _start(goal: str = "", title: str = "", kind: str = "generic", priority: int
                 "speak": f"{job['title']} would take over the computer — say the word and "
                          "I'll start."}
     return {"ok": True, "id": job["id"], "title": job["title"], "status": job["status"],
-            "speak": f"Working on {job['title']} in the background."}
+            "speak": f"Working on {job['title']} in the background.",
+            # Found live: having started the job, a model went on doing the same work itself.
+            "next": "This is now being done for you. Do not do any of it yourself in this "
+                    "reply: say in a sentence that it is under way."}
 
 
 def _check(which: str | None = None, respond: str | None = None,

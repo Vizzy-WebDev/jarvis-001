@@ -181,8 +181,10 @@ def error_in_body(body: Any, url: str) -> errors.ModelError:
 def network_error(err: Exception, url: str) -> errors.ModelError:
     host = host_of(url)
     if isinstance(err, (httpx.ConnectError, httpx.ConnectTimeout)):
+        # Nothing at that address answered at all: no model on this connection can be reached
+        # either, so the failure is the connection's, not this one model's.
         return errors.Unavailable(f"Couldn't reach {host}. If it's a program on this computer, check that it's "
-                                  "running and that the address is right.")
+                                  "running and that the address is right.").with_scope("connection")
     if isinstance(err, httpx.TimeoutException):
         return errors.Timeout(f"{host} went silent and the reply was given up on.")
     return errors.Unavailable(f"The connection to {host} broke part-way.",

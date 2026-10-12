@@ -82,6 +82,8 @@ def model_wait(code: str | None, detail: dict[str, Any] | None) -> float | None:
     """Whether a failed turn failed only because no model could answer RIGHT NOW. Returns how
     long the server asked to wait (0.0 when it did not say), or None when waiting would not
     help: the request itself was the problem, or nothing is set up to wait for."""
+    if code == "empty_reply":
+        return 0.0
     if code != "no_model":
         return None
     detail = detail or {}
@@ -105,6 +107,14 @@ def model_refused(detail: dict[str, Any] | None) -> bool:
     was no longer known to its provider, every round ended "it can't find that", and three jobs
     were told twice to change how they were working and then declared stuck."""
     return (detail or {}).get("reason") in ("invalid_request", "model_not_found")
+
+
+def model_gave_nothing(code: str | None) -> bool:
+    """The model answered twice running with no words and nothing to call (`empty_reply`). Like
+    a refusal it is the MODEL's trouble, never the work's approach, and is tried again only a
+    few times. Found live: two empty replies used up both of a job's "try a different
+    approach" recoveries and the job was declared stuck with its work two-thirds done."""
+    return code == "empty_reply"
 
 
 def model_retry_in(attempt: int, asked: float | None = None) -> float:
@@ -483,7 +493,8 @@ def run_round(work_id: str, kind_name: str, round_no: int, text: str,
                 outcome = {"outcome": "ran_out" if ran_out else
                            ("no_model" if wait is not None else "failed"), "text": "",
                            "error": event.error, "approval": None,
-                           **({"wait": wait, "refused": model_refused(event.detail)}
+                           **({"wait": wait, "refused": model_refused(event.detail),
+                               "silent": model_gave_nothing(event.code)}
                               if wait is not None else {})}
             elif isinstance(event, Interrupted):
                 outcome = {"outcome": "stopped", "text": "", "error": None, "approval": None}
@@ -609,7 +620,8 @@ def _build_workflow(saver: Any) -> Any:
             if out["outcome"] == "no_model" and waits_for_model:
                 waits += 1
                 waiting_since = waiting_since or now_iso()
-                refused_too_often = bool(out.get("refused")) and waits > MODEL_REFUSAL_TRIES
+                refused_too_often = (bool(out.get("refused") or out.get("silent"))
+                                     and waits > MODEL_REFUSAL_TRIES)
                 if not refused_too_often and _seconds_since(waiting_since) < MODEL_WAIT_LIMIT_S:
                     why = {"reason": "model", "error": out.get("error"), "attempt": waits,
                            "since": waiting_since, "steps": spent,
@@ -621,7 +633,9 @@ def _build_workflow(saver: Any) -> Any:
                                         "spent": spent, "allowance": allowance, "why": why,
                                         "waits": waits, "waitingSince": waiting_since}})
                 out = {**out, "outcome": "failed",
-                       "error": ((f"The model would not take the request, {waits} times running. "
+                       "error": ((f"The model gave no answer at all, {waits} times running. "
+                                  if refused_too_often and out.get("silent") else
+                                  f"The model would not take the request, {waits} times running. "
                                   if refused_too_often else
                                   "No model has been able to answer for "
                                   f"{round(_seconds_since(waiting_since) / 3600)} hours. ")

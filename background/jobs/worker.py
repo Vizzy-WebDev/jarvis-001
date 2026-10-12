@@ -210,7 +210,13 @@ def _turn(job_id: str, text: str, spec: Any, cancel: threading.Event) -> Iterato
         run = runner.start_run(agent, text, session_id=session_for(job_id),
                                requested_by="job", conversation_id=job.get("conversationId"),
                                job_id=job_id, event_bus=_bus_for(job_id))
-        yield from runner.stream_run(agent, run, text, autonomy=Autonomy.ESCALATE,
+        # The same rule as any other background job, by the owner's decision: the person set
+        # this work going, so an ordinary (MEDIUM) step toward it runs; a HIGH-risk step still
+        # parks for them, and the specialist may still use only what its access allows. It
+        # used to stop and ask for every MEDIUM step — unlike a plain job, a scheduled
+        # specialist run, and the same specialist asked directly by a job (found live: three
+        # specialist jobs each stopped to ask before filing the report they were sent to file).
+        yield from runner.stream_run(agent, run, text, autonomy=Autonomy.PRE_CONSENTED,
                                      surface=Surface.SCHEDULED, event_bus=_bus_for(job_id),
                                      cancel=cancel, turn=spec)
         return

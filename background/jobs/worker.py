@@ -234,9 +234,24 @@ def _turn(job_id: str, text: str, spec: Any, cancel: threading.Event) -> Iterato
 
 
 def _refuse_repeat(job_id: str, name: str, args: dict[str, Any]) -> str | None:
+    """The gate on a job's calls (`objective.refuse_repeat`). A refused call is still written
+    to the trace, as the failure it is: a worker that keeps asking for the very call it was
+    just refused is going round in circles, and `diagnose_stall` can only see what is there."""
+    import uuid
+
     from . import objective
 
-    return objective.refuse_repeat(job_id, name, args)
+    refusal = objective.refuse_repeat(job_id, name, args)
+    if refusal:
+        operation = f"refused-{uuid.uuid4().hex[:12]}"
+        job_store.append_trace(job_id, phase="intent", effect="read", kind="tool",
+                               summary=f"{name} not run again",
+                               detail={"name": name, "args": args, "operationId": operation})
+        job_store.append_trace(job_id, phase="outcome", effect="read", kind="tool",
+                               summary=f"{name} refused",
+                               detail={"name": name, "ok": False, "error": "refused: it keeps failing",
+                                       "operationId": operation})
+    return refusal
 
 
 def _on_event(job_id: str, event: Any) -> None:
@@ -270,10 +285,12 @@ def _observe(job_id: str, event_type: str, payload: dict[str, Any]) -> None:
                                detail={"name": name, "args": payload.get("args") or {},
                                        "operationId": payload.get("operationId")})
     elif event_type in (EventType.TOOL_COMPLETED.value, EventType.TOOL_FAILED.value):
-        ok = event_type == EventType.TOOL_COMPLETED.value
+        # Worked means it ran AND did not itself report that it failed.
+        ok = event_type == EventType.TOOL_COMPLETED.value and not payload.get("reportedFailure")
         job_store.append_trace(job_id, phase="outcome", effect=_effect_of(name), kind="tool",
                                summary=f"{name} {'completed' if ok else 'failed'}",
-                               detail={"name": name, "ok": ok, "error": payload.get("error"),
+                               detail={"name": name, "ok": ok,
+                                       "error": payload.get("error") or payload.get("reportedError"),
                                        "operationId": payload.get("operationId")})
 
 

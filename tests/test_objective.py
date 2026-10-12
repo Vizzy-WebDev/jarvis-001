@@ -162,7 +162,8 @@ def test_an_exact_call_that_has_failed_three_times_is_not_made_a_fourth():
     from jarvis.capabilities import CapabilitySpec, Risk
 
     def always_fails(name: str = "") -> dict:
-        raise RuntimeError("timed out")
+        # The way tools usually fail: they run, and say it did not work.
+        return {"ok": False, "error": f'The records system timed out reading "{name}".'}
 
     brain = install(Brain())
     assembly.get_registry().register(CapabilitySpec(
@@ -185,6 +186,9 @@ def test_an_exact_call_that_has_failed_three_times_is_not_made_a_fourth():
                for res in m.get("toolResults") or [] if res.get("name") == "read_dead"
                and "Not run" in str(res.get("result"))]
     assert refused and "already failed 3 times" in refused[0] and "cannot_finish" in refused[0]
+    # And the record says those calls failed, though each one "completed".
+    # (Refused tries are on record as failures too, so the count is three or more.)
+    assert any(line.startswith('read_dead({"name": "x"}) — failed ') for line in objective.keeps_failing(job["id"]))
 
 
 def get_ops(job_id: str) -> list[str]:

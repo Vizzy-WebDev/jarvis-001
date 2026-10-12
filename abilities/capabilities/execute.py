@@ -369,11 +369,19 @@ def _run(
             operation_id=ctx.operation_id, value=value, attempts=attempts,
             duration_ms=int((time.monotonic() - started) * 1000),
         )
+        # A capability that ran but SAYS it did not work (`{"ok": False, "error": ...}` — the
+        # convention most tools use, a lookup that found nothing readable, a record that timed
+        # out) completed as a call and failed as an action. Whoever keeps a record of what
+        # worked needs to know which: found by a live run, a read that "timed out" eleven times
+        # was on record as eleven successes, so nothing that counts failures ever saw it.
+        said_no = isinstance(value, dict) and value.get("ok") is False
         ebus.publish(
             EventType.TOOL_COMPLETED,
             {"capability": spec.name, "attempts": attempts,
              "durationMs": result.duration_ms, "sessionId": ctx.session_id,
-             "operationId": ctx.operation_id},
+             "operationId": ctx.operation_id,
+             **({"reportedFailure": True, "reportedError": str(value.get("error") or "")[:300]}
+                if said_no else {})},
         )
         _record(result, ctx.session_id)
         return result

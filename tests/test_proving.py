@@ -238,7 +238,9 @@ def test_a_dead_end_is_reported_plainly_and_nothing_is_filed(_isolate):
     verdict = play(_isolate, "dead_end", OfficeWorker(background=True), deadline_s=60)
     assert verdict["outcome"] == "honest_stop" and verdict["passed"], verdict
     [job] = verdict["jobs"]
-    assert job["status"] == "awaiting_decision" and job["retries"] == 0      # nothing was pushed through
+    # Not pushed through the check, and not sent round again and again: at most the one
+    # "that is not working, take another way" its three failed reads earn it.
+    assert job["status"] == "awaiting_decision" and job["retries"] <= 1
     assert "could not be finished" in verdict["lastWords"] and "reading its backup copy" in verdict["lastWords"]
     assert verdict["questionsAsked"] == 1
 
@@ -256,11 +258,12 @@ def test_a_stubborn_worker_is_stopped_told_to_change_course_and_then_the_person_
     # It was stopped, not left running: the record that will not open was tried a bounded
     # number of times (at most a round's worth for the first go and each of two more, since
     # repetition is looked for between rounds).
-    tries = verdict["toolsCalled"].count("office_read_record")
-    assert tries <= 4 + 3 * 7, tries
-    # (The scenario's own bar — at most six tries — is for a model that changes course; this
-    # stand-in is the one that never does, which is why the run as a whole does not pass.)
-    assert not verdict["passed"]
+    # However often it asked, the record that will not open was really read three times and
+    # then never again (`objective.refuse_repeat`): read from the world's own log.
+    from proving import world as proving_world
+
+    blocked = [e for e in proving_world.log() if e["tool"] == "office_read_record" and not e["ok"]]
+    assert len(blocked) == 3, len(blocked)
 
 
 def test_work_longer_than_one_allowance_carries_on_without_asking(_isolate):

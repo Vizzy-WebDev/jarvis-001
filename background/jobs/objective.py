@@ -261,6 +261,54 @@ def progress_mark(job_id: str) -> dict[str, int]:
 
 #: The same call failing this often is shown to the worker as something not to try again.
 KEEPS_FAILING = 2
+#: And failing this often with never a success, it is not run again at all (`refuse_repeat`).
+GIVE_UP_AFTER = 3
+
+
+def _signature(name: Any, args: Any) -> str:
+    return f"{name}:{json.dumps(args or {}, sort_keys=True, default=str)}"
+
+
+def _failures(job_id: str) -> tuple[dict[str, int], set[str]]:
+    """(how often each exact call failed, which exact calls ever worked) — from the trace."""
+    started: dict[str, str] = {}
+    failed: dict[str, int] = {}
+    worked: set[str] = set()
+    for row in job_store.get_trace(job_id):
+        if row.get("kind") != "tool":
+            continue
+        detail = row.get("detail")
+        if isinstance(detail, str):
+            try:
+                detail = json.loads(detail)
+            except ValueError:
+                continue
+        if not isinstance(detail, dict):
+            continue
+        operation = str(detail.get("operationId") or "")
+        if row.get("phase") == "intent":
+            started[operation] = _signature(detail.get("name"), detail.get("args"))
+        elif operation in started:
+            if detail.get("ok"):
+                worked.add(started[operation])
+            else:
+                failed[started[operation]] = failed.get(started[operation], 0) + 1
+    return failed, worked
+
+
+def refuse_repeat(job_id: str, name: str, args: dict[str, Any]) -> str | None:
+    """Why this exact call should not be run again, or None. A call that has failed
+    `GIVE_UP_AFTER` times in this job with the same arguments, and never once worked, is not
+    made a fourth time: the worker is told so instead, which costs nothing and cannot be
+    ignored. Found by live runs: shown that a read "keeps failing", a real model still made
+    it 13 times between other steps. Asking nicely does not bound it; this does."""
+    failed, worked = _failures(job_id)
+    signature = _signature(name, args)
+    if signature in worked or failed.get(signature, 0) < GIVE_UP_AFTER:
+        return None
+    return (f"Not run: this exact call has already failed {failed[signature]} times in this work "
+            "with the same result, so making it again will not help. Get to what it was for "
+            "another way, or — if there is none — call cannot_finish and say what is in the way.")
 
 
 def keeps_failing(job_id: str) -> list[str]:

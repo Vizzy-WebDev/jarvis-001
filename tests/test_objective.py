@@ -156,6 +156,45 @@ def test_a_call_that_keeps_failing_is_put_in_front_of_the_worker_as_not_worth_re
     assert 'read_record({"name": "dead"}) — failed 2 times' in sections["where_it_stands"]
 
 
+def test_an_exact_call_that_has_failed_three_times_is_not_made_a_fourth():
+    """Found live: shown that a read "keeps failing", a real model still made it 13 times."""
+    from durable_support import _effect_spec  # noqa: F401 — the registry is already populated
+    from jarvis.capabilities import CapabilitySpec, Risk
+
+    def always_fails(name: str = "") -> dict:
+        raise RuntimeError("timed out")
+
+    brain = install(Brain())
+    assembly.get_registry().register(CapabilitySpec(
+        id="test.read_dead", name="read_dead", description="Reads a record (test).",
+        input_schema={"type": "object", "properties": {"name": {"type": "string"}}},
+        handler=always_fails, risk=Risk.LOW, tags=frozenset({"core"})))
+    job = job_store.create_job(title="T", goal="read it")
+    dead = ("call", "read_dead", {"name": "x"})
+    other = ("call", "look_up_fact", {"q": "something else"})
+    # Never three in a row, so the repetition check alone would not see it.
+    brain.plan("job:", [[dead, other, dead, other, dead, other, dead],
+                        [dead, ("call", "read_dead", {"name": "y"}), ("say", "Could not read x.")]])
+
+    run_and_wait(lambda: worker.run_job(job["id"], event_bus=EventBus()))
+
+    ran = [r for r in get_ops(job["id"]) if r == "read_dead"]
+    assert len(ran) == 3 + 1                # x three times and never again; y (different) once
+    refused = [res["result"]["error"] for call in brain.calls_for(f"job:{job['id']}")
+               for m in call["messages"][-1:] if m.get("role") == "tool"
+               for res in m.get("toolResults") or [] if res.get("name") == "read_dead"
+               and "Not run" in str(res.get("result"))]
+    assert refused and "already failed 3 times" in refused[0] and "cannot_finish" in refused[0]
+
+
+def get_ops(job_id: str) -> list[str]:
+    from jarvis.db import get_db
+
+    return [r[0] for r in get_db().execute(
+        "SELECT capability FROM operations WHERE operation_id LIKE ? ORDER BY completed_at",
+        (f"{job_id}/%",)).fetchall()]
+
+
 def test_update_plan_is_a_workers_tool_and_nobody_elses():
     install(Brain())
     registry = assembly.get_registry()

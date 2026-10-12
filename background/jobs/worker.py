@@ -228,8 +228,15 @@ def _turn(job_id: str, text: str, spec: Any, cancel: threading.Event) -> Iterato
         operation_scope=spec.operation_scope,
         continuable=spec.continuable,
         max_steps=spec.max_steps,
+        gate=lambda name, args: _refuse_repeat(job_id, name, args),
     )
     yield from get_orchestrator().run_turn(request, cancel)
+
+
+def _refuse_repeat(job_id: str, name: str, args: dict[str, Any]) -> str | None:
+    from . import objective
+
+    return objective.refuse_repeat(job_id, name, args)
 
 
 def _on_event(job_id: str, event: Any) -> None:

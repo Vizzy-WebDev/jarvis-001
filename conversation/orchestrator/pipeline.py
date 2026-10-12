@@ -35,7 +35,7 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from .. import conversation
 from ..assistant.state import TRANSITIONS, AssistantState, State
@@ -336,6 +336,11 @@ class TurnRequest:
     #: Set by durable background work: at most this many model steps in this turn (never more
     #: than the usual ceiling), so a job's step budget is never overshot by a whole round.
     max_steps: int | None = None
+    #: Set by background work: asked before each call with (capability, arguments). A string
+    #: back means the call is NOT run and that string is its result — how a job stops the
+    #: exact call that has already failed several times from being made yet again. Plain data
+    #: in, plain words out: the loop knows nothing about why.
+    gate: Callable[[str, dict[str, Any]], str | None] | None = None
 
 
 def operation_id_for(scope: str, name: str, args: dict[str, Any], seen: dict[str, int]) -> str:
@@ -841,6 +846,15 @@ class Orchestrator:
 
     def _execute_call(self, request: TurnRequest, call: ToolCall,
                       seen: dict[str, int] | None = None) -> ExecutionResult:
+        if request.gate is not None:
+            try:
+                refusal = request.gate(call.name, dict(call.args or {}))
+            except Exception:  # noqa: BLE001 — a gate that breaks must not break the work
+                logger.exception("the call gate failed for %s", call.name)
+                refusal = None
+            if refusal:
+                return ExecutionResult(ok=False, outcome=ExecOutcome.REFUSED, capability=call.name,
+                                       operation_id=f"{request.turn_id}:{call.id}", error=refusal)
         operation_id = (operation_id_for(request.operation_scope, call.name, dict(call.args or {}),
                                          seen if seen is not None else {})
                         if request.operation_scope else f"{request.turn_id}:{call.id}")

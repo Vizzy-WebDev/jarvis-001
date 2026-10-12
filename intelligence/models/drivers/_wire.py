@@ -94,6 +94,7 @@ _NOT_ALLOWED = re.compile(
     r"only supported (in|by|on) .{0,24}(completions|responses|embeddings|audio|images|realtime)|"
     r"not (a )?(supported )?(in|by|for) the .{0,24}chat|not a chat model|"
     r"does not support (the )?(chat|generatecontent|streamgeneratecontent)", re.I)
+_MISSING = re.compile(r"does not exist|doesn'?t exist|not found|no such model|unknown model|not exist", re.I)
 _REFUSED = re.compile(r"content (policy|management|filter)|safety|flagged|moderation|prohibited", re.I)
 
 
@@ -144,7 +145,7 @@ def error_for(status: int, words: str, url: str, *, headers: Mapping[str, str] |
     if status == 402 or _BILLING.search(words):
         return errors.Billing(f"{host} refused this for billing or quota reasons: the account may be out of "
                               "credit or over its limit.", detail=detail)
-    if status in (400, 403, 404) and _NOT_ALLOWED.search(words):
+    if status in (400, 403, 404) and _NOT_ALLOWED.search(words) and not _MISSING.search(words):
         return errors.ModelNotAllowed(f"{host} accepted the key but won't serve that model to this account, "
                                       "so Jarvis set it aside.", detail=detail)
     if status in (401, 403):

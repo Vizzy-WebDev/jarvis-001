@@ -31,7 +31,7 @@ def openai_conn():
 
 @pytest.mark.parametrize("status,words", [
     (403, "Project does not have access to model `gpt-x`"),
-    (404, "You do not have access to the model gpt-x or it does not exist for your organization"),
+    (404, "The model gpt-x is not available for your account; you do not have access to it."),
     (400, "This model is only supported in v1/responses and not in v1/chat/completions."),
 ])
 def test_a_model_the_account_cannot_use_is_endpoint_scoped(status, words):
@@ -39,6 +39,11 @@ def test_a_model_the_account_cannot_use_is_endpoint_scoped(status, words):
     assert isinstance(err, errors.ModelNotAllowed)
     assert err.scope == "endpoint" and err.recovery == "user" and not err.retryable
     assert words not in str(err)
+
+
+def test_wording_that_may_mean_the_model_is_missing_stays_a_missing_model():
+    words = "The model `gpt-x` does not exist or you do not have access to it."
+    assert isinstance(_wire.error_for(404, words, "https://api.example.test/v1"), errors.ModelNotFound)
 
 
 def test_a_real_bad_key_is_still_a_connection_refusal():

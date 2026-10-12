@@ -26,6 +26,7 @@ interprets it; the tool layer says so to the model.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -58,6 +59,17 @@ MAX_PROFILES = 20
 IDLE_TIMEOUT_S = 30 * 60
 MAX_ELEMENTS = 80
 STATE_SAVE_EVERY_S = 3.0
+#: After an action, how long to wait for a page load it started before reporting. Longer than
+#: this and the result says the page is still loading, which is true and useful, rather than
+#: holding up the whole task for a slow server.
+SETTLE_MAX_S = 6.0
+#: Reading a page whose next page is still arriving can hang until that page does.
+READ_TIMEOUT_S = 6.0
+LOADING_READ_S = 1.5
+#: How long Close and the person's own input wait behind an action the agent is in the middle of.
+HOLD_PATIENCE_S = 3.0
+#: A picture older than this is not shown in place of a fresh one.
+STALE_SHOT_S = 45.0
 MAX_TYPED_CHARS = 10_000
 
 _KEYS = re.compile(r"^(Enter|Tab|Escape|Backspace|Delete|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|"
@@ -66,10 +78,13 @@ _KEYS = re.compile(r"^(Enter|Tab|Escape|Backspace|Delete|ArrowUp|ArrowDown|Arrow
 #: Runs inside the page. A fixed script: callers cannot pass their own.
 _READ_SCRIPT = """() => {
   const text = document.body ? document.body.innerText : '';
-  return {url: location.href, title: document.title.slice(0, 300),
+  return {url: location.href, title: document.title.slice(0, 300), ready: document.readyState,
           text: text.slice(0, %d), truncated: text.length > %d,
           scroll: {y: Math.round(window.scrollY), height: document.documentElement.scrollHeight,
-                   viewport: window.innerHeight}};
+                   viewport: window.innerHeight},
+          frames: Array.prototype.filter.call(document.querySelectorAll('iframe'), function (f) {
+            const r = f.getBoundingClientRect(); return r.width > 40 && r.height > 40;
+          }).slice(0, 5).map(function (f) { return (f.src || f.name || 'a frame on this page').slice(0, 120); })};
 }""" % (MAX_READ_CHARS, MAX_READ_CHARS)
 
 _ELEMENTS_SCRIPT = """() => {
@@ -183,6 +198,16 @@ class _Running:
     temp_dir: Path | None = None
     #: When the sign-ins were last written down (monotonic seconds).
     state_saved: float = 0.0
+    #: Page loads the window has started and not finished (main-frame navigations in flight).
+    navigating: dict = field(default_factory=dict)
+    #: When the last navigation turned out to be a file download, and to what address.
+    download_started: tuple | None = None
+    #: The last picture taken of the page, and when: shown when a fresh one cannot be had because
+    #: the page is busy arriving.
+    last_shot: tuple | None = None
+    #: Things the window did on its own that the next report should mention: a dialog it
+    #: dismissed, a pop-up it closed. Told once, then forgotten.
+    events: list = field(default_factory=list)
     #: Downloads still arriving; awaited before an agent's step reports, and at close.
     pending: set = field(default_factory=set)
 
@@ -244,6 +269,25 @@ class BrowserManager:
     def _lock(self, session_id: str) -> asyncio.Lock:
         return self._locks.setdefault(session_id, asyncio.Lock())
 
+    @contextlib.asynccontextmanager
+    async def _hold(self, session_id: str, patience: float = HOLD_PATIENCE_S):
+        """Take a window's turn, but not forever: closing it, and the person's own clicks and
+        typing, must not sit behind an agent action that is waiting on a slow site. After
+        `patience` they go ahead regardless (the action in progress then fails, which is what
+        was asked for)."""
+        lock = self._lock(session_id)
+        held = False
+        try:
+            await asyncio.wait_for(lock.acquire(), patience)
+            held = True
+        except asyncio.TimeoutError:
+            logger.info("window %s is busy; going ahead without its turn", session_id)
+        try:
+            yield
+        finally:
+            if held:
+                lock.release()
+
     def _persist(self, session: Session) -> None:
         folder = self.directory(session.id)
         folder.mkdir(parents=True, exist_ok=True)
@@ -280,12 +324,22 @@ class BrowserManager:
         running = self._active(session_id)
         if running.page.url != "about:blank":
             await self._validate(running.page.url)
-        session = Session(id=session_id, title=(await running.page.title())[:300],
-                          url=running.page.url, status="active", updated_at=_now())
+        known = self._sessions.get(session_id)
+        title = await self._title(running.page, known.title if known else "")
+        session = Session(id=session_id, title=title, url=running.page.url, status="active",
+                          updated_at=_now())
         self._sessions[session_id] = session
         self._persist(session)
         await self._save_state(session_id, running)
         return session
+
+    @staticmethod
+    async def _title(page: Any, fallback: str = "") -> str:
+        """The page's title - or what was known, when the page is busy arriving and will not say."""
+        try:
+            return (await asyncio.wait_for(page.title(), READ_TIMEOUT_S))[:300]
+        except Exception:  # noqa: BLE001
+            return fallback[:300]
 
     async def _save_state(self, session_id: str, running: _Running, *, force: bool = False) -> None:
         """Write the window's sign-ins down, so they outlive a hard exit.
@@ -321,13 +375,21 @@ class BrowserManager:
             self._playwright = await async_playwright().start()
         return self._playwright
 
-    async def create_session(self, session_id: str, url: str) -> dict[str, str]:
+    async def create_session(self, session_id: str, url: str, *,
+                             keep_on_failure: bool = False) -> dict[str, str]:
+        """Open (or reopen) a window at `url`.
+
+        If the window starts but the FIRST page will not load, `keep_on_failure` decides what
+        is left: a window the agent works in stays open on a blank page (it was just asked to
+        go somewhere that failed, and its next step is to try something else - a window that
+        vanished made that step answer "no page is open"); a brand new one nobody has an id
+        for yet is removed, as OpenMuse does, so it cannot pile up out of sight."""
         session_id = validate_session_id(session_id)
         async with self._create_lock:
             async with self._lock(session_id):
-                return (await self._create(session_id, url)).as_dict()
+                return (await self._create(session_id, url, keep_on_failure)).as_dict()
 
-    async def _create(self, session_id: str, url: str) -> Session:
+    async def _create(self, session_id: str, url: str, keep_on_failure: bool = False) -> Session:
         await self._validate(url)
         if self.is_running(session_id):
             return await self._navigate(session_id, url)
@@ -386,14 +448,28 @@ class BrowserManager:
             running = _Running(context=context, page=page, touched=time.monotonic(),
                                temp_dir=temp_dir)
             self._running[session_id] = running
-            context.on("page", lambda popup: asyncio.ensure_future(self._close_quietly(popup)))
-            page.on("dialog", lambda dialog: asyncio.ensure_future(self._dismiss(dialog)))
+            context.on("page", lambda popup: asyncio.ensure_future(
+                self._block_popup(running, popup)))
+            page.on("dialog", lambda dialog: asyncio.ensure_future(
+                self._dismiss(running, dialog)))
             page.on("download", lambda download: self._on_download(session_id, running, download))
+            self._track_navigation(page, running)
             initial = Session(id=session_id, title=previous.title if previous else "New session",
                               url=url, status="active", updated_at=_now())
             self._sessions[session_id] = initial
             self._persist(initial)
-            return await self._navigate(session_id, url)
+            try:
+                return await self._navigate(session_id, url)
+            except BrowserError as err:
+                if keep_on_failure:
+                    await self._refresh_quietly(session_id)
+                    raise _Kept(err) from None
+                raise _Abandon(err) from None
+        except _Kept as kept:
+            raise kept.reason from None             # the window stays; only the page failed
+        except _Abandon as abandon:
+            await self._abandon(session_id, context, previous, folder, temp_dir, url)
+            raise abandon.reason from None
         except BaseException:
             await self._discard(context)
             self._running.pop(session_id, None)
@@ -455,14 +531,35 @@ class BrowserManager:
             pass
 
     @staticmethod
-    async def _close_quietly(page: Any) -> None:
+    def _note(running: "_Running", event: dict[str, str]) -> None:
+        running.events.append(event)
+        del running.events[:-10]                    # a page that spams dialogs is not a log
+
+    async def _block_popup(self, running: "_Running", popup: Any) -> None:
+        """Close a window a page opened, and remember that it did, and where it was going.
+
+        One window is all there is to work in (see `connectors/browser_connector.py`), so a
+        pop-up cannot be used; but a page that "opened a pop-up" that is not there is something
+        the person and the model both need to be told, not to discover."""
+        address = ""
         try:
-            await page.close()
+            await popup.wait_for_url("**/*", wait_until="commit", timeout=1_500)
+            address = popup.url
+        except Exception:  # noqa: BLE001 - it may never navigate; the address is a courtesy
+            address = popup.url if popup.url != "about:blank" else ""
+        self._note(running, {"kind": "popup", "address": address[:200]})
+        try:
+            await popup.close()
         except Exception:  # noqa: BLE001
             pass
 
-    @staticmethod
-    async def _dismiss(dialog: Any) -> None:
+    async def _dismiss(self, running: "_Running", dialog: Any) -> None:
+        """Answer a dialog the only safe way - no - and remember what it said.
+
+        An alert is simply closed; a confirm is answered No and a prompt cancelled, so nothing
+        a page asks "are you sure?" about is ever agreed to on the person's behalf."""
+        self._note(running, {"kind": "dialog", "type": dialog.type,
+                             "message": (dialog.message or "")[:200]})
         try:
             await dialog.dismiss()
         except Exception:  # noqa: BLE001
@@ -495,7 +592,10 @@ class BrowserManager:
 
     async def _navigate(self, session_id: str, url: str) -> Session:
         target = await self._validate(url)
-        page = self._active(session_id).page
+        running = self._active(session_id)
+        page = running.page
+        before = page.url
+        running.download_started = None
         try:
             await page.goto(target.href, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
             # A redirect can land somewhere the proxy refused; its 403 is still an HTTP
@@ -506,10 +606,63 @@ class BrowserManager:
                 await self._blank(page)
             raise
         except Exception as err:  # noqa: BLE001
-            # A file download aborts the navigation on purpose; the page stays where it was.
-            if "Download is starting" not in str(err):
+            if "Download is starting" in str(err):
+                # A file download aborts the navigation on purpose; the page stays where it was.
+                running.download_started = (target.href, time.monotonic())
+            elif _is_timeout(err) and page.url not in (before, "about:blank", ""):
+                # The server answered and the page began to arrive, but not all of it did in time.
+                # A person would see a half-drawn page and carry on; so does this (the result
+                # says it is still loading), instead of throwing away a page that is there.
+                await self._validate(page.url)
+            else:
                 raise BrowserError("NAVIGATION_FAILED", _why_navigation_failed(err), 502) from err
         return await self._refresh(session_id)
+
+    async def _refresh_quietly(self, session_id: str) -> None:
+        try:
+            await self._refresh(session_id)
+        except Exception:  # noqa: BLE001 - recording where a failed window is must not hide the failure
+            logger.debug("could not refresh a window after a failed first load", exc_info=True)
+
+    async def _abandon(self, session_id: str, context: Any, previous: "Session | None",
+                       folder: Path, temp_dir: Path, url: str) -> None:
+        await self._discard(context)
+        self._running.pop(session_id, None)
+        if previous is not None:
+            failed = Session(id=session_id, title=previous.title, url=url, status="error",
+                             updated_at=_now())
+            self._sessions[session_id] = failed
+            self._persist(failed)
+        else:
+            self._sessions.pop(session_id, None)
+            shutil.rmtree(folder, ignore_errors=True)
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    @staticmethod
+    def _track_navigation(page: Any, running: "_Running") -> None:
+        """Remember which page loads are still under way, so a result can say "still loading"
+        and an action can tell a slow page from a click that did nothing."""
+        def started(request: Any) -> None:
+            try:
+                if request.is_navigation_request() and request.frame == page.main_frame:
+                    running.navigating[request] = time.monotonic()
+            except Exception:  # noqa: BLE001 - a request with no frame (a worker's) is not a page load
+                pass
+
+        def ended(request: Any) -> None:
+            running.navigating.pop(request, None)
+
+        page.on("request", started)
+        page.on("requestfinished", ended)
+        page.on("requestfailed", ended)
+
+    @staticmethod
+    def _loading(running: "_Running") -> bool:
+        cutoff = time.monotonic() - 90          # a load nobody ever finished is not still loading
+        for request, since in list(running.navigating.items()):
+            if since < cutoff:
+                running.navigating.pop(request, None)
+        return bool(running.navigating)
 
     @staticmethod
     async def _blank(page: Any) -> None:
@@ -520,7 +673,7 @@ class BrowserManager:
 
     async def close_session(self, session_id: str) -> dict[str, str]:
         session_id = validate_session_id(session_id)
-        async with self._lock(session_id):
+        async with self._hold(session_id):
             return (await self._close(session_id)).as_dict()
 
     async def _close(self, session_id: str) -> Session:
@@ -529,9 +682,17 @@ class BrowserManager:
             raise BrowserError("SESSION_NOT_FOUND", "Browser session not found.", 404)
         running = self._running.get(session_id)
         if running is not None:
-            await self._save_state(session_id, running, force=True)
+            # Each step is given a few seconds, not forever: a window being closed because the
+            # page it is waiting on never arrives must still close.
+            try:
+                await asyncio.wait_for(self._save_state(session_id, running, force=True), 3)
+            except Exception:  # noqa: BLE001 - what was written at the last step is on disk
+                logger.info("could not save sign-ins while closing %s", session_id)
             await self._finish_downloads(running, 10)
-            await self._discard(running.context)
+            try:
+                await asyncio.wait_for(self._discard(running.context), 8)
+            except Exception:  # noqa: BLE001 - a browser that will not close is let go of
+                logger.info("the browser for %s did not close in time", session_id)
             self._running.pop(session_id, None)
             if running.temp_dir:
                 shutil.rmtree(running.temp_dir, ignore_errors=True)
@@ -554,9 +715,24 @@ class BrowserManager:
     # --- looking ----------------------------------------------------------------------
 
     async def screenshot(self, session_id: str) -> bytes:
+        """A picture of the window as it is now.
+
+        Deliberately NOT queued behind what the agent is doing. It used to be, and while the
+        agent waited on a slow page (tens of seconds is ordinary) the person's live view
+        stalled, gave up and showed "Disconnected", and the requests piled up to arrive in a
+        burst. Taking a picture does not disturb a page that is loading. If the page is too busy
+        to be photographed this moment, the last picture is shown instead of nothing."""
         session_id = validate_session_id(session_id)
-        async with self._lock(session_id):
-            return await self._active(session_id).page.screenshot(type="png", timeout=10_000)
+        running = self._active(session_id)
+        try:
+            shot = await asyncio.wait_for(running.page.screenshot(type="png", timeout=2_500), 3.5)
+            running.last_shot = (shot, time.monotonic())
+            return shot
+        except Exception:  # noqa: BLE001 - busy, mid-navigation, or closing
+            if running.last_shot and time.monotonic() - running.last_shot[1] < STALE_SHOT_S:
+                return running.last_shot[0]
+            raise BrowserError("BUSY", "The page is busy loading; try the picture again in a "
+                                       "moment.", 503) from None
 
     async def read(self, session_id: str, *, elements: bool = False) -> dict[str, Any]:
         session_id = validate_session_id(session_id)
@@ -573,12 +749,34 @@ class BrowserManager:
         if page.url != "about:blank":
             await self._validate(page.url)
         # The script is fixed by this module; nothing a caller sends is ever evaluated.
-        result = await page.evaluate(_READ_SCRIPT)
+        unreadable = False
+        # While the next page is still being fetched the browser holds a read until it arrives,
+        # so a read during a load is only given a moment: "still loading" is the honest answer.
+        patience = LOADING_READ_S if self._loading(running) else READ_TIMEOUT_S
+        try:
+            result = await asyncio.wait_for(self._evaluate_settled(page, _READ_SCRIPT), patience)
+        except asyncio.TimeoutError:
+            # The page cannot be read while its replacement is on the way. Say where it is and
+            # that it is still loading; the next look will have the page.
+            known = self._sessions.get(session_id)
+            result = {"url": page.url, "title": known.title if known else "", "text": "",
+                      "truncated": False, "scroll": {"y": 0, "height": 0, "viewport": 0}}
+            unreadable = True
         if result["url"] != "about:blank":
             await self._validate(result["url"])
+        # `readyState` is the page's own word for it: a page whose head has arrived and whose
+        # body has not reads as empty, and an empty page that is merely unfinished must not be
+        # mistaken for a page that has nothing on it.
+        result["loading"] = unreadable or self._loading(running) or result.get("ready") == "loading"
+        result.pop("ready", None)
+        if running.events:
+            result["events"], running.events[:] = list(running.events), []
+        if running.download_started and time.monotonic() - running.download_started[1] < 60:
+            result["startedDownload"] = running.download_started[0]
         if elements:
             try:
-                result["elements"] = await page.evaluate(_ELEMENTS_SCRIPT)
+                result["elements"] = [] if unreadable else await asyncio.wait_for(
+                    self._evaluate_settled(page, _ELEMENTS_SCRIPT), patience)
             except Exception:  # noqa: BLE001 - a page that will not list itself is still readable
                 result["elements"] = []
         session = Session(id=session_id, title=result["title"], url=result["url"],
@@ -591,7 +789,7 @@ class BrowserManager:
 
     async def input(self, session_id: str, value: dict[str, Any]) -> dict[str, str]:
         session_id = validate_session_id(session_id)
-        async with self._lock(session_id):
+        async with self._hold(session_id):
             page = self._active(session_id).page
             kind = value.get("type")
             x, y, key = value.get("x"), value.get("y"), value.get("key")
@@ -614,7 +812,9 @@ class BrowserManager:
     async def click(self, session_id: str, selector: str) -> dict[str, Any]:
         session_id = validate_session_id(session_id)
         async with self._lock(session_id):
-            page = self._active(session_id).page
+            running = self._active(session_id)
+            page = running.page
+            started = time.monotonic()
             try:
                 # A link that wants a new tab would open a popup, which is dismissed;
                 # make it open in this one instead.
@@ -622,12 +822,19 @@ class BrowserManager:
                     "el => { const a = el.closest('a'); "
                     "if (a && a.target && a.target !== '_self') a.target = '_self'; }",
                     timeout=ACTION_TIMEOUT_MS)
-                await page.click(selector, timeout=ACTION_TIMEOUT_MS)
+                await self._perform(running, page.click(selector, timeout=ACTION_TIMEOUT_MS),
+                                    started)
             except BrowserError:
                 raise
             except Exception as err:  # noqa: BLE001
-                raise BrowserError("ACTION_FAILED", _why_action_failed(err, selector), 422) from err
-            await self._settle(page)
+                # The click itself can be done and the PAGE it started still be arriving: the
+                # wait for that is what timed out. Reporting "couldn't find it" for a click that
+                # worked sent a real task round in circles. Only a failure BEFORE the click is a
+                # failure.
+                if not _action_was_performed(err):
+                    raise BrowserError("ACTION_FAILED", _why_action_failed(err, selector),
+                                       422) from err
+            await self._settle(page, running, started)
             await self._refresh(session_id)
             return await self._read(session_id, elements=True)
 
@@ -637,7 +844,9 @@ class BrowserManager:
         if len(text) > MAX_TYPED_CHARS:
             raise BrowserError("INVALID_INPUT", "That is too much text to type at once.")
         async with self._lock(session_id):
-            page = self._active(session_id).page
+            running = self._active(session_id)
+            page = running.page
+            started = time.monotonic()
             try:
                 tag = await page.locator(selector).first.evaluate(
                     "el => el.tagName", timeout=ACTION_TIMEOUT_MS)
@@ -649,10 +858,13 @@ class BrowserManager:
                 else:
                     await page.fill(selector, text, timeout=ACTION_TIMEOUT_MS)
                     if submit:
-                        await page.press(selector, "Enter", timeout=ACTION_TIMEOUT_MS)
+                        await self._perform(running, page.press(selector, "Enter",
+                                                                timeout=ACTION_TIMEOUT_MS), started)
             except Exception as err:  # noqa: BLE001
-                raise BrowserError("ACTION_FAILED", _why_action_failed(err, selector), 422) from err
-            await self._settle(page)
+                if not _action_was_performed(err):
+                    raise BrowserError("ACTION_FAILED", _why_action_failed(err, selector),
+                                       422) from err
+            await self._settle(page, running, started)
             await self._refresh(session_id)
             return await self._read(session_id, elements=True)
 
@@ -672,14 +884,58 @@ class BrowserManager:
             await self._refresh(session_id)
             return await self._read(session_id, elements=True)
 
-    @staticmethod
-    async def _settle(page: Any) -> None:
-        """Give the page a moment to react to what was just done."""
+    async def _perform(self, running: "_Running", action: Any, started: float) -> None:
+        """Run one Playwright action, without being held hostage by the page it starts.
+
+        A click or key press is not finished, to Playwright, until the page load it began
+        has finished too - so a slow site made the action "time out" after it had worked, and
+        its option to stop waiting is deprecated and ignored. This waits for the action for a
+        fair while; if it is still going after that, and a page load is in flight, the action
+        was evidently performed (that load is what it is waiting for): report on. Anything else
+        still failing is a real failure, and is raised."""
+        task = asyncio.ensure_future(action)
+        patience = started + SETTLE_MAX_S
+        while not task.done():
+            await asyncio.wait({task}, timeout=0.25)
+            if not task.done() and time.monotonic() > patience and self._loading(running):
+                task.add_done_callback(lambda finished: finished.cancelled() or finished.exception())
+                return
+        task.result()
+
+    async def _settle(self, page: Any, running: "_Running", started: float) -> None:
+        """Give the page a moment to react to what was just done - and, if the action started a
+        page load, a fair wait for it, but not an unlimited one. `started` is when the action
+        began: the wait for the action itself and this one share ONE budget, so a slow site
+        costs the task `SETTLE_MAX_S`, not twice that."""
+        await asyncio.sleep(0.4)                 # a load the action started registers just after
+        deadline = started + SETTLE_MAX_S
+        while self._loading(running) and time.monotonic() < deadline:
+            await asyncio.sleep(0.25)
         try:
-            await page.wait_for_load_state("domcontentloaded", timeout=5_000)
-        except Exception:  # noqa: BLE001 - nothing was loading
+            await page.wait_for_load_state("domcontentloaded", timeout=3_000)
+        except Exception:  # noqa: BLE001 - nothing was loading, or it is still going
             pass
-        await asyncio.sleep(0.4)
+
+    @staticmethod
+    async def _evaluate_settled(page: Any, script: str) -> Any:
+        """Run a fixed script, again if the page changed under it.
+
+        A page that is navigating destroys the context a script runs in, and the failure reads
+        as "the browser ran into a problem". The second look, after the new page has begun,
+        is nearly always fine."""
+        last: Exception | None = None
+        for _ in range(3):
+            try:
+                return await page.evaluate(script)
+            except Exception as err:  # noqa: BLE001
+                last = err
+                if not _is_page_changing(err):
+                    raise
+                try:
+                    await page.wait_for_load_state("domcontentloaded", timeout=4_000)
+                except Exception:  # noqa: BLE001
+                    await asyncio.sleep(0.5)
+        raise last  # type: ignore[misc]
 
     # --- downloads --------------------------------------------------------------------
 
@@ -780,6 +1036,43 @@ def _prime_profile(profile: Path) -> None:
         os.replace(temp, path)
     except (OSError, ValueError):
         logger.info("could not set the PDF preference in the profile", exc_info=True)
+
+
+class _Kept(Exception):
+    """Internal: the first page failed, but the window it failed in is to be kept."""
+
+    def __init__(self, reason: BrowserError) -> None:
+        super().__init__(reason.message)
+        self.reason = reason
+
+
+class _Abandon(Exception):
+    """Internal: the first page of a window nobody can name yet would not load; remove it."""
+
+    def __init__(self, reason: BrowserError) -> None:
+        super().__init__(reason.message)
+        self.reason = reason
+
+
+def _is_timeout(err: Exception) -> bool:
+    return type(err).__name__ == "TimeoutError" or "Timeout" in str(err)[:80]
+
+
+def _is_page_changing(err: Exception) -> bool:
+    text = str(err)
+    return "Execution context was destroyed" in text or "navigation" in text.lower()
+
+
+def _action_was_performed(err: Exception) -> bool:
+    """Whether a failed click or key press had already happened when it failed.
+
+    Playwright's own log says so: the actionability checks pass, the action is performed
+    ("click action done"), and what is left to time out is the wait for any page load the
+    action began. That is a slow page, not a failed action."""
+    text = str(err)
+    return _is_timeout(err) and ("click action done" in text
+                                 or "waiting for scheduled navigations" in text
+                                 or "navigations have finished" in text)
 
 
 def _is_number(value: Any) -> bool:

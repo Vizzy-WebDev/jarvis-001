@@ -70,8 +70,10 @@ TOOLS: tuple[dict[str, Any], ...] = (
     {
         "name": "browser_read_page",
         "description": ("Read the page the browser is on right now: its address, title, text "
-                        "and elements. Use after Boss has taken over and says they are done, "
-                        "or to look again after a page has had time to load."),
+                        "and elements. This is how you see the browser - look_at_screen cannot, "
+                        "it is not on Boss's screen. Use after Boss has taken over and says they "
+                        "are done, or to look again when a result says the page is still "
+                        "loading."),
         "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
@@ -142,6 +144,44 @@ def tool_declarations(config: dict[str, Any] | None = None) -> list[dict[str, An
     return [dict(tool) for tool in TOOLS]
 
 
+#: What the last page the model was shown listed, so an approval can say WHAT is about to be
+#: clicked or typed into rather than a CSS path nobody can read. Only ever what the model was
+#: itself shown; the card is for the person, and a selector alone asks them to approve blind.
+_seen: dict[str, Any] = {"host": "", "elements": {}}
+
+
+def _remember(page: dict[str, Any]) -> None:
+    from urllib.parse import urlsplit
+
+    try:
+        _seen["host"] = (urlsplit(str(page.get("url") or "")).hostname or "").removeprefix("www.")
+    except ValueError:
+        _seen["host"] = ""
+    _seen["elements"] = {e.get("selector"): e for e in (page.get("elements") or [])
+                         if isinstance(e, dict)}
+
+
+def describe_action(tool: str, args: dict[str, Any]) -> str:
+    """The question an approval asks: what is about to happen, in words a person can judge."""
+    selector = str(args.get("selector") or "")
+    element = _seen["elements"].get(selector) or {}
+    what = (element.get("label") or "").strip() or ("that element" if not selector else
+                                                    f"the element {selector[:40]}")
+    where = f" on {_seen['host']}" if _seen["host"] else ""
+    if tool == "browser_click":
+        return f'Click "{what}"{where}?'
+    if tool == "browser_type":
+        if element.get("type") == "password":
+            return f'Type a password into "{what}"{where}?'
+        text = str(args.get("text") or "")
+        shown = text if len(text) <= 60 else text[:57] + "..."
+        verb = "Choose" if element.get("tag") == "select" else "Type"
+        target = "in" if verb == "Choose" else "into"
+        sent = " and press Enter" if args.get("submit") else ""
+        return f'{verb} "{shown}" {target} "{what}"{where}{sent}?'
+    return f'Use "{tool}" in the browser?'
+
+
 def _address(raw: str) -> str:
     """"example.com" is an address a person types. https, not http: defaulting to the
     unencrypted one because it is easier to reach is not a default worth having."""
@@ -160,6 +200,29 @@ def _page(page: dict[str, Any], limit: int) -> dict[str, Any]:
         "elements": page.get("elements") or [], "note": UNTRUSTED}
     if len(text) > limit or page.get("truncated"):
         result["textTruncated"] = True
+    if page.get("loading"):
+        # True and useful: the click or address worked, and the page is still arriving. Not an
+        # error, and not a reason to click again.
+        result["loading"] = True
+        result["pageNote"] = ("The page is still loading, so this may be the old page or only "
+                              "part of the new one. Do not repeat what you just did: use "
+                              "browser_read_page again in a few seconds.")
+    if page.get("startedDownload"):
+        result["startedDownload"] = True
+        result["pageNote"] = ("That address started a file download instead of showing a page, "
+                              "so there is no page text. Downloads are listed below once they "
+                              "have arrived.")
+    if page.get("frames"):
+        # Content inside a frame (an embedded form, a payment box, a sign-in widget) cannot be
+        # read or used from here. Say so, so a "sparse" page is not mistaken for the whole page.
+        result["embeddedFrames"] = page["frames"]
+        result["frameNote"] = ("This page embeds content from another address that I cannot "
+                               "read or click in. If the task needs it, ask Boss to use "
+                               "Take control for that part.")
+    said = _window_events(page.get("events") or [])
+    if said:
+        result["windowEvents"] = said
+    _remember(page)
     scroll = page.get("scroll") or {}
     if scroll.get("height") and scroll["height"] > scroll.get("y", 0) + scroll.get("viewport", 0) + 40:
         result["moreBelow"] = True      # there is more page than was in view
@@ -170,6 +233,24 @@ def _page(page: dict[str, Any], limit: int) -> dict[str, Any]:
                            "mimeType": "text/html", "name": page.get("title") or page.get("url", ""),
                            "sessionId": AGENT_SESSION_ID, "pageUrl": page.get("url", "")}
     return result
+
+
+def _window_events(events: list[dict[str, Any]]) -> list[str]:
+    """What the window did by itself since the last look, as plain sentences for the model."""
+    said: list[str] = []
+    for event in events:
+        if event.get("kind") == "dialog":
+            kind, message = event.get("type", "dialog"), event.get("message", "")
+            outcome = {"alert": "closed it", "confirm": 'answered "No" (never agreed to for Boss)',
+                       "prompt": "cancelled it", "beforeunload": "stayed on the page"
+                       }.get(kind, "dismissed it")
+            article = "An" if kind[:1] in "aeiou" else "A"
+            said.append(f'{article} {kind} dialog said "{message}" and I {outcome}.')
+        elif event.get("kind") == "popup":
+            where = f" to {event['address']}" if event.get("address") else ""
+            said.append(f"The page tried to open a pop-up window{where}. I only work in one "
+                        "window, so I closed it.")
+    return said
 
 
 def _with_downloads(result: dict[str, Any], host: BrowserHost) -> dict[str, Any]:
@@ -184,20 +265,26 @@ def _with_downloads(result: dict[str, Any], host: BrowserHost) -> dict[str, Any]
         result["downloads"] = waiting
         result["downloadNote"] = ("A PDF was downloaded and is waiting. Use "
                                   "browser_save_downloads to keep it for Boss.")
+    problems = _recent_problems(caught["failures"])
+    if problems:
+        result["downloadProblems"] = problems
+    return result
+
+
+def _recent_problems(failures: list[dict[str, Any]]) -> list[str]:
+    """Downloads the browser refused in the last two minutes, in plain words."""
     from datetime import datetime, timedelta, timezone
 
     recent = datetime.now(timezone.utc) - timedelta(seconds=120)
-    problems = []
-    for failure in caught["failures"][:3]:
+    problems: list[str] = []
+    for failure in failures[:3]:
         try:
             when = datetime.fromisoformat(str(failure["createdAt"]).replace("Z", "+00:00"))
         except (KeyError, ValueError):
             continue
         if when >= recent:
             problems.append(failure["message"])
-    if problems:
-        result["downloadProblems"] = problems
-    return result
+    return problems
 
 
 def _saved(host: BrowserHost, session_id: str | None) -> dict[str, Any]:
@@ -206,11 +293,14 @@ def _saved(host: BrowserHost, session_id: str | None) -> dict[str, Any]:
     kept = import_downloads(host, AGENT_SESSION_ID, conversation_session=session_id)
     result: dict[str, Any] = {
         "ok": True,
+        # Only what this call kept. (The window remembers every PDF ever kept from it; listing
+        # those made one download look like several "duplicate copies".)
         "saved": [{"name": f["name"], "title": f["title"], "url": f["url"], "id": f["id"]}
-                  for f in kept["files"]]}
-    if not kept["files"]:
-        result["note"] = "There is no downloaded PDF waiting."
-    problems = [f["message"] for f in kept["failures"][:3]]
+                  for f in kept["created"]]}
+    if not kept["created"]:
+        result["note"] = ("There is no downloaded PDF waiting." if not kept["files"] else
+                          "Nothing new to keep: what was downloaded is already kept.")
+    problems = _recent_problems(kept["failures"])
     if problems:
         result["downloadProblems"] = problems
     if kept["created"]:
@@ -243,9 +333,13 @@ def _run(name: str, args: dict[str, Any], host: BrowserHost,
          session_id: str | None = None) -> dict[str, Any]:
     if name == "browser_close":
         was_open = host.started and host.is_running(AGENT_SESSION_ID)
+        last = host.remembered(AGENT_SESSION_ID)
         if was_open:
             host.close_session(AGENT_SESSION_ID)
-        return {"ok": True, "closed": was_open}
+        result: dict[str, Any] = {"ok": True, "closed": was_open}
+        if last and last.get("url") not in (None, "", "about:blank"):
+            result["lastPage"] = last["url"]      # so "open that again" needs no guessing
+        return result
 
     if name == "browser_navigate":
         url = str(args.get("url") or "").strip()
@@ -254,7 +348,9 @@ def _run(name: str, args: dict[str, Any], host: BrowserHost,
         available = host.availability()
         if not available["available"]:
             return {"ok": False, "error": available["reason"]}
-        host.open(AGENT_SESSION_ID, _address(url))
+        # keep_on_failure: if the page will not load, the window stays, so the next step (try
+        # again, try another address) has a window to work in.
+        host.open(AGENT_SESSION_ID, _address(url), keep_on_failure=True)
         return _page(host.read(AGENT_SESSION_ID, elements=True), NAV_TEXT_CHARS)
 
     if name == "browser_save_downloads":
@@ -266,7 +362,10 @@ def _run(name: str, args: dict[str, Any], host: BrowserHost,
         return {"ok": False, "error": f"{name} is not something the browser can do."}
 
     if not host.started or not host.is_running(AGENT_SESSION_ID):
-        return {"ok": False, "error": "No page is open - use browser_navigate first."}
+        last = host.remembered(AGENT_SESSION_ID)
+        was = (f" (the window was last on {last['url']})"
+               if last and last.get("url") not in (None, "", "about:blank") else "")
+        return {"ok": False, "error": f"No page is open{was}. Use browser_navigate first."}
 
     if name == "browser_read_page":
         return _page(host.read(AGENT_SESSION_ID, elements=True), NAV_TEXT_CHARS)

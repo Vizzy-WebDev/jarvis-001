@@ -72,6 +72,47 @@ inline are turned into downloads.
   sessionId, pageUrl}` (`orchestrator/pipeline.py::_one_attachment` carries those two fields). The
   chat shows one live card per window per reply (`Message.tsx` de-duplicates by session).
 
+## Slow sites, and what a result is allowed to claim
+
+Sites are often slow (20-27 s for a first page is not unusual on a poor connection), and the first
+version told the model things that were false when they were. The rules now:
+
+- **An action that was performed is never reported as "not found".** Playwright counts a click as
+  unfinished until the page it started has loaded, and its option to stop waiting is deprecated and
+  ignored; so a click on a slow link "timed out" after it had worked, and Jarvis said it "couldn't find
+  anything matching". `_perform` waits a bounded time (`SETTLE_MAX_S`, shared with `_settle`) and, if a
+  page load the action began is still in flight (`running.navigating`, from the page's own request
+  events), treats the action as done. Only a failure before the click is a failure.
+- **A result says when the page is still loading** (`loading: true` + `pageNote`, from the tracker and
+  the page's own `readyState`). A page whose head has arrived and body has not reads as EMPTY; saying
+  "ok, no text" with no flag made the model believe a page was blank.
+- **A page that began to arrive but did not finish is returned**, not thrown away (`_navigate`).
+- **A page being replaced cannot be read until the new one arrives** (the browser holds the read), so
+  reads during a load are given 1.5 s and then report "loading" rather than hanging the task.
+- **The picture, Close and the person's own input never wait behind the agent.** They used to share the
+  window's one lock; while the agent waited on a slow page the live view stalled for tens of seconds,
+  the console gave up at 20 s and showed "Disconnected", and requests queued up to arrive in a burst -
+  the cause of the intermittent "never went Live" / "Close did nothing" failures in the live tests. The
+  picture takes no lock (and falls back to the last one); Close and input wait 3 s for the agent's turn
+  and then go ahead (the action in progress then fails, which is what was asked for).
+- **A failed first page leaves the agent's window open** (`keep_on_failure`), so the next step has a
+  window; a brand-new window nobody has an id for is still removed.
+- **Dialogs, pop-ups and frames are reported, not silent.** A confirm is answered No and a prompt
+  cancelled (never agreed to for the person); a pop-up is closed (one window is all there is); content
+  in an iframe cannot be read or used. Each is told to the model once (`windowEvents`, `embeddedFrames`).
+- **An approval card names what will happen** (`describe_action`: `Click "Add to cart" on
+  saucedemo.com?`, `Type a password into "Password" ...` - never the password). It used to say `Use
+  "browser_click" on Browser?` for every click, i.e. approval was blind.
+
+## Known limits (not bugs: how it is built)
+
+One window, one page: pop-ups are closed, so a sign-in that opens a pop-up (OAuth) or a task that
+needs two pages side by side does not work; links that ask for a new tab are followed in the same one.
+Frames are invisible. Dialogs are always answered No. There is no arbitrary key press. Credentials the
+person types in chat are stored in the conversation and sent to the model (Take control keeps them out
+of it). After an approval the turn does not resume by itself; see the root `CLAUDE.md`'s notes on
+approvals.
+
 ## Testing it
 
 `tests/browser_site.py` is a small website on loopback plus a host that reaches it as

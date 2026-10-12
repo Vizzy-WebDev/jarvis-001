@@ -159,6 +159,20 @@ class BrowserHost:
 
     # --- the operations ---------------------------------------------------------------
 
+    def remembered(self, session_id: str) -> dict[str, str] | None:
+        """What was last known of a window - read from its small file, starting nothing.
+
+        For a plain answer when a window is closed ("it was last on ..."), without waking the
+        browser to ask."""
+        import json
+
+        try:
+            folder = (self._directory or (data_dir() / SESSIONS_FOLDER)) / session_id
+            found = json.loads((folder / "session.json").read_text("utf-8"))
+        except (OSError, ValueError):
+            return None
+        return found if isinstance(found, dict) else None
+
     def sessions(self) -> list[dict[str, str]]:
         return self.run(lambda m: _value(m.sessions()))
 
@@ -170,8 +184,9 @@ class BrowserHost:
             return False
         return self.run(lambda m: _value(m.is_running(session_id)))
 
-    def open(self, session_id: str, url: str) -> dict[str, str]:
-        return self.run(lambda m: m.create_session(session_id, url), 90)
+    def open(self, session_id: str, url: str, *, keep_on_failure: bool = False) -> dict[str, str]:
+        return self.run(lambda m: m.create_session(session_id, url,
+                                                   keep_on_failure=keep_on_failure), 90)
 
     def navigate(self, session_id: str, url: str) -> dict[str, str]:
         return self.run(lambda m: m.navigate(session_id, url), 90)

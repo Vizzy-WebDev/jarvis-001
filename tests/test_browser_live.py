@@ -270,3 +270,82 @@ def test_acting_with_no_window_open_says_so(live):
     assert reply.text.strip()
     errors = [r for r in live.results_of("browser_click")[-1:] if r.get("ok") is False]
     assert not errors or "browser_navigate first" in errors[-1]["error"]
+
+
+# --- whole tasks: sign in, shop, several sites, recovery, context -------------------------------
+
+SHOP = "https://www.saucedemo.com"
+
+
+def test_a_multi_step_workflow_on_a_real_shop_is_finished_and_right(live):
+    """Sign in, add something to the basket, open the basket, read the price - on a real
+    single-page shop, with every click and typing asked about. The answer is checked against
+    the site, and the count of "Go on." nudges the person had to give is recorded."""
+    live.new_chat()
+    mark = live.mark()
+    reply = live.say(
+        f"In your browser, go to {SHOP}. Sign in with the username standard_user and the password "
+        "secret_sauce, add the Sauce Labs Backpack to the cart, open the cart, and tell me the "
+        "price of the item in the cart.", allow=CLICKS, max_follow_ups=14)
+    assert reply.failed is None, reply.failed
+    assert "29.99" in reply.text, reply.text
+    pages = [r for name in ("browser_click", "browser_type", "browser_read_page")
+             for r in live.results_of(name, mark) if r.get("ok")]
+    assert any("cart.html" in str(r.get("url")) for r in pages), "it never reached the cart"
+    asked = [a for a in reply.approvals if a[1] == "allow"]
+    nudges = sum(1 for s in live.steps(mark) if s["role"] == "user") - 1
+    print(f"SHOP WORKFLOW: {len(asked)} approvals, {nudges} nudges from the person")
+    assert nudges <= len(asked) + 1
+
+
+def test_a_sign_in_to_a_real_site_is_still_there_after_closing_and_restarting_jarvis(live):
+    live.new_chat()
+    live.say(f"In your browser, go to {SHOP}. Sign in with the username standard_user and the "
+             "password secret_sauce.", allow=CLICKS, max_follow_ups=6)
+    live.new_chat()
+    live.say("Close the browser window.")
+    assert live.window()["running"] is False
+    live.restart()                                        # Jarvis quits and starts again
+    live.new_chat()
+    mark = live.mark()
+    live.say(f"In your browser, go straight to {SHOP}/inventory.html and tell me the heading of "
+             "the page.")
+    opened = live.results_of("browser_navigate", mark)[-1]
+    assert "inventory.html" in opened["url"], f"it was sent back to sign in: {opened['url']}"
+    assert "Products" in opened["text"], opened["text"][:200]
+
+
+def test_a_task_that_spans_two_sites_is_done_in_order_without_being_nudged(live):
+    live.new_chat()
+    mark = live.mark()
+    reply = live.say("In your browser, first open https://example.com and tell me its heading. "
+                     "Then open https://en.wikipedia.org/wiki/Ada_Lovelace and tell me the year "
+                     "she was born. Give me both answers.")
+    assert reply.failed is None, reply.failed
+    opened = [r["url"] for r in live.results_of("browser_navigate", mark) if r.get("ok")]
+    assert any("example.com" in u for u in opened) and any("Ada_Lovelace" in u for u in opened)
+    assert opened.index(next(u for u in opened if "example.com" in u)) <         opened.index(next(u for u in opened if "Ada_Lovelace" in u)), "wrong order"
+    assert "Example Domain" in reply.text and "1815" in reply.text, reply.text
+
+
+def test_it_carries_on_with_another_address_when_the_first_does_not_work(live):
+    live.new_chat()
+    mark = live.mark()
+    reply = live.say("In your browser, go to https://this-domain-does-not-exist-9z8y7.example. "
+                     "If that does not work, go to https://example.com instead and tell me its "
+                     "heading.")
+    assert reply.failed is None, reply.failed
+    tried = live.results_of("browser_navigate", mark)
+    assert len(tried) >= 2 and tried[0].get("ok") is False and tried[-1].get("ok") is True
+    assert "Example Domain" in reply.text, reply.text
+
+
+def test_a_follow_up_is_answered_from_what_it_already_read_without_browsing_again(live):
+    live.new_chat()
+    live.say("In your browser, go to https://en.wikipedia.org/wiki/Alan_Turing and tell me the "
+             "year he was born.")
+    mark = live.mark()
+    follow_up = live.say("How old was he when he died? Work it out from what you read.")
+    assert follow_up.failed is None, follow_up.failed
+    assert not any(name.startswith("browser_") for name, _, _ in follow_up.tools),         "it browsed again for something it had already read"
+    assert "41" in follow_up.text, follow_up.text

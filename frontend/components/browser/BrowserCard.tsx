@@ -94,6 +94,10 @@ export function BrowserCard({ card }: { card: BrowserCardInfo }) {
           return;                                   // closed: nothing more to watch
         }
         if (response.status === 404) { setState('gone'); return; }
+        if (response.status === 503) {                      // the page is busy arriving: keep looking
+          timer = setTimeout(look, POLL_MS);
+          return;
+        }
         if (!response.ok) throw new Error(`preview ${response.status}`);
         const next = URL.createObjectURL(await response.blob());
         if (cancelled) { URL.revokeObjectURL(next); return; }

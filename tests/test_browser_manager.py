@@ -256,6 +256,125 @@ def test_a_window_whose_tab_died_is_replaced_by_the_next_open(host):
     assert host.is_running(SID) is True
 
 
+def test_a_click_that_worked_is_not_reported_as_failed_because_its_page_is_slow(site, host):
+    """Found in the person's own session: a click on a link whose page took over ten seconds
+    came back as "couldn't find anything matching" - while the page was in fact on its way.
+    Playwright's own log said `click action done`; what timed out was the wait for the page."""
+    import time
+
+    site.handler.slow_seconds = 12
+    host.open(SID, f"{BASE}/slow-link")
+    started = time.time()
+    after = host.click(SID, "#go")                       # must not raise
+    took = time.time() - started
+    assert after["loading"] is True, "the result should say the page is still loading"
+    assert after["url"] == f"{BASE}/slow-link", "it is still the old page: the new one is not here"
+    assert took < 10, f"a slow page held the task for {took:.0f}s"
+    # And the page did arrive: the click really did happen.
+    deadline = time.time() + 15
+    while time.time() < deadline and host.read(SID)["url"] != f"{BASE}/very-slow":
+        time.sleep(0.5)
+    arrived = host.read(SID)
+    assert arrived["url"] == f"{BASE}/very-slow" and "the slow page arrived" in arrived["text"]
+    assert arrived["loading"] is False
+
+
+def test_typing_and_pressing_enter_on_a_slow_form_is_not_reported_as_failed_either(site, host):
+    import time
+
+    site.handler.slow_seconds = 12
+    host.open(SID, f"{BASE}/slow-link")
+    started = time.time()
+    after = host.type_into(SID, "#q", "hello", submit=True)
+    assert after["loading"] is True and time.time() - started < 10
+    deadline = time.time() + 15
+    while time.time() < deadline and "very-slow" not in host.read(SID)["url"]:
+        time.sleep(0.5)
+    assert "very-slow?q=hello" in host.read(SID)["url"], "the form was not submitted"
+
+
+def test_a_page_that_begins_but_does_not_finish_is_returned_as_loading_not_thrown_away(
+        site, host, monkeypatch):
+    from jarvis.browser import manager
+
+    monkeypatch.setattr(manager, "NAV_TIMEOUT_MS", 3000)
+    site.handler.slow_seconds = 9
+    host.open(SID, f"{BASE}/two")
+    opened = host.navigate(SID, f"{BASE}/slow-body")      # must not raise
+    assert opened["url"] == f"{BASE}/slow-body"
+    page = host.read(SID)
+    assert page["loading"] is True and "first part" in page["text"]
+
+
+def test_a_first_page_that_will_not_load_leaves_the_agents_window_open_but_not_a_stranger(
+        site, host, monkeypatch):
+    """A window the agent works in must survive its first address failing - its next step is to
+    try another, and a vanished window made that step answer "no page is open". One nobody has an
+    id for yet is removed, as before, so it cannot pile up out of sight. (An address that cannot
+    even be looked up is refused before any window starts, so there is nothing to keep.)"""
+    from jarvis.browser import manager
+
+    monkeypatch.setattr(manager, "NAV_TIMEOUT_MS", 2000)
+    site.handler.slow_seconds = 8                        # never answers within the 2 seconds
+    with pytest.raises(BrowserError) as unanswered:
+        host.open(SID, f"{BASE}/very-slow", keep_on_failure=True)
+    assert unanswered.value.code == "NAVIGATION_FAILED"
+    assert host.is_running(SID) is True
+    host.navigate(SID, f"{BASE}/two")                    # the next step has a window to use
+    assert host.read(SID)["title"] == "Second"
+
+    with pytest.raises(BrowserError):
+        host.open(SID2, f"{BASE}/very-slow")
+    assert host.is_running(SID2) is False
+    assert [s["id"] for s in host.sessions()] == [SID]
+
+
+def test_an_address_that_starts_a_download_says_so_instead_of_returning_an_empty_page(host):
+    host.open(SID, f"{BASE}/two")
+    host.navigate(SID, f"{BASE}/report.pdf")
+    page = host.read(SID, elements=True)
+    assert page.get("startedDownload") == f"{BASE}/report.pdf"
+    host.navigate(SID, f"{BASE}/two")
+    assert "startedDownload" not in host.read(SID), "the note outlived the page it was about"
+
+
+def test_the_live_picture_and_close_do_not_wait_behind_an_agent_stuck_on_a_slow_page(site, host):
+    """The cause of the intermittent "never went Live" / "Close did nothing" failures in the
+    live tests: the picture, Close and the person's own input all queued behind whatever the
+    agent was doing, and a slow site keeps the agent busy for tens of seconds. The console
+    gives up after 20 seconds and shows "Disconnected"."""
+    import threading
+    import time
+
+    site.handler.slow_seconds = 14
+    host.open(SID, f"{BASE}/two")
+    host.screenshot(SID)                                 # what the card has been polling
+    agent = threading.Thread(target=lambda: _quietly(lambda: host.navigate(SID, f"{BASE}/very-slow")))
+    agent.start()
+    time.sleep(1.0)                                      # the agent is now waiting on the page
+
+    started = time.time()
+    picture = host.screenshot(SID)
+    assert picture[1:4] == b"PNG", "no picture while the agent waited"
+    assert time.time() - started < 6, f"the picture waited {time.time() - started:.0f}s"
+
+    started = time.time()
+    assert host.input(SID, {"type": "scroll", "deltaY": 50})["status"] == "active"
+    assert time.time() - started < 8
+
+    started = time.time()
+    assert host.close_session(SID)["status"] == "closed"
+    assert time.time() - started < 12, f"Close waited {time.time() - started:.0f}s"
+    agent.join(30)
+
+
+def _quietly(job):
+    try:
+        job()
+    except BrowserError:
+        pass                                             # closed under it: that is what was asked
+
+
 def test_sessions_are_remembered_across_a_restart_of_the_host(site, tmp_path):
     first = site.host(tmp_path / "sessions")
     first.open(SID, f"{BASE}/two")

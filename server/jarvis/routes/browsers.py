@@ -96,7 +96,7 @@ def reopen(session_id: str, body: dict = Body(default={})):
         host = get_host()
         known = host.session(session_id)
         url = _url_of(body) if body.get("url") else (known["url"] or "about:blank")
-        return {"ok": True, "session": host.open(session_id, url)}
+        return {"ok": True, "session": host.open(session_id, url, keep_on_failure=True)}
     except BrowserError as err:
         return _fail(err)
 

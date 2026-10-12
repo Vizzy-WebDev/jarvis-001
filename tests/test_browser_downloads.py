@@ -125,7 +125,9 @@ def test_keeping_the_same_download_again_returns_the_same_file(site):
     click("Download the report")
     first = save()
     again = save()
-    assert [f["id"] for f in again["saved"]] == [f["id"] for f in first["saved"]]
+    assert len(first["saved"]) == 1
+    assert again["saved"] == [], "the same download was reported as kept a second time"
+    assert "already kept" in again["note"]
     assert "ui_action" not in again, "a card was shown a second time for the same file"
     from jarvis.artifacts import list_page
 
@@ -238,3 +240,17 @@ def test_the_person_can_keep_what_a_window_caught_from_the_card(site):
     served = client.get(kept["files"][0]["url"])
     assert served.status_code == 200 and served.content.startswith(b"%PDF-")
     assert served.headers["content-disposition"].startswith("attachment")
+
+
+@needs_browser
+def test_a_second_download_reports_only_itself_not_the_first_one_again(site):
+    """In the person's session one PDF was called "two identical copies": the tool listed every
+    PDF ever kept from the window, so the model counted old ones as new."""
+    go(f"{BASE}/downloads")
+    click("Download the report")
+    first = save()
+    assert [f["name"] for f in first["saved"]] == ["report.pdf"]
+    click("Download the report")                          # the same file, fetched again
+    second = save()
+    assert len(second["saved"]) == 1, second
+    assert second["saved"][0]["id"] != first["saved"][0]["id"]

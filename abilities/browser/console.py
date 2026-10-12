@@ -65,6 +65,7 @@ where.textContent=(d.title?d.title+' - ':'')+(d.url||'');lastUrl=d.url||'';if(do
 async function refresh(){if(refreshing||sending||document.hidden)return;refreshing=true;try{
 const r=await fetch(BASE+'/preview',{cache:'no-store',signal:AbortSignal.timeout(20000)});
 if(r.status===409){live=false;previewError='closed';status.textContent='Closed';status.className='';error.textContent='';await details();return;}
+if(r.status===503){status.textContent='Loading…';status.className='';return;}
 if(!r.ok)throw new Error(r.status===404?'That browser window no longer exists.':'The browser is not answering. Try the refresh button.');
 const blob=await r.blob();const next=URL.createObjectURL(blob);
 await new Promise((resolve,reject)=>{const probe=new Image();probe.onload=resolve;probe.onerror=()=>{URL.revokeObjectURL(next);reject(new Error('The picture could not be shown.'));};probe.src=next;});

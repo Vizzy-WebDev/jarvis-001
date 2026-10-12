@@ -72,6 +72,7 @@ DOWNLOADS = b"""<!doctype html><title>Downloads</title><body>
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     port = 0                            # set on the subclass
+    slow_seconds = 13                   # how long /very-slow takes
 
     def log_message(self, *_args):
         pass
@@ -121,6 +122,49 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/cookie-echo":
             seen = (self.headers.get("Cookie") or "none").encode()
             return self._send(b"<!doctype html><title>Echo</title><body>cookie: " + seen + b"</body>")
+        if path == "/slow-link":
+            return self._send(b"<!doctype html><title>Slow link</title><body>"
+                              b"<a id=go href='/very-slow'>Go to the slow page</a>"
+                              b"<input id=f><form action='/very-slow' method=get>"
+                              b"<input name=q id=q><button id=submit>Send</button></form></body>")
+        if path == "/very-slow":
+            # A server that takes a long time to answer: the click that asked for this page
+            # has done its job long before the page arrives.
+            import time
+
+            time.sleep(self.slow_seconds)
+            return self._send(b"<!doctype html><title>Finally</title><body>the slow page arrived</body>")
+        if path == "/slow-body":
+            # Headers and the start of the page arrive at once; the rest stalls. The page has
+            # begun - a person would see it half drawn - but it never finishes in time.
+            import time
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(b"<!doctype html><title>Partial page</title><body><p>first part</p>")
+            self.wfile.flush()
+            time.sleep(self.slow_seconds)
+            self.wfile.write(b"<p>last part</p></body>")
+            self.close_connection = True
+            return None
+        if path == "/dialogs":
+            return self._send(b"""<!doctype html><title>Dialogs</title><body>
+<button id=alert onclick="alert('Heads up'); out.textContent='alert done'">Alert</button>
+<button id=confirm onclick="out.textContent = 'confirm: ' + confirm('Delete everything?')">Confirm</button>
+<button id=prompt onclick="out.textContent = 'prompt: ' + prompt('Your name?', 'nobody')">Prompt</button>
+<p id=out>nothing yet</p></body>""")
+        if path == "/frames":
+            return self._send(b"""<!doctype html><title>Frames</title><body><h1>Outer page</h1>
+<iframe id=inner name=inner src="/frame-inside" width=400 height=200></iframe></body>""")
+        if path == "/frame-inside":
+            return self._send(b"""<!doctype html><title>Inside</title><body><p>Text that lives inside the frame</p>
+<input id=ff placeholder="card number"><button id=fb onclick="r.textContent='frame clicked'">Pay</button><p id=r></p></body>""")
+        if path == "/popup-page":
+            return self._send(b"""<!doctype html><title>Popup page</title><body>
+<button id=pop onclick="window.open('/two', 'child'); out.textContent='opened a popup'">Sign in with a pop-up</button>
+<p id=out></p></body>""")
         if path == "/to-private":
             return self._send(b"", status=302,
                               extra={"Location": f"http://127.0.0.1:{self.port}/"})

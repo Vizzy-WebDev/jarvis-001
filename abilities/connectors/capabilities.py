@@ -219,8 +219,10 @@ def connector_specs(connector: dict[str, Any]) -> list[CapabilitySpec]:
             kind=CapabilityKind.CONNECTOR,
             timeout_s=_timeout_for(kind, tool["name"], connector),
             tags=frozenset({"core"}) if kind in ("files", "browser") else frozenset(),
-            summarize=(lambda args, _label=connector.get("label"), _tool=tool["name"]:
-                       f'Use "{_tool}" on {_label}?'),
+            summarize=((lambda args, _tool=tool["name"]: browser_connector.describe_action(_tool, args))
+                       if kind == "browser" else
+                       (lambda args, _label=connector.get("label"), _tool=tool["name"]:
+                        f'Use "{_tool}" on {_label}?')),
         ))
     return specs
 
@@ -281,6 +283,12 @@ def refresh_tools(connector_id: str) -> dict[str, Any]:
     else:
         found = len(_raw_tools(connector))
 
+    # When the list was last read: the background sweep (`tool_refresh.py`) re-reads a list
+    # that has gone stale, so an app's newer tools do not stay invisible until someone presses
+    # Refresh.
+    from ..jscompat import now_iso
+
+    config["toolsRefreshedAt"] = now_iso()
     updated = store.update_connector(connector_id, {
         "config": config,
         "status": {"state": "working", "checkedAt": None, "detail": f"{found} tools"}})

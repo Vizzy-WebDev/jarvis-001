@@ -146,8 +146,11 @@ def test_a_model_can_finish_a_task_on_a_site_by_reading_picking_acting_and_readi
 
     again = dispatch("browser_read_page")
     assert again["title"] == "Second" and again["url"] == f"{BASE}/two"
-    assert dispatch("browser_close") == {"ok": True, "closed": True}
-    assert dispatch("browser_read_page")["ok"] is False, "a closed window must not read"
+    closed = dispatch("browser_close")
+    assert closed == {"ok": True, "closed": True, "lastPage": f"{BASE}/two"}
+    after = dispatch("browser_read_page")
+    assert after["ok"] is False, "a closed window must not read"
+    assert f"{BASE}/two" in after["error"] and "browser_navigate first" in after["error"],         "a closed window should say where it was, so reopening it needs no guessing"
 
 
 @needs_browser
@@ -214,3 +217,111 @@ def test_it_goes_through_the_same_permission_gate_as_any_connector(site):
     store.set_tool_permission(connector["id"], "browser_navigate", "deny")
     registry = CapabilityRegistry()
     assert "browser_navigate" not in capabilities.sync(registry)
+
+
+# --- what the person is asked, and what a slow page looks like to the model --------------------
+
+def test_an_approval_says_what_will_be_clicked_or_typed_not_a_selector():
+    """The card used to read `Use "browser_click" on Browser?` for every click: the person was
+    asked to approve blind. It names the thing, the site, and for typing the words."""
+    browser_connector._remember({
+        "url": "https://www.example.com/form", "elements": [
+            {"selector": "#go", "tag": "button", "label": "Submit order"},
+            {"selector": "#name", "tag": "input", "type": "text", "label": "Customer name:"},
+            {"selector": "#pw", "tag": "input", "type": "password", "label": "Password"},
+            {"selector": "#size", "tag": "select", "label": "Size"}]})
+    describe = browser_connector.describe_action
+    assert describe("browser_click", {"selector": "#go"}) == 'Click "Submit order" on example.com?'
+    assert describe("browser_type", {"selector": "#name", "text": "Ada Lovelace"}) ==         'Type "Ada Lovelace" into "Customer name:" on example.com?'
+    assert describe("browser_type", {"selector": "#name", "text": "Ada", "submit": True}) ==         'Type "Ada" into "Customer name:" on example.com and press Enter?'
+    assert describe("browser_type", {"selector": "#size", "text": "Large"}) ==         'Choose "Large" in "Size" on example.com?'
+    password = describe("browser_type", {"selector": "#pw", "text": "hunter2"})
+    assert "hunter2" not in password and "password" in password,         "a password must never be written into the approval card"
+    long = describe("browser_type", {"selector": "#name", "text": "x" * 500})
+    assert len(long) < 160
+    unknown = describe("browser_click", {"selector": "div > a:nth-of-type(7)"})
+    assert unknown.startswith('Click "the element div > a:nth-of-type(7)"')
+
+
+def test_the_approval_card_of_the_real_registry_uses_that_wording():
+    store.get_or_create_singleton("browser")
+    registry = CapabilityRegistry()
+    capabilities.sync(registry)
+    browser_connector._remember({"url": "https://example.com/", "elements": [
+        {"selector": "body > a", "tag": "a", "label": "Learn more"}]})
+    spec = registry.get("browser_click")
+    assert spec.summarize({"selector": "body > a"}) == 'Click "Learn more" on example.com?'
+
+
+def test_a_page_that_is_still_loading_is_said_to_be_loading_and_not_to_be_clicked_again():
+    page = browser_connector._page({"url": "https://a.test/", "title": "Loading https://a.test/x",
+                                    "text": "", "loading": True}, 1000)
+    assert page["loading"] is True
+    assert "still loading" in page["pageNote"] and "Do not repeat" in page["pageNote"]
+
+
+def test_an_address_that_started_a_download_says_there_is_no_page_text():
+    page = browser_connector._page({"url": "about:blank", "title": "", "text": "",
+                                    "startedDownload": "https://a.test/x.pdf"}, 1000)
+    assert page["startedDownload"] is True and "file download" in page["pageNote"]
+
+
+@needs_browser
+def test_a_slow_site_does_not_stall_the_agent_or_make_it_think_the_click_failed(site):
+    """The whole path the model uses, against a link whose page takes twelve seconds."""
+    import time
+
+    site.handler.slow_seconds = 12
+    dispatch = lambda name, **args: browser_connector.dispatch(name, args, {})  # noqa: E731
+    opened = dispatch("browser_navigate", url=f"{BASE}/slow-link")
+    link = next(e["selector"] for e in opened["elements"] if e["label"] == "Go to the slow page")
+    started = time.time()
+    clicked = dispatch("browser_click", selector=link)
+    assert clicked["ok"] is True and clicked["loading"] is True
+    assert "Do not repeat" in clicked["pageNote"]
+    assert time.time() - started < 12
+    deadline = time.time() + 20
+    arrived = dispatch("browser_read_page")
+    while arrived.get("loading") or "very-slow" not in arrived["url"]:
+        assert time.time() < deadline, "the page never arrived"
+        time.sleep(1)
+        arrived = dispatch("browser_read_page")
+    assert "the slow page arrived" in arrived["text"]
+
+
+@needs_browser
+def test_the_model_is_told_when_a_page_showed_a_dialog_and_how_it_was_answered(site):
+    """A confirm is answered "No" and a prompt cancelled - nothing a page asks "are you sure?"
+    about is agreed to for the person - but the model used to be told nothing, so it could
+    neither explain why a delete did not happen nor ask the person about it."""
+    dispatch = lambda name, **args: browser_connector.dispatch(name, args, {})  # noqa: E731
+    page = dispatch("browser_navigate", url=f"{BASE}/dialogs")
+    pick = lambda label: next(e["selector"] for e in page["elements"] if e["label"] == label)  # noqa: E731
+    confirm = dispatch("browser_click", selector=pick("Confirm"))
+    assert confirm["windowEvents"] == [
+        'A confirm dialog said "Delete everything?" and I answered "No" (never agreed to for Boss).']
+    assert "confirm: false" in confirm["text"]
+    alert = dispatch("browser_click", selector=pick("Alert"))
+    assert alert["windowEvents"] == ['An alert dialog said "Heads up" and I closed it.']
+    assert "windowEvents" not in dispatch("browser_read_page"), "an event was told twice"
+
+
+@needs_browser
+def test_the_model_is_told_when_a_page_tried_to_open_a_popup(site):
+    dispatch = lambda name, **args: browser_connector.dispatch(name, args, {})  # noqa: E731
+    page = dispatch("browser_navigate", url=f"{BASE}/popup-page")
+    button = next(e["selector"] for e in page["elements"] if "pop-up" in e["label"])
+    after = dispatch("browser_click", selector=button)
+    assert after["url"] == f"{BASE}/popup-page", "the pop-up replaced the page"
+    assert len(after["windowEvents"]) == 1
+    assert "tried to open a pop-up window" in after["windowEvents"][0]
+    assert f"{BASE}/two" in after["windowEvents"][0]
+
+
+@needs_browser
+def test_a_page_with_content_in_a_frame_says_so_rather_than_looking_sparse(site):
+    page = browser_connector.dispatch("browser_navigate", {"url": f"{BASE}/frames"}, {})
+    assert page["embeddedFrames"] == [f"{BASE}/frame-inside"]
+    assert "Take control" in page["frameNote"]
+    plain = browser_connector.dispatch("browser_navigate", {"url": f"{BASE}/two"}, {})
+    assert "embeddedFrames" not in plain

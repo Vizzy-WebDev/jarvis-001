@@ -232,8 +232,33 @@ no built-in image/video generation) and (b) the search itself:
   the prefix of its `app__tool` names. Avoided apps are never returned; if nothing else fits it says so.
 - **Naming an app that isn't usable** (not set up, switched off, needs reconnecting) is reported as
   `notConnected` with the reason, instead of silently offering whatever else mentions the word.
-- A connector's cached tool list can be stale (live Oct 2026: Higgsfield 156 tools vs 101 cached); only
-  `refresh_tools()` updates it.
+- **Several apps can do the same job**: the best tool of EVERY capable app comes first (an app is judged on its own
+  best match, so one app with thirty tools can't hide another's one), at most `PER_APP` tools from one app, and
+  `options` names the capable apps with a note to pick the best fit and say which was used.
+- **`prefer` may be an app, a provider or a MODEL.** An app is preferred outright. Otherwise the name is looked for
+  in the tools' own text (name, description, argument schema): apps that mention it are boosted for what they can
+  DO (a "manage references" tool that merely mentions a model does not outrank the one that generates). A name
+  found nowhere comes back as `unmatched` with a note: it may be in an app's own model catalog, which only that app
+  can say — check it, and if it is not there say so and ask; never quietly substitute. Nothing here knows a provider.
+- A connector's cached tool list is kept current by `tool_refresh.py` (below); only `refresh_tools()` reads one.
+- **Check it with a real model**: `python -m jarvis.routing_check` runs six scripted requests (not-this-app,
+  this-app, a model nothing offers, an app not set up, ...) on the person's own model in a throw-away folder with
+  every connector sign-in left out, and judges from the stored tool calls and approval cards.
+
+## `tool_refresh.py` — tool lists keep up with the apps
+
+A list read at connect time went stale (live: Higgsfield 156 tools vs 101 known). A sweep behind
+`JARVIS_CONNECTOR_TOOLS` (set by `main()`, started by `assembly.start_background_work()`) re-reads any WORKING,
+enabled app whose list is older than 24 h (`config.toolsRefreshedAt`, stamped by every `refresh_tools()`; an absent
+stamp counts as stale), one app at a time, first sweep 45 s after launch, then every 2 h. A transient failure is
+logged and never changes a working app's status (a refused sign-in still does); apps that are broken or switched off
+are left alone. New tools get the ordinary default, Ask.
+
+## Who a sign-in was made as
+
+`accountHint` (from an OIDC `id_token`, when the service sends one) is shown in the connector row and named on the
+"Connected" page. A provider that is already signed in to in this browser approves without showing a consent
+screen, so the person's only proof of whose access was granted is that line — ChatCut does exactly this.
 
 ## Transient failures
 

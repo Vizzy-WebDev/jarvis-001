@@ -353,3 +353,23 @@ def test_a_missing_document_is_not_retried(monkeypatch):
             return await oauth._try_fetch_json(client, "https://x.test/.well-known/y")
 
     assert asyncio.run(run()) is None and len(asked) == 1
+
+
+# --- the person can SEE who a sign-in was made as -------------------------------------------------
+
+def test_the_account_a_service_reported_is_shown_and_named_on_the_connected_page(api):
+    from jarvis.routes.connectors import _callback_page
+
+    connector = store.add_connector(type="mcp", label="ChatCut", config={})
+    store.update_connector(connector["id"], {"accountHint": "me@example.test",
+                                             "status": {"state": "working", "checkedAt": None, "detail": None}})
+    listed = api.get("/api/connectors").json()["connectors"]
+    assert [c["accountHint"] for c in listed if c["label"] == "ChatCut"] == ["me@example.test"]
+    page = _callback_page({"ok": True, "connectorId": connector["id"]})
+    assert "ChatCut" in page and "me@example.test" in page
+
+
+def test_a_connector_with_no_known_account_is_unchanged(api):
+    store.add_connector(type="mcp", label="Plain", config={})
+    [row] = [c for c in api.get("/api/connectors").json()["connectors"] if c["label"] == "Plain"]
+    assert "accountHint" not in row

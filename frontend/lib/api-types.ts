@@ -378,6 +378,8 @@ export interface Connector {
    *  hand-drawn mark. Absent while nothing has resolved yet. */
   iconDataUri?: string | null;
   config: { hasSecret: boolean };
+  /** Who the sign-in was made as, when the service said (e.g. an email). */
+  accountHint?: string;
   [key: string]: unknown;
 }
 

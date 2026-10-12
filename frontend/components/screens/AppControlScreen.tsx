@@ -45,7 +45,10 @@ const STATUS_LABEL: Record<string, string> = {
 
 function statusText(connector: Connector): string {
   const state = connector.status?.state;
-  return (state && STATUS_LABEL[state]) || connector.status?.detail || 'Not connected';
+  const text = (state && STATUS_LABEL[state]) || connector.status?.detail || 'Not connected';
+  // Show who it is signed in as: a provider already signed in to in this browser approves
+  // without a visible step, so this is the person's only proof of whose access was granted.
+  return state === 'working' && connector.accountHint ? `${text} · ${connector.accountHint}` : text;
 }
 
 /** A real signal, not just dimmer text: green once it actually works, amber on
@@ -1133,6 +1136,9 @@ function ConnectionStatus({ connector }: { connector: Connector }) {
       <div className="min-w-0">
         <p className="text-[13px] text-ink">{text}</p>
         {state === 'working' && detail && <p className="text-[12px] text-ink-faint">{detail}</p>}
+        {state === 'working' && connector.accountHint && (
+          <p className="text-[12px] text-ink-faint" data-testid="account-hint">Signed in as {connector.accountHint}</p>
+        )}
       </div>
     </div>
   );

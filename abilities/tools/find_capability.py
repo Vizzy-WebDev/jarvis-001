@@ -23,6 +23,8 @@ from typing import Any
 from ..capabilities import CapabilityKind, CapabilityRegistry, CapabilitySpec, Risk
 
 MAX_MATCHES = 6
+#: At most this many of one app's tools in an answer while other apps can also do the job.
+PER_APP = 4
 _WORD = re.compile(r"[a-z0-9]+")
 
 #: Filler that appears in nearly every capability description, so matching on it
@@ -78,6 +80,32 @@ def _score(spec: CapabilitySpec, terms: list[str], weights: dict[str, float] | N
 _NEGATION = re.compile(
     r"\b(?:do not|don'?t|dont|never|without|instead of|rather than|other than|apart from|except|"
     r"anything but|not)\b")
+
+
+def _spec_text(spec: CapabilitySpec) -> str:
+    """Everything a capability says about itself, for finding a provider or model name in it:
+    its name, description and the descriptions and values in its argument schema."""
+    import json
+
+    raw = f"{spec.name} {spec.description or ''} {json.dumps(spec.input_schema or {}, default=str)}"
+    return " ".join(_WORD.findall(raw.lower()))
+
+
+def _persons_words(ctx: Any) -> str:
+    """What the person last said in this conversation, or "" when there is none to read
+    (a background run, a test, no conversation behind the call)."""
+    session = getattr(ctx, "session_id", None)
+    if not session:
+        return ""
+    try:
+        from .. import conversation
+
+        for message in reversed(conversation.get_messages(session)):
+            if message.get("role") == "user":
+                return str(message.get("text") or "")
+    except Exception:  # noqa: BLE001 — never let reading the conversation break the search
+        pass
+    return ""
 
 
 def _app_of(spec: CapabilitySpec) -> str | None:
@@ -213,25 +241,38 @@ def _brief(description: str) -> str:
 
 def build(registry: CapabilityRegistry) -> list[CapabilitySpec]:
     def _run(intent: str = "", avoid: list[str] | None = None,
-             prefer: str | None = None) -> dict[str, Any]:
+             prefer: str | None = None, ctx: Any = None) -> dict[str, Any]:
         # A background worker's own tools are not answers to "can you do X":
         # nothing the user says can reach one, so offering it would be a lie.
         searchable = [spec for spec in registry.list() if not spec.has_tag("job")]
         apps = _apps_in(searchable)
         text, left_out, asked = _split_instruction(intent, apps)
+        # The person's OWN words count too. Seen live: told "use X, not Y or Z", the model searched
+        # for just "generate a video with X" and passed no `avoid`, so Y's and Z's tools were
+        # offered anyway. What the person said about WHICH app must not depend on the model
+        # remembering to repeat it.
+        said_avoid, said_asked = _split_instruction(_persons_words(ctx), apps)[1:]
+        left_out |= said_avoid
+        asked |= said_asked
         for given in avoid or []:
             found = _resolve(str(given), apps)
             if found:
                 left_out.add(found)
-        if prefer:
-            found = _resolve(str(prefer), apps)
-            if found and found not in left_out:
-                asked.add(found)
+        # What the person asked for by name may be an app, or only a provider or MODEL that some
+        # app offers (a model catalog lives behind the app's own tools, so nothing here can know
+        # whether it is there). An app is preferred outright; anything else is looked for in the
+        # tools' own text, and when no tool mentions it that is said, not papered over.
+        requested = str(prefer or "").strip()
+        requested_app = _resolve(requested, apps) if requested else None
+        if requested_app and requested_app not in left_out:
+            asked.add(requested_app)
+        needle = " ".join(_WORD.findall(requested.lower())) if requested and not requested_app else ""
         asked -= left_out
         # The words that NAME an app are not part of what is wanted: left in, a service
         # named only to be avoided would be the strongest match of all.
         naming = ({w for app in (left_out | asked) for w in app.split("_")}
-                  | {app.replace("_", "") for app in (left_out | asked)})
+                  | {app.replace("_", "") for app in (left_out | asked)}
+                  | set(needle.split()))
         terms = [t for t in _terms(text) if t not in naming]
         if not terms and not asked:
             # Same shape as "nothing matched", deliberately: one result shape
@@ -253,37 +294,87 @@ def build(registry: CapabilityRegistry) -> list[CapabilitySpec]:
 
         scored = [(spec, _score(spec, terms, weights)) for spec in candidates
                   if _app_of(spec) in asked or covers(spec) >= need]
-        if asked:
-            # Asked for by name: that app's tools come first, whatever else mentions the words.
+        holders: set[str] = set()
+        unmatched: list[str] = []
+        if needle:
+            holders = {spec.name for spec in candidates if needle in _spec_text(spec)}
+            if not holders:
+                unmatched = [requested]
+        # An app asked for by name, or one whose tools mention the model that was asked for, is
+        # boosted — for what it can DO about the request. A tool that merely mentions the model
+        # (a "manage references" tool) must not outrank the one that generates.
+        holder_apps = {a_ for a_ in (_app_of(spec) for spec in candidates if spec.name in holders) if a_}
+        boost_apps = asked | holder_apps
+        boost = {s_.name for s_, _ in scored if _app_of(s_) in boost_apps}
+        if boost:
             bonus = max((n for _, n in scored), default=0) + 1
-            scored = [(s, n + bonus if _app_of(s) in asked else n) for s, n in scored]
-        best = max((n for _, n in scored), default=0)
-        # Two gates, both needed: a hard floor so one incidental word in a long
-        # description is not a match, and a relative floor so a genuinely strong
-        # match is not diluted by six weak ones.
-        floor = max(2, best / 2)
-        matches = sorted(((s, n) for s, n in scored if n >= floor),
-                         key=lambda pair: (-pair[1], pair[0].name))[:MAX_MATCHES]
+            scored = [(s_, n + bonus if s_.name in boost else n) for s_, n in scored]
+
+        # Each app is judged on its own best match: one app with thirty tools must not set a bar
+        # that hides another app's single, equally good one.
+        by_app: dict[str, list[tuple[CapabilitySpec, float]]] = {}
+        for spec, n in scored:
+            by_app.setdefault(_app_of(spec) or "", []).append((spec, n))
+        qualified: dict[str, list[tuple[CapabilitySpec, float]]] = {}
+        for app, rows in by_app.items():
+            best_here = max(n for _, n in rows)
+            if best_here < 2:
+                continue  # a hard floor: one incidental word in a long description is no match
+            qualified[app] = sorted(((s_, n) for s_, n in rows if n >= max(2, best_here / 2)),
+                                    key=lambda pair: (-pair[1], pair[0].name))
+        # The best tool of EVERY capable app first, then the rest by score, at most PER_APP from
+        # one app: otherwise the app with the most tools fills the whole answer and the others
+        # are never even seen.
+        order = sorted(qualified, key=lambda app: (-qualified[app][0][1], app))
+        matches = [qualified[app][0] for app in order][:MAX_MATCHES]
+        leftovers = sorted(((s_, n) for app in order for s_, n in qualified[app][1:PER_APP]),
+                           key=lambda pair: (-pair[1], pair[0].name))
+        matches += leftovers[:MAX_MATCHES - len(matches)]
+        matches.sort(key=lambda pair: (-pair[1], pair[0].name))
+        capable = sorted(app for app in qualified if "__" in (qualified[app][0][0].name))
+
         unusable = _named_but_unusable(terms + sorted(naming))
         notes: list[str] = []
         if left_out:
-            notes.append("As asked, left out: " + ", ".join(sorted(a.replace("_", " ") for a in left_out))
+            notes.append("As asked, left out: " + ", ".join(sorted(a_.replace("_", " ") for a_ in left_out))
                          + ". Do not do this through those apps; if nothing else fits, say so.")
+        if unmatched:
+            notes.append(
+                f"The user asked for {unmatched[0]}, and no connected app is named that or mentions it. "
+                "It may still be one of the models an app below offers: look at that app's own list "
+                "of models before saying otherwise. If it is not there, say so plainly and ask before "
+                "using anything else — do not quietly substitute.")
+        if holders:
+            names_ = sorted({_app_of(spec) or spec.name for spec in candidates if spec.name in holders})
+            notes.append(f"{requested} is mentioned by the tools of: {', '.join(n_.replace('_', ' ') for n_ in names_)}.")
+        if len(capable) > 1:
+            notes.append("More than one connected app can do this: "
+                         + ", ".join(c_.replace("_", " ") for c_ in capable)
+                         + ". If the user did not choose, pick the ONE best fit for what they asked and "
+                           "use exactly one, and say which you used — not several at once, which would "
+                           "do and charge for the same thing repeatedly — unless the user asked to "
+                           "compare or to use more than one.")
         if not matches:
             # An honest "no" beats offering something unrelated (§45).
             answer: dict[str, Any] = {"ok": True, "found": [], "unlock": [],
                                       "note": f"I have nothing that does that ({intent})."}
             if notes:
                 answer["note"] = " ".join(notes) + " " + answer["note"]
+            if unmatched:
+                answer["unmatched"] = unmatched
             if unusable:
                 answer.update(notConnected=unusable, note=_unusable_note(unusable))
             return answer
         answer = {
             "ok": True,
-            "found": [{"name": s.name, "description": _brief(s.description)} for s, _ in matches],
-            "unlock": [s.name for s, _ in matches],
+            "found": [{"name": s_.name, "description": _brief(s_.description)} for s_, _ in matches],
+            "unlock": [s_.name for s_, _ in matches],
             "note": " ".join(notes + ["These are callable now, in this same turn."]),
         }
+        if len(capable) > 1:
+            answer["options"] = capable
+        if unmatched:
+            answer["unmatched"] = unmatched
         if unusable:
             answer.update(notConnected=unusable,
                           note=answer["note"] + " " + _unusable_note(unusable))
@@ -302,12 +393,14 @@ def build(registry: CapabilityRegistry) -> list[CapabilitySpec]:
             "intent": {"type": "string",
                        "description": 'A few words, e.g. "schedule a reminder".'},
             "prefer": {"type": "string",
-                       "description": "An app the user asked you to use, by name, if they did."},
+                       "description": "An app, provider or model the user asked you to use, by name, "
+                                      "if they named one."},
             "avoid": {"type": "array", "items": {"type": "string"},
                       "description": "Apps the user told you NOT to use, by name, if they did."}},
             "required": ["intent"]},
         risk=Risk.LOW,
         handler=_run,
+        wants_context=True,
         timeout_s=5.0,
         tags=frozenset({"core"}),
     )]

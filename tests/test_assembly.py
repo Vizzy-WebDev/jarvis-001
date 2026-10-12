@@ -23,6 +23,7 @@ def _stop_everything() -> None:
     starts them must also be the one that cancels them."""
     from jarvis import chat_store, notifications
     from jarvis.connectors import icons as connector_icons
+    from jarvis.connectors import tool_refresh as connector_tools
     from jarvis.heartbeat import engine as heartbeat
     from jarvis.heartbeat.triggers import stop_triggers
     from jarvis.improvement import cadence as improvement_cadence
@@ -34,7 +35,8 @@ def _stop_everything() -> None:
     for stop in (sampler.stop,
                 stop_triggers, heartbeat.stop, scheduler_engine.stop,
                 monitor_engine.stop, job_supervisor.stop, improvement_cadence.stop,
-                notifications.stop_trash_purge, connector_icons.stop, chat_store.stop_trash_purge):
+                notifications.stop_trash_purge, connector_icons.stop, connector_tools.stop,
+                chat_store.stop_trash_purge):
         try:
             stop()
         except Exception:  # noqa: BLE001 — teardown must not itself fail the test
@@ -79,7 +81,7 @@ def test_every_gated_subsystem_reports_started_when_every_interlock_is_set(scrat
 
     for key in ("sampler", "heartbeat", "scheduler", "monitor",
                "job_supervisor", "improvement_cadence", "notification_trash_purge",
-               "connector_icons", "chat_trash_purge"):
+               "connector_icons", "connector_tools", "chat_trash_purge"):
         assert started[key] is True, f"{key} did not start with every interlock set"
 
 
@@ -93,7 +95,7 @@ def test_without_any_interlock_nothing_starts(scratch, monkeypatch):
 
     for key in ("sampler", "heartbeat", "scheduler", "monitor",
                "job_supervisor", "improvement_cadence", "notification_trash_purge",
-               "connector_icons", "chat_trash_purge"):
+               "connector_icons", "connector_tools", "chat_trash_purge"):
         assert started[key] is False, f"{key} started with no interlock set"
 
 
@@ -131,6 +133,7 @@ def test_mains_interlock_set_matches_what_start_background_work_actually_starts(
     one `main()` actually sets."""
     from jarvis import chat_store, notifications
     from jarvis.connectors import icons as connector_icons
+    from jarvis.connectors import tool_refresh as connector_tools
     from jarvis.heartbeat import engine as heartbeat
     from jarvis.improvement import cadence as improvement_cadence
     from jarvis.jobs import orchestrator as job_supervisor
@@ -142,6 +145,6 @@ def test_mains_interlock_set_matches_what_start_background_work_actually_starts(
         heartbeat.ENABLE_ENV, scheduler_engine.ENABLE_ENV, monitor_engine.ENABLE_ENV,
         job_supervisor.ENABLE_ENV, improvement_cadence.ENABLE_ENV,
         sampler.ENABLE_ENV, notifications.ENABLE_ENV, connector_icons.ENABLE_ENV,
-        chat_store.ENABLE_ENV,
+        chat_store.ENABLE_ENV, connector_tools.ENABLE_ENV,
     }
     assert gated_by_main <= set(main_module._BACKGROUND_INTERLOCKS)

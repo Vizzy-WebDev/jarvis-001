@@ -147,6 +147,10 @@ def _public(connector: dict) -> dict:
     # as `null` when nothing has resolved — same reasoning as `toolPermissions`
     # above: keeps a connector with no real logo yet byte-identical to the
     # recorded contract fixture, which predates this field entirely.
+    # Who the sign-in was made as, when the service said (an OIDC id_token). Omitted when
+    # unknown, like the fields above, so a connector without one stays byte-identical.
+    if connector.get("accountHint"):
+        public["accountHint"] = connector["accountHint"]
     icon_data_uri = icons.icon_for(host_key, refresh=False) if host_key else None
     if icon_data_uri:
         public["iconDataUri"] = icon_data_uri
@@ -308,8 +312,15 @@ def _callback_page(outcome: dict) -> str:
     import html as _html
 
     if outcome.get("ok"):
-        body = ("<p>Connected.</p><p>You can close this tab.</p>"
-                "<script>setTimeout(function(){ window.close(); }, 1200);</script>")
+        # Say WHICH app and, when the service told us, which account: a provider that is
+        # already signed in to in this browser approves without showing anything, and
+        # "Connected." alone left no way to see who Jarvis had just been given access as.
+        connector = store.get_connector(outcome.get("connectorId") or "") or {}
+        who = f" to {_html.escape(str(connector['label']))}" if connector.get("label") else ""
+        account = (f" as <strong>{_html.escape(str(connector['accountHint']))}</strong>"
+                   if connector.get("accountHint") else "")
+        body = (f"<p>Connected{who}{account}.</p><p>You can close this tab.</p>"
+                "<script>setTimeout(function(){ window.close(); }, 4000);</script>")
     else:
         reason = _html.escape(str(outcome.get("error") or "Something went wrong."))
         body = (f"<p>Could not connect: {reason}</p>"

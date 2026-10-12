@@ -219,6 +219,9 @@ def _page(page: dict[str, Any], limit: int) -> dict[str, Any]:
         result["frameNote"] = ("This page embeds content from another address that I cannot "
                                "read or click in. If the task needs it, ask Boss to use "
                                "Take control for that part.")
+    if page.get("takenOver"):
+        result["takeoverNote"] = ("Boss used Take control since you last looked, so whatever "
+                                  "changed on the page is their doing, not the site's.")
     said = _window_events(page.get("events") or [])
     if said:
         result["windowEvents"] = said

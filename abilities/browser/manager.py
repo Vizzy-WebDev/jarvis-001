@@ -205,6 +205,9 @@ class _Running:
     #: The last picture taken of the page, and when: shown when a fresh one cannot be had because
     #: the page is busy arriving.
     last_shot: tuple | None = None
+    #: Whether the PERSON has used the window (Take control) since the agent last looked. The
+    #: agent is told once, so it does not mistake the person's doing for the page's own.
+    person_acted: bool = False
     #: Things the window did on its own that the next report should mention: a dialog it
     #: dismissed, a pop-up it closed. Told once, then forgotten.
     events: list = field(default_factory=list)
@@ -771,6 +774,10 @@ class BrowserManager:
         result.pop("ready", None)
         if running.events:
             result["events"], running.events[:] = list(running.events), []
+        if elements and running.person_acted:
+            # Only the agent's own look settles this: the console and the card read nothing.
+            result["takenOver"] = True
+            running.person_acted = False
         if running.download_started and time.monotonic() - running.download_started[1] < 60:
             result["startedDownload"] = running.download_started[0]
         if elements:
@@ -790,7 +797,9 @@ class BrowserManager:
     async def input(self, session_id: str, value: dict[str, Any]) -> dict[str, str]:
         session_id = validate_session_id(session_id)
         async with self._hold(session_id):
-            page = self._active(session_id).page
+            running = self._active(session_id)
+            page = running.page
+            running.person_acted = True
             kind = value.get("type")
             x, y, key = value.get("x"), value.get("y"), value.get("key")
             text, delta = value.get("text"), value.get("deltaY")

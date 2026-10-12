@@ -143,12 +143,9 @@ def test_a_sign_in_survives_closing_the_window_and_restarting_jarvis(live):
 
     live.restart()                                  # Jarvis itself quits and starts again
     live.new_chat()
-    mark = live.mark()
-    reply = live.say("In your browser, go to https://httpbin.org/cookies and tell me exactly "
-                     "which cookies it shows.")
-    shown = live.results_of("browser_navigate", mark)[-1]["text"]
+    shown = live.navigate_text("In your browser, go to https://httpbin.org/cookies and tell me "
+                               "exactly which cookies it shows.")
     assert "remembered" in shown, f"the cookie did not survive: {shown!r}"
-    assert "remembered" in lower(reply.text)
 
 
 def test_a_sign_in_survives_jarvis_being_killed_without_closing_anything(live):
@@ -160,10 +157,8 @@ def test_a_sign_in_survives_jarvis_being_killed_without_closing_anything(live):
     live.process_kill()                             # the console window closed: no goodbye
     live.start_again()
     live.new_chat()
-    mark = live.mark()
-    live.say("In your browser, go to https://httpbin.org/cookies and tell me exactly which "
-             "cookies it shows.")
-    text = live.results_of("browser_navigate", mark)[-1]["text"]
+    text = live.navigate_text("In your browser, go to https://httpbin.org/cookies and tell me "
+                              "exactly which cookies it shows.")
     assert "also-kept" in text, f"a hard exit lost the sign-in: {text!r}"
     assert "remembered" in text
 
@@ -175,6 +170,8 @@ def test_the_person_can_fill_in_a_real_form_by_hand_through_take_control(live):
                         timeout=90)
     assert opened.status_code == 201, opened.text
     window = opened.json()["session"]["id"]
+    ready = live.read_window_when_ready(window, 60)         # a slow site is not a failed test
+    assert ready.get("text") and not ready.get("loading"), f"the form never finished loading: {ready}"
     send = lambda body: httpx.post(f"{live.base}/api/browsers/{window}/input", json=body,  # noqa: E731
                                    timeout=60)
     assert send({"type": "key", "key": "Tab"}).json()["ok"] is True

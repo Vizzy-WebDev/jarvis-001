@@ -164,7 +164,10 @@ def test_after_the_person_takes_over_the_next_read_shows_what_they_did(site):
                      {"type": "click", "x": 10, "y": 10})      # the person clicks somewhere
     get_host().input(browser_connector.AGENT_SESSION_ID,
                      {"type": "text", "text": "typed by the person"})
-    assert browser_connector.dispatch("browser_read_page", {}, {})["ok"] is True
+    after = browser_connector.dispatch("browser_read_page", {}, {})
+    assert after["ok"] is True
+    assert "Take control" in after["takeoverNote"],         "the model was left to guess whether the page changed by itself"
+    assert "takeoverNote" not in browser_connector.dispatch("browser_read_page", {}, {}),         "the note was repeated on every look after"
 
 
 @needs_browser

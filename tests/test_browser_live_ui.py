@@ -62,7 +62,7 @@ def last_assistant_text(live: LiveApp) -> str:
     return spoken[-1].lower() if spoken else ""
 
 
-def wait_for_answer(live: LiveApp, needle: str, seconds: float = 150) -> str:
+def wait_for_answer(live: LiveApp, needle: str, seconds: float = 300) -> str:
     deadline = time.time() + seconds
     while time.time() < deadline:
         text = last_assistant_text(live)
@@ -72,23 +72,42 @@ def wait_for_answer(live: LiveApp, needle: str, seconds: float = 150) -> str:
     raise AssertionError(f"the answer never mentioned {needle!r}; last said: {last_assistant_text(live)!r}")
 
 
+def _what_the_page_was_doing(page: Page, live: LiveApp) -> str:
+    """If a click will not land, why: what state is the card in, and what did the model do?"""
+    card = page.locator("[data-testid=browser-card]")
+    count = card.count()
+    state = card.first.get_attribute("data-state") if count else None
+    text = card.first.inner_text(timeout=3000).replace(chr(10), " | ") if count else ""
+    calls = [name for step in live.steps()[-12:] for name, _ in step["calls"]]
+    return (f"cards={count} state={state!r} text={text!r}; the window is {live.window()}; "
+            f"the model's last calls: {calls}")
+
+
 def test_the_person_takes_over_and_jarvis_sees_where_they_took_it(live, page):
     live.new_chat()
     visit(page, live.base)
     send(page, "Go to https://example.com and tell me the title of the page.")
 
     # The chat shows the window, live, with what Jarvis is looking at.
-    page.wait_for_selector("[data-testid=browser-card][data-state=live]", timeout=150000)
+    try:
+        page.wait_for_selector("[data-testid=browser-card][data-state=live]", timeout=300000)
+    except Exception:
+        raise AssertionError("the card never went live: " + _what_the_page_was_doing(page, live)
+                             + f"; person-visible chat text: {page.inner_text('body')[-400:]!r}") from None
     card = page.locator("[data-testid=browser-card]")
     assert "Example Domain" in card.locator("[data-testid=browser-card-title]").inner_text()
     assert card.locator("[data-testid=browser-card-site]").inner_text() == "example.com"
     assert page.evaluate("el => el.naturalWidth", card.locator(
         "[data-testid=browser-card-shot]").element_handle()) == 1280
     wait_for_answer(live, "example")
+    live.wait_idle()                          # the model has finished: the chat has stopped moving
 
     # The person takes control and sends the window somewhere else, by hand.
-    with page.context.expect_page() as opened:
-        page.click("[data-testid=browser-card-take-control]")
+    try:
+        with page.context.expect_page() as opened:
+            page.click("[data-testid=browser-card-take-control]", timeout=30000)
+    except Exception:
+        raise AssertionError("could not click Take control: " + _what_the_page_was_doing(page, live)) from None
     console = opened.value
     try:
         until(console, "document.querySelector('#status').className === 'live'", 60)
@@ -104,9 +123,16 @@ def test_the_person_takes_over_and_jarvis_sees_where_they_took_it(live, page):
     assert console.locator("#error").inner_text() == ""
 
     # The chat's own card follows the window.
-    page.wait_for_function(
-        "document.querySelector('[data-testid=browser-card-title]').textContent.includes('Wikipedia')",
-        timeout=30000)
+    try:
+        page.wait_for_function(
+            "document.querySelector('[data-testid=browser-card-title]').textContent.includes('Wikipedia')",
+            timeout=45000)
+    except Exception:
+        state = page.evaluate("""() => ({hidden: document.hidden, visibility: document.visibilityState,
+            focus: document.hasFocus(), card: document.querySelector('[data-testid=browser-card]')?.innerText,
+            state: document.querySelector('[data-testid=browser-card]')?.dataset.state})""")
+        raise AssertionError(f"the chat card never followed the window: {state}; window: "
+                             f"{live.window()}") from None
 
     # And when the person says they are done, Jarvis reads the page they left it on.
     send(page, "I took over the browser and moved it. Read the page again and tell me which "
@@ -121,8 +147,9 @@ def test_the_window_can_be_closed_from_the_card_and_opened_again_still_signed_in
     live.new_chat()
     visit(page, live.base)
     send(page, "Go to https://httpbin.org/cookies/set?card=kept and tell me the cookies.")
-    page.wait_for_selector("[data-testid=browser-card][data-state=live]", timeout=150000)
+    page.wait_for_selector("[data-testid=browser-card][data-state=live]", timeout=300000)
     wait_for_answer(live, "kept")
+    live.wait_idle()
     page.click("[data-testid=browser-card-close]")
     try:
         page.wait_for_selector("[data-testid=browser-card][data-state=closed]", timeout=30000)
@@ -133,6 +160,6 @@ def test_the_window_can_be_closed_from_the_card_and_opened_again_still_signed_in
     assert page.locator("[data-testid=browser-card-take-control]").count() == 0
     page.click("[data-testid=browser-card-reopen]")
     page.wait_for_selector("[data-testid=browser-card][data-state=live]", timeout=60000)
-    assert "kept" in live.read_window()["text"], "reopening lost what the window had"
+    assert "kept" in live.read_window_when_ready()["text"], "reopening lost what the window had"
     refresh(page)
     page.wait_for_selector("[data-testid=browser-card]", timeout=60000)

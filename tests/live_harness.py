@@ -257,5 +257,46 @@ class LiveApp:
     def read_window(self, session: str = "0a7e5d11-6a72-4a76-8a1c-000000000001") -> dict[str, Any]:
         return httpx.get(f"{self.base}/api/browsers/{session}/read", timeout=60).json()
 
+    def read_window_when_ready(self, session: str = "0a7e5d11-6a72-4a76-8a1c-000000000001",
+                               seconds: float = 60) -> dict[str, Any]:
+        """The window's page once it has finished loading - a slow site is not a failed test."""
+        deadline = time.time() + seconds
+        page: dict[str, Any] = {}
+        while time.time() < deadline:
+            page = self.read_window(session)
+            if page.get("ok") and not page.get("loading") and page.get("text"):
+                return page
+            time.sleep(1.5)
+        return page
+
+    def wait_idle(self, seconds: float = 150, quiet: float = 3.0) -> None:
+        """Wait until the model has finished the turn: the last thing stored is its own answer,
+        with no tool call waiting on a result, and nothing new has been stored for `quiet` s."""
+        deadline = time.time() + seconds
+        last_count, since = -1, time.time()
+        while time.time() < deadline:
+            steps = self.steps()
+            if len(steps) != last_count:
+                last_count, since = len(steps), time.time()
+            done = bool(steps) and steps[-1]["role"] == "assistant" and not steps[-1]["calls"]
+            if done and time.time() - since >= quiet:
+                return
+            time.sleep(0.5)
+
+    def navigate_text(self, message: str, mark_name: str = "browser_navigate",
+                      tries: int = 3) -> str:
+        """Ask the model to open something and return what the browser really showed. A site
+        that answers with a 5xx page (httpbin does, now and then) is asked again: that is the
+        website's weather, not a finding."""
+        text = ""
+        for _ in range(tries):
+            before = self.mark()
+            self.say(message)
+            results = self.results_of(mark_name, before)
+            text = results[-1].get("text", "") if results else ""
+            if not text.startswith(("502", "503", "504", "Service", "Bad Gateway")):
+                return text
+        return text
+
     def artifacts(self) -> list[dict[str, Any]]:
         return httpx.get(f"{self.base}/api/artifacts", timeout=20).json()["artifacts"]

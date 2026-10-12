@@ -14,7 +14,7 @@ flags, read here and nowhere else.
     reasoning_param          how effort is sent: "reasoning_effort" | "reasoning_object"
     max_tokens_param         "max_tokens" (default) | "max_completion_tokens"
     show_endpoint            discovery also asks Ollama's native /api/show per model
-    catalog_fields           "rich": the model list carries capabilities and prices
+    upstream_from_id         the vendor before the "/" in a listed id is who serves it (a gateway)
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from . import _turns, _wire
 NAME = "openai_chat"
 QUIRKS = frozenset({"no_parallel_tool_calls", "tool_args_not_streamed", "rejects_strict", "no_stream_usage",
                     "no_system_role", "no_tool_call_ids", "error_envelope_in_text", "reasoning_param",
-                    "max_tokens_param", "show_endpoint", "catalog_fields"})
+                    "max_tokens_param", "show_endpoint", "upstream_from_id"})
 DEFAULT_CAPABILITIES: dict[str, Any] = {"text_in": True, "tools": True, "parallel_tools": True, "streaming": True,
                                         "kind": "chat"}
 
@@ -279,6 +279,26 @@ def _per_million(value: Any) -> float | None:
     return None if number < 0 else number * 1_000_000
 
 
+def _reasoning_caps(row: dict[str, Any]) -> dict[str, Any]:
+    """A listing's own account of a model's thinking control (OpenRouter's `reasoning` object):
+    the levels it takes, the one it uses unasked, and whether it can be switched off. Nothing is
+    read from the model's name; a listing without the object says nothing."""
+    found = row.get("reasoning")
+    if not isinstance(found, dict):
+        return {}
+    listed = [str(e).strip() for e in found.get("supported_efforts") or [] if isinstance(e, str) and e.strip()]
+    levels = list(dict.fromkeys(e for e in listed if e != "none"))
+    if not levels:
+        return {}
+    levels.reverse()  # the listing names the strongest first in every row seen; the picker reads weakest first
+    caps: dict[str, Any] = {"reasoning_levels": levels, "reasoning_can_disable": "none" in listed and
+                            found.get("mandatory") is not True}
+    default = found.get("default_effort")
+    if isinstance(default, str) and default in levels:
+        caps["reasoning_default"] = default
+    return caps
+
+
 def _listed(row: dict[str, Any], quirks: dict[str, Any] | None = None) -> Discovered:
     """Only what the server reported about the model. A plain server says nothing
     beyond the id; a gateway may describe capabilities, modalities and price."""
@@ -307,6 +327,7 @@ def _listed(row: dict[str, Any], quirks: dict[str, Any] | None = None) -> Discov
         caps["tools"] = "tools" in supported
         caps["structured_output_strict"] = "structured_outputs" in supported
         caps["json_mode"] = "response_format" in supported
+    caps.update(_reasoning_caps(row))
     listed_caps = row.get("capabilities") if isinstance(row.get("capabilities"), dict) else {}
     if isinstance(listed_caps.get("tool_calling"), bool):
         caps["tools"] = listed_caps["tool_calling"]
@@ -324,11 +345,12 @@ def _listed(row: dict[str, Any], quirks: dict[str, Any] | None = None) -> Discov
         pricing = Pricing(prompt, completion, _per_million(price.get("input_cache_read")))
     family = upstream = None
     if arch:
-        # A gateway's rich listing: the tokenizer it reports is the model's family, and the
-        # vendor before the "/" in its id is who serves it. A plain server's ids are its own
-        # names, so nothing is read from them.
+        # The tokenizer a listing reports is the model's family.
         tokenizer = str(arch.get("tokenizer") or "").strip().lower()
         family = tokenizer if tokenizer and tokenizer not in {"other", "router"} else None
+    if arch or (quirks or {}).get("upstream_from_id"):
+        # A gateway names who serves a model before the "/" in its id. A plain server's ids are
+        # its own names, so nothing is read from them unless the connection says it is a gateway.
         vendor, sep, _ = str(row["id"]).partition("/")
         upstream = vendor.lower() if sep and vendor else None
     return Discovered(model_id=str(row["id"]), label=row.get("name") or None, capabilities=caps, pricing=pricing,

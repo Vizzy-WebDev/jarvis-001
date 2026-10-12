@@ -85,6 +85,15 @@ _BILLING = re.compile(r"insufficient[_ ]quota|exceeded your current quota|billin
 _DAILY = re.compile(r"per[ _-]?day|daily|requests?[ _-]?per[ _-]?day|PerDay", re.I)
 _NO_MODEL = re.compile(r"\bmodels?\b.{0,80}(not found|does not exist|doesn'?t exist|no such|unknown|not supported)|"
                        r"(not found|does not exist|no such|unknown).{0,40}\bmodel\b", re.I)
+# A refusal about ONE model (this account has no access to it; it is not served on this endpoint) —
+# the key itself was accepted, so it must never be read as the connection refusing the key.
+_NOT_ALLOWED = re.compile(
+    r"(does not|doesn'?t|do not|don'?t) have access to|no access to|access to (the )?model|"
+    r"not (authori[sz]ed|allowed|permitted|enabled) .{0,40}model|"
+    r"model.{0,80}(not available|unavailable|not enabled|not accessible) (for|to|in|on) (your|this)|"
+    r"only supported (in|by|on) .{0,24}(completions|responses|embeddings|audio|images|realtime)|"
+    r"not (a )?(supported )?(in|by|for) the .{0,24}chat|not a chat model|"
+    r"does not support (the )?(chat|generatecontent|streamgeneratecontent)", re.I)
 _REFUSED = re.compile(r"content (policy|management|filter)|safety|flagged|moderation|prohibited", re.I)
 
 
@@ -135,6 +144,9 @@ def error_for(status: int, words: str, url: str, *, headers: Mapping[str, str] |
     if status == 402 or _BILLING.search(words):
         return errors.Billing(f"{host} refused this for billing or quota reasons: the account may be out of "
                               "credit or over its limit.", detail=detail)
+    if status in (400, 403, 404) and _NOT_ALLOWED.search(words):
+        return errors.ModelNotAllowed(f"{host} accepted the key but won't serve that model to this account, "
+                                      "so Jarvis set it aside.", detail=detail)
     if status in (401, 403):
         return errors.Auth(f"{host} didn't accept the key.", detail=detail)
     if status == 429:

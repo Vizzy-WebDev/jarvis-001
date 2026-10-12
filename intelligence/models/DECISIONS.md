@@ -287,3 +287,56 @@ it was deliberately corrected.
   (it used to ride the shared thread pool). Every outbound HTTP call shares one TLS context
   (`jarvis/tls.py`; building one cost ~1 s per call on Windows), and `main()` warms the tool registry
   and model layer in the background so the first message of a launch is not slow.
+
+## Model Fabric completion pass (Hermes comparison, live provider check)
+
+Compared against NousResearch/hermes-agent (read from source) and against the real OpenAI,
+Anthropic, Gemini and OpenRouter listings. The architecture stood up; the changes below are
+targeted corrections, not a rebuild.
+
+- **What Hermes confirmed, and what we did not copy.** Hermes keeps catalogs curated and
+  chat-only: OpenRouter is (curated ∩ live ∩ has-tools, failing open when `supported_parameters`
+  is missing), the official OpenAI host is (curated ∩ live) to hide embeddings/whisper/tts,
+  custom endpoints list the live catalog verbatim, image/video generators are dropped by
+  structured type first and name shape second, and effort is clamped to the nearest weaker level.
+  Jarvis takes the *principle* (offer only models that can take a chat turn, fail open when the
+  listing is silent) but not the *mechanism*: no name-curated lists, because the layer holds no
+  model names. Classification is by capability evidence from the listing, else by profile data
+  (`model_profiles`, matched by id pattern, editable in `models.yaml`).
+- **The full catalog is kept; only chat-capable models are offered.** Discovery records every
+  listed model honestly (state file, Model Settings screen shows non-chat ones greyed with the
+  reason). `settings.chat_problem(endpoint)` is the one predicate: a kind other than chat, or
+  `tools` explicitly false, makes a model unselectable (`select()` refuses; the picker hides it;
+  `connection_view` reports `chatProblem`). A model that says nothing is never presumed unable.
+- **A refusal about one model is not a refusal of the key.** New `ModelNotAllowed`
+  (`model_not_allowed`, scope `endpoint`, recovery `user`): a 400/403/404 whose wording says the
+  account has no access, or the model is for another endpoint (embeddings, audio, completions),
+  rests only that endpoint as `unusable` (cleared by Test/Discover) and the connection keeps
+  serving its siblings. A real 401 or a bare 403 is still `Auth` and rests the connection.
+- **Honest kinds.** OpenAI's `/models` is ids only; previously every id was a "chat" model.
+  Non-chat `model_profiles` (embedding, speech, transcription, image, video, moderation, realtime,
+  completion) now live in `defaults.yaml` for `openai_responses`. Live result: 127 listed, 81 chat.
+  Gemini models without `generateContent` get kind `embedding` or `other` (raw method names no
+  longer leak out as kinds).
+- **A gateway's own reasoning description is used.** OpenRouter lists per-model `reasoning`
+  (`supported_efforts`, `default_effort`, `mandatory`). Levels are stored weakest-first, `none`
+  becomes `reasoning_can_disable` (unless mandatory), and a default the model does not list is
+  not believed. Negative prices (routers priced -1) mean "unknown", not a price.
+- **Upstream from the id is an explicit quirk** (`upstream_from_id`, set for openrouter and
+  gateway profiles) so fallback can prefer a different upstream without the driver guessing from
+  any id that happens to contain a slash.
+- **Effort is validated against the chosen endpoint.** `settings.effort()` returns a saved level
+  only if the selected endpoint still lists it; `select()` clears one the new model lacks.
+- **Live check (free listing calls only, scratch data dir, key read from `.env`).** Gemini 62
+  listed (34 chat), OpenAI 127 (81 chat), Anthropic 14 (all chat, per-model effort levels read from
+  the API: `low..max` on current models, none on the 4.5 Haiku/Sonnet).
+
+### Unresolved, stated plainly
+- OpenRouter `:batch` rows are kept as ordinary rows; whether chat turns work on them is unverified.
+- OmniRoute behaviour is from its docs only (per-model effort fields undocumented); mirrors,
+  `parent` rows and `auto/*` routers have no special handling.
+- Real no-access / wrong-endpoint error bodies from OpenAI, Anthropic and Gemini were not provoked
+  live; `ModelNotAllowed` matching is tested against documented wording only.
+- Gemini listings do not say output modality, so music/transcription/research models that list
+  `generateContent` still show as chat models until a first call refuses them.
+- Gemini budget mode drops an effort level missing from `thinking_budgets`.

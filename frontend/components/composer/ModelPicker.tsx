@@ -41,10 +41,10 @@ export function ModelPicker() {
     return connection && model ? { connection, model } : null;
   }, [connections, selection]);
 
-  const total = connections.reduce((n, c) => n + c.models.length, 0);
+  const total = connections.reduce((n, c) => n + c.models.filter((m) => !m.chatProblem).length, 0);
   const needle = query.trim().toLowerCase();
   const matches = (model: ProviderModel) =>
-    !needle || model.label.toLowerCase().includes(needle) || model.id.toLowerCase().includes(needle);
+    !model.chatProblem && (!needle || model.label.toLowerCase().includes(needle) || model.id.toLowerCase().includes(needle));
 
   // What the trigger says. A selection that cannot be run says so here, where the
   // person will see it, rather than showing a model name that looks fine.

@@ -144,6 +144,10 @@ export interface ProviderModel {
   source: 'discovered' | 'manual';
   /** False once a later discovery no longer names it. A note, not a verdict: it still runs. */
   stillListed: boolean;
+  /** What the model is for. Only 'chat' models can be talked with. */
+  kind: string;
+  /** Plain words for why it can't take a chat turn (not a text model, or listed as unable to use tools); null when it can. */
+  chatProblem: string | null;
   effort: ModelEffort | null;
 }
 

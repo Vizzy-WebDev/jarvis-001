@@ -138,6 +138,10 @@ def _health(endpoint: Endpoint, connection: Connection) -> Rejection | None:
             return Rejection(endpoint.id, "model_missing",
                              f"{_name(connection)} says it has no model by this name. Run Discover on the "
                              "Model Settings screen to refresh the list.")
+        if rest["kind"] == "unusable":
+            return Rejection(endpoint.id, "model_not_allowed",
+                             f"{_name(connection)} wouldn't serve this model to this account last time. "
+                             "It's set aside for a while; other models on it are unaffected.")
         if rest["kind"] == "reset":
             return Rejection(endpoint.id, "rate_limited",
                              f"This model's allowance on {_name(connection)} is used up until it resets.")

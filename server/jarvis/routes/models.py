@@ -101,6 +101,8 @@ def select(body: dict[str, Any] = Body(default_factory=dict)):
         stored = settings.select(connection, model_id, _text(body.get("effort")) or None)
     except LookupError as err:
         return _fail(str(err), 404)
+    except ValueError as err:
+        return _fail(str(err), 400)
     return {"ok": True, "selection": {"auto": False, **stored},
             "availability": settings.selection_view()["availability"]}
 

@@ -30,7 +30,9 @@ def note_failure(endpoint_id: str, connection: Connection, err: ModelError, cfg:
     if err.scope == "connection" and err.recovery == "user":
         state.refuse_connection(conn, str(err), s.refused_rest_s, kind=err.type)
         return
-    if err.recovery == "refresh":
+    if err.type == "model_not_allowed":
+        state.rest_endpoint(endpoint_id, s.refused_rest_s, reason=str(err), kind="unusable")
+    elif err.recovery == "refresh":
         state.mark_model_missing(endpoint_id, str(err))
     elif err.recovery == "reset":
         state.rest_endpoint(endpoint_id, daily_rest_s(connection, cfg), reason=str(err), kind="reset")

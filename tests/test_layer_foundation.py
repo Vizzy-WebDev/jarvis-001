@@ -121,5 +121,6 @@ def test_every_error_type_says_whether_it_is_retryable():
     assert retryable == {"rate_limited", "unavailable", "timeout"}
     assert set(errors.BY_TYPE) == {"rate_limited", "unavailable", "timeout", "auth", "invalid_request",
                                    "context_too_long", "content_refused", "no_eligible_endpoint",
-                                   "budget_exceeded", "schema_validation_failed", "billing", "model_not_found"}
+                                   "budget_exceeded", "schema_validation_failed", "billing", "model_not_found",
+                                       "model_not_allowed"}
     assert errors.Auth("no").at("c/m").endpoint_id == "c/m"

@@ -59,9 +59,9 @@ quirk_profiles:
   litellm:
     wire: {error_envelope_in_text: true}
   openrouter:
-    wire: {error_envelope_in_text: true, reasoning_param: reasoning_object, catalog_fields: rich}
+    wire: {error_envelope_in_text: true, reasoning_param: reasoning_object, upstream_from_id: true}
   gateway:
-    wire: {error_envelope_in_text: true, catalog_fields: rich}
+    wire: {error_envelope_in_text: true, upstream_from_id: true}
   gemini:
     # Newer Gemini models refuse a current-turn function call with no thought
     # signature; a call made by another endpoint has none. Google documents this
@@ -97,6 +97,24 @@ model_profiles:
   - match: "*"
     driver: openai_responses
     capabilities: {image_in: true}
+  # OpenAI's /models lists only ids, with no hint of what a model is for. These are the families
+  # its documentation puts on other endpoints (embeddings, audio, images, moderation, realtime,
+  # legacy completions), so they are never offered or tried as chat models.
+  - {match: "text-embedding-*", driver: openai_responses, capabilities: {kind: embedding}}
+  - {match: "tts-*", driver: openai_responses, capabilities: {kind: speech}}
+  - {match: "*-tts*", driver: openai_responses, capabilities: {kind: speech}}
+  - {match: "whisper-*", driver: openai_responses, capabilities: {kind: transcription}}
+  - {match: "*-transcribe*", driver: openai_responses, capabilities: {kind: transcription}}
+  - {match: "dall-e-*", driver: openai_responses, capabilities: {kind: image}}
+  - {match: "gpt-image-*", driver: openai_responses, capabilities: {kind: image}}
+  - {match: "chatgpt-image-*", driver: openai_responses, capabilities: {kind: image}}
+  - {match: "sora-*", driver: openai_responses, capabilities: {kind: video}}
+  - {match: "omni-moderation-*", driver: openai_responses, capabilities: {kind: moderation}}
+  - {match: "text-moderation-*", driver: openai_responses, capabilities: {kind: moderation}}
+  - {match: "*realtime*", driver: openai_responses, capabilities: {kind: realtime}}
+  - {match: "*-instruct*", driver: openai_responses, capabilities: {kind: completion}}
+  - {match: "babbage-*", driver: openai_responses, capabilities: {kind: completion}}
+  - {match: "davinci-*", driver: openai_responses, capabilities: {kind: completion}}
 
 # What the Model Settings screen's "Add connection" picker offers. Read only by the
 # settings routes, never by routing.

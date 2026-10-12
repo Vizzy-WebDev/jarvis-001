@@ -251,7 +251,7 @@ def discover(conn: ConnInfo) -> list[Discovered]:
                 if any("embed" in str(m).lower() for m in methods):
                     caps["kind"] = "embedding"
                 else:
-                    caps["kind"] = str(methods[0]).lower() if methods else "other"
+                    caps["kind"] = "other"
             if _wire.count(row.get("inputTokenLimit")):
                 caps["max_context_tokens"] = row["inputTokenLimit"]
             if _wire.count(row.get("outputTokenLimit")):

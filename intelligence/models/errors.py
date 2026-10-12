@@ -105,6 +105,16 @@ class ModelNotFound(ModelError):
     recovery = "refresh"
 
 
+class ModelNotAllowed(ModelError):
+    """The connection is fine, but it will not serve THIS model to this account or through this
+    endpoint ("no access to model X", "only supported in v1/completions"). Every other model on
+    the connection is unaffected, so it is the endpoint that rests, never the connection."""
+
+    type = "model_not_allowed"
+    scope = "endpoint"
+    recovery = "user"
+
+
 class InvalidRequest(ModelError):
     type = "invalid_request"
 
@@ -137,6 +147,6 @@ class SchemaValidationFailed(ModelError):
     type = "schema_validation_failed"
 
 
-ALL = (RateLimited, Unavailable, Timeout, Auth, Billing, ModelNotFound, InvalidRequest, ContextTooLong, ContentRefused,
+ALL = (RateLimited, Unavailable, Timeout, Auth, Billing, ModelNotFound, ModelNotAllowed, InvalidRequest, ContextTooLong, ContentRefused,
        NoEligibleEndpoint, BudgetExceeded, SchemaValidationFailed)
 BY_TYPE = {cls.type: cls for cls in ALL}

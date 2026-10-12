@@ -45,8 +45,32 @@ def chosen(cfg: config.Config | None = None) -> tuple[str | None, str | None]:
 
 
 def effort() -> str | None:
+    """The saved effort, only while the chosen model still takes that level (a refresh can
+    remove one; a stale choice is never sent)."""
     value = prefs.get_prefs().get("selectedEffort")
-    return value if isinstance(value, str) and value.strip() else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    conn_name, model_id = chosen()
+    if conn_name is None:
+        return value
+    endpoint = engine.catalog().endpoints.get(endpoint_id(conn_name, model_id or ""))
+    return value if endpoint is not None and value in effort_levels(endpoint) else None
+
+
+def chat_problem(endpoint: Endpoint) -> str | None:
+    """Why this model cannot take one of Jarvis's turns, in plain words, or None. Only what the
+    listing or the person's config actually says counts: a model that says nothing is not
+    presumed unable (a refusal at the first call still sets it aside)."""
+    name = endpoint.label or endpoint.model_id
+    if endpoint.kind == "other":
+        return f"{name} isn't listed as a model that answers in text, so it can't be chosen to talk with."
+    if endpoint.kind not in (None, "chat"):
+        return f"{name} is a {endpoint.kind} model, not one that answers in text, so it can't be chosen to talk with."
+    tools = endpoint.capabilities.get("tools")
+    if tools is not None and tools.value is False:
+        return (f"{name} is listed as unable to use tools, and Jarvis needs tools on every turn, "
+                "so it can't be chosen to talk with.")
+    return None
 
 
 def effort_levels(endpoint: Endpoint | None) -> list[str]:
@@ -101,6 +125,9 @@ def select(connection: str, model_id: str, chosen_effort: str | None) -> dict[st
     endpoint = cat.endpoints.get(endpoint_id(connection, model_id))
     if connection not in cfg.connections or endpoint is None:
         raise LookupError("That model isn't set up.")
+    problem = chat_problem(endpoint)
+    if problem:
+        raise ValueError(problem)
     if chosen_effort not in effort_levels(endpoint):
         chosen_effort = None
     if not endpoint.configured:
@@ -185,6 +212,7 @@ def connection_view(name: str) -> dict[str, Any]:
             # A model the person set up stays theirs whatever a listing says.
             "stillListed": e.listed or e.configured or not discovered_before,
             "kind": e.kind or "chat",
+            "chatProblem": chat_problem(e),
             "effort": ({"levels": effort_levels(e), "default": caps_mod.reasoning_default(e.capabilities),
                         "canDisable": caps_mod.can_disable(e.capabilities)}
                        if effort_levels(e) else None),

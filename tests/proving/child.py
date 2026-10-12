@@ -33,6 +33,18 @@ def main(argv: list[str]) -> int:
         # saying so.
         import time
 
+        if os.environ.get("PROVING_AUTO") == "1":
+            # Auto model selection for this run: the copied settings lose their "selected"
+            # model (in the throw-away copy only), so a turn can move to another connected
+            # model when one stops answering — as the owner asked for the proving runs.
+            try:
+                from jarvis.models import config as model_config
+
+                model_config.remove_alias("selected")
+                print("(running under Auto: no selected model)", flush=True)
+            except Exception as err:  # noqa: BLE001 — then it runs as the settings stand
+                print(f"(could not switch this run to Auto: {err})", flush=True)
+
         for attempt in range(6):
             try:
                 from jarvis.models import refresh_catalog

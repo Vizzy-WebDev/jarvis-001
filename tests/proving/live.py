@@ -51,11 +51,14 @@ def prepare(real_root: Path, scratch: Path) -> None:
 
 #: Set by `--tools-in-hand` for every child this run starts.
 IN_HAND = False
+#: Set by `--auto`: each run's copied model settings have no selected model (Auto).
+AUTO = False
 
 
 def _child(scenario_id: str, phase: str, scratch: Path, seed: int) -> subprocess.Popen:
     env = dict(os.environ)
     env["PROVING_TOOLS_IN_HAND"] = "1" if IN_HAND else "0"
+    env["PROVING_AUTO"] = "1" if AUTO else "0"
     env["JARVIS_DATA_DIR"] = str(scratch / "data")
     env["JARVIS_ENV_PATH"] = str(scratch / ".env")
     env["PYTHONPATH"] = os.pathsep.join([str(REPO / "server"), str(TESTS), env.get("PYTHONPATH", "")])
@@ -174,9 +177,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tools-in-hand", action="store_true",
                         help="declare the world's tools on every turn, instead of leaving Jarvis "
                              "to find them: tests the work itself, not the finding")
+    parser.add_argument("--auto", action="store_true",
+                        help="run under Auto model selection: the throw-away copy of the model "
+                             "settings has no selected model, so turns can fall back")
     args = parser.parse_args(argv)
-    global IN_HAND
-    IN_HAND = args.tools_in_hand
+    global IN_HAND, AUTO
+    IN_HAND, AUTO = args.tools_in_hand, args.auto
 
     real_root = Path(args.real_root).resolve()
     wanted = [s for s in args.only.split(",") if s] or [s.id for s in SCENARIOS]

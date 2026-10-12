@@ -328,7 +328,13 @@ def test_a_garbled_tool_request_is_never_run(client, serve):
         events, error = run_step(tools=TOOLS)
     finally:
         StubWire._openai_chat = original
-    assert error is not None and "garbled" in str(error)
+    # Changed deliberately: it used to end the whole turn. It is still never run — it is
+    # handed to the turn loop marked as unreadable, with no arguments made up for it.
+    assert error is None
+    [step] = [e for e in events if hasattr(e, "tool_calls")]
+    [call] = step.tool_calls
+    assert call.name == "get_time" and call.garbled is True and call.args == {}
+    assert step.raw is None
 
 
 # --- ask --------------------------------------------------------------------------------------

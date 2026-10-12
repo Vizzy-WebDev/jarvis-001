@@ -199,6 +199,37 @@ def get_ops(job_id: str) -> list[str]:
         (f"{job_id}/%",)).fetchall()]
 
 
+def test_a_request_the_model_garbled_is_not_run_and_the_model_can_ask_again():
+    """Found live: one malformed tool call on the second step of a reply ended the whole
+    turn, and the objective it was about to take on was never taken on."""
+    from jarvis.orchestrator.model_port import StepComplete, TextChunk, ToolCall
+
+    class Garbles(Brain):
+        def stream(self, **kw):
+            step = len([m for m in kw["messages"] if m.get("role") == "assistant"])
+            self.calls.append({"session": kw["session_id"], "round": 0, "step": step,
+                               "system": kw["system"], "tools": [], "messages": kw["messages"]})
+            if step == 0:
+                yield StepComplete(tool_calls=(ToolCall(id="c1", name="effect_low", args={}, garbled=True),),
+                                   finish_reason="tool_calls", model_id="brain")
+            elif step == 1:
+                yield StepComplete(tool_calls=(ToolCall(id="c2", name="effect_low", args={"tag": "second-try"}),),
+                                   finish_reason="tool_calls", model_id="brain")
+            else:
+                yield TextChunk("Done on the second try.")
+                yield StepComplete(text="Done on the second try.", model_id="brain")
+
+    brain = install(Garbles())
+    session = chat()
+    events = say(session, "Do the thing.")
+
+    assert next(e for e in events if isinstance(e, Done)).text == "Done on the second try."
+    assert not any(isinstance(e, Failed) for e in events)
+    assert effect_count() == 1 and effect_count("second-try") == 1      # the garbled one never ran
+    told = brain.calls[1]["messages"][-1]["toolResults"][0]["result"]["error"]
+    assert "could not be read" in told and "NOT run" in told
+
+
 def test_update_plan_is_a_workers_tool_and_nobody_elses():
     install(Brain())
     registry = assembly.get_registry()

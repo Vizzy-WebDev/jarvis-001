@@ -720,7 +720,8 @@ class Orchestrator:
             # The last step chose to carry the work on: that one call is run like any other,
             # and its own words ("Working on … in the background") are the reply.
             handing_off = bool(handoff is not None and completed.tool_calls
-                               and completed.tool_calls[0].name == handoff.name)
+                               and completed.tool_calls[0].name == handoff.name
+                               and not completed.tool_calls[0].garbled)
             if handing_off:
                 completed = replace(completed, tool_calls=completed.tool_calls[:1])
             elif handoff is not None and completed.tool_calls:
@@ -846,6 +847,15 @@ class Orchestrator:
 
     def _execute_call(self, request: TurnRequest, call: ToolCall,
                       seen: dict[str, int] | None = None) -> ExecutionResult:
+        if getattr(call, "garbled", False):
+            # Never run, and never with guessed arguments: said back to the model as what it
+            # is, so the next step can ask again properly.
+            return ExecutionResult(
+                ok=False, outcome=ExecOutcome.INVALID_ARGUMENTS, capability=call.name,
+                operation_id=f"{request.turn_id}:{call.id}",
+                error=(f"Your request to use {call.name} could not be read (its arguments were "
+                       "not valid JSON), so it was NOT run. Ask again, with the arguments as "
+                       "one valid JSON object."))
         if request.gate is not None:
             try:
                 refusal = request.gate(call.name, dict(call.args or {}))

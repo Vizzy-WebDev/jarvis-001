@@ -146,17 +146,24 @@ class JarvisModelClient:
         for moved in response.provenance.fallbacks:
             yield ModelSwitched(to_model_id=moved.to_endpoint, from_model_id=moved.from_endpoint,
                                 reason=f"Moved on from {moved.from_endpoint}: {moved.reason}")
-        boundary.refuse_raw_arguments(response)
         boundary.publish_completed(response, session_id=session_id, background=role in BACKGROUND_ROLES)
         usage = response.usage
+        # A tool call whose arguments were not valid JSON is passed on marked `garbled`, never
+        # with made-up arguments: the turn loop does not run it and tells the model so. It used
+        # to end the whole turn here — found live, one malformed call on the second step of a
+        # reply threw away an objective that had not been taken on yet.
+        garbled = any(c.arguments is None for c in response.tool_calls)
         yield StepComplete(
             text=response.text,
-            tool_calls=tuple(ToolCall(id=c.id, name=c.name, args=dict(c.arguments or {}))
+            tool_calls=tuple(ToolCall(id=c.id, name=c.name, args=dict(c.arguments or {}),
+                                      garbled=c.arguments is None)
                              for c in response.tool_calls),
             finish_reason=response.stop_reason,
             usage=PortUsage(tokens_in=usage.input, tokens_out=usage.output, tokens_reasoning=usage.reasoning,
                             cached_in=usage.cached),
             model_id=boundary.reported_model(response),
             provider_id=response.provenance.endpoint_id.split("/", 1)[0],
-            raw=boundary.raw_for(response),
+            # The step's own items are not kept when one of them could not be read: they would
+            # be sent back to the provider next step exactly as unreadable as they arrived.
+            raw=None if garbled else boundary.raw_for(response),
         )

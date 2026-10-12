@@ -95,7 +95,8 @@ def trace_kinds(job_id: str) -> list[str]:
     # Waiting would wait for nothing:
     ("no_model", {"reason": "no_eligible_endpoint", "scope": "request", "rejected": ["no_key"]}, None),
     ("no_model", {"reason": "no_eligible_endpoint", "scope": "request", "rejected": []}, None),
-    ("no_model", {"reason": "invalid_request", "scope": "request"}, None),
+    ("no_model", {"reason": "invalid_request", "scope": "request"}, 0.0),   # tried again, briefly
+    ("no_model", {"reason": "model_not_found", "scope": "endpoint"}, 0.0),
     ("no_model", {"reason": "context_too_long", "scope": "request"}, None),
     ("no_model", {"reason": "budget_exceeded", "scope": "request", "rejected": ["budget_spent"]}, None),
     ("no_model", {}, None),                  # nothing set up at all
@@ -126,7 +127,9 @@ def test_the_layer_says_how_far_a_failure_reaches_and_what_ruled_models_out():
     assert none_left.detail["rejected"] == ["no_key", "resting"]
     assert durable.model_wait("no_model", none_left.detail) == 0.0
     refused = boundary.failure(errors.InvalidRequest("x couldn't use that."), pinned_selection=False)
-    assert durable.model_wait("no_model", refused.detail) is None
+    assert durable.model_wait("no_model", refused.detail) == 0.0 and durable.model_refused(refused.detail)
+    too_long = boundary.failure(errors.ContextTooLong("too long."), pinned_selection=False)
+    assert durable.model_wait("no_model", too_long.detail) is None
 
 
 # --- a job --------------------------------------------------------------------------------------
@@ -206,14 +209,38 @@ def test_an_outage_in_the_middle_keeps_what_was_done_and_does_not_eat_the_step_b
     assert sum(r["steps"] for r in durable.rounds(job["id"])) == 3  # three answered calls only
 
 
-def test_a_request_the_model_refuses_is_still_a_failure_of_the_work():
+def test_a_request_one_model_refuses_is_tried_again_and_never_blamed_on_the_approach(monkeypatch):
+    """Found by a live run under Auto: the first-ranked model's id was unknown to its provider,
+    and three jobs were told twice to "take a different approach" and then declared stuck."""
+    monkeypatch.setattr(durable, "MODEL_WAITS_S", (0,))
     brain = install(OutageBrain())
     job = new_job()
+    brain.plan("job:", [[], [("say", "Done once a model took it.")]])
     brain.failures = [bad_request()]
-    result = run(job["id"])
-    assert result["status"] == "stalled"
-    assert job_store.get_job(job["id"])["status"] == "stalled"
-    assert durable.get(job["id"])["waiting_on"]["reason"] == "failed"
+
+    assert run(job["id"])["reason"] == "model"                 # waiting, not stalled
+    assert orchestrator.supervise(event_bus=EventBus())[0]["action"] == "continued"
+    assert worker.join_all(timeout=20)
+    stored = job_store.get_job(job["id"])
+    assert stored["status"] == "done" and not stored["attempts"] and stored["retries"] == 0
+
+
+def test_a_request_refused_every_time_stops_after_a_few_tries_and_says_so(monkeypatch):
+    monkeypatch.setattr(durable, "MODEL_WAITS_S", (0,))
+    brain = install(OutageBrain())
+    job = new_job()
+    brain.failures = [bad_request() for _ in range(durable.MODEL_REFUSAL_TRIES + 1)]
+
+    assert run(job["id"])["reason"] == "model"
+    for _ in range(durable.MODEL_REFUSAL_TRIES):
+        durable.wake_due(now="9999-01-01T00:00:00.000Z")
+        assert worker.join_all(timeout=20)
+    # It stopped waiting and recorded why, as a failure of the round (what the executive does
+    # with that afterwards is its own business).
+    stalls = [str(row.get("detail")) for row in job_store.get_trace(job["id"])
+              if str(row.get("summary")).startswith("stalled: ")]
+    assert stalls and "would not take the request" in stalls[0]
+    assert trace_kinds(job["id"]).count("wait") == durable.MODEL_REFUSAL_TRIES
 
 
 def test_waiting_ends_after_the_limit_and_says_how_long(monkeypatch):
@@ -340,12 +367,14 @@ def test_a_scheduled_run_gives_up_after_its_tries_and_says_so(monkeypatch):
 
 
 def test_an_ordinary_failure_of_a_scheduled_run_is_recorded_at_once(monkeypatch):
+    from jarvis.orchestrator.model_port import ModelUnavailable
     from jarvis.scheduler import engine, task_store
 
     monkeypatch.setattr(engine, "_verify_run", lambda task, result: None)
     brain = install(OutageBrain())
     task = _task()
-    brain.failures = [bad_request()]
+    brain.failures = [ModelUnavailable("This month's budget for models is used up.",
+                                       detail={"reason": "budget_exceeded", "scope": "request"})]
     result = engine.run_task_now(task["id"], event_bus=EventBus())
     assert not result.get("retrying")
     [recorded] = _runs(task["id"])

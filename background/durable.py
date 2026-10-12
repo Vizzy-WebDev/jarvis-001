@@ -65,6 +65,11 @@ DECLINED = "The person said no to this, so it was not done. Carry on without it.
 MODEL_WAITS_S = (60, 180, 600, 900, 1800)
 #: Waiting for a model this long in one stretch, the work stops waiting and says so.
 MODEL_WAIT_LIMIT_S = 12 * 3600
+#: A model REFUSING the request (rather than being unable to answer just now) may be that one
+#: model's own trouble — a model id its provider no longer has, a request it cannot express —
+#: and another try may reach a different model. It is tried again this many times, briefly;
+#: if it is still refused, it is the request, and the work says so.
+MODEL_REFUSAL_TRIES = 3
 
 #: Why an endpoint was ruled out before any call, when the reason heals by itself (a rest, a
 #: rate limit, a connection that did not answer). The others — no key, no fitting model, a
@@ -83,13 +88,23 @@ def model_wait(code: str | None, detail: dict[str, Any] | None) -> float | None:
     if detail.get("reason") == "no_eligible_endpoint":
         heals = bool(_HEALS & set(detail.get("rejected") or ()))
     else:
-        heals = detail.get("scope") in ("endpoint", "upstream", "connection")
+        heals = detail.get("scope") in ("endpoint", "upstream", "connection") or model_refused(detail)
     if not heals:
         return None
     try:
         return max(0.0, float(detail.get("retryAfter") or 0.0))
     except (TypeError, ValueError):
         return 0.0
+
+
+def model_refused(detail: dict[str, Any] | None) -> bool:
+    """A model turned the request down as one it cannot take (`invalid_request`, a model its
+    provider cannot find). Never the WORK's approach being wrong — so it must not be answered
+    with "try a different approach" — but not certain to heal either: tried again only a few
+    times (`MODEL_REFUSAL_TRIES`). Found by a live run under Auto: the first-ranked model's id
+    was no longer known to its provider, every round ended "it can't find that", and three jobs
+    were told twice to change how they were working and then declared stuck."""
+    return (detail or {}).get("reason") in ("invalid_request", "model_not_found")
 
 
 def model_retry_in(attempt: int, asked: float | None = None) -> float:
@@ -468,7 +483,8 @@ def run_round(work_id: str, kind_name: str, round_no: int, text: str,
                 outcome = {"outcome": "ran_out" if ran_out else
                            ("no_model" if wait is not None else "failed"), "text": "",
                            "error": event.error, "approval": None,
-                           **({"wait": wait} if wait is not None else {})}
+                           **({"wait": wait, "refused": model_refused(event.detail)}
+                              if wait is not None else {})}
             elif isinstance(event, Interrupted):
                 outcome = {"outcome": "stopped", "text": "", "error": None, "approval": None}
             elif isinstance(event, ApprovalRequired):
@@ -593,7 +609,8 @@ def _build_workflow(saver: Any) -> Any:
             if out["outcome"] == "no_model" and waits_for_model:
                 waits += 1
                 waiting_since = waiting_since or now_iso()
-                if _seconds_since(waiting_since) < MODEL_WAIT_LIMIT_S:
+                refused_too_often = bool(out.get("refused")) and waits > MODEL_REFUSAL_TRIES
+                if not refused_too_often and _seconds_since(waiting_since) < MODEL_WAIT_LIMIT_S:
                     why = {"reason": "model", "error": out.get("error"), "attempt": waits,
                            "since": waiting_since, "steps": spent,
                            "retryAt": _iso_in(model_retry_in(waits, out.get("wait")))}
@@ -604,9 +621,11 @@ def _build_workflow(saver: Any) -> Any:
                                         "spent": spent, "allowance": allowance, "why": why,
                                         "waits": waits, "waitingSince": waiting_since}})
                 out = {**out, "outcome": "failed",
-                       "error": ("No model has been able to answer for "
-                                 f"{round(_seconds_since(waiting_since) / 3600)} hours. "
-                                 f"{out.get('error') or ''}").strip()}
+                       "error": ((f"The model would not take the request, {waits} times running. "
+                                  if refused_too_often else
+                                  "No model has been able to answer for "
+                                  f"{round(_seconds_since(waiting_since) / 3600)} hours. ")
+                                 + f"{out.get('error') or ''}").strip()}
             if out["outcome"] != "no_model":
                 waits, waiting_since = 0, None
             if not continuable:

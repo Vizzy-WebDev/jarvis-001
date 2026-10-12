@@ -80,7 +80,11 @@ class Records:
         finish times."""
         marks = []
         for job in self.jobs:
-            if job.get("started_at"):
+            # A job that ended up waiting on the person has no finish time and was not working
+            # from then on; when it stopped is not on record, so it is left out rather than
+            # counted as working for ever.
+            if job.get("started_at") and not (job.get("status") == "awaiting_decision"
+                                              and not job.get("finished_at")):
                 marks.append((str(job["started_at"]), 1))
                 marks.append((str(job.get("finished_at") or "9999"), -1))
         most = now = 0
@@ -124,6 +128,9 @@ class Records:
                 seen[key] = seen.get(key, 0) + 1
         found += [f"done {count} times: {key[:160]}" for key, count in seen.items() if count > 1]
         return found
+
+    def reports_filed(self) -> int:
+        return len(self.world.get("filed") or [])
 
 
 def _rows(db: sqlite3.Connection, sql: str) -> list[dict[str, Any]]:

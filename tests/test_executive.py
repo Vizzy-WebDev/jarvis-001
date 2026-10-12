@@ -343,6 +343,22 @@ def test_work_that_says_it_cannot_be_finished_goes_to_the_person_and_not_back_th
     assert "File it with the first four entries." in brain.calls_for(f"job:{job['id']}", 1)[0]["messages"][-1]["text"]
 
 
+def test_background_work_cannot_start_more_background_work_through_a_specialist():
+    """Found by a live run: a job handed its three parts to specialists "in the background" —
+    three more jobs nothing waited for, each stopping to ask the person something."""
+    from jarvis.agents import capabilities as agent_capabilities, ensure_builtins
+    from jarvis.policy import Autonomy, CallContext, Surface
+
+    install(Brain())
+    ensure_builtins()
+    job = job_store.create_job(title="T", goal="g")
+    inside = CallContext(session_id=f"job:{job['id']}", turn_id="t", surface=Surface.JOB,
+                         autonomy=Autonomy.PRE_CONSENTED)
+    refused = agent_capabilities._ask(ctx=inside, agent="operations", task="do a part", background=True)
+    assert refused["ok"] is False and "already working in the background" in refused["error"]
+    assert len(job_store.list_jobs()) == 1
+
+
 def test_cannot_finish_is_a_workers_tool_and_needs_a_reason():
     from jarvis.policy import Autonomy, CallContext, Surface
 

@@ -186,7 +186,8 @@ SPECS = [
                      "more steps than one reply has room for, or when you could not finish in "
                      "this reply — it carries on from what you have already found. Give the "
                      "whole outcome and what done looks like: the work cannot see this "
-                     "conversation."),
+                     "conversation. When they ask for several separate pieces of work, call "
+                     "this once for each, straight away, rather than starting on them yourself."),
         input_schema={"type": "object", "properties": {
             "goal": {"type": "string",
                      "description": "The outcome wanted, in full, with every name, place and "

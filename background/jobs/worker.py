@@ -620,9 +620,19 @@ def _verify_result(job: dict[str, Any], answer: str) -> Any:
     from ..ops.verify import verify_semantic_match
 
     try:
-        return verify_semantic_match(request=job.get("goal") or job.get("title") or "",
-                                     result_summary=f'the background job "{job.get("title")}"',
-                                     result_text=answer)
+        # What is judged is whether the OUTCOME was achieved. Found by a live run: the person
+        # had said "three separate jobs, in the background, and tell me when each is done", the
+        # work was done correctly as one job, and the check sent it back twice for not
+        # "demonstrating that three separate background jobs were run" — each time making the
+        # job do things over, reports filed twice among them.
+        return verify_semantic_match(
+            request=job.get("goal") or job.get("title") or "",
+            result_summary=(f'the result of a background job ("{job.get("title")}") that worked '
+                            "on its own with nobody watching. Judge only whether what was asked "
+                            "FOR was achieved and is reported — not whether it ran in the "
+                            "background, how the work was divided up, or how and when the "
+                            "person will be told, which are not the job's to decide"),
+            result_text=answer)
     except Exception:  # noqa: BLE001 — a check that fails must not fail the job
         logger.exception("the semantic check on job %s failed", job.get("id"))
         return None

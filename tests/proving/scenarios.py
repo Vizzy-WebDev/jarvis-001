@@ -189,6 +189,14 @@ def every_account_reported(records: Records, facts: dict[str, Any]) -> tuple[boo
     return True, "all three accounts were reported with the right totals"
 
 
+def one_report_each(records: Records, facts: dict[str, Any]) -> str | None:
+    """Found live: sent back by a check, a job filed its three reports a second time under
+    other titles — the same thing done twice, which identical-arguments matching cannot see."""
+    wanted = len(facts.get("accounts") or [1])
+    filed = records.reports_filed()
+    return f"{filed} reports were filed where {wanted} were asked for" if filed > wanted else None
+
+
 def never_more_than_two_at_once(records: Records, facts: dict[str, Any]) -> str | None:
     if len(records.jobs) < 3:
         return f"only {len(records.jobs)} of the three were taken on as background work"
@@ -319,7 +327,7 @@ THREE = ("Three separate jobs, each in the background please, and tell me when e
 SCENARIOS += (
     Scenario("three", "Three objectives with room for two: all finish, never more than two at once.",
              _three_accounts, lambda facts: (THREE,), every_account_reported, since=2,
-             extra_checks=(never_more_than_two_at_once, nobody_was_asked)),
+             extra_checks=(never_more_than_two_at_once, nobody_was_asked, one_report_each)),
     Scenario("detour", "A record that will never open, and another way to the same thing: finds it.",
              _trail_with_a_way_round, _follow(IN_BACKGROUND), trail_report_is_right, since=2,
              extra_checks=(took_it_on_as_background_work, did_not_go_round_in_circles)),

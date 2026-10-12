@@ -218,6 +218,30 @@ silently refreshing an expiring one.
 - **`find_capability` says so when the person names an app that is not usable** (`notConnected`),
   matched on the app's label against saved connectors and the catalogue — never on a service name in code.
 
+## How Jarvis picks among connected apps — `abilities/tools/find_capability.py`
+
+With more than `DECLARATION_BUDGET` (20) capabilities, connector tools are declared ONLY after `find_capability`
+unlocks them, so its ranking IS the router. Nothing in the prompt, orchestrator or tools names a service;
+what looked like "defaults to Higgsfield" was (a) Higgsfield being the only connected generator (Jarvis has
+no built-in image/video generation) and (b) the search itself:
+- **Rare words outrank common ones** (`_weights`: squared inverse document frequency) — a verb in thirty tool
+  names no longer beats the one word that says what was wanted. A result must cover 60% of the distinct words.
+- **The person's instruction decides**: `prefer` (an app to use) and `avoid` (apps NOT to use) are real,
+  schema-visible arguments — a rule only in prose can't be followed by a model that sticks to its schema — and
+  plain-words negation in `intent` ("not X", "don't use X", "without", "instead of", ...) is read too. An app is
+  the prefix of its `app__tool` names. Avoided apps are never returned; if nothing else fits it says so.
+- **Naming an app that isn't usable** (not set up, switched off, needs reconnecting) is reported as
+  `notConnected` with the reason, instead of silently offering whatever else mentions the word.
+- A connector's cached tool list can be stale (live Oct 2026: Higgsfield 156 tools vs 101 cached); only
+  `refresh_tools()` updates it.
+
+## Transient failures
+
+Discovery metadata lookups retry network errors, 429 and 5xx (`oauth.FETCH_ATTEMPTS`); reading a tool list
+retries once on `TransientFailure`; **calling a tool is never retried** (it may already have done its work).
+Composio answered in 5–17 s from one request to the next, so a slow answer is not a verdict. The underlying
+exception class is logged (`mcp call to ... failed`) because the person-facing wording hides it.
+
 ## Catalogue, icons, routes
 
 - `catalog.json` / `catalog.py` — the bundled directory. **An entry is only listed once its real

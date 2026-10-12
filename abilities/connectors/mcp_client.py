@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,16 @@ class AuthRejected(RuntimeError):
     """
 
 
+class TransientFailure(RuntimeError):
+    """The server did not answer in time, could not be reached, or had a passing fault.
+
+    Worth ONE more try when only reading (listing tools), never when doing: a call that
+    already reached the server may have done its work. A real server answered a tool list in
+    5-17 s from one request to the next, so a single slow answer is not a verdict.
+    """
+
+
+RETRY_PAUSE_S = 1.5
 CONNECT_TIMEOUT_S = 30.0
 CALL_TIMEOUT_S = 120.0
 MAX_RESULT_CHARS = 20000
@@ -146,9 +157,14 @@ async def _with_client(config: dict[str, Any], work: Any, *, connector_id: str |
         raise
     except Exception as err:  # noqa: BLE001 — reworded, never swallowed
         message = _plain_failure(err, statuses, target)
+        lf = _innermost(err)
+        logger.info("mcp call to %s failed: %s.%s: %s (statuses %s)", target,
+                    type(lf).__module__, type(lf).__name__, str(lf)[:200], statuses)
         if 401 in statuses:
             _needs_reconnect(connector_id, message)
             raise AuthRejected(message) from err
+        if _is_transient(message):
+            raise TransientFailure(message) from err
         raise RuntimeError(message) from err
 
 
@@ -183,6 +199,11 @@ def _plain_failure(err: BaseException, statuses: list[int], url: str | None) -> 
     return str(leaf) or name
 
 
+def _is_transient(message: str) -> bool:
+    return message.startswith(("Couldn't reach the app's server", "The app's server took too long",
+                               "The app's server had a problem"))
+
+
 def _run(coroutine: Any) -> Any:
     """Drive an async client from sync code.
 
@@ -211,7 +232,11 @@ def fetch_tools(config: dict[str, Any], *, connector_id: str | None = None) -> l
         listed = await client.list_tools()
         return [_tool_shape(tool) for tool in listed.tools]
 
-    return _run(_with_client(config, work, connector_id=connector_id))
+    try:
+        return _run(_with_client(config, work, connector_id=connector_id))
+    except TransientFailure:
+        time.sleep(RETRY_PAUSE_S)
+        return _run(_with_client(config, work, connector_id=connector_id))
 
 
 def tool_declarations(config: dict[str, Any]) -> list[dict[str, Any]]:

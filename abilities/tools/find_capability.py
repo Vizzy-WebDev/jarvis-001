@@ -16,10 +16,11 @@ registry loader.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
-from ..capabilities import CapabilityRegistry, CapabilitySpec, Risk
+from ..capabilities import CapabilityKind, CapabilityRegistry, CapabilitySpec, Risk
 
 MAX_MATCHES = 6
 _WORD = re.compile(r"[a-z0-9]+")
@@ -30,6 +31,9 @@ _STOPWORDS = frozenset({
     "the", "and", "for", "with", "from", "your", "you", "this", "that", "what",
     "when", "how", "can", "use", "user", "asks", "about", "them", "something",
     "anything", "please", "want", "wants", "need", "needs", "help", "me", "my",
+    # how a person words an instruction about WHICH app, not what they want done
+    "but", "not", "dont", "don", "never", "without", "instead", "rather", "than", "other",
+    "apart", "except", "using", "via", "through", "also", "just", "then", "any",
 })
 
 
@@ -38,16 +42,86 @@ def _terms(text: str) -> list[str]:
             if len(w) > 2 and w not in _STOPWORDS]
 
 
-def _score(spec: CapabilitySpec, terms: list[str]) -> int:
+def _weights(specs: list[CapabilitySpec], terms: list[str]) -> dict[str, float]:
+    """How much each word is worth, by how few capabilities mention it.
+
+    Every word used to count the same, so a verb in thirty tool names ("create") outweighed
+    the one word that said what was wanted ("github", found in a single description). Rarer is
+    worth more, and steeply: squared, so a word in one or two capabilities beats a verb in
+    dozens even when the verb is in the NAME and the rare word only in a description.
+    """
+    total = max(len(specs), 1)
+    out: dict[str, float] = {}
+    for term in set(terms):
+        seen = sum(1 for s in specs
+                   if term in s.name.lower().replace("_", " ") or term in (s.description or "").lower())
+        out[term] = math.log((total + 1) / (seen + 1)) ** 2 + 1.0
+    return out
+
+
+def _score(spec: CapabilitySpec, terms: list[str], weights: dict[str, float] | None = None) -> float:
     name = spec.name.lower().replace("_", " ")
     description = (spec.description or "").lower()
-    score = 0
+    score = 0.0
     for term in terms:
+        weight = (weights or {}).get(term, 1.0)
         if term in name:
-            score += 3
+            score += 3 * weight
         if term in description:
-            score += 1
+            score += 1 * weight
     return score
+
+
+# --- apps the person named: to use, or to leave out ---------------------------------------------
+
+#: Words that introduce something to leave out ("not", "don't use", "instead of", ...).
+_NEGATION = re.compile(
+    r"\b(?:do not|don'?t|dont|never|without|instead of|rather than|other than|apart from|except|"
+    r"anything but|not)\b")
+
+
+def _app_of(spec: CapabilitySpec) -> str | None:
+    """The app a connector tool belongs to: the prefix of its `app__tool` name."""
+    if spec.kind is CapabilityKind.CONNECTOR and "__" in spec.name:
+        return spec.name.split("__", 1)[0].lower()
+    return None
+
+
+def _apps_in(specs: list[CapabilitySpec]) -> set[str]:
+    return {a for a in (_app_of(s) for s in specs) if a}
+
+
+def _slug(text: str) -> str:
+    return "_".join(_WORD.findall((text or "").lower()))
+
+
+def _resolve(name: str, apps: set[str]) -> str | None:
+    """The app prefix a person's word for it points at (`git hub`, `Google Drive`)."""
+    slug = _slug(name)
+    if slug in apps:
+        return slug
+    squashed = slug.replace("_", "")
+    return next((a for a in apps if a.replace("_", "") == squashed), None)
+
+
+def _split_instruction(intent: str, apps: set[str]) -> tuple[str, set[str], set[str]]:
+    """(the intent as words, apps to avoid, apps asked for) read from plain words.
+
+    A negation covers an app named within a few words after it. Only a word that really is a
+    connected app counts, so "not urgent" is left alone.
+    """
+    lowered = (intent or "").lower()
+    avoid: set[str] = set()
+    asked: set[str] = set()
+    negated_at = [m.start() for m in _NEGATION.finditer(lowered)]
+    for match in _WORD.finditer(lowered):
+        found = _resolve(match.group(0), apps)
+        if not found:
+            continue
+        before = [n for n in negated_at
+                  if n < match.start() and len(_WORD.findall(lowered[n:match.start()])) <= 6]
+        (avoid if before else asked).add(found)
+    return " ".join(_WORD.findall(lowered)), avoid, asked - avoid
 
 
 BRIEF_CHARS = 240
@@ -138,17 +212,51 @@ def _brief(description: str) -> str:
 
 
 def build(registry: CapabilityRegistry) -> list[CapabilitySpec]:
-    def _run(intent: str = "") -> dict[str, Any]:
-        terms = _terms(intent)
-        if not terms:
+    def _run(intent: str = "", avoid: list[str] | None = None,
+             prefer: str | None = None) -> dict[str, Any]:
+        # A background worker's own tools are not answers to "can you do X":
+        # nothing the user says can reach one, so offering it would be a lie.
+        searchable = [spec for spec in registry.list() if not spec.has_tag("job")]
+        apps = _apps_in(searchable)
+        text, left_out, asked = _split_instruction(intent, apps)
+        for given in avoid or []:
+            found = _resolve(str(given), apps)
+            if found:
+                left_out.add(found)
+        if prefer:
+            found = _resolve(str(prefer), apps)
+            if found and found not in left_out:
+                asked.add(found)
+        asked -= left_out
+        # The words that NAME an app are not part of what is wanted: left in, a service
+        # named only to be avoided would be the strongest match of all.
+        naming = ({w for app in (left_out | asked) for w in app.split("_")}
+                  | {app.replace("_", "") for app in (left_out | asked)})
+        terms = [t for t in _terms(text) if t not in naming]
+        if not terms and not asked:
             # Same shape as "nothing matched", deliberately: one result shape
             # means no caller has to special-case an empty search.
             return {"ok": False, "found": [], "unlock": [],
                     "error": "Say in a few words what's needed — a verb helps."}
-        # A background worker's own tools are not answers to "can you do X":
-        # nothing the user says can reach one, so offering it would be a lie.
-        searchable = [spec for spec in registry.list() if not spec.has_tag("job")]
-        scored = [(spec, _score(spec, terms)) for spec in searchable]
+        candidates = [s for s in searchable if _app_of(s) not in left_out]
+        weights = _weights(candidates, terms)
+        # A result must speak to at least 60% of what was asked. Without it, taking the
+        # obvious answer away (an app left out) filled the list with one-word accidents —
+        # a project lister for "generate an image" — instead of saying nothing fits.
+        wanted = sorted(set(terms))
+        need = math.ceil(len(wanted) * 0.6)
+
+        def covers(spec: CapabilitySpec) -> int:
+            name = spec.name.lower().replace("_", " ")
+            description = (spec.description or "").lower()
+            return sum(1 for t in wanted if t in name or t in description)
+
+        scored = [(spec, _score(spec, terms, weights)) for spec in candidates
+                  if _app_of(spec) in asked or covers(spec) >= need]
+        if asked:
+            # Asked for by name: that app's tools come first, whatever else mentions the words.
+            bonus = max((n for _, n in scored), default=0) + 1
+            scored = [(s, n + bonus if _app_of(s) in asked else n) for s, n in scored]
         best = max((n for _, n in scored), default=0)
         # Two gates, both needed: a hard floor so one incidental word in a long
         # description is not a match, and a relative floor so a genuinely strong
@@ -156,11 +264,17 @@ def build(registry: CapabilityRegistry) -> list[CapabilitySpec]:
         floor = max(2, best / 2)
         matches = sorted(((s, n) for s, n in scored if n >= floor),
                          key=lambda pair: (-pair[1], pair[0].name))[:MAX_MATCHES]
-        unusable = _named_but_unusable(terms)
+        unusable = _named_but_unusable(terms + sorted(naming))
+        notes: list[str] = []
+        if left_out:
+            notes.append("As asked, left out: " + ", ".join(sorted(a.replace("_", " ") for a in left_out))
+                         + ". Do not do this through those apps; if nothing else fits, say so.")
         if not matches:
             # An honest "no" beats offering something unrelated (§45).
-            answer = {"ok": True, "found": [], "unlock": [],
-                      "note": f"I have nothing that does that ({intent})."}
+            answer: dict[str, Any] = {"ok": True, "found": [], "unlock": [],
+                                      "note": f"I have nothing that does that ({intent})."}
+            if notes:
+                answer["note"] = " ".join(notes) + " " + answer["note"]
             if unusable:
                 answer.update(notConnected=unusable, note=_unusable_note(unusable))
             return answer
@@ -168,7 +282,7 @@ def build(registry: CapabilityRegistry) -> list[CapabilitySpec]:
             "ok": True,
             "found": [{"name": s.name, "description": _brief(s.description)} for s, _ in matches],
             "unlock": [s.name for s, _ in matches],
-            "note": "These are callable now, in this same turn.",
+            "note": " ".join(notes + ["These are callable now, in this same turn."]),
         }
         if unusable:
             answer.update(notConnected=unusable,
@@ -182,10 +296,15 @@ def build(registry: CapabilityRegistry) -> list[CapabilitySpec]:
                      "scheduling something, controlling the computer, reading a spreadsheet, "
                      "or anything connected through another app. Describe what's needed in a "
                      "few plain words; matching abilities become callable right away, in this "
-                     "same turn."),
+                     "same turn. If the user named an app to use, or not to use, pass it as "
+                     "prefer or avoid — their instruction decides, not what scores highest."),
         input_schema={"type": "object", "properties": {
             "intent": {"type": "string",
-                       "description": 'A few words, e.g. "schedule a reminder".'}},
+                       "description": 'A few words, e.g. "schedule a reminder".'},
+            "prefer": {"type": "string",
+                       "description": "An app the user asked you to use, by name, if they did."},
+            "avoid": {"type": "array", "items": {"type": "string"},
+                      "description": "Apps the user told you NOT to use, by name, if they did."}},
             "required": ["intent"]},
         risk=Risk.LOW,
         handler=_run,

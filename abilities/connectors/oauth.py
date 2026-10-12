@@ -157,14 +157,33 @@ def _pkce_pair_native() -> tuple[str, str]:
 
 # --- discovery -------------------------------------------------------------------
 
+RETRY_PAUSE_S = 0.6
+FETCH_ATTEMPTS = 3
+
+
 async def _try_fetch_json(client: httpx.AsyncClient, url: str) -> dict[str, Any] | None:
-    try:
-        response = await client.get(url)
-        if response.status_code != 200:
+    """A metadata document, or None when there isn't one.
+
+    A network error, a 429 or a 5xx is a bad moment, not an answer, and is tried again: with
+    one try each, a single blip made discovery report "didn't return the OAuth details" for
+    five different providers in a row. A 404 is a real answer and is not retried.
+    """
+    for attempt in range(FETCH_ATTEMPTS):
+        try:
+            response = await client.get(url)
+        except httpx.HTTPError:
+            response = None
+        if response is not None and response.status_code == 200:
+            try:
+                return response.json()
+            except ValueError:
+                return None
+        retryable = response is None or response.status_code == 429 or response.status_code >= 500
+        if not retryable:
             return None
-        return response.json()
-    except (httpx.HTTPError, ValueError):
-        return None
+        if attempt < FETCH_ATTEMPTS - 1:
+            await asyncio.sleep(RETRY_PAUSE_S * (attempt + 1))
+    return None
 
 
 async def _probe_authorization(client: httpx.AsyncClient, mcp_url: str) -> dict[str, Any]:

@@ -636,8 +636,12 @@ export function useAssistant(go: (id: string) => void, onHome: boolean) {
     go('home');
   }
 
+  /** Jarvis is thinking, working or speaking: there is something to stop (design 1c). Hidden
+   *  only when idle, so Interrupt is there for a typed reply too, not just a spoken one. */
+  const working = busy || orbState === 'thinking' || orbState === 'tool_running' || orbState === 'speaking';
+
   return {
-    turns, orbState, status, busy, configured, unread, setUnread, sharing, watching,
+    turns, orbState, status, busy, working, configured, unread, setUnread, sharing, watching,
     listening, muted, engineId, voiceId, speakReplies, editing, setEditing, interrupt,
     talkingTo, setTalkingTo, composerDraft, setComposerDraft, activeConversationId, engine,
     send, handleRetryMessage, decide, newChat, resumeConversation,

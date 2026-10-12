@@ -11,14 +11,14 @@ import { rgba } from './HomeHeader';
  * The mic starts a voice session when none is running — the same as saying the
  * wake word — and mutes or unmutes one that is: muting never interrupts Jarvis,
  * it only stops the microphone. **Interrupt** is its own control (1c): a red ring
- * to the LEFT of the mic, there only while Jarvis is speaking, so the mic never
- * moves. Esc does the same.
+ * to the LEFT of the mic, there whenever Jarvis is thinking, working or speaking
+ * and hidden only when idle, so the mic never moves. Esc does the same.
  */
 export function VoiceDock({
   state,
   listening,
   muted,
-  speaking,
+  canInterrupt,
   status,
   visible,
   width,
@@ -31,7 +31,8 @@ export function VoiceDock({
   /** A voice session is running. */
   listening: boolean;
   muted: boolean;
-  speaking: boolean;
+  /** Jarvis is thinking, working or speaking. */
+  canInterrupt: boolean;
   status: string;
   visible: boolean;
   width: number;
@@ -79,15 +80,15 @@ export function VoiceDock({
         <button
           type="button"
           data-testid="interrupt"
-          aria-label="Stop Jarvis speaking"
-          title="Stop Jarvis speaking (Esc)"
-          aria-hidden={!speaking}
-          tabIndex={speaking ? 0 : -1}
+          aria-label="Stop Jarvis"
+          title="Stop Jarvis (Esc)"
+          aria-hidden={!canInterrupt}
+          tabIndex={canInterrupt ? 0 : -1}
           onClick={onInterrupt}
           className="absolute left-[calc(50%-100px)] top-1/2 flex h-[52px] w-[52px] -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full
                      border-[1.5px] border-[rgb(255_59_48/0.65)] bg-[rgb(255_59_48/0.12)] text-[#ff8a82] shadow-[0_0_18px_rgba(255,59,48,0.35)]
                      transition-opacity duration-200"
-          style={{ opacity: speaking ? 1 : 0, pointerEvents: speaking ? 'auto' : 'none' }}
+          style={{ opacity: canInterrupt ? 1 : 0, pointerEvents: canInterrupt ? 'auto' : 'none' }}
         >
           <svg viewBox="0 0 24 24" className="h-[22px] w-[22px] fill-none stroke-current stroke-[1.8]" strokeLinecap="round" aria-hidden>
             <path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" />

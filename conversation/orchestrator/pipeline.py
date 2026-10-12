@@ -744,6 +744,13 @@ class Orchestrator:
             results: list[dict[str, Any]] = []
             state.to(State.EXECUTING, f"step {step}")
             for call in completed.tool_calls:
+                if cancel.is_set():
+                    # Stopped between actions: what already ran stays done and is reported as
+                    # done; nothing further starts. The call still gets a result, so the
+                    # transcript stays a valid call/result pair for the next request.
+                    results.append({"id": call.id, "name": call.name,
+                                    "result": {"error": "Not started: stopped before it ran."}})
+                    continue
                 result = self._execute_call(request, call, seen_calls)
                 tools_used.append(call.name)
                 yield ToolRan(call.name, result.ok, result.outcome, result.error,

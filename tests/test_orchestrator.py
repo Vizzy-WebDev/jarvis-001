@@ -466,6 +466,34 @@ def test_an_interruption_records_what_was_actually_heard(reg):
     assert not any(isinstance(e, Done) for e in events)
 
 
+def test_stopping_between_actions_starts_nothing_further_and_keeps_what_ran(reg):
+    """Interrupt while one of several actions runs: that one finishes (nothing is undone or
+    pretended undone), the rest never start, and no further model step is asked for."""
+    cancel = threading.Event()
+    ran: list[str] = []
+
+    def first(**_):
+        ran.append("first")
+        cancel.set()                        # the person presses Interrupt during it
+        return "first done"
+
+    add(reg, "first_action", handler=first)
+    add(reg, "second_action", handler=lambda **_: ran.append("second") or "second done")
+    model = StubModel([StepComplete(tool_calls=(ToolCall("c1", "first_action", {}),
+                                                ToolCall("c2", "second_action", {})),
+                                    model_id="stub")])
+    orch = Orchestrator(model, registry=reg, event_bus=EventBus())
+
+    events = run(orch, "do both", cancel=cancel)
+
+    assert ran == ["first"]
+    assert model.call_count == 1
+    assert isinstance(events[-1], Interrupted)
+    assert [e.capability for e in events if isinstance(e, ToolRan)] == ["first_action"]
+    stored = str([m for m in conversation.get_messages("s1") if m["role"] == "tool"])
+    assert "first done" in stored and "Not started" in stored
+
+
 # --- real vocal laughter -------------------------------------------------
 
 def test_a_laugh_marker_becomes_a_reaction_and_never_appears_in_text(reg):

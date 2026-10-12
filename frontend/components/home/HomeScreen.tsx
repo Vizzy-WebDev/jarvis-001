@@ -129,7 +129,7 @@ export function HomeScreen({ a, go, menuOpen, onMenu }: {
     else listener.stop();
   }, [hears, a.listening, prefs.loaded]);
 
-  // --- keys: Esc stops Jarvis speaking (or ends a session), F = Just Jarvis, Space = push-to-talk
+  // --- keys: Esc stops Jarvis while it thinks, works or speaks (or ends a session), F = Just Jarvis, Space = push-to-talk
   const presenceOnly = useCallback(() => {
     const any = show.chat || show.sys || show.jar;
     void setPrefs({ homeShow: { chat: !any, sys: !any, jar: !any } });
@@ -147,7 +147,7 @@ export function HomeScreen({ a, go, menuOpen, onMenu }: {
       if (k.resting) { k.wake(); return; }
       if (e.key === 'Escape' && !k.pop) {
         const live = k.a.engine.current;
-        if (k.a.orbState === 'speaking' || k.a.busy) { k.a.interrupt(); return; }
+        if (k.a.working) { k.a.interrupt(); return; }
         if (live && k.a.listening) { void k.a.toggleListening(); }
         return;
       }
@@ -288,7 +288,7 @@ export function HomeScreen({ a, go, menuOpen, onMenu }: {
 
           <div>
             <VoiceDock
-              state={state} listening={a.listening} muted={a.muted} speaking={speaking}
+              state={state} listening={a.listening} muted={a.muted} canInterrupt={a.working}
               status={status} visible={on(2)} width={bp === 'desk' ? 560 : 420} bottom={tabletP ? 446 : 0}
               onMic={onMic} onInterrupt={a.interrupt} waveMeter={waveMeter}
             />
@@ -438,7 +438,7 @@ function PhoneHome({ a, state, label, status, speaking, view, setView, health, s
       {view === 'core' ? (
         <div className="absolute inset-x-0 bottom-0 z-[4] flex flex-col items-center gap-3.5 px-3.5 pb-[18px]">
           <p data-testid="status" aria-live="polite" className="m-0 text-center text-[14px] text-ink-soft">{status}</p>
-          {speaking && (
+          {a.working && (
             <button type="button" data-testid="interrupt" onClick={a.interrupt}
                     className="flex h-11 items-center gap-2 rounded-full border-[1.5px] border-[rgb(255_59_48/0.65)] bg-[rgb(255_59_48/0.12)] px-[18px] text-[13.5px] text-[#ff8a82]">
               <svg viewBox="0 0 24 24" aria-hidden className="h-4 w-4 fill-none stroke-current stroke-[1.8]" strokeLinecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" /><path d="M3 21 21 3" /></svg>

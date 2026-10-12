@@ -649,6 +649,29 @@ def test_a_turn_that_stops_to_ask_shows_the_card_and_no_dropped_connection(
     assert page.is_enabled("[data-testid=send]")
 
 
+def test_interrupt_shows_while_jarvis_thinks_and_stops_the_reply(page, live_server, serve_provider):
+    """Design 1c as decided: Interrupt is there whenever Jarvis is thinking, working or speaking
+    (a typed reply included), hidden only when idle; pressing it ends the reply then and there."""
+    stub = serve_provider("openai-chat", reply="This reply should never arrive.", first_token_delay=6.0)
+    connect_and_select(live_server, stub)
+    refresh(page)
+    assert page.get_attribute("[data-testid=interrupt]", "aria-hidden") == "true"
+
+    say(page, "take your time")
+    page.wait_for_function(
+        "() => document.querySelector('[data-testid=interrupt]').getAttribute('aria-hidden') === 'false'",
+        timeout=10_000)
+    assert page.get_attribute("[data-testid=interrupt]", "tabindex") == "0"
+    page.click("[data-testid=interrupt]")
+    page.wait_for_function(
+        "() => document.querySelector('[data-testid=interrupt]').getAttribute('aria-hidden') === 'true'",
+        timeout=5_000)
+    page.wait_for_timeout(7_000)  # past the stub's delay: nothing more arrives
+    assert "This reply should never arrive." not in page.inner_text("body")
+    page.fill("[data-testid=composer-input]", "next")
+    assert page.is_enabled("[data-testid=send]")
+
+
 def test_connecting_a_provider_and_using_a_model_reaches_that_model_at_the_provider(
         page, live_server, serve_provider):
     stub = serve_provider("openai-chat", reply="Hello from the stub.")

@@ -294,7 +294,8 @@ def test_a_driver_knows_its_own_wire_and_nothing_else_of_jarvis():
     config, the state, the router or another driver — that would make it a gateway
     making routing decisions of its own."""
     allowed = ("jarvis.models.errors", "jarvis.models.types", "jarvis.models.prepared", "jarvis.models.catalog",
-               "jarvis.models.drivers._wire", "jarvis.models.drivers._turns", "jarvis.redact")
+               "jarvis.models.drivers._wire", "jarvis.models.drivers._turns",
+               "jarvis.models.drivers._inline_think", "jarvis.redact")
     drivers = [p for p in files_under("models", "drivers") if p.name != "__init__.py"]
     for path in drivers:
         # `from .. import errors` also lists the package itself; the module it names is what counts.

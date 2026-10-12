@@ -38,6 +38,10 @@ class Turn:
     #: The reply is a 200 whose content is the server's error: {"code": int, "message": str}.
     error_in_200: dict[str, Any] | None = None
     truncate: bool = False
+    #: Stream `text` even when the turn also calls tools (words before a call).
+    say_with_tools: bool = False
+    #: Stream `text` in pieces of this many characters instead of word by word.
+    piece: int = 0
     model: str | None = None
     finish: str | None = None  # None | "length" | "content_filter"
     usage: dict[str, int] = field(default_factory=lambda: {"input": 12, "output": 7, "cached": 4, "reasoning": 2})
@@ -239,7 +243,9 @@ class StubWire:
                 out.append(e({"model": model, "choices": [{"index": 0, "delta": {"content": envelope[i:i + 9]}}]}))
             out.append(e({"model": model, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}))
             return out + ["data: [DONE]\n\n"]
-        words = self._words(turn.text) if not turn.tools else []
+        words = self._words(turn.text) if (not turn.tools or turn.say_with_tools) else []
+        if turn.piece and words:
+            words = [turn.text[i:i + turn.piece] for i in range(0, len(turn.text), turn.piece)]
         for i, word in enumerate(words):
             out.append(e({"model": model, "choices": [{"index": 0, "delta": {"content": word}}]}))
             if i == 0 and turn.mid_stream:

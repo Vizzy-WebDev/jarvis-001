@@ -219,6 +219,10 @@ def outcome_of(records: Records, met: bool) -> str:
         return "false_done"
     if records.pending_approvals():
         return "waiting_for_you"
-    if says_not_done(words) or waiting_on_person:
+    # Stopped honestly means the person was actually TOLD: in the result or reply, or in a
+    # question raised for them. A job merely marked as waiting on them, with nothing said
+    # (found live: a status written by a race), is work abandoned, not a stop.
+    told = any(o.get("tier") == 1 for o in records.outbox)
+    if says_not_done(words) or (waiting_on_person and told):
         return "honest_stop"
     return "abandoned"

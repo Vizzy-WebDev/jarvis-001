@@ -131,9 +131,16 @@ def run_job(job_id: str, *, event_bus: EventBus | None = None,
         _buses.pop(job_id, None)
     report = _report({"status": reached["state"], "result": reached.get("result"),
                       "waiting_on": reached.get("why")}, job_id)
-    if (job_store.get_job(job_id) or {}).get("status") == "running":
+    stopped = reached["state"] == "waiting" and (reached.get("why") or {}).get("reason") == "stopped"
+    if not stopped and (job_store.get_job(job_id) or {}).get("status") == "running":
         # Its hooks normally say where it stopped; a pause re-reached from a saved step
         # (after a crash) runs no hook again, so the row is set from the record.
+        #
+        # Never when the round was STOPPED: whoever stopped it owns what the job is now. Found
+        # by a live run — the executive stopped a job that was repeating itself and at once set
+        # it going again on a new thread; this thread, finishing its stopped round a moment
+        # later, saw "running" (the new thread's), took it for its own, and marked the job
+        # "waiting on you" with no question anywhere, while the new round was still working.
         job_store.update_job(job_id, {"status": _status_of(report), "currentStep": None})
     return report
 

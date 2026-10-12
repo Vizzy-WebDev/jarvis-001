@@ -248,6 +248,61 @@ def test_a_hung_job_is_picked_up_from_where_its_plan_stands():
     assert stored["result"] == "Picked up and finished."
 
 
+def test_a_stopped_round_never_overwrites_what_the_job_has_become(monkeypatch):
+    """Found by a live run: a job stopped for repeating itself and set going again was marked
+    "waiting on you" — with no question anywhere — by the stopped round's own thread."""
+    install(Brain())
+    job = job_store.create_job(title="Raced", goal="g")
+
+    def stopped_while_another_run_took_over(job_id, kind, text, **kw):
+        # What the executive does between stopping the round and this thread returning:
+        job_store.update_job(job_id, {"status": "running", "currentStep": "working"})
+        return {"state": "waiting", "why": {"reason": "stopped", "steps": 3}}
+
+    monkeypatch.setattr(durable, "advance", stopped_while_another_run_took_over)
+    worker.run_job(job["id"], event_bus=EventBus())
+    stored = job_store.get_job(job["id"])
+    assert stored["status"] == "running" and stored["currentStep"] == "working"
+
+
+def test_a_job_repeating_itself_while_running_is_stopped_and_set_going_again_cleanly():
+    """The whole path, with a real held round: the clock sees the repetition, stops the round
+    and sets the job going again; the job ends done, and is never shown as waiting on anyone."""
+    brain = install(Brain())
+    job = job_store.create_job(title="Repeats", goal="read it")
+    session = f"job:{job['id']}"
+    same = ("call", "look_up_fact", {"q": "the same thing"})
+    # Round 0 repeats itself and is then held mid-round; the round after the nudge finishes.
+    brain.plan("job:", [[same, same, same, same, same], [("say", "Took another way: done.")]])
+    brain.hold[(session, 0, 4)] = threading.Event()
+    brain.reached[(session, 0, 4)] = threading.Event()
+
+    worker.run_in_background(job["id"], event_bus=EventBus())
+    assert brain.reached[(session, 0, 4)].wait(20)
+    seen: list[str] = []
+    real = job_store.update_job
+
+    def watch(job_id, patch):
+        if "status" in patch:
+            seen.append(patch["status"])
+        return real(job_id, patch)
+
+    job_store.update_job = watch  # type: ignore[assignment]
+    try:
+        [action] = [a for a in orchestrator.supervise(event_bus=EventBus()) if a["action"] == "retried"]
+        assert action["cause"] == "exact_repeat" and action["kind"] == "approach"
+        brain.hold[(session, 0, 4)].set()
+        for _ in range(3):
+            assert worker.join_all(timeout=30)
+    finally:
+        job_store.update_job = real  # type: ignore[assignment]
+
+    stored = job_store.get_job(job["id"])
+    assert stored["status"] == "done" and stored["result"] == "Took another way: done."
+    assert "awaiting_decision" not in seen
+    assert outbox_for(job["id"]) and all(o["reason"] == "finished" for o in outbox_for(job["id"]))
+
+
 # --- a step allowance that follows the work --------------------------------------------------------
 
 def test_a_job_out_of_steps_but_getting_somewhere_carries_on_without_asking(monkeypatch):

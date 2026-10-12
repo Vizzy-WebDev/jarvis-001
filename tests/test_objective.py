@@ -230,6 +230,51 @@ def test_a_request_the_model_garbled_is_not_run_and_the_model_can_ask_again():
     assert "could not be read" in told and "NOT run" in told
 
 
+class _SaysNothing(Brain):
+    """Returns an empty reply (no words, nothing called) for the steps listed in `empty`."""
+
+    def __init__(self, empty: set) -> None:
+        super().__init__()
+        self.empty, self.n = empty, 0
+
+    def stream(self, **kw):
+        from jarvis.orchestrator.model_port import StepComplete
+
+        self.n += 1
+        if self.n in self.empty:
+            self.calls.append({"session": kw["session_id"], "round": -1, "step": -1,
+                               "system": kw["system"], "tools": [], "messages": kw["messages"]})
+            yield StepComplete(text="", model_id="brain")
+            return
+        yield from super().stream(**kw)
+
+
+def test_an_empty_reply_is_never_taken_for_an_answer():
+    """Found live: a model spent 3,072 output tokens and returned no words and no call; that
+    was recorded as a background job's finished result, with nothing filed."""
+    brain = install(_SaysNothing({1}))
+    session = chat()
+    brain.plan("", [[("say", "Here is the answer.")]])
+    events = say(session, "What is it?")
+    assert next(e for e in events if isinstance(e, Done)).text == "Here is the answer."
+    assert "Your last reply was empty" in system_of(brain.calls[1])      # it was told so
+
+    brain = install(_SaysNothing({1, 2}))
+    events = say(chat(), "What is it?")
+    assert [e.code for e in events if isinstance(e, Failed)] == ["empty_reply"]
+    assert not any(isinstance(e, Done) for e in events)
+
+
+def test_a_job_that_ends_without_a_word_is_not_done():
+    from jarvis.jobs import orchestrator
+
+    brain = install(Brain())
+    job = job_store.create_job(title="Silent", goal="file the total")
+    assert worker._finish(job["id"], {"text": "  "}) == \
+        {"accepted": False, "error": "it ended without giving any result at all"}
+    assert job_store.get_job(job["id"])["status"] != "done"
+
+
 def test_update_plan_is_a_workers_tool_and_nobody_elses():
     install(Brain())
     registry = assembly.get_registry()

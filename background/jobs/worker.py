@@ -328,6 +328,10 @@ def _finish(job_id: str, outcome: dict[str, Any]) -> dict[str, Any]:
     # Without a leading thinking block some models leave in their reply: what is delivered is
     # the result, not the reasoning that led to it.
     answer = objective.clean(outcome.get("text") or "")
+    if not answer.strip():
+        # Ending without a word is not finishing. (Found live: a job was recorded as done with
+        # an empty result and nothing filed.) Sent back like any result that does not hold up.
+        return {"accepted": False, "error": "it ended without giving any result at all"}
     blocked = objective.blocked_of(job)
     if blocked:
         # It said it cannot be finished. Its account is kept as where the work stands, and it

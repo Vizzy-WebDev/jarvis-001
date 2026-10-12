@@ -90,6 +90,11 @@ HANDOFF_NOTE = ("This is your last step for this reply. If the work is finished,
                 "it is NOT finished, do not leave it half done and do not ask them what to do: "
                 "call {tool} with the whole outcome and what done looks like, and it carries on "
                 "from what you have already found. That is the only thing you can call now.")
+#: Added to the one extra attempt a step gets when the model came back with nothing at all —
+#: no words and nothing to call (found live: 3,072 output tokens of reasoning, and an empty
+#: reply, which was then accepted as a background job's finished result).
+EMPTY_REPLY_NOTE = ("Your last reply was empty: no words and nothing called. Reply now — either "
+                    "call what you need next, or say your answer in words.")
 #: The last step of one ROUND of longer background work (`TurnRequest.continuable`): the
 #: work is not over, so what is asked for is where it stands, not a final answer.
 ROUND_END_NOTE = ("This round of the work ends here: there is nothing more to call right now. "
@@ -588,6 +593,9 @@ class Orchestrator:
         # Set when the last step came back asking for a tool it was not offered:
         # that earns exactly one more attempt at the answer (see below).
         insist = False
+        # Set once a step has come back with nothing at all: the next one is told so, and a
+        # second empty reply ends the turn as a failure rather than as an "answer".
+        empty_before = False
         # What the model that will answer can hold — asked once per turn, and again
         # only after it refuses a request as too long (one refit per turn).
         capacity: tuple[int | None, int | None] | None = None
@@ -630,6 +638,8 @@ class Orchestrator:
                     system = with_section(system, "final_step", note)
                     if step > ceiling:
                         system = with_section(system, "no_tools_now", INSIST_NOTE)
+                if empty_before:
+                    system = with_section(system, "empty_reply", EMPTY_REPLY_NOTE)
 
                 self._bus.publish(
                     EventType.MODEL_CALL_STARTED,
@@ -770,6 +780,16 @@ class Orchestrator:
                 if step > ceiling and not reply.strip():
                     # The firmer second attempt said nothing at all: that is not an answer.
                     break
+                if not reply.strip():
+                    # Nothing said and nothing called. Never an answer: one more try, told so;
+                    # then a plain failure.
+                    if not empty_before and step < ceiling:
+                        empty_before = True
+                        continue
+                    state.fail("the model returned nothing")
+                    yield Failed("I didn't get an answer from the model just then. Ask me again.",
+                                 code="empty_reply")
+                    return
                 pushed_reply = conversation.push_assistant_text(
                     request.session_id, reply, completed.model_id, completed.raw
                 )

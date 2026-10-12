@@ -186,7 +186,7 @@ export function ConnectionCard({
                         {model.label !== model.id && <span>{model.id}</span>}
                         {model.chatProblem && (
                           <span data-testid="not-chat" title={model.chatProblem}>
-                            {' '}· not for chatting ({model.kind !== 'chat' ? `${model.kind} model` : 'no tool use'})
+                            {' '}· not for chatting ({model.kind === 'other' ? 'not a text model' : model.kind !== 'chat' ? `${model.kind} model` : 'no tool use'})
                           </span>
                         )}
                         {model.source === 'manual' && <span> · added by hand</span>}

@@ -57,6 +57,7 @@ MAX_SESSIONS = 3
 MAX_PROFILES = 20
 IDLE_TIMEOUT_S = 30 * 60
 MAX_ELEMENTS = 80
+STATE_SAVE_EVERY_S = 3.0
 MAX_TYPED_CHARS = 10_000
 
 _KEYS = re.compile(r"^(Enter|Tab|Escape|Backspace|Delete|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|"
@@ -180,6 +181,8 @@ class _Running:
     page: Any
     touched: float
     temp_dir: Path | None = None
+    #: When the sign-ins were last written down (monotonic seconds).
+    state_saved: float = 0.0
     #: Downloads still arriving; awaited before an agent's step reports, and at close.
     pending: set = field(default_factory=set)
 
@@ -281,7 +284,27 @@ class BrowserManager:
                           url=running.page.url, status="active", updated_at=_now())
         self._sessions[session_id] = session
         self._persist(session)
+        await self._save_state(session_id, running)
         return session
+
+    async def _save_state(self, session_id: str, running: _Running, *, force: bool = False) -> None:
+        """Write the window's sign-ins down, so they outlive a hard exit.
+
+        A browser keeps session cookies - what a login with no "remember me" is made of - only
+        in memory, so a Jarvis that is killed (a closed console window) would forget every one.
+        They are written after what the window just did, at most every few seconds; closing the
+        window writes them too. Best effort: it never fails the step that caused it."""
+        now = time.monotonic()
+        if not force and now - running.state_saved < STATE_SAVE_EVERY_S:
+            return
+        running.state_saved = now
+        try:
+            path = self.directory(session_id) / "storage.json"
+            temp = path.with_suffix(".json.tmp")
+            await running.context.storage_state(path=str(temp))
+            os.replace(temp, path)
+        except Exception:  # noqa: BLE001 - saving cookies is never worth failing a step over
+            logger.debug("could not save sign-ins for %s", session_id, exc_info=True)
 
     # --- opening, navigating, closing -------------------------------------------------
 
@@ -320,6 +343,7 @@ class BrowserManager:
             raise BrowserError("BROWSER_UNAVAILABLE",
                                "There's no browser installed here for me to open. Jarvis uses "
                                "Microsoft Edge or Google Chrome.", 503)
+        await self._clear_dead(session_id)
         previous = self._sessions.get(session_id)
         folder = self.directory(session_id)
         profile = folder / "profile"
@@ -350,9 +374,13 @@ class BrowserManager:
             await self._restore_cookies(context, folder)
             await context.route("**/*", self._guard_request)
             await context.route_web_socket("**/*", self._close_socket)
-            for old in list(context.pages):
-                await old.close()
+            # The new tab BEFORE the old one goes: closing a browser's last tab ends its session
+            # and drops every session cookie - exactly what an ordinary sign-in is made of -
+            # including the ones just restored above.
             page = await context.new_page()
+            for old in list(context.pages):
+                if old is not page:
+                    await old.close()
             page.set_default_timeout(ACTION_TIMEOUT_MS)
             await self._normalise_user_agent(context, page)
             running = _Running(context=context, page=page, touched=time.monotonic(),
@@ -379,6 +407,23 @@ class BrowserManager:
                 shutil.rmtree(folder, ignore_errors=True)
             shutil.rmtree(temp_dir, ignore_errors=True)
             raise
+
+    async def _clear_dead(self, session_id: str) -> None:
+        """Let go of a window whose tab has died, before a new one is opened on its profile.
+
+        A tab can die under a window (a crash, a browser killed under memory pressure) and
+        leave the browser process holding the profile; a second launch on it is refused, and
+        the window could not be opened again until Jarvis was restarted. Found by making a
+        tab die and opening the window again."""
+        dead = self._running.pop(session_id, None)
+        if dead is None:
+            return
+        try:
+            await asyncio.wait_for(self._discard(dead.context), 15)
+        except Exception:  # noqa: BLE001 - a browser that will not close is abandoned
+            logger.info("a dead browser window would not close cleanly", exc_info=True)
+        if dead.temp_dir:
+            shutil.rmtree(dead.temp_dir, ignore_errors=True)
 
     async def _restore_cookies(self, context: Any, folder: Path) -> None:
         try:
@@ -484,11 +529,7 @@ class BrowserManager:
             raise BrowserError("SESSION_NOT_FOUND", "Browser session not found.", 404)
         running = self._running.get(session_id)
         if running is not None:
-            try:
-                await running.context.storage_state(
-                    path=str(self.directory(session_id) / "storage.json"))
-            except Exception:  # noqa: BLE001 - saving cookies is best effort during teardown
-                pass
+            await self._save_state(session_id, running, force=True)
             await self._finish_downloads(running, 10)
             await self._discard(running.context)
             self._running.pop(session_id, None)

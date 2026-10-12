@@ -114,6 +114,13 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/big.pdf":
             return self._send(b"%PDF-1.4\n" + b"0" * (11 * 1024 * 1024), "application/pdf",
                               extra={"Content-Disposition": 'attachment; filename="big.pdf"'})
+        if path == "/set-cookie":
+            # An ordinary sign-in: a session cookie, no expiry, gone when a browser quits.
+            return self._send(b"<!doctype html><title>Cookie set</title><body>set</body>",
+                              extra={"Set-Cookie": "sid=signed-in; Path=/"})
+        if path == "/cookie-echo":
+            seen = (self.headers.get("Cookie") or "none").encode()
+            return self._send(b"<!doctype html><title>Echo</title><body>cookie: " + seen + b"</body>")
         if path == "/to-private":
             return self._send(b"", status=302,
                               extra={"Location": f"http://127.0.0.1:{self.port}/"})

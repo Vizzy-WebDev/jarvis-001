@@ -201,6 +201,61 @@ def test_a_closed_window_reopens_still_signed_in(host):
     assert "had:yes" in host.read(SID)["text"], "the profile did not survive closing"
 
 
+def test_a_sign_in_made_of_a_session_cookie_survives_closing_and_reopening(host):
+    """A login with no "remember me" is a session cookie, which a browser keeps only in memory.
+    Found live against a real site: reopening a closed window lost it, because closing the old
+    startup tab ended the browser's session and dropped the cookies that had just been restored."""
+    host.open(SID, f"{BASE}/set-cookie")
+    host.navigate(SID, f"{BASE}/cookie-echo")
+    assert "sid=signed-in" in host.read(SID)["text"]
+    host.close_session(SID)
+    host.open(SID, f"{BASE}/cookie-echo")
+    assert "sid=signed-in" in host.read(SID)["text"], "closing and reopening lost the sign-in"
+
+
+def test_a_sign_in_is_written_down_while_the_window_is_open_so_a_hard_exit_keeps_it(
+        site, host, tmp_path):
+    """Nothing closes gracefully when the console window is shut. The cookies must already be
+    on disk: copy what a killed Jarvis would have left (no close ever ran) into a fresh place."""
+    import json
+    import shutil
+
+    host.open(SID, f"{BASE}/set-cookie")
+    host.navigate(SID, f"{BASE}/two")
+    saved = tmp_path / "sessions" / SID / "storage.json"
+    assert saved.exists(), "nothing was written down while the window was open"
+    assert any(c["name"] == "sid" for c in json.loads(saved.read_text())["cookies"])
+
+    survivor = tmp_path / "after-a-kill"
+    (survivor / SID).mkdir(parents=True)
+    shutil.copy(saved, survivor / SID / "storage.json")
+    shutil.copy(tmp_path / "sessions" / SID / "session.json", survivor / SID / "session.json")
+    afterwards = site.host(survivor)
+    try:
+        afterwards.open(SID, f"{BASE}/cookie-echo")
+        assert "sid=signed-in" in afterwards.read(SID)["text"]
+    finally:
+        afterwards.shutdown()
+
+
+def test_a_window_whose_tab_died_is_replaced_by_the_next_open(host):
+    """A tab can die under a window (a crash, a browser killed under memory pressure). The next
+    open must give a working window, not collide with what is left of the old one."""
+    host.open(SID, f"{BASE}/storage")
+
+    async def kill_the_tab(manager):
+        await manager._running[SID].page.close()
+
+    host.run(kill_the_tab)
+    assert host.is_running(SID) is False
+    with pytest.raises(BrowserError) as dead:
+        host.read(SID)
+    assert dead.value.code == "SESSION_CLOSED"
+    host.open(SID, f"{BASE}/two")
+    assert host.read(SID)["title"] == "Second"
+    assert host.is_running(SID) is True
+
+
 def test_sessions_are_remembered_across_a_restart_of_the_host(site, tmp_path):
     first = site.host(tmp_path / "sessions")
     first.open(SID, f"{BASE}/two")

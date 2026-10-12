@@ -78,7 +78,9 @@ TOOLS: tuple[dict[str, Any], ...] = (
         "name": "browser_click",
         "description": ("Click an element on the current page, using a selector from the "
                         "page's element list (not a guess). Returns the page afterwards, so "
-                        "you can see what happened and choose the next step."),
+                        "you can see what happened and choose the next step. This asks Boss for "
+                        "permission first, so call NO other browser tool in the same step: "
+                        "anything sent with it would run before the click and show the old page."),
         # Declared rather than inferred. The word-based classifier exists for tools from a
         # server this build has never seen; these declarations are ours, and we know what they
         # do. Clicking an arbitrary page can pay, send or post, and a headless window has no
@@ -95,7 +97,9 @@ TOOLS: tuple[dict[str, Any], ...] = (
         "description": ("Type into a field on the current page, or choose an option in a "
                         "dropdown by its label, using a selector from the element list. "
                         "Replaces what was in the field. Set submit to press Enter afterwards "
-                        "(search boxes, login forms). Returns the page afterwards."),
+                        "(search boxes, login forms). Returns the page afterwards. This asks "
+                        "Boss for permission first, so call NO other browser tool in the same "
+                        "step: anything sent with it would run first and show the old page."),
         "risk": "risky",
         "parameters": {"type": "object",
                        "properties": {"selector": {"type": "string"},
@@ -125,7 +129,9 @@ TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "browser_close",
-        "description": "Close Jarvis's browser window. Its sign-ins are kept for next time.",
+        "description": ("Close Jarvis's browser window. Only when Boss asks you to: leaving it "
+                        "open after a task is normal, and it lets them see where you got to and "
+                        "take over. Its sign-ins are kept for next time."),
         "risk": "safe",
         "parameters": {"type": "object", "properties": {}, "required": []},
     },

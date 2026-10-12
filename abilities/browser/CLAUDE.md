@@ -89,6 +89,17 @@ only the proxy's last connect is redirected to the fixture. Real Chrome or Edge,
   `wait_for_function` needs — poll with `page.evaluate` instead.
 - "open …" in a chat message can be taken by the router's fast path as an app-launch intent and
   never reach the model; phrase e2e prompts otherwise.
+- **Live tests** (`test_browser_live.py`, `test_browser_live_ui.py`, harness `live_harness.py`) use the
+  person's real model, a real Chrome/Edge and real websites, so they run only with
+  `JARVIS_LIVE_TESTS=1` (they spend model quota). A real server runs in its own process on a
+  scratch copy of `models.yaml` with the real `.env` READ for the key; approvals are answered one
+  by one by capability name, never blanket-allowed. They assert on what the tools returned and what
+  the window showed, not on the model's wording. `JARVIS_LIVE_KEEP=<dir>` keeps the run's database.
+  What the live runs found: session cookies were lost on reopen (the old startup tab was closed
+  before the new one opened, ending Chrome's session); sign-ins were not on disk after a hard exit
+  (now saved after each step); a dead tab left the profile locked so the window could not be opened
+  again (`_clear_dead`); the model sometimes sent a click together with a page read, and sometimes
+  closed the window unprompted (tool text now says not to).
 - What cannot be verified here: a real site's behaviour (logins, CAPTCHAs, consent walls, sites that
   need WebSockets or service workers, which are off). Real HTTPS through the CONNECT tunnel was
   checked against `example.com`, but is not in the suite, which has no internet dependency.

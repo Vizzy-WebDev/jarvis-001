@@ -127,6 +127,7 @@ def ledger_of(job: dict[str, Any] | None) -> dict[str, Any]:
             "open": _lines(raw.get("open"), MAX_OPEN),
             "note": str(raw.get("note") or "")[:NOTE_CHARS],
             "earlier": [str(n)[:NOTE_CHARS] for n in (raw.get("earlier") or [])][-EARLIER_NOTES:],
+            "blocked": raw.get("blocked") if isinstance(raw.get("blocked"), dict) else None,
             "updatedAt": raw.get("updatedAt")}
 
 
@@ -208,6 +209,26 @@ def _activity(job_id: str) -> str:
     parts = [f"{name} ×{ran}" + (f" ({failed} failed)" if failed else "")
              for name, (ran, failed) in counts.items()]
     return ", ".join(parts)
+
+
+def set_blocked(job_id: str, reason: str, tried: Any = None) -> dict[str, Any] | None:
+    """The work itself says it cannot be finished: what is in the way, and what it tried."""
+    job = job_store.get_job(job_id)
+    if job is None:
+        return None
+    blocked = {"reason": _short(reason, 600), "tried": _lines(tried, 8)}
+    _save(job_id, {**ledger_of(job), "blocked": blocked})
+    return blocked
+
+
+def clear_blocked(job_id: str) -> None:
+    job = job_store.get_job(job_id)
+    if job is not None and ledger_of(job)["blocked"]:
+        _save(job_id, {**ledger_of(job), "blocked": None})
+
+
+def blocked_of(job: dict[str, Any] | None) -> dict[str, Any] | None:
+    return ledger_of(job)["blocked"]
 
 
 def progress_mark(job_id: str) -> dict[str, int]:

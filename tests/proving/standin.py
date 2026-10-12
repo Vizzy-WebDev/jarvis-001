@@ -208,6 +208,10 @@ class OfficeWorker:
         if name:
             if self.finds_another_way and failed.get(name, 0) >= 2:
                 if failed.get(f"{name}-backup", 0) >= 1:
+                    if not any(r.get("name") == "cannot_finish" for r in results):
+                        return ("call", "cannot_finish",
+                                {"reason": f"the record {name} will not open, and neither will its backup",
+                                 "tried": ["reading it again", "reading its backup copy"]})
                     return ("say", f"I could not finish: the record {name} will not open and neither "
                                    "will its backup, so the trail cannot be followed past it. "
                                    "Nothing was filed.")

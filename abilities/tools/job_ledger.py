@@ -37,6 +37,36 @@ def _run(steps: Any = None, found: Any = None, open_questions: Any = None,
                         "— merge findings into fewer, fuller lines."} if ledger.get("dropped") else {})}
 
 
+def _cannot(reason: str = "", tried: Any = None, ctx: Any = None) -> dict[str, Any]:
+    session_id = getattr(ctx, "session_id", "") or ""
+    if not session_id.startswith(objective.SESSION_PREFIX):
+        return {"ok": False, "error": "cannot_finish can only be called while working on a "
+                                      "background job."}
+    if not (reason or "").strip():
+        return {"ok": False, "error": "Say what is in the way."}
+    if objective.set_blocked(session_id[len(objective.SESSION_PREFIX):], reason, tried) is None:
+        return {"ok": False, "error": "Unknown job."}
+    return {"ok": True, "recorded": True,
+            "note": "Recorded. Call nothing else: give your final account now — what is done, "
+                    "what blocks the rest, and what would unblock it."}
+
+
+CANNOT_SPEC = CapabilitySpec(
+    id="builtin.cannot_finish", name="cannot_finish",
+    description=("Say that the work you are doing cannot be finished, once you have really "
+                 "tried another way: what is in the way, and what you tried. It goes to Boss "
+                 "as a question, with your place kept. Use it instead of repeating something "
+                 "that keeps failing, and instead of handing in a result that is not what was "
+                 "asked for."),
+    input_schema={"type": "object", "properties": {
+        "reason": {"type": "string", "description": "Exactly what is in the way."},
+        "tried": {"type": "array", "items": {"type": "string"},
+                  "description": "The ways round it you tried."}},
+        "required": ["reason"]},
+    risk=Risk.LOW, handler=_cannot, wants_context=True, timeout_s=10.0,
+    tags=frozenset({"job", "core"}),
+)
+
 SPEC = CapabilitySpec(
     id="builtin.update_plan", name="update_plan",
     description=("Keep your plan and what you have found, for the work you are doing. Call it "
@@ -60,3 +90,6 @@ SPEC = CapabilitySpec(
     risk=Risk.LOW, handler=_run, wants_context=True, timeout_s=10.0,
     tags=frozenset({"job", "core"}),
 )
+
+#: Both of a worker's own tools (the loader takes `SPECS` over `SPEC`).
+SPECS = [SPEC, CANNOT_SPEC]

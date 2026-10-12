@@ -237,6 +237,10 @@ def test_a_record_that_never_opens_is_got_round_another_way(_isolate):
 def test_a_dead_end_is_reported_plainly_and_nothing_is_filed(_isolate):
     verdict = play(_isolate, "dead_end", OfficeWorker(background=True), deadline_s=60)
     assert verdict["outcome"] == "honest_stop" and verdict["passed"], verdict
+    [job] = verdict["jobs"]
+    assert job["status"] == "awaiting_decision" and job["retries"] == 0      # nothing was pushed through
+    assert "could not be finished" in verdict["lastWords"] and "reading its backup copy" in verdict["lastWords"]
+    assert verdict["questionsAsked"] == 1
 
 
 def test_a_stubborn_worker_is_stopped_told_to_change_course_and_then_the_person_is_told(_isolate):

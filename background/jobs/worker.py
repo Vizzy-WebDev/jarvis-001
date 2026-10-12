@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 #: A worker's own tools, added to every restricted kind. A narrow, repetitive
 #: job is exactly the one most likely to turn out to be three jobs, so leaving
 #: these out of the fenced kinds would let only unrestricted work ask to split.
-JOB_OWN_TOOLS = ["request_job_split", "update_plan"]
+JOB_OWN_TOOLS = ["request_job_split", "update_plan", "cannot_finish"]
 
 TOOLS_BY_KIND: dict[str, list[str] | None] = {
     "generic": None,
@@ -164,6 +164,8 @@ def _report(work: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
         return {"status": "awaiting_decision", "reason": "budget", "steps": why.get("steps")}
     if reason in ("failed", "rejected"):
         return {"status": "stalled", "error": _stall_detail(why), "cause": _stall_cause(why)}
+    if reason == "blocked":
+        return {"status": "awaiting_decision", "reason": "blocked", "error": why.get("error")}
     if reason == "model":
         # Not stuck and not the person's problem: it goes on by itself at `retryAt`.
         return {"status": "queued", "reason": "model", "retryAt": why.get("retryAt"),
@@ -302,6 +304,12 @@ def _finish(job_id: str, outcome: dict[str, Any]) -> dict[str, Any]:
     # Without a leading thinking block some models leave in their reply: what is delivered is
     # the result, not the reasoning that led to it.
     answer = objective.clean(outcome.get("text") or "")
+    blocked = objective.blocked_of(job)
+    if blocked:
+        # It said it cannot be finished. Its account is kept as where the work stands, and it
+        # goes to the person as that — not through the check, which would only send it back.
+        objective.note_round(job_id, answer)
+        return {"accepted": False, "blocked": True, "error": blocked["reason"]}
     # "It finished" is not the same as "it did what was asked". A checked
     # mismatch is treated exactly like a stall — the SAME single retry, the same
     # counter, the same escalation — rather than a second recovery mechanism
@@ -405,7 +413,40 @@ def _park(job_id: str, why: dict[str, Any]) -> None:
         _stall(job_id, _stall_detail(why), _bus_for(job_id), cause=_stall_cause(why))
     elif reason == "model":
         _park_for_model(job_id, why)
+    elif reason == "blocked":
+        _park_blocked(job_id, str(why.get("error") or "it cannot be finished"))
     # "stopped": whoever stopped it (the person cancelling, the supervisor) already said why.
+
+
+def _park_blocked(job_id: str, reason: str) -> None:
+    """The work itself said it cannot be finished (`cannot_finish`). That is not a result to
+    check and send back, and not a stall to push through: it is a question for the person,
+    asked once, with what is in the way, what was tried and what is done — and the work's
+    place kept, so their answer carries it on.
+
+    Found by a live run: a real model correctly concluded a record could not be read and said
+    so, and the completion check rejected that honest answer as "incomplete" and sent it back
+    to try again — twelve more model calls to arrive at the same place."""
+    from . import objective
+
+    job = job_store.get_job(job_id) or {}
+    ledger = objective.ledger_of(job)
+    tried = (ledger["blocked"] or {}).get("tried") or []
+    done = [s["text"] for s in ledger["steps"] if s["status"] == "done"]
+    job_store.update_job(job_id, {"status": "awaiting_decision", "error": reason,
+                                  "currentStep": None})
+    if not _has_trace(job_id, "could not finish"):
+        job_store.append_trace(job_id, phase="outcome", effect="read", kind="note",
+                               summary="could not finish", detail=reason)
+    summary = (f'"{job.get("title")}" could not be finished: {reason}'
+               + (f" I tried: {'; '.join(tried)[:240]}." if tried else "")
+               + (f" Done so far: {'; '.join(done)[:240]}." if done else "")
+               + " Tell me how to go on, or to stop.")
+    entry = _outbox_once(job_id, tier=1, reason="blocked", summary=summary,
+                         detail={"reason": reason, "tried": tried})
+    _bus_for(job_id).publish(EventType.JOB_UPDATED, {"id": job_id, "status": "awaiting_decision",
+                                                     "error": reason})
+    _ask_aloud(job_id, entry, summary, "A background job could not be finished.")
 
 
 def _park_for_model(job_id: str, why: dict[str, Any]) -> None:

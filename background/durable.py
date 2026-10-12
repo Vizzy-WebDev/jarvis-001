@@ -617,7 +617,11 @@ def _build_workflow(saver: Any) -> Any:
                 verdict = finish_task(work_id, kind_name, out).result()
                 if not (isinstance(verdict, dict) and verdict.get("accepted") is False):
                     return entrypoint.final(value={"finished": verdict}, save={"state": None})
-                why = {"reason": "rejected", "error": verdict.get("error"), "steps": spent}
+                # Refused as a finish. Either the result did not hold up (`rejected` — sent
+                # back), or the work itself said it cannot be finished (`blocked` — a question
+                # for the person, with the work's place kept so their answer carries it on).
+                why = {"reason": "blocked" if verdict.get("blocked") else "rejected",
+                       "error": verdict.get("error"), "steps": spent}
             elif out["outcome"] == "ran_out":
                 if allowance is None or spent < allowance:
                     text = continuation(None, inp["text"])

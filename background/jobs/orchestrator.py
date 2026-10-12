@@ -225,6 +225,10 @@ def resume(job_id: str, *, guidance: str | None = None,
     if guidance:
         job_store.append_trace(job_id, phase="intent", effect="read", kind="nudge",
                                summary="guidance from the user", detail=guidance)
+    # Being told to go on answers "it cannot be finished": that is no longer how it stands.
+    from . import objective
+
+    objective.clear_blocked(job_id)
     job_store.update_job(job_id, {"status": "queued", "error": None})
     # Only the action that actually resolves the decision marks the row
     # delivered — showing it is not resolving it.

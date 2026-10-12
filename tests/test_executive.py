@@ -303,6 +303,61 @@ def test_a_job_repeating_itself_while_running_is_stopped_and_set_going_again_cle
     assert outbox_for(job["id"]) and all(o["reason"] == "finished" for o in outbox_for(job["id"]))
 
 
+# --- saying it cannot be done -----------------------------------------------------------------------
+
+def test_work_that_says_it_cannot_be_finished_goes_to_the_person_and_not_back_through_the_check(monkeypatch):
+    """Found by a live run: a real model correctly concluded a record could not be read, and
+    the completion check rejected that honest answer as "incomplete" and sent it back."""
+    brain = install(Brain())
+    checked: list[str] = []
+    monkeypatch.setattr("jarvis.jobs.worker._verify_result",
+                        lambda job, answer: checked.append(answer) or None)
+    job = job_store.create_job(title="Trail", goal="follow the trail and file the total")
+    brain.plan("job:", [
+        [("call", "update_plan", {"steps": [{"text": "read entries 1 to 4", "status": "done"},
+                                            {"text": "read entry 5", "status": "blocked"}]}),
+         ("call", "cannot_finish", {"reason": "entry 5 will not open", "tried": ["reading it again", "searching for a copy"]}),
+         ("say", "I could not finish: entry 5 will not open, so no total was filed.")],
+        [("call", "effect_low", {"tag": "filed-after-guidance"}), ("say", "Filed with the first four entries, as you said.")]])
+
+    result = run_and_wait(lambda: worker.run_job(job["id"], event_bus=EventBus()))
+
+    assert result == {"status": "awaiting_decision", "reason": "blocked", "error": "entry 5 will not open"}
+    stored = job_store.get_job(job["id"])
+    assert stored["status"] == "awaiting_decision" and stored["retries"] == 0 and not stored["attempts"]
+    assert checked == []                                         # never put through the check
+    [ask] = outbox_for(job["id"])
+    assert ask["tier"] == 1 and ask["reason"] == "blocked"
+    assert 'could not be finished: entry 5 will not open' in ask["summary"]
+    assert "I tried: reading it again; searching for a copy." in ask["summary"]
+    assert "Done so far: read entries 1 to 4." in ask["summary"]
+    assert orchestrator.supervise(event_bus=EventBus()) == []    # and it is not "recovered" either
+    assert durable.get(job["id"])["status"] == "waiting"         # its place is kept
+
+    # The person says how to go on: it carries on from there, and finishes.
+    orchestrator.resume(job["id"], guidance="File it with the first four entries.", event_bus=EventBus())
+    assert worker.join_all(timeout=20)
+    stored = job_store.get_job(job["id"])
+    assert stored["status"] == "done" and effect_count("filed-after-guidance") == 1
+    assert objective.blocked_of(stored) is None
+    assert "File it with the first four entries." in brain.calls_for(f"job:{job['id']}", 1)[0]["messages"][-1]["text"]
+
+
+def test_cannot_finish_is_a_workers_tool_and_needs_a_reason():
+    from jarvis.policy import Autonomy, CallContext, Surface
+
+    install(Brain())
+    spec = assembly.get_registry().get("cannot_finish")
+    assert spec.has_tag("job")
+    job = job_store.create_job(title="T", goal="g")
+    inside = CallContext(session_id=f"job:{job['id']}", turn_id="t", surface=Surface.JOB, autonomy=Autonomy.PRE_CONSENTED)
+    outside = CallContext(session_id="chat-1", turn_id="t", surface=Surface.TEXT, autonomy=Autonomy.INTERACTIVE)
+    assert spec.handler(reason="x", ctx=outside)["ok"] is False
+    assert spec.handler(reason=" ", ctx=inside)["ok"] is False
+    assert spec.handler(reason="it is locked", ctx=inside)["ok"] is True
+    assert objective.blocked_of(job_store.get_job(job["id"]))["reason"] == "it is locked"
+
+
 # --- a step allowance that follows the work --------------------------------------------------------
 
 def test_a_job_out_of_steps_but_getting_somewhere_carries_on_without_asking(monkeypatch):

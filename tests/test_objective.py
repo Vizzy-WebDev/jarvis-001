@@ -132,6 +132,30 @@ def test_a_job_works_under_its_own_prompt_with_its_objective_in_front_of_it_ever
     assert job_store.get_job(job["id"])["plan"]["note"]
 
 
+def test_a_call_that_keeps_failing_is_put_in_front_of_the_worker_as_not_worth_repeating():
+    """Found live: told to change approach, a real model searched elsewhere and still came
+    back to the same failing read eleven times, never three times in a row."""
+    job = job_store.create_job(title="T", goal="g")
+
+    def ran(n: int, name: str, args: dict, ok: bool) -> None:
+        job_store.append_trace(job["id"], phase="intent", effect="read", kind="tool", summary="s",
+                               detail={"name": name, "args": args, "operationId": f"op{n}"})
+        job_store.append_trace(job["id"], phase="outcome", effect="read", kind="tool", summary="s",
+                               detail={"name": name, "ok": ok, "operationId": f"op{n}"})
+
+    ran(1, "read_record", {"name": "a"}, True)
+    ran(2, "read_record", {"name": "dead"}, False)
+    ran(3, "search", {"q": "dead"}, True)
+    ran(4, "read_record", {"name": "dead"}, False)
+    ran(5, "read_record", {"name": "flaky"}, False)
+    ran(6, "read_record", {"name": "flaky"}, False)
+    ran(7, "read_record", {"name": "flaky"}, True)       # it worked in the end: not listed
+    assert objective.keeps_failing(job["id"]) == ['read_record({"name": "dead"}) — failed 2 times']
+    sections = dict(objective.worker_sections(f"job:{job['id']}"))
+    assert "These exact calls keep failing" in sections["where_it_stands"]
+    assert 'read_record({"name": "dead"}) — failed 2 times' in sections["where_it_stands"]
+
+
 def test_update_plan_is_a_workers_tool_and_nobody_elses():
     install(Brain())
     registry = assembly.get_registry()

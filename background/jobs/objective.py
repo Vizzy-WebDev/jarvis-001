@@ -259,6 +259,44 @@ def progress_mark(job_id: str) -> dict[str, int]:
             "found": len(ledger["found"]), "calls": len(worked)}
 
 
+#: The same call failing this often is shown to the worker as something not to try again.
+KEEPS_FAILING = 2
+
+
+def keeps_failing(job_id: str) -> list[str]:
+    """Calls that have failed more than once with the same arguments and never worked, from
+    the trace: `name(args) — failed N times`. Found by a live run: told to take a different
+    approach, a real model did search elsewhere — and kept coming back to the same read
+    between searches, eleven times in all, because nothing in front of it said how often that
+    exact call had already failed. Interleaved like that it is never "the same thing three
+    times in a row", so only the count shows it."""
+    started: dict[str, str] = {}
+    failed: dict[str, int] = {}
+    worked: set[str] = set()
+    for row in job_store.get_trace(job_id):
+        if row.get("kind") != "tool":
+            continue
+        detail = row.get("detail")
+        if isinstance(detail, str):
+            try:
+                detail = json.loads(detail)
+            except ValueError:
+                continue
+        if not isinstance(detail, dict):
+            continue
+        operation = str(detail.get("operationId") or "")
+        if row.get("phase") == "intent":
+            args = json.dumps(detail.get("args") or {}, sort_keys=True, default=str)
+            started[operation] = f"{detail.get('name')}({args[:160]})"
+        elif operation in started:
+            if detail.get("ok"):
+                worked.add(started[operation])
+            else:
+                failed[started[operation]] = failed.get(started[operation], 0) + 1
+    return [f"{call} — failed {count} times" for call, count in failed.items()
+            if count >= KEEPS_FAILING and call not in worked][:6]
+
+
 # --- in front of the worker ---------------------------------------------------------------------
 
 def job_for_session(session_id: str) -> dict[str, Any] | None:
@@ -314,6 +352,14 @@ def worker_sections(session_id: str) -> list[tuple[str, str]]:
         done = ""
     if done:
         progress.append(f"What you have actually run so far (from the record): {done}")
+    try:
+        failing = keeps_failing(job["id"])
+    except Exception:  # noqa: BLE001
+        failing = []
+    if failing:
+        progress.append("These exact calls keep failing, and trying them again will not help — "
+                        "find another way to what they were for, or call cannot_finish:\n"
+                        + "\n".join(f"- {line}" for line in failing))
 
     sections = [("objective", "\n\n".join(objective))]
     if progress:

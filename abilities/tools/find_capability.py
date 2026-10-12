@@ -53,6 +53,76 @@ def _score(spec: CapabilitySpec, terms: list[str]) -> int:
 BRIEF_CHARS = 240
 
 
+def _label_words(label: str) -> list[str]:
+    return [w for w in _WORD.findall((label or "").lower()) if len(w) > 2]
+
+
+def _named_but_unusable(terms: list[str]) -> list[dict[str, str]]:
+    """Apps the person NAMED that Jarvis cannot use right now, and why.
+
+    Matching is on the app's own label (every word of it must be in what was asked),
+    over what the person saved in Connector and the Official directory. Nothing here
+    knows a service: it reads the same records the Connector screen shows. Without
+    it, naming an app that was not set up returned whatever else happened to mention
+    the word, which is how an aggregator's "500+ apps incl. GitHub" got used instead.
+    """
+    try:
+        from ..connectors import catalog, store
+        from ..connectors.capabilities import tool_rows
+    except Exception:  # noqa: BLE001 — a broken connector store must not break the search
+        return []
+    wanted = set(terms)
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+
+    def named(label: str) -> bool:
+        words = _label_words(label)
+        return bool(words) and all(word in wanted for word in words)
+
+    try:
+        saved = [c for c in store.list_connectors() if c.get("type") in store.USER_TYPES]
+    except Exception:  # noqa: BLE001
+        saved = []
+    for connector in saved:
+        label = str(connector.get("label") or "")
+        if not named(label):
+            continue
+        status = connector.get("status") or {}
+        if not connector.get("enabled", True):
+            state = "switched off in Connector"
+        elif status.get("state") == "error":
+            reason = str(status.get("detail") or "").strip()
+            state = "needs reconnecting" + (f": {reason[:160]}" if reason else "")
+        elif status.get("state") != "working" and connector.get("type") == "mcp":
+            state = "added but not connected yet"
+        else:
+            try:
+                usable = bool(tool_rows(connector))
+            except Exception:  # noqa: BLE001
+                usable = True
+            if usable:
+                seen.add(label.lower())
+                continue
+            state = "connected, but its tools have not been read yet"
+        seen.add(label.lower())
+        out.append({"app": label, "state": state})
+    for entry in catalog.list_catalog():
+        label = str(entry.get("label") or "")
+        if label.lower() in seen or not named(label):
+            continue
+        has_record = any((c.get("source") or {}).get("id") == entry.get("id") for c in saved)
+        if not has_record:
+            out.append({"app": label, "state": "not set up yet"})
+    return out
+
+
+def _unusable_note(apps: list[dict[str, str]]) -> str:
+    names = ", ".join(f'{a["app"]} ({a["state"]})' for a in apps)
+    return (f"The user named an app Jarvis cannot use right now: {names}. Say so plainly and offer "
+            "to help set it up in Connector. Do not quietly do the job through a different app "
+            "(an aggregator that lists many apps, say) unless the user says that is fine.")
+
+
 def _brief(description: str) -> str:
     """Enough to choose by, not the whole manual.
 
@@ -86,16 +156,24 @@ def build(registry: CapabilityRegistry) -> list[CapabilitySpec]:
         floor = max(2, best / 2)
         matches = sorted(((s, n) for s, n in scored if n >= floor),
                          key=lambda pair: (-pair[1], pair[0].name))[:MAX_MATCHES]
+        unusable = _named_but_unusable(terms)
         if not matches:
             # An honest "no" beats offering something unrelated (§45).
-            return {"ok": True, "found": [], "unlock": [],
-                    "note": f"I have nothing that does that ({intent})."}
-        return {
+            answer = {"ok": True, "found": [], "unlock": [],
+                      "note": f"I have nothing that does that ({intent})."}
+            if unusable:
+                answer.update(notConnected=unusable, note=_unusable_note(unusable))
+            return answer
+        answer = {
             "ok": True,
             "found": [{"name": s.name, "description": _brief(s.description)} for s, _ in matches],
             "unlock": [s.name for s, _ in matches],
             "note": "These are callable now, in this same turn.",
         }
+        if unusable:
+            answer.update(notConnected=unusable,
+                          note=answer["note"] + " " + _unusable_note(unusable))
+        return answer
 
     return [CapabilitySpec(
         id="builtin.find_capability",

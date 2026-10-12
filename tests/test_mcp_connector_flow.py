@@ -119,8 +119,8 @@ def test_a_finished_sign_in_reads_the_tools_by_itself(stub, live_server, monkeyp
     assert sorted(t["title"] for t in tools) == sorted(TOOLS)
 
 
-def test_a_failed_read_after_connecting_says_why_and_keeps_the_connection(stub, live_server,
-                                                                        monkeypatch):
+def test_a_failed_read_after_connecting_says_why_and_is_not_called_working(stub, live_server,
+                                                                         monkeypatch):
     connector = _connector(stub, with_token=False)
 
     async def signed_in(_query):
@@ -136,9 +136,10 @@ def test_a_failed_read_after_connecting_says_why_and_keeps_the_connection(stub, 
             if status.get("detail"):
                 break
             time.sleep(0.2)
-    assert status["state"] == "working"
-    assert status["detail"] == ("Connected, but couldn't read its tools: The app didn't accept "
-                                "Jarvis's sign-in. Disconnect it and connect again.")
+    # Not "working": a connector whose tools cannot be read cannot do anything, and
+    # saying otherwise is what left some showing Connected with nothing behind them.
+    assert status["state"] == "error"
+    assert "sign-in" in status["detail"] and "connect" in status["detail"].lower()
 
 
 # --- Allow / Ask / Deny, where the tool actually runs --------------------------

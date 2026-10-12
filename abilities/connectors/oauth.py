@@ -54,10 +54,12 @@ scope cut, not an oversight.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 import secrets
+import threading
 import time
 from typing import Any
 from urllib.parse import urlencode, urlparse
@@ -288,7 +290,11 @@ async def _discover_authorization_server(client: httpx.AsyncClient, issuer_url: 
     to answer with valid-looking metadata at that origin."""
     from mcp.client.auth.oauth2 import build_oauth_authorization_server_metadata_discovery_urls
 
-    for url in build_oauth_authorization_server_metadata_discovery_urls(None, issuer_url):
+    # The issuer goes in the FIRST slot: that is the one the library inserts the
+    # well-known path in front of the issuer's own path with (RFC 8414 §3.1), the
+    # form GitHub (`github.com/login/oauth`) and any path-scoped issuer publish at.
+    # Passed as the resource address instead, it only ever tried the bare origin.
+    for url in build_oauth_authorization_server_metadata_discovery_urls(issuer_url, issuer_url):
         meta = await _try_fetch_json(client, url)
         if not meta or not _is_auth_server_doc(meta):
             continue
@@ -633,11 +639,15 @@ async def _refresh_token_set(token_set: dict[str, Any]) -> dict[str, Any]:
         response = await client.post(token_set["tokenEndpoint"], data=body)
     if response.status_code >= 400:
         raise RuntimeError("This connection expired and could not be refreshed — reconnect it.")
-    fresh = response.json()
+    try:
+        fresh = response.json()
+        access_token = fresh["access_token"]
+    except (ValueError, KeyError, TypeError) as err:
+        raise RuntimeError("This connection expired and could not be refreshed — reconnect it.") from err
 
     from mcp.client.auth.oauth2 import calculate_token_expiry
 
-    return {**token_set, "accessToken": fresh["access_token"],
+    return {**token_set, "accessToken": access_token,
             "refreshToken": fresh.get("refresh_token") or token_set.get("refreshToken"),
             "expiresAt": calculate_token_expiry(fresh.get("expires_in"))}
 
@@ -669,15 +679,41 @@ async def get_access_token(connector_id: str) -> str | None:
     except ValueError as err:
         raise RuntimeError("This connection is in a bad state — reconnect it.") from err
 
+    if _is_due(token_set):
+        # One refresh at a time per connector. A refresh token that works only once
+        # (rotation) would otherwise be spent by whichever call got there first, and
+        # the other would fail its refresh and be told to reconnect. The lock is a
+        # plain threading one because every MCP call runs its own event loop on its own
+        # worker thread; waiting happens off the loop.
+        lock = _refresh_lock(connector_id)
+        await asyncio.to_thread(lock.acquire)
+        try:
+            raw = get_secret(ref)  # somebody may have just renewed it
+            token_set = json.loads(raw) if raw else token_set
+            if _is_due(token_set):
+                token_set = await _refresh_token_set(token_set)
+                save_secret(ref, json.dumps(token_set))
+        finally:
+            lock.release()
+
+    return token_set["accessToken"]
+
+
+def _is_due(token_set: dict[str, Any]) -> bool:
     expires_at = token_set.get("expiresAt")
     # `is not None`, not a truthy check: a real expiry is always a huge Unix
     # timestamp, but writing this as a bare `if expires_at` is the exact
     # falsy-vs-absent confusion that has bitten this codebase before.
-    if expires_at is not None and time.time() > expires_at - TOKEN_REFRESH_SLACK_S:
-        token_set = await _refresh_token_set(token_set)
-        save_secret(ref, json.dumps(token_set))
+    return expires_at is not None and time.time() > expires_at - TOKEN_REFRESH_SLACK_S
 
-    return token_set["accessToken"]
+
+_refresh_locks: dict[str, threading.Lock] = {}
+_refresh_locks_guard = threading.Lock()
+
+
+def _refresh_lock(connector_id: str) -> threading.Lock:
+    with _refresh_locks_guard:
+        return _refresh_locks.setdefault(connector_id, threading.Lock())
 
 
 def disconnect(connector_id: str) -> None:

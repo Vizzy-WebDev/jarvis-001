@@ -194,6 +194,30 @@ silently refreshing an expiring one.
   dynamic registration. It is a leaf over `store.py`'s JSON helpers; the secret goes through
   `config.save_secret()`.
 
+## Reliability rules (Oct 2026 investigation)
+
+- **The OAuth return trip is the one `/api` request a foreign-site navigation may make.**
+  `request_guard.is_oauth_return()` lets through only a GET to `/api/connectors/oauth/callback` that the
+  browser labels `Sec-Fetch-Mode: navigate` + `Sec-Fetch-Dest: document` and not `Origin: null`; the
+  one-time `state` is what makes that safe. Every earlier test called the callback with no headers, so
+  the guard blocked every provider redirect (Canva, ChatCut) unseen. `test_oauth_return_guard.py` and
+  the Playwright test `test_a_provider_redirecting_the_browser_back_really_connects` (stub provider on
+  `localhost`, so the browser really sends `cross-site`) pin it. Set `PORT` in any test that connects.
+- **"working" means the tools were read.** `refresh_tools()` sets it; a failure after sign-in is
+  `error` ("Signed in, but Jarvis couldn't read its tools"). A 401 on any call or a failed token
+  refresh raises `mcp_client.AuthRejected` AND marks the connector `error` (needs reconnecting).
+  Never resolve a token by swallowing failure and calling anonymously.
+- **Refresh is one-at-a-time per connector** (`oauth._refresh_lock`), re-reading the saved token
+  inside the lock, so a single-use refresh token is not spent twice.
+- **Authorization-server discovery passes the ISSUER as the library's first argument** — that is what
+  inserts `/.well-known/...` before the issuer's path (GitHub's `github.com/login/oauth`).
+- **A token can be pasted instead of signing in** (`POST /{id}/token`, `connectFlow.kind: "token"`,
+  `signInKind` remembers the OAuth kind so Connect again restores it). It is proven by reading tools.
+  GitHub's remote MCP server has no dynamic registration: browser sign-in needs a Client ID; the token
+  is the no-Client-ID route.
+- **`find_capability` says so when the person names an app that is not usable** (`notConnected`),
+  matched on the app's label against saved connectors and the catalogue — never on a service name in code.
+
 ## Catalogue, icons, routes
 
 - `catalog.json` / `catalog.py` — the bundled directory. **An entry is only listed once its real

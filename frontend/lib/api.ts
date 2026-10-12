@@ -363,6 +363,13 @@ export const api = {
         method: 'POST',
         ...json(manual ?? {}),
       }),
+    /** An mcp connector connected with a pasted access token instead of a browser
+     *  sign-in. The server proves it by reading the app's tools with it. */
+    saveToken: (id: string, token: string) =>
+      request<{ ok: true; tools: number; connector: Connector }>(
+        `/connectors/${encodeURIComponent(id)}/token`,
+        { method: 'POST', ...json({ token }) },
+      ),
     disconnect: (id: string) =>
       request<{ ok: true; connector: Connector }>(
         `/connectors/${encodeURIComponent(id)}/disconnect`,

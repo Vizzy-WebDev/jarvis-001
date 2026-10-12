@@ -31,13 +31,33 @@ def _sync() -> None:
     connector_capabilities.sync(get_registry())
 
 
+def _record_discovery_failure(connector_id: str, err: BaseException) -> None:
+    """Signed in, but the tools could not be read: that is NOT "working".
+
+    Marking it working here used to leave a connector reading "connected" that had
+    no tools and never would (Composio sat like that), so the screen, Jarvis's own
+    list of connected apps and the person all believed something that was false. It
+    is an error with the real reason; a refused sign-in has already marked itself.
+    """
+    try:
+        current = (store.get_connector(connector_id) or {}).get("status") or {}
+        if current.get("state") == "error" and current.get("detail"):
+            return  # the more specific reason (a refused sign-in) is already recorded
+        store.update_connector(connector_id, {"status": {
+            "state": "error", "checkedAt": now_iso(),
+            "detail": f"Signed in, but Jarvis couldn't read its tools: {err}"}})
+    except Exception:  # noqa: BLE001 — best-effort
+        pass
+
+
 def _discover_in_background(connector_id: str) -> None:
     """Read a just-connected server's tools without making anyone wait for it.
 
     Connecting only proves the sign-in worked; until the tool list is read,
     Jarvis has nothing to offer and the permission list has nothing to show.
-    A failure leaves the connection itself alone — it did connect — and says
-    why in its status detail, which the connector screen shows.
+    Only reading them successfully makes the connector `working`
+    (`refresh_tools`); a failure is recorded as an error with its reason, which the
+    connector screen shows.
     """
     def work() -> None:
         try:
@@ -46,12 +66,7 @@ def _discover_in_background(connector_id: str) -> None:
         except Exception as err:  # noqa: BLE001 — an unreachable server is a result
             logger.warning("connector %s: reading tools after connect failed: %s",
                            connector_id, err)
-            try:
-                store.update_connector(connector_id, {"status": {
-                    "state": "working", "checkedAt": now_iso(),
-                    "detail": f"Connected, but couldn't read its tools: {err}"}})
-            except Exception:  # noqa: BLE001 — best-effort
-                pass
+            _record_discovery_failure(connector_id, err)
 
     threading.Thread(target=work, name=f"connector-discover-{connector_id}",
                      daemon=True).start()
@@ -283,6 +298,27 @@ async def oauth_redirect_uri():
     return {"uri": oauth.redirect_uri()}
 
 
+def _callback_page(outcome: dict) -> str:
+    """The page the person lands on after approving (or refusing) Jarvis.
+
+    A failure stays on screen: the old page closed itself 1.2 seconds after showing
+    ANY result, so a failed connection vanished before it could be read. The text
+    can come from the provider's own redirect (`error_description`), so it is escaped.
+    """
+    import html as _html
+
+    if outcome.get("ok"):
+        body = ("<p>Connected.</p><p>You can close this tab.</p>"
+                "<script>setTimeout(function(){ window.close(); }, 1200);</script>")
+    else:
+        reason = _html.escape(str(outcome.get("error") or "Something went wrong."))
+        body = (f"<p>Could not connect: {reason}</p>"
+                "<p>Go back to Jarvis and click Connect to try again. "
+                "You can close this tab.</p>")
+    return ('<!doctype html><html><head><meta charset="utf-8"><title>Jarvis</title></head>'
+            f'<body style="font:16px system-ui;padding:2em;text-align:center">{body}</body></html>')
+
+
 @router.get("/oauth/callback")
 async def oauth_callback(request: Request):
     outcome = await oauth.handle_callback(dict(request.query_params))
@@ -305,12 +341,7 @@ async def oauth_callback(request: Request):
             meta={"connectorId": outcome["connectorId"]} if outcome.get("connectorId") else None)
     except Exception:  # noqa: BLE001 — the HTML page below still tells the user what happened
         logger.warning("could not record the OAuth callback notification")
-    message = "Connected." if outcome.get("ok") else f"Could not connect: {outcome.get('error')}"
-    html = (f'<!doctype html><html><body style="font:16px system-ui;padding:2em;text-align:center">'
-           f'<p>{message}</p><p>You can close this tab.</p>'
-           f'<script>setTimeout(function(){{ window.close(); }}, 1200);</script>'
-           f'</body></html>')
-    return HTMLResponse(content=html)
+    return HTMLResponse(content=_callback_page(outcome))
 
 
 @router.post("/{connector_id}/connect")
@@ -325,6 +356,13 @@ async def connect(connector_id: str, body: dict | None = None):
     if not server_url:
         return JSONResponse({"ok": False, "error": "This connector has no server address to connect to."},
                             status_code=400)
+
+    flow = (connector.get("config") or {}).get("connectFlow") or {}
+    if flow.get("kind") == "token":
+        # Signing in again after a pasted token: put back the kind it had, or the
+        # token set the sign-in saves would be sent as if it were a bare token.
+        store.update_connector(connector_id, {"config": {"connectFlow": {
+            **flow, "kind": flow.get("signInKind") or "oauth_dcr"}}})
 
     client_id = (body or {}).get("clientId")
     client_secret = (body or {}).get("clientSecret")
@@ -347,6 +385,47 @@ async def connect(connector_id: str, body: dict | None = None):
         except Exception:  # noqa: BLE001 — best-effort
             pass
         return JSONResponse({"ok": False, "error": message}, status_code=400)
+
+
+@router.post("/{connector_id}/token")
+async def save_token(connector_id: str, body: dict):
+    """Connect an `mcp` connector with a token the person pastes instead of signing in.
+
+    The way in for a service that has no automatic sign-in for an app like Jarvis
+    (GitHub's own server will not register one: it needs a Client ID someone made
+    by hand) but hands out personal access tokens. Saved under this connector's own
+    secret and never returned; proven by actually reading the server's tools with it,
+    so a wrong token is an error the person sees now, not a "Connected" that is not.
+    """
+    connector = store.get_connector(connector_id)
+    if connector is None or connector.get("type") != "mcp":
+        return JSONResponse({"ok": False, "error": "Unknown connector."}, status_code=404)
+    token = str((body or {}).get("token") or "").strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    if not token:
+        return JSONResponse({"ok": False, "error": "Paste the token first."}, status_code=400)
+    flow = dict((connector.get("config") or {}).get("connectFlow") or {})
+    if not flow.get("url"):
+        return JSONResponse({"ok": False, "error": "This connector has no server address to connect to."},
+                            status_code=400)
+    from ..config import save_secret
+
+    ref = f"conn_{connector_id}"
+    save_secret(ref, token)
+    previous = flow.get("kind")
+    store.update_connector(connector_id, {
+        "config": {"secretRef": ref, "connectFlow": {
+            **flow, "kind": "token", "manualClient": None,
+            "signInKind": flow.get("signInKind") or (previous if previous in ("oauth_dcr", "oauth_guided") else None)}},
+        "status": {"state": "untested", "checkedAt": None, "detail": None}})
+    try:
+        result = await run_in_threadpool(connector_capabilities.refresh_tools, connector_id)
+    except Exception as err:  # noqa: BLE001 — a refused token is a result the person must see
+        _record_discovery_failure(connector_id, err)
+        return JSONResponse({"ok": False, "error": str(err)}, status_code=400)
+    _sync()
+    return {"ok": True, "tools": result["tools"], "connector": _public(result["connector"])}
 
 
 @router.post("/{connector_id}/disconnect")
@@ -589,6 +668,8 @@ async def refresh(connector_id: str):
     except KeyError:
         return JSONResponse({"ok": False, "error": "Unknown connector."}, status_code=404)
     except Exception as err:  # noqa: BLE001 — an unreachable server is a result, not a crash
+        if (store.get_connector(connector_id) or {}).get("type") == "mcp":
+            _record_discovery_failure(connector_id, err)
         return JSONResponse({"ok": False, "error": str(err)}, status_code=502)
     _sync()
     return {"ok": True, "tools": result["tools"],

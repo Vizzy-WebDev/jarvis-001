@@ -2019,6 +2019,49 @@ def test_a_custom_mcp_connector_connects_end_to_end_against_a_real_server(page, 
     page.wait_for_selector("text=Connected")
 
 
+def test_a_provider_redirecting_the_browser_back_really_connects(page, monkeypatch):
+    """The bug that stopped Canva and ChatCut: after approving, the PROVIDER sends the
+    browser back to Jarvis, and a browser labels that `Sec-Fetch-Site: cross-site`. The
+    request guard answered it with "That request came from a page outside Jarvis".
+    Every earlier test called the callback itself, with no such label.
+
+    Nothing is driven by hand here: the stub provider lives on `localhost` (a different
+    site from Jarvis's 127.0.0.1) and answers /authorize with a real 302, so the browser
+    does the whole return trip."""
+    # The return address Jarvis hands a provider comes from `PORT`; the test server is on
+    # an unusual port, so say so — left alone it would send the browser to :3000, which
+    # is where a person's own running Jarvis lives.
+    monkeypatch.setenv("PORT", live_server_url(page).rsplit(":", 1)[1])
+    provider = StubOAuthServer(redirect=True, public_host="localhost")
+    provider.start()
+    try:
+        _open_app_control(page)
+        page.click("[data-testid=add-connector-menu]")
+        page.click("[data-testid=add-custom-connector]")
+        page.fill("[data-testid=custom-label]", "Redirecting Stub")
+        page.fill("[data-testid=custom-mcp-url]", f"{provider.base_url}/mcp")
+        page.click("[data-testid=save-custom-connector]")
+
+        page.wait_for_selector("[data-testid=connect]")
+        callback_answers: list[int] = []
+        page.context.on("response", lambda r: callback_answers.append(r.status)
+                        if "/api/connectors/oauth/callback" in r.url else None)
+        with page.expect_popup():
+            page.click("[data-testid=connect]")
+
+        try:
+            page.wait_for_selector("[data-testid=disconnect]", timeout=20_000)
+        except Exception:
+            seen = page.evaluate("() => fetch('/api/connectors').then(r => r.json())")
+            states = [(c["label"], c["status"]) for c in seen["connectors"]]
+            raise AssertionError(f"callback answered {callback_answers}; connectors: {states}")
+        assert callback_answers == [200], callback_answers
+        page.click("[data-testid=modal-close]")
+        page.wait_for_selector("text=Connected")
+    finally:
+        provider.stop()
+
+
 def test_an_mcp_apps_tools_appear_and_their_permissions_work_in_the_popup(page):
     """A connected MCP app with no tools read yet: opening it reads them from a
     real server that demands its token, every one starts on Ask, and a row, a

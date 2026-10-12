@@ -1005,8 +1005,29 @@ function McpConnect({ connector, catalogEntry, label, onConnected, setPoll }: {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
+  const [token, setToken] = useState('');
   const [busy, setBusy] = useState(false);
   const [buttonLabel, setButtonLabel] = useState(wasErrored ? 'Reconnect' : 'Connect');
+
+  // The way in for an app that has no automatic sign-in for Jarvis: a token the person
+  // makes on the app's own settings page. The server proves it by reading the app's
+  // tools with it, so a wrong one says so here instead of showing "Connected".
+  async function connectWithToken() {
+    setBusy(true);
+    try {
+      let connectorId = connector?.id;
+      if (!connectorId && catalogEntry) {
+        connectorId = (await api.connectors.ensure(catalogEntry.id)).connectorId;
+      }
+      if (!connectorId) throw new Error('Nothing to connect.');
+      await api.connectors.saveToken(connectorId, token.trim());
+      setToken('');
+      await onConnected(connectorId);
+    } catch (err) {
+      setStatus(err instanceof ApiRequestError ? err.message : 'Could not connect with that token.');
+      setBusy(false);
+    }
+  }
 
   async function connect() {
     setBusy(true);
@@ -1078,6 +1099,15 @@ function McpConnect({ connector, catalogEntry, label, onConnected, setPoll }: {
             <input className={inputClass} type="password" data-testid="connect-client-secret"
                    value={clientSecret} onChange={(event) => setClientSecret(event.target.value)} />
           </Field>
+          <Field label="Or an access token instead of signing in">
+            <input className={inputClass} type="password" data-testid="connect-token"
+                   placeholder="A personal access token from the app's own settings page"
+                   value={token} onChange={(event) => setToken(event.target.value)} />
+          </Field>
+          <Button tone="quiet" data-testid="connect-with-token" disabled={busy || !token.trim()}
+                  onClick={() => void connectWithToken()}>
+            Connect with this token
+          </Button>
         </div>
       )}
       <Button tone="primary" data-testid="connect" disabled={busy} onClick={() => void connect()}>

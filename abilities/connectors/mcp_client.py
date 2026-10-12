@@ -20,9 +20,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+class AuthRejected(RuntimeError):
+    """The saved sign-in is no longer accepted (or could not be renewed).
+
+    Its text is plain language for the person. Raising it ALSO records the connector
+    as needing to be reconnected (`_needs_reconnect`), so the connector screen, the
+    list of connected apps Jarvis is told about, and the next turn all stop claiming
+    it works — a status of "working" used to survive a refused token indefinitely.
+    """
+
 
 CONNECT_TIMEOUT_S = 30.0
 CALL_TIMEOUT_S = 120.0
@@ -46,6 +57,19 @@ def _connect_target(config: dict[str, Any]) -> Any:
     raise ValueError("That MCP connector has no server address or command.")
 
 
+def _needs_reconnect(connector_id: str | None, message: str) -> None:
+    if not connector_id:
+        return
+    from ..jscompat import now_iso
+    from . import store
+
+    try:
+        store.update_connector(connector_id, {
+            "status": {"state": "error", "checkedAt": now_iso(), "detail": message}})
+    except Exception:  # noqa: BLE001 — recording the state must never hide the failure itself
+        logger.warning("could not record that connector %s needs reconnecting", connector_id)
+
+
 async def _resolve_token(connector_id: str | None, config: dict[str, Any]) -> str | None:
     """The bearer token to send, resolved the right way for how this
     connector was actually set up.
@@ -66,8 +90,13 @@ async def _resolve_token(connector_id: str | None, config: dict[str, Any]) -> st
     if connector_id and oauth_module.is_oauth_flow(config):
         try:
             return await oauth_module.get_access_token(connector_id)
-        except RuntimeError:
-            return None
+        except RuntimeError as err:
+            # Never carry on without a token: the server would answer 401 and the
+            # person would be told ITS sign-in was refused, when the real news is
+            # that the saved one is gone or could not be renewed.
+            message = str(err) or "This connection needs to be set up again — reconnect it."
+            _needs_reconnect(connector_id, message)
+            raise AuthRejected(message) from err
 
     from ..config import get_secret
 
@@ -113,8 +142,14 @@ async def _with_client(config: dict[str, Any], work: Any, *, connector_id: str |
             transport = streamable_http_client(target, http_client=http)
             async with Client(transport, read_timeout_seconds=CALL_TIMEOUT_S) as client:
                 return await work(client)
+    except AuthRejected:
+        raise
     except Exception as err:  # noqa: BLE001 — reworded, never swallowed
-        raise RuntimeError(_plain_failure(err, statuses, target)) from err
+        message = _plain_failure(err, statuses, target)
+        if 401 in statuses:
+            _needs_reconnect(connector_id, message)
+            raise AuthRejected(message) from err
+        raise RuntimeError(message) from err
 
 
 def _innermost(err: BaseException) -> BaseException:
@@ -136,7 +171,10 @@ def _plain_failure(err: BaseException, statuses: list[int], url: str | None) -> 
     name = type(leaf).__name__
     if url is None and isinstance(leaf, OSError):
         return f"Couldn't start that app's program on this computer: {leaf}"
-    if name in ("ConnectError", "ConnectTimeout") or isinstance(leaf, (ConnectionError, OSError)):
+    # Only a genuine failure to connect says "couldn't reach": any other OSError (a
+    # certificate problem, a permission error) used to be reported as the server
+    # being down, which sent people looking in the wrong place.
+    if name in ("ConnectError", "ConnectTimeout") or isinstance(leaf, (ConnectionError, socket.gaierror)):
         return f"Couldn't reach the app's server at {url}. Check it is running and try again."
     if name in ("ReadTimeout", "TimeoutError") or isinstance(leaf, TimeoutError):
         return "The app's server took too long to answer."

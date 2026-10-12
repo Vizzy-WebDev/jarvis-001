@@ -695,6 +695,11 @@ class Orchestrator:
                         {"sessionId": request.session_id, "turnId": request.turn_id,
                          "step": step, "error": str(err)},
                     )
+                    carried = self._carry_on_after_outage(request, err, tools_used, seen_calls,
+                                                          step, state, budget)
+                    if carried is not None:
+                        yield from carried
+                        return
                     raise
                 break
 
@@ -949,6 +954,52 @@ class Orchestrator:
                                             or spec.name in request.allowed_names):
                 return spec
         return None
+
+    def _carry_on_after_outage(self, request: TurnRequest, err: BaseException,
+                               tools_used: list[str], seen: dict[str, int], step: int,
+                               state: AssistantState, budget: int | None) -> list[TurnEvent] | None:
+        """The model stopped answering part-way through work this reply had already started.
+        Rather than lose what was done, the work is handed to the background — which waits for
+        a model, and may use another one — and the reply says so. None when that does not
+        apply: nothing was under way yet, the failure is not an outage (the request itself was
+        the problem), or there is nothing to hand it to; the failure is then reported as before.
+
+        Found live: eight steps into following a trail, the person's chosen model had a
+        problem on its end, and the reply ended as an error with everything it had read gone.
+        """
+        detail = getattr(err, "detail", None) or {}
+        outage = isinstance(err, ModelUnavailable) and (
+            detail.get("scope") in ("endpoint", "upstream", "connection")
+            or (detail.get("reason") == "no_eligible_endpoint" and detail.get("rejected")))
+        handoff = self._handoff(request) if (outage and tools_used) else None
+        if handoff is None:
+            return None
+        call = ToolCall(id=f"handoff-{request.turn_id[:12]}", name=handoff.name,
+                        args={"goal": request.text})
+        try:
+            result = self._execute_call(request, call, seen)
+        except Exception:  # noqa: BLE001 — then the outage is reported as it always was
+            logger.exception("could not carry the work on after the model stopped answering")
+            return None
+        spoken = _spoken_result(result)
+        if result.outcome is ExecOutcome.NEEDS_APPROVAL or spoken is None:
+            return None
+        conversation.push_assistant_tool_calls(
+            request.session_id, [{"id": call.id, "name": call.name, "args": dict(call.args)}])
+        conversation.push_tool_results(
+            request.session_id, [{"id": call.id, "name": call.name, "result": result.value}])
+        reply = ("The model I was using stopped answering part-way through, so rather than lose "
+                 f"what I had done I have carried it on in the background. {spoken}")
+        pushed = conversation.push_assistant_text(request.session_id, reply)
+        self._bus.publish(
+            EventType.ASSISTANT_RESPONSE,
+            {"sessionId": request.session_id, "turnId": request.turn_id, "steps": step,
+             "text": reply, "userText": request.text, "toolNames": [*tools_used, call.name],
+             "contextBudget": budget},
+        )
+        self._finish(state, request)
+        return [ToolRan(call.name, result.ok, result.outcome, result.error),
+                Done(reply, steps=step, message_id=pushed.get("id"))]
 
     def _relevant(self, request: TurnRequest) -> set[str]:
         """Abilities this request's own words plainly point at, to declare alongside the core

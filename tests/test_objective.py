@@ -337,6 +337,75 @@ def test_work_still_under_way_at_the_last_step_is_handed_over_even_if_the_model_
     assert sorted(calls) == sorted(results) and len(calls) == MAX_STEPS
 
 
+def _outage():
+    from jarvis.orchestrator.model_port import ModelUnavailable
+
+    return ModelUnavailable("stub.test had a problem on its end.",
+                            detail={"reason": "unavailable", "scope": "endpoint", "recovery": "after"})
+
+
+class _DropsOut(Brain):
+    """Fails the chat's call at `at` (a step number) with whatever `failure()` makes."""
+
+    def __init__(self, at: int, failure) -> None:
+        super().__init__()
+        self.at, self.failure, self.dropped = at, failure, False
+
+    def stream(self, **kw):
+        from durable_support import position
+
+        if not kw["session_id"].startswith("job:") and position(kw["messages"])[1] == self.at \
+                and not self.dropped:
+            self.dropped = True
+            raise self.failure()
+        return super().stream(**kw)
+
+
+def test_work_under_way_when_the_model_drops_out_is_carried_on_in_the_background():
+    """Found live: eight steps into a reply the chosen model had a problem on its end, and
+    the reply ended as an error with everything it had read thrown away."""
+    brain = install(_DropsOut(at=3, failure=_outage))
+    session = chat()
+    lookups = [("call", "look_up_fact", {"q": f"f{i}"}) for i in range(5)]
+    brain.plan("job:", [[("call", "effect_low", {"tag": "carried-on"}), ("say", "Finished what the reply began.")]])
+    brain.plan("", [lookups])
+
+    events = say(session, "Find the five facts and file them.")
+
+    assert not any(isinstance(e, Failed) for e in events)
+    done = next(e for e in events if isinstance(e, Done))
+    assert "stopped answering part-way through" in done.text and "in the background" in done.text
+    assert worker.join_all(timeout=20)
+    [job] = job_store.list_jobs()
+    assert job["status"] == "done" and effect_count("carried-on") == 1
+    assert job["goal"] == "Find the five facts and file them." and job["conversationId"] == session
+    assert job["brief"]["already"].count("look_up_fact(") == 3        # the three steps that had run
+    calls = [c["id"] for m in conversation.get_messages(session) for c in m.get("toolCalls") or []]
+    results = [r["id"] for m in conversation.get_messages(session) for r in m.get("toolResults") or []]
+    assert sorted(calls) == sorted(results)                             # the transcript is still valid
+
+
+def test_an_outage_before_any_work_is_just_reported():
+    brain = install(_DropsOut(at=0, failure=_outage))
+    session = chat()
+    events = say(session, "Find the five facts.")
+    assert [e.code for e in events if isinstance(e, Failed)] == ["no_model"]
+    assert job_store.list_jobs() == []
+
+
+def test_a_request_the_model_refuses_mid_work_is_not_carried_on():
+    """Carrying it on would only send the same refused request again."""
+    from jarvis.orchestrator.model_port import ModelUnavailable
+
+    refused = lambda: ModelUnavailable("stub.test couldn't use that request.",   # noqa: E731
+                                       detail={"reason": "invalid_request", "scope": "request"})
+    brain = install(_DropsOut(at=2, failure=refused))
+    session = chat()
+    brain.plan("", [[("call", "look_up_fact", {"q": f"f{i}"}) for i in range(4)]])
+    events = say(session, "Find the facts.")
+    assert any(isinstance(e, Failed) for e in events) and job_store.list_jobs() == []
+
+
 def test_a_reply_that_is_finished_on_its_last_step_just_answers():
     brain = install(Brain())
     session = chat()

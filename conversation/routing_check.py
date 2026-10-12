@@ -55,7 +55,7 @@ SCENARIOS: tuple[Scenario, ...] = (
              "Create an issue in my GitHub repository called 'test issue'.",
              (("says_not_set_up", "github"), ("no_detour", "composio"))),
     Scenario("an app that is named",
-             "Use Canva to make a simple poster design for a bake sale.",
+             "Use Canva to make a poster. Title: Bake Sale. Saturday 10am, Main Street. Cupcakes, cookies and pies.",
              (("uses", "canva"),)),
     Scenario("one app named, two ruled out",
              "Make a 10-second video of a dog surfing at sunset. Use ChatCut, not Canva or Higgsfield.",
@@ -118,11 +118,20 @@ def problems_for(reply: Reply, scenario: Scenario) -> list[str]:
         elif kind == "says_not_set_up" and not (args[0] in text and NOT_SET_UP.search(reply.text)):
             out.append(f"did not say that {args[0]} is not set up")
         elif kind == "one_app_only":
-            apps = sorted({n.split("__", 1)[0] for n in reply.reached()
-                           if "__" in n and re.search(r"generate|submit|create", n)})
+            # The SAME job through several apps that did not fail: that is doing and charging for
+            # it twice. A call that failed ("not connected", out of credits) is a fallback, not a
+            # duplicate — reading it as one is how this check once mis-reported a harmless chain.
+            def went_through(call: dict) -> bool:
+                result = call.get("result")
+                return not (isinstance(result, dict) and (result.get("ok") is False or "error" in result)
+                            and "needs confirming" not in str(result.get("error", "")))
+            apps = sorted({str(c["name"]).split("__", 1)[0] for c in reply.calls
+                           if "__" in str(c.get("name")) and re.search(r"generate|submit|create", str(c["name"]))
+                           and went_through(c)} | {n.split("__", 1)[0] for n in reply.cards
+                                                    if "__" in n and re.search(r"generate|submit|create", n)})
             if len(apps) > 1:
-                out.append("did the same job through several apps at once, which would do and charge "
-                           f"for it more than once ({', '.join(apps)})")
+                out.append("did the same job through several apps that did not fail, which would do "
+                           f"and charge for it more than once ({', '.join(apps)})")
         elif kind == "uses_a_generator" and not any(re.search(r"generate|submit|create", n)
                                                     for n in reply.reached()):
             out.append("did not go for any generation tool")

@@ -225,7 +225,12 @@ unlocks them, so its ranking IS the router. Nothing in the prompt, orchestrator 
 what looked like "defaults to Higgsfield" was (a) Higgsfield being the only connected generator (Jarvis has
 no built-in image/video generation) and (b) the search itself:
 - **Rare words outrank common ones** (`_weights`: squared inverse document frequency) — a verb in thirty tool
-  names no longer beats the one word that says what was wanted. A result must cover 60% of the distinct words.
+  names no longer beats the one word that says what was wanted. A result must cover 60% of the distinct words
+  **that some capability mentions at all** — what a picture is OF ("mountain", "sunrise") is in no tool's text, and
+  counted, it made "generate an image of a mountain at sunrise" match NOTHING; told "nothing", the model searched app
+  by app and, where each call failed, fell back one app at a time. That chain (announced by the model, nothing made until
+  one worked) is what once looked like "three apps at once"; with working apps the servers' own counts showed one call.
+  `tests/live_duplicate_check.py` (manual, real model, counting stub apps) is the proof to rerun.
 - **The person's instruction decides**: `prefer` (an app to use) and `avoid` (apps NOT to use) are real,
   schema-visible arguments — a rule only in prose can't be followed by a model that sticks to its schema — and
   plain-words negation in `intent` ("not X", "don't use X", "without", "instead of", ...) is read too. An app is

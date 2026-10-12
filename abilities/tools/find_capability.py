@@ -284,8 +284,14 @@ def build(registry: CapabilityRegistry) -> list[CapabilitySpec]:
         # A result must speak to at least 60% of what was asked. Without it, taking the
         # obvious answer away (an app left out) filled the list with one-word accidents —
         # a project lister for "generate an image" — instead of saying nothing fits.
-        wanted = sorted(set(terms))
-        need = math.ceil(len(wanted) * 0.6)
+        # Only words that SOME capability says anything about count. What a picture is of
+        # ("mountain", "sunrise") is in no tool's text and never will be: it is the payload of the
+        # request, not something a tool is expected to cover. Counted, it made a plain "generate an
+        # image of a mountain at sunrise" match nothing at all — and the model, told "nothing",
+        # searched again app by app. A request made only of such words still matches nothing.
+        texts = [(s_.name.lower().replace("_", " "), (s_.description or "").lower()) for s_ in candidates]
+        wanted = sorted(t for t in set(terms) if any(t in n_ or t in d_ for n_, d_ in texts))
+        need = max(1, math.ceil(len(wanted) * 0.6))
 
         def covers(spec: CapabilitySpec) -> int:
             name = spec.name.lower().replace("_", " ")

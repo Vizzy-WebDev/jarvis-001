@@ -210,3 +210,31 @@ def test_with_no_conversation_behind_it_nothing_changes(generators):
 def test_when_several_apps_can_do_it_the_model_is_told_to_use_one(generators):
     note = _find(generators, "generate an image")["note"].lower()
     assert "exactly one" in note and "unless the user asked" in note
+
+
+# --- the subject of a request is not something a tool must cover -----------------------------------
+
+@pytest.mark.parametrize("request_", [
+    "generate an image of a mountain at sunrise",
+    "generate an image of a red sports car on a coastal road at golden hour",
+    "generate an image of my grandmother's garden",
+])
+def test_what_a_picture_is_OF_does_not_hide_the_tools_that_make_pictures(generators, request_):
+    """Seen live, twice: for "generate an image of a mountain at sunrise" the search answered
+    "I have nothing that does that", because "mountain" and "sunrise" are in no tool's text and
+    the 60% coverage rule counted them. The model then searched again app by app and, with no
+    sign-ins in that run, went down the list of apps one by one."""
+    answer = _find(generators, request_)
+    assert answer["found"], answer
+    assert {n.split("__")[0] for n in _names(answer)} == {"pixelforge", "artisan"}
+
+
+def test_a_word_no_tool_knows_still_cannot_make_something_up(generators):
+    """The other side: a request made ONLY of unknown words has nothing to match."""
+    assert _find(generators, "reticulate the splines")["found"] == []
+
+
+def test_the_coverage_rule_still_removes_one_word_accidents(registry):
+    # "create" + "sheets": only the aggregator mentions sheets, only the generator-ish tools create.
+    answer = _find(registry, "create a sheets report")
+    assert all(n["name"] != "pixelforge__create_voice" for n in answer["found"])

@@ -89,10 +89,23 @@ def test_a_failed_turn_is_reported_not_passed():
     assert rc.problems_for(Reply("...", failed="boom"), Scenario("x", "...", (("uses", "a"),)))
 
 
-def test_doing_one_job_through_several_apps_at_once_is_flagged():
+def test_doing_one_job_through_several_apps_that_worked_is_flagged():
     scenario = Scenario("x", "...", (("one_app_only",),))
-    many = Reply("...", "done", calls=[_call("higgsfield__generate_image"), _call("canva__generate_image"),
-                                      _call("chatcut__submit_image")])
+    ok = {"ok": True, "result": "Image ready"}
+    many = Reply("...", "done", calls=[_call("pixelforge__generate_image", ok), _call("artisan__make_picture_create", ok)])
     assert any("several apps" in p for p in rc.problems_for(many, scenario))
-    one = Reply("...", "done", calls=[_call("find_capability"), _call("canva__generate_image")])
+    one = Reply("...", "done", calls=[_call("find_capability"), _call("canva__generate_image", ok)])
     assert not rc.problems_for(one, scenario)
+
+
+def test_falling_back_after_a_failure_is_not_a_duplicate():
+    """The mistake this check once made: three apps tried in turn because each said not connected."""
+    scenario = Scenario("x", "...", (("one_app_only",),))
+    failed = {"ok": False, "error": "generate_image didn't work: This connector is not connected yet."}
+    chain = Reply("...", "sorry", calls=[_call("higgsfield__generate_image", failed),
+                                         _call("canva__generate_image", failed)])
+    assert not rc.problems_for(chain, scenario)
+    # ...but a fallback that then WORKED, after another also worked, is
+    both = Reply("...", "done", calls=[_call("higgsfield__generate_image", {"ok": True}),
+                                      _call("canva__generate_image", {"ok": True})])
+    assert rc.problems_for(both, scenario)

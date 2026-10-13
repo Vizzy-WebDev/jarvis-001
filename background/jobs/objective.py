@@ -49,12 +49,34 @@ _THINK_CLOSED = re.compile(r"^\s*<think(?:ing)?>.*?</think(?:ing)?>\s*", re.DOTA
 _THINK_OPEN = re.compile(r"^\s*<think(?:ing)?>.*?(?:\n\s*\n|\Z)\s*", re.DOTALL | re.IGNORECASE)
 
 
+#: A model's own tool-call markup that a server failed to take out of the reply text
+#: (`<｜DSML｜invoke …>`, `</｜DSML｜tool_calls>` and the like, with a full-width or plain bar).
+_MARKUP_BLOCK = re.compile(r"<\s*[｜|]\s*DSML\s*[｜|]\s*parameter\b[^>]*>.*?<\s*/\s*[｜|]\s*DSML\s*[｜|]\s*parameter\s*>",
+                           re.DOTALL | re.IGNORECASE)
+_MARKUP_TAG = re.compile(r"<\s*/?\s*[｜|]\s*DSML\s*[｜|][^>]*>", re.IGNORECASE)
+
+
+def without_tool_markup(text: str) -> str:
+    """The text without tool-call markup that leaked into it. Found live: one in ten of a
+    provider's replies carried pieces of the model's own call syntax, and a job's progress
+    note — the one thing that carries its running total into the next round — was once
+    nothing but `</｜DSML｜tool_calls>`, twice over. The next round started reading again."""
+    if "DSML" not in (text or ""):
+        return text or ""
+    return _MARKUP_TAG.sub("", _MARKUP_BLOCK.sub("", text))
+
+
 def clean(text: str) -> str:
-    """A result or note without a model's leading thinking block. Found live: a gateway model
-    opened its reply with `<think>…` and never closed the tag, and that reasoning was delivered
-    as the result. A closed block is removed whole; an unclosed one, up to its first blank line
-    (it is explicitly marked as thinking, and what is being kept is what follows it)."""
+    """A result or note without a model's leading thinking block or leaked tool markup. Found
+    live: a gateway model opened its reply with `<think>…` and never closed the tag, and that
+    reasoning was delivered as the result. A closed block is removed whole; an unclosed one,
+    up to its first blank line (it is explicitly marked as thinking, and what is being kept is
+    what follows it). Text that was nothing BUT leaked markup is nothing."""
     text = text or ""
+    if "DSML" in text:
+        text = without_tool_markup(text)
+        if not text.strip(" \n\t>"):
+            return ""
     cleaned = _THINK_CLOSED.sub("", text, count=1)
     if cleaned == text:
         cleaned = _THINK_OPEN.sub("", text, count=1)

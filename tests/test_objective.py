@@ -319,6 +319,27 @@ def test_a_job_that_ends_without_a_word_is_not_done():
     assert job_store.get_job(job["id"])["status"] != "done"
 
 
+@pytest.mark.parametrize("text,expected", [
+    ("</｜DSML｜tool_calls>\n\n</｜DSML｜tool_calls>", ""),
+    ('<｜DSML｜parameter name="name" string="true">ledger-2816bd</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>', ""),
+    ("</｜DSML｜tool_calls>\n\nI'll keep following the chain. Total so far 41.50.",
+     "I'll keep following the chain. Total so far 41.50."),
+    ("A timeout. Let me retry.\n\n</|DSML|tool_calls>\n\n", "A timeout. Let me retry."),
+    ("The DSML format is a markup language.", "The DSML format is a markup language."),
+])
+def test_tool_markup_a_server_left_in_the_text_is_not_kept_as_a_note_or_a_result(text, expected):
+    """Found live: a round's progress note — what carries the running total into the next
+    round — was nothing but leaked call markup, and the next round began reading again."""
+    assert objective.clean(text) == expected
+
+
+def test_a_round_note_of_nothing_but_leaked_markup_does_not_replace_the_last_real_note():
+    job = job_store.create_job(title="Trail", goal="follow it")
+    objective.note_round(job["id"], "12 entries read, running total 4,101.20, next is ledger-aa01.")
+    objective.note_round(job["id"], "</｜DSML｜tool_calls>\n\n</｜DSML｜tool_calls>")
+    assert objective.ledger_of(job_store.get_job(job["id"]))["note"].startswith("12 entries read")
+
+
 def test_update_plan_is_a_workers_tool_and_nobody_elses():
     install(Brain())
     registry = assembly.get_registry()

@@ -65,11 +65,51 @@ def run_task_now(task_id: str, *, late: bool = False,
     except Exception as err:  # noqa: BLE001 — a task must never take the loop down
         logger.exception("task %s threw", task_id)
         result = {"ok": False, "summary": "", "error": str(err) or "Something went wrong."}
+    return settle(task, result, late=late, event_bus=ebus)
+
+
+#: How long to wait before trying a run again when it failed only because no model could
+#: answer: the 1st, 2nd, … retry of one occurrence. After the last, the failure is recorded.
+RETRY_WAITS_S = (300, 900, 1800, 3600, 7200)
+
+
+def settle(task: dict[str, Any], result: dict[str, Any], *, late: bool,
+           event_bus: EventBus | None = None) -> dict[str, Any]:
+    """What becomes of a run that has ended: recorded — or, when it ended only because no model
+    could answer just then, tried again later the same day and recorded only once that has
+    been given up. Before this a daily task that met an outage simply failed and waited for
+    tomorrow (8 of the 11 runs on record)."""
     if result.get("recorded"):
         # A prompt run is durable work, which records its own run when it finishes — so a
         # run picked back up after a restart is recorded too, with nobody waiting on it.
         return result
-    return complete_run(task, result, late=late, event_bus=ebus)
+    task = get_task(task["id"]) or task
+    if result.get("retryable"):
+        if _retry_later(task, result, late):
+            return {**result, "retrying": True}
+        tried = len(RETRY_WAITS_S) + 1
+        result = {**result, "error": (f"{result.get('error') or 'No model could answer.'} "
+                                      f"I tried {tried} times and none could.")}
+    return complete_run(task, result, late=late, event_bus=event_bus)
+
+
+def _retry_later(task: dict[str, Any], result: dict[str, Any], late: bool) -> bool:
+    """Note when to try this run again. False when it has had all its tries."""
+    retry = task.get("retry") or {}
+    attempt = int(retry.get("attempt") or 0)
+    if attempt >= len(RETRY_WAITS_S):
+        return False
+    try:
+        asked = float(result.get("wait") or 0.0)
+    except (TypeError, ValueError):
+        asked = 0.0
+    wait = max(float(RETRY_WAITS_S[attempt]), asked)
+    update_task(task["id"], {"retry": {
+        "at": to_iso_z(datetime.now() + timedelta(seconds=wait)), "attempt": attempt + 1,
+        "late": late, "since": retry.get("since") or now_iso(), "error": result.get("error")}})
+    logger.info("task %s: no model could answer; trying again in %ds (try %d)",
+                task["id"], wait, attempt + 2)
+    return True
 
 
 def complete_run(task: dict[str, Any], result: dict[str, Any], *, late: bool,
@@ -95,7 +135,8 @@ def complete_run(task: dict[str, Any], result: dict[str, Any], *, late: bool,
                            + "It ran, but the result did not match what the task asked for: "
                            + (verdict.reason or "no reason given.")}
 
-    update_task(task_id, {"lastRunAt": now_iso()})
+    # Recording a run also ends any retry that was pending for it: this is its outcome.
+    update_task(task_id, {"lastRunAt": now_iso(), "retry": None})
 
     run = record_run({
         "taskId": task_id,
@@ -317,7 +358,9 @@ def _run_as_specialist(task: dict[str, Any], action: dict[str, Any], text: str) 
                 "error": f"{(outcome.approval or {}).get('capability') or 'Something'} needs "
                          "your go-ahead before this can finish."}
     if outcome.status != "done":
-        return {"ok": False, "summary": outcome.result, "error": outcome.error or "It failed."}
+        return {"ok": False, "summary": outcome.result, "error": outcome.error or "It failed.",
+                # No model could answer just then: tried again later (`settle`).
+                **({"retryable": True, "wait": outcome.wait} if outcome.wait is not None else {})}
     return {"ok": True, "summary": outcome.result, "modelId": outcome.model_id,
             "agentRunId": outcome.run["id"]}
 
@@ -352,18 +395,34 @@ def tick(now: datetime | None = None, event_bus: EventBus | None = None) -> list
         due = _parse(task["nextRunAt"]) or now
         late = (now - due) > LATE_THRESHOLD
 
-        # Advance BEFORE running — see this module's docstring.
+        # Advance BEFORE running — see this module's docstring. A new occurrence also drops
+        # whatever retry the last one still had pending: this run is that retry.
         if (task.get("recurrence") or {}).get("type") == "once":
-            update_task(task["id"], {"enabled": False, "nextRunAt": None})
+            update_task(task["id"], {"enabled": False, "nextRunAt": None, "retry": None})
         else:
             update_task(task["id"],
                         {"nextRunAt": to_iso_z(next_run_at(task["recurrence"], now))
-                         if next_run_at(task["recurrence"], now) else None})
+                         if next_run_at(task["recurrence"], now) else None, "retry": None})
 
         try:
             run_task_now(task["id"], late=late, event_bus=event_bus)
         except Exception:  # noqa: BLE001
             logger.exception("task %s failed to run", task["id"])
+        ran.append(task["id"])
+
+    # Runs that ended only because no model could answer, whose time to try again has come.
+    for task in list_tasks():
+        retry = task.get("retry") or {}
+        due = _parse(retry.get("at") or "")
+        if task["id"] in ran or due is None or due > now:
+            continue
+        if not (task.get("enabled") or (task.get("recurrence") or {}).get("type") == "once"):
+            update_task(task["id"], {"retry": None})  # switched off meanwhile: nothing to retry
+            continue
+        try:
+            run_task_now(task["id"], late=bool(retry.get("late")), event_bus=event_bus)
+        except Exception:  # noqa: BLE001
+            logger.exception("task %s failed to run again", task["id"])
         ran.append(task["id"])
     return ran
 

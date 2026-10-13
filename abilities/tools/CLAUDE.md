@@ -86,9 +86,13 @@ be silently skipped.
 - `core` — always declared to the model. Above `DECLARATION_BUDGET` (20) the turn declares
   only `core` tools, ones unlocked this turn, and any explicitly allowed by name.
   `find_capability` is how the rest become reachable: it returns matches under an `unlock`
-  key and the orchestrator adds them for the rest of that turn.
+  key and the orchestrator adds them for the rest of that turn. The turn loop also declares,
+  unasked, what the request's own words plainly point at (`capabilities/search.py`).
 - `job` — a background worker's own voice (reporting on itself, asking for its work to be
   split). Declared only on a job's turn, never in a live conversation.
+- `handoff` — the one capability the turn loop offers on the last step of a reply so unfinished
+  work is carried on in the background (`work_in_background`). Never declared on a job's or a
+  scheduled run's own turn.
 - `meta` — abilities that only make sense in live conversation (scheduling, memory
   management, notifications, self-inspection). `skills/capabilities.py` leaves them out of the
   tools a Skill pipeline may name.

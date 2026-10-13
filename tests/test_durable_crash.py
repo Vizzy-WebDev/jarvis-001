@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -392,9 +391,18 @@ def test_a_job_killed_for_real_mid_round_resumes_in_a_new_process_without_repeat
         assert first.poll() is None, first.stdout.read() if first.stdout else ""
         assert time.monotonic() < deadline, "the first process never reached round 2"
         time.sleep(0.05)
-    os.kill(first.pid, signal.SIGKILL)
+    # A hard kill on every platform: SIGKILL on POSIX, TerminateProcess on Windows (which has no
+    # SIGKILL — this test could never run on the one platform Jarvis is used on). Either way the
+    # process gets no chance to clean up, which is the point.
+    if os.name == "nt":
+        # The whole tree: a virtual environment's python.exe is a launcher whose child is the
+        # real interpreter, and killing only the launcher leaves that one running for ever.
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(first.pid)],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    else:
+        first.kill()
     first.wait(10)
-    assert first.returncode == -signal.SIGKILL
+    assert first.returncode not in (0, 3), "the first process ended by itself instead of being killed"
 
     before = _calls(log)
     assert sorted({(r, s) for _, r, s in before}) == \

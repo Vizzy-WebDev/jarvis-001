@@ -223,7 +223,9 @@ SPECS = [
             "required": ["when"]},
         # It commits the assistant to acting when nobody is watching.
         risk=Risk.MEDIUM, request_suffices=True, handler=_schedule, summarize=_schedule_summary,
-        timeout_s=10.0, tags=frozenset({"meta"}),
+        # `core`: the prompt says a promise to do something later is only real once this has
+        # been called, so it cannot be something Jarvis has to go looking for first.
+        timeout_s=10.0, tags=frozenset({"meta", "core"}),
     ),
     CapabilitySpec(
         id="builtin.list_tasks", name="list_tasks",

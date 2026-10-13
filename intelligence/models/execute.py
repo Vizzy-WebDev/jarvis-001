@@ -255,11 +255,15 @@ def run(request: Request, *, streaming: bool) -> Generator[Event, None, Response
     previous: Candidate | None = None
 
     while queue:
-        candidate = (next((queue.pop(i) for i, c in enumerate(queue)
-                           if c.connection.name not in refused_connections and _upstream(c) not in failed_upstreams),
-                          None)
-                     or next((queue.pop(i) for i, c in enumerate(queue) if c.connection.name not in refused_connections),
-                             None)
+        # A connection that failed AS A WHOLE in this call (its key or account refused, or
+        # nothing answering at its address) is not asked again in this call: every other model
+        # on it would say the same. Found live — the one working provider was rate-limited for
+        # a moment, and a background job then spent over ten minutes being refused, one model
+        # at a time, by a local gateway that was not running and lists 1,404 of them.
+        queue = [c for c in queue if c.connection.name not in refused_connections]
+        if not queue:
+            break
+        candidate = (next((queue.pop(i) for i, c in enumerate(queue) if _upstream(c) not in failed_upstreams), None)
                      or queue.pop(0))
         if previous is not None and not request.requirements.allow_family_change and not _same_family(first, candidate):
             report.warnings.append(f"{candidate.endpoint.id} was skipped: it's a different model family, and this "
@@ -282,6 +286,8 @@ def run(request: Request, *, streaming: bool) -> Generator[Event, None, Response
                 record.attempts.append(Attempt(candidate.endpoint.id, err.type, _diagnostic(err),
                                                int((clock() - attempt_started) * 1000)))
                 _note_failure(candidate, err, cfg)
+                if err.scope == "connection":
+                    refused_connections.add(candidate.connection.name)
                 # A failure wider than the request moves on under Auto, before anything was
                 # streamed, without retrying what it says cannot heal in a moment. A pinned
                 # request ends here.
@@ -294,8 +300,6 @@ def run(request: Request, *, streaming: bool) -> Generator[Event, None, Response
                     _publish(record)
                     raise
                 if moves_on:
-                    if err.scope == "connection":
-                        refused_connections.add(candidate.connection.name)
                     break
                 if err.recovery != "after":
                     break  # it heals at a reset, not in a moment: retrying here cannot help

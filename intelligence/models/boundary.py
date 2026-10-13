@@ -148,7 +148,14 @@ def failure(err: ModelError, *, pinned_selection: bool) -> NoModelAvailable:
     if pinned_selection and err.type != "no_eligible_endpoint":
         model = f" ({split_endpoint_id(err.endpoint_id)[1]})" if err.endpoint_id and "/" in err.endpoint_id else ""
         message += " " + _STAYED.format(model=model)
-    return NoModelAvailable(message, detail={"reason": err.type, "endpoint": err.endpoint_id})
+    return NoModelAvailable(message, detail={"reason": err.type, "endpoint": err.endpoint_id,
+                                             # How far the failure reaches and how it heals, so work
+                                             # nobody is watching can tell "wait and try again" from
+                                             # "this request is the problem" (`durable.py`).
+                                             "scope": err.scope, "recovery": err.recovery,
+                                             "retryAfter": err.retry_after,
+                                             "rejected": sorted({r.reason for r in
+                                                                 getattr(err, "rejections", ())})})
 
 
 def refuse_raw_arguments(response: Response) -> None:

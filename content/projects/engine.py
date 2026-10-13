@@ -151,7 +151,7 @@ def research_project(project_id: str, *, event_bus: EventBus | None = None) -> d
 
         if store.get_project(project_id) is None:
             return                       # deleted mid-job
-        if found.ok:
+        if found.summarised:
             store.update_project(project_id, {"research": {
                 "answer": found.answer,
                 "sources": [{"title": s.title, "url": s.url} for s in found.sources],
@@ -159,13 +159,13 @@ def research_project(project_id: str, *, event_bus: EventBus | None = None) -> d
             store.record_step(project_id, "research", found.model_id)
         else:
             store.update_project(project_id, {"research": {
-                "answer": None, "sources": [], "via": None, "error": found.error}})
+                "answer": None, "sources": [], "via": None, "error": (found.error or found.note)}})
 
         done = store.get_project(project_id)
-        _push_step(done, step="research", ok=found.ok, text=found.answer, error=found.error)
-        _announce(done, event_bus=event_bus, status="ready" if found.ok else "failed",
-                  step="research", document=found.answer if found.ok else None,
-                  error=None if found.ok else found.error)
+        _push_step(done, step="research", ok=found.summarised, text=found.answer, error=(found.error or found.note))
+        _announce(done, event_bus=event_bus, status="ready" if found.summarised else "failed",
+                  step="research", document=found.answer if found.summarised else None,
+                  error=None if found.summarised else (found.error or found.note))
 
     run_in_background(work, name=f"project-research:{project_id}")
     return project

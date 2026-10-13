@@ -74,7 +74,9 @@ SPECS = [
         risk=Risk.MEDIUM, request_suffices=True, handler=_watch,
         summarize=lambda args: f'Watch for {args.get("description")} and tell you when it '
                                "happens?",
-        timeout_s=15.0, tags=frozenset({"meta"}),
+        # `core` for the same reason as `schedule_task`: "I'll keep an eye on it" is only true
+        # once this has been called.
+        timeout_s=15.0, tags=frozenset({"meta", "core"}),
     ),
     CapabilitySpec(
         id="builtin.stop_watching", name="stop_watching",

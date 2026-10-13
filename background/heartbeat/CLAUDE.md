@@ -22,8 +22,8 @@ tracking for a single running job. Don't confuse the two.
   throws is skipped for the tick; an item whose `check()` throws still advances its schedule
   (in a `finally`), so a consistently failing check does not retry on every tick forever.
   `register_default_sources()` is the one place that lists what is watched by default:
-  jobs, commitments, the environment source, and the diagnosis source (its checks are
-  registered first so the first tick has real checks).
+  jobs, commitments, stale questions, the environment source, and the diagnosis source (its
+  checks are registered first so the first tick has real checks).
 - `triggers.py` is the event-driven half: it subscribes to the event bus and reacts to a job
   going `awaiting_decision` immediately, instead of waiting for the next poll. Both entry
   points feed the same `route_finding()` — one pipeline, so "should this interrupt someone"
@@ -68,6 +68,12 @@ normal tick, so it must ALSO persist the returned `checkState` (`upsert_item()` 
   structured field extraction fills in for things that stop being true on a known date — and
   notices two moments: shortly before, and once it has passed. It is deliberately built on the
   structured field rather than parsing dates out of prose.
+- `sources/stale_questions_source.py` clears go-aheads asked in a chat and never answered: after
+  a day (`STALE_AFTER`) they are timed out (`approvals.expire_older_than` — which existed and was
+  called by nothing; 14 had sat pending for up to three weeks), a specialist run that stopped on
+  one is closed off, and the person is told once, in one notification. Questions a job or a
+  scheduled run is waiting on are never dropped (`WAITING_WORK`). It returns no finding: no model
+  call is spent deciding how urgent that is.
 - The environment and diagnosis sources live in `ops/` (see `ops/CLAUDE.md`).
 
 ## `decision.py` — the one urgency-reasoning step

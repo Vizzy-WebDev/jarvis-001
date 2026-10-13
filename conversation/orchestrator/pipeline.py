@@ -35,13 +35,14 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from .. import conversation
 from ..assistant.state import TRANSITIONS, AssistantState, State
 from ..capabilities import CapabilitySpec, registry as default_registry
 from ..capabilities.execute import ExecOutcome, ExecutionResult, execute
 from ..capabilities.registry import CapabilityRegistry
+from ..capabilities.search import relevant as relevant_capabilities
 from ..events import EventType, bus as default_bus
 from ..events.bus import EventBus
 from ..intent import Intent, Route, classify
@@ -81,11 +82,32 @@ FINAL_STEP_NOTE = ("This is your last step for this request: there is nothing mo
 #: anyway (see `_run_model_loop`).
 INSIST_NOTE = ("No tools exist for this reply — any tool call will be ignored. Write your "
                "answer to the person now, in plain words, from what you already have.")
+#: Added on the last step of a reply to a person when carrying the work on is possible: the
+#: one tool offered is the hand-off (the capability tagged `handoff`). Without it, work that
+#: did not fit in a reply ended as "I went round 8 times … tell me what to try differently" —
+#: everything found thrown away, and the person left to manage the next step themselves.
+HANDOFF_NOTE = ("This is your last step for this reply. If the work is finished, answer now. If "
+                "it is NOT finished, do not leave it half done and do not ask them what to do: "
+                "call {tool} with the whole outcome and what done looks like, and it carries on "
+                "from what you have already found. That is the only thing you can call now.")
+#: Added to the one extra attempt a step gets when the model came back with nothing at all —
+#: no words and nothing to call (found live: 3,072 output tokens of reasoning, and an empty
+#: reply, which was then accepted as a background job's finished result).
+EMPTY_REPLY_NOTE = ("Your last reply was empty: no words and nothing called. Reply now — either "
+                    "call what you need next, or say your answer in words.")
+#: The same, when the reply was cut off by the server's own length limit before any answer —
+#: found live: a model adding up 34 amounts "in its head" hit the limit five replies running.
+CUT_OFF_NOTE = ("Your last reply was cut off before you answered: you used all your room "
+                "thinking. Do not work the whole thing out at once. Take ONE small step now — "
+                "call what you need next, or write down the part you have worked out — and keep "
+                "your thinking short.")
 #: The last step of one ROUND of longer background work (`TurnRequest.continuable`): the
 #: work is not over, so what is asked for is where it stands, not a final answer.
 ROUND_END_NOTE = ("This round of the work ends here: there is nothing more to call right now. "
                   "Write a short progress note — what you have done so far, what you found, and "
-                  "exactly what is left to do. You will continue from it in the next round.")
+                  "exactly what is left to do. Put in it every figure, name and running total "
+                  "you will need: you continue from this note in the next round, and your "
+                  "earlier messages will not stay in front of you.")
 
 
 #: Above this many capabilities, a turn is declared its CORE set plus whatever
@@ -252,6 +274,12 @@ def _attachment_of(value: Any) -> dict[str, Any] | None:
     return found[0] if found else None
 
 
+def _same_call(call: ToolCall) -> str:
+    import json
+
+    return f"{call.name}:{json.dumps(dict(call.args or {}), sort_keys=True, default=str)}"
+
+
 def _navigate_of(value: Any) -> dict[str, Any] | None:
     """A section a tool asked the interface to open.
 
@@ -329,6 +357,11 @@ class TurnRequest:
     #: carry on from where it stopped. No user message is added, and the turn is not
     #: announced as new input — the conversation already ends in the settled tool results.
     resume: bool = False
+    #: Set by background work: asked before each call with (capability, arguments). A string
+    #: back means the call is NOT run and that string is its result — how a job stops the
+    #: exact call that has already failed several times from being made yet again. Plain data
+    #: in, plain words out: the loop knows nothing about why.
+    gate: Callable[[str, dict[str, Any], str], str | None] | None = None
 
 
 def operation_id_for(scope: str, name: str, args: dict[str, Any], seen: dict[str, int]) -> str:
@@ -595,8 +628,10 @@ class Orchestrator:
         spoken_so_far: list[str] = []
         # What this turn has been granted beyond the core set, by a capability
         # that returned `unlock` (see tools/find_capability.py). Per-turn and
-        # per-call: nothing here outlives the turn that earned it.
-        unlocked: set[str] = set()
+        # per-call: nothing here outlives the turn that earned it. It starts with what the
+        # request's own words plainly point at (`_relevant`), looked up in code so finding the
+        # right ability does not depend on the model deciding to search for it.
+        unlocked: set[str] = self._relevant(request)
         # Identical calls counted per round, for replay-stable operation ids (only used when
         # `request.operation_scope` is set — durable background work).
         seen_calls: dict[str, int] = {}
@@ -609,6 +644,10 @@ class Orchestrator:
         # Set when the last step came back asking for a tool it was not offered:
         # that earns exactly one more attempt at the answer (see below).
         insist = False
+        # Set once a step has come back with nothing at all: the next one is told so, and a
+        # second empty reply ends the turn as a failure rather than as an "answer".
+        empty_before = False
+        cut_off = False
         # What the model that will answer can hold — asked once per turn, and again
         # only after it refuses a request as too long (one refit per turn).
         capacity: tuple[int | None, int | None] | None = None
@@ -630,23 +669,37 @@ class Orchestrator:
             while True:
                 tools = self._declarations(request, unlocked)
                 final = step >= ceiling and ceiling > 1
+                # On the last step of a reply to a person, the one thing still on offer is
+                # carrying the work on in the background (never on the firmer second attempt).
+                handoff = self._handoff(request) if (final and step == ceiling) else None
+                if handoff is not None and handoff.name in tools_used:
+                    # This reply already handed the work over. Found live: a model started
+                    # the background job, kept reading the records itself anyway, and at its
+                    # last step the loop handed the SAME request over again — two jobs on one
+                    # piece of work, each about to file its own report. Once is once: the
+                    # last step is then an ordinary one, with nothing to call.
+                    handoff = None
                 if final:
                     # The last step this turn gets. Found live: a specialist made 22
                     # successful lookups across its steps, never wrote its answer, and
                     # everything it had found was thrown away with "I went round 8
                     # times". On the last step it is asked to answer, with nothing to
                     # call — the work it already did is still in front of it.
-                    tools = []
+                    tools = self._registry.declarations([handoff]) if handoff else []
                 if capacity is None:
                     capacity = self._capacity(request, needs, tools)
                 budget = budget_for(*capacity, tool_chars=_declared_chars(tools))
                 assembled = self._assemble(request, budget)
                 system = assembled.system
                 if final:
-                    system = with_section(system, "final_step",
-                                          ROUND_END_NOTE if request.continuable else FINAL_STEP_NOTE)
+                    note = (ROUND_END_NOTE if request.continuable else
+                            HANDOFF_NOTE.format(tool=handoff.name) if handoff else FINAL_STEP_NOTE)
+                    system = with_section(system, "final_step", note)
                     if step > ceiling:
                         system = with_section(system, "no_tools_now", INSIST_NOTE)
+                if empty_before:
+                    system = with_section(system, "empty_reply",
+                                          CUT_OFF_NOTE if cut_off else EMPTY_REPLY_NOTE)
 
                 self._bus.publish(
                     EventType.MODEL_CALL_STARTED,
@@ -712,6 +765,11 @@ class Orchestrator:
                         {"sessionId": request.session_id, "turnId": request.turn_id,
                          "step": step, "error": str(err)},
                     )
+                    carried = self._carry_on_after_outage(request, err, tools_used, seen_calls,
+                                                          step, state, budget)
+                    if carried is not None:
+                        yield from carried
+                        return
                     raise
                 break
 
@@ -734,7 +792,28 @@ class Orchestrator:
                  "toolCalls": len(completed.tool_calls)},
             )
 
-            if final and completed.tool_calls:
+            # The last step chose to carry the work on: that one call is run like any other,
+            # and its own words ("Working on … in the background") are the reply.
+            handing_off = bool(handoff is not None and completed.tool_calls
+                               and completed.tool_calls[0].name == handoff.name
+                               and not completed.tool_calls[0].garbled)
+            if handing_off:
+                completed = replace(completed, tool_calls=completed.tool_calls[:1])
+            elif handoff is not None and completed.tool_calls:
+                # Out of room, and still reaching for another tool: it was mid-work. Found
+                # live — offered only the hand-off, a real model asked for one more read
+                # instead, and eleven reads' worth of work ended as an empty reply. Whether
+                # unfinished work is carried on must not depend on the model choosing to: the
+                # loop hands it over itself, with the person's own words as the outcome (the
+                # brief is built from the conversation, including everything found so far).
+                # `raw` is dropped: it holds the call the model actually made, which never ran.
+                handing_off = True
+                completed = replace(
+                    completed, raw=None, text="",
+                    tool_calls=(ToolCall(id=f"handoff-{request.turn_id[:12]}", name=handoff.name,
+                                         args={"goal": request.text}),))
+
+            if final and completed.tool_calls and not handing_off:
                 # Offered nothing to call, it asked to call something anyway — found
                 # live: some models copy the tool-calling pattern from earlier in the
                 # conversation. Nothing is run, and it gets ONE more, firmer, attempt.
@@ -758,6 +837,28 @@ class Orchestrator:
                 # gets the same stripping before it ever reaches the
                 # transcript or gets said back as words.
                 reply = strip_reaction_markers(completed.text) or "".join(spoken_so_far)
+                if step > ceiling and not reply.strip():
+                    # The firmer second attempt said nothing at all: that is not an answer.
+                    break
+                if not reply.strip():
+                    # Nothing said and nothing called. Never an answer: one more try, told so;
+                    # then a plain failure.
+                    if not empty_before and step < ceiling:
+                        empty_before = True
+                        cut_off = completed.finish_reason == "length"
+                        continue
+                    if final and request.continuable:
+                        # The closing step of a ROUND of longer work asks only for a progress
+                        # note. Getting none is the round running out of room, nothing worse:
+                        # what the round did is on record and the next round carries on from
+                        # it. (Found live: a 34-record trail was stopped as "stuck" twice
+                        # over, because a model with more reading to do answered the request
+                        # for a note with nothing.)
+                        break
+                    state.fail("the model returned nothing")
+                    yield Failed("I didn't get an answer from the model just then. Ask me again.",
+                                 code="empty_reply")
+                    return
                 pushed_reply = conversation.push_assistant_text(
                     request.session_id, reply, completed.model_id, completed.raw
                 )
@@ -782,7 +883,9 @@ class Orchestrator:
 
             parked = None
             results: list[dict[str, Any]] = []
+            result: ExecutionResult | None = None
             state.to(State.EXECUTING, f"step {step}")
+            in_this_reply: dict[str, ExecutionResult] = {}
             for call in completed.tool_calls:
                 if cancel.is_set():
                     # Stopped between actions: what already ran stays done and is reported as
@@ -791,7 +894,19 @@ class Orchestrator:
                     results.append({"id": call.id, "name": call.name,
                                     "result": {"error": "Not started: stopped before it ran."}})
                     continue
-                result = self._execute_call(request, call, seen_calls)
+                # The same lookup asked for twice in ONE reply is one lookup: the first
+                # answer is the answer to both. Found live — one provider returns a tool call
+                # twice about every other reply; the doubles filled a long job's context and
+                # were then read as "repeating itself", and work two-thirds done was stopped.
+                # Only for what changes nothing (LOW risk): a second identical ACTION is never
+                # silently folded into the first, because "done" would then be said of two.
+                twin = _same_call(call)
+                if twin in in_this_reply and self._only_reads(call.name):
+                    result = in_this_reply[twin]
+                else:
+                    result = self._execute_call(request, call, seen_calls)
+                    if result.ok and not getattr(call, "garbled", False):
+                        in_this_reply.setdefault(twin, result)
                 tools_used.append(call.name)
                 yield ToolRan(call.name, result.ok, result.outcome, result.error,
                               _attachment_of(result.value), _navigate_of(result.value),
@@ -817,6 +932,23 @@ class Orchestrator:
                 yield parked
                 return
 
+            if handing_off and result is not None:
+                reply = _spoken_result(result) or (
+                    "I couldn't finish that in one go, and I couldn't carry it on in the "
+                    f"background either: {result.error or 'it would not start'}.")
+                pushed_reply = conversation.push_assistant_text(request.session_id, reply,
+                                                                completed.model_id)
+                self._bus.publish(
+                    EventType.ASSISTANT_RESPONSE,
+                    {"sessionId": request.session_id, "turnId": request.turn_id,
+                     "steps": step, "text": reply, "userText": request.text,
+                     "toolNames": list(tools_used), "contextBudget": budget},
+                )
+                self._finish(state, request)
+                yield Done(reply, steps=step, model_id=completed.model_id,
+                           message_id=pushed_reply.get("id"))
+                return
+
         # Out of steps. Say so rather than looping or pretending to have finished.
         state.fail("the turn ran out of steps")
         yield Failed(
@@ -829,15 +961,41 @@ class Orchestrator:
 
     def _execute_call(self, request: TurnRequest, call: ToolCall,
                       seen: dict[str, int] | None = None) -> ExecutionResult:
+        if getattr(call, "garbled", False):
+            # Never run, and never with guessed arguments: said back to the model as what it
+            # is, so the next step can ask again properly.
+            return ExecutionResult(
+                ok=False, outcome=ExecOutcome.INVALID_ARGUMENTS, capability=call.name,
+                operation_id=f"{request.turn_id}:{call.id}",
+                error=(f"Your request to use {call.name} could not be read (its arguments were "
+                       "not valid JSON), so it was NOT run. Ask again, with the arguments as "
+                       "one valid JSON object."))
+        # The id first: it is the same when a round is replayed after a crash, which is what
+        # lets the gate give a replayed call the answer it gave the first time.
         operation_id = (operation_id_for(request.operation_scope, call.name, dict(call.args or {}),
                                          seen if seen is not None else {})
                         if request.operation_scope else f"{request.turn_id}:{call.id}")
+        if request.gate is not None:
+            try:
+                refusal = request.gate(call.name, dict(call.args or {}), operation_id)
+            except Exception:  # noqa: BLE001 — a gate that breaks must not break the work
+                logger.exception("the call gate failed for %s", call.name)
+                refusal = None
+            if refusal:
+                return ExecutionResult(ok=False, outcome=ExecOutcome.REFUSED, capability=call.name,
+                                       operation_id=operation_id, error=refusal)
         ctx = self._context_for(request, operation_id)
         return execute(
             call.name, dict(call.args or {}), ctx,
             registry=self._registry, grants=request.grants,
             allowed_names=request.allowed_names, event_bus=self._bus,
         )
+
+    def _only_reads(self, name: str) -> bool:
+        from ..capabilities import Risk
+
+        spec = self._registry.get(name)
+        return spec is not None and spec.risk is Risk.LOW
 
     def _context_for(self, request: TurnRequest, operation_id: str) -> CallContext:
         return CallContext(
@@ -898,6 +1056,84 @@ class Orchestrator:
             # waiting for the user belongs in a turn the user actually started.
             background=request.surface in (Surface.JOB, Surface.SCHEDULED), **extra)
 
+    def _unattended(self, request: TurnRequest) -> bool:
+        return request.surface in (Surface.JOB, Surface.SCHEDULED)
+
+    def _handoff(self, request: TurnRequest) -> CapabilitySpec | None:
+        """The capability that carries unfinished work on in the background (tagged `handoff`),
+        when this turn may use it: a reply to a person, by Jarvis itself. Not a job's or a
+        scheduled run's own turn (it IS the background work), and not a specialist's."""
+        if (self._unattended(request) or request.continuable or request.agent is not None
+                or request.autonomy is not Autonomy.INTERACTIVE):
+            return None
+        for spec in self._registry.list():
+            if spec.has_tag("handoff") and (request.allowed_names is None
+                                            or spec.name in request.allowed_names):
+                return spec
+        return None
+
+    def _carry_on_after_outage(self, request: TurnRequest, err: BaseException,
+                               tools_used: list[str], seen: dict[str, int], step: int,
+                               state: AssistantState, budget: int | None) -> list[TurnEvent] | None:
+        """The model stopped answering part-way through work this reply had already started.
+        Rather than lose what was done, the work is handed to the background — which waits for
+        a model, and may use another one — and the reply says so. None when that does not
+        apply: nothing was under way yet, the failure is not an outage (the request itself was
+        the problem), or there is nothing to hand it to; the failure is then reported as before.
+
+        Found live: eight steps into following a trail, the person's chosen model had a
+        problem on its end, and the reply ended as an error with everything it had read gone.
+        """
+        detail = getattr(err, "detail", None) or {}
+        outage = isinstance(err, ModelUnavailable) and (
+            detail.get("scope") in ("endpoint", "upstream", "connection")
+            or (detail.get("reason") == "no_eligible_endpoint" and detail.get("rejected")))
+        handoff = self._handoff(request) if (outage and tools_used) else None
+        if handoff is None or handoff.name in tools_used:   # already handed over: never twice
+            return None
+        call = ToolCall(id=f"handoff-{request.turn_id[:12]}", name=handoff.name,
+                        args={"goal": request.text})
+        try:
+            result = self._execute_call(request, call, seen)
+        except Exception:  # noqa: BLE001 — then the outage is reported as it always was
+            logger.exception("could not carry the work on after the model stopped answering")
+            return None
+        spoken = _spoken_result(result)
+        if result.outcome is ExecOutcome.NEEDS_APPROVAL or spoken is None:
+            return None
+        conversation.push_assistant_tool_calls(
+            request.session_id, [{"id": call.id, "name": call.name, "args": dict(call.args)}])
+        conversation.push_tool_results(
+            request.session_id, [{"id": call.id, "name": call.name, "result": result.value}])
+        reply = ("The model I was using stopped answering part-way through, so rather than lose "
+                 f"what I had done I have carried it on in the background. {spoken}")
+        pushed = conversation.push_assistant_text(request.session_id, reply)
+        self._bus.publish(
+            EventType.ASSISTANT_RESPONSE,
+            {"sessionId": request.session_id, "turnId": request.turn_id, "steps": step,
+             "text": reply, "userText": request.text, "toolNames": [*tools_used, call.name],
+             "contextBudget": budget},
+        )
+        self._finish(state, request)
+        return [ToolRan(call.name, result.ok, result.outcome, result.error),
+                Done(reply, steps=step, message_id=pushed.get("id"))]
+
+    def _relevant(self, request: TurnRequest) -> set[str]:
+        """Abilities this request's own words plainly point at, to declare alongside the core
+        set (`capabilities/search.py`). Only matters once there are too many to declare them
+        all. Work nobody is present for is not offered the conversation-only ones."""
+        specs = self._registry.list()
+        if len(specs) <= DECLARATION_BUDGET:
+            return set()
+        unattended = self._unattended(request)
+        candidates = [s for s in specs if not s.has_tag("core") and not s.has_tag("job")
+                      and not (unattended and s.has_tag("meta"))]
+        try:
+            return set(relevant_capabilities(candidates, request.text, among=specs))
+        except Exception:  # noqa: BLE001 — a lookup must never fail a turn
+            logger.exception("could not look up what this request needs")
+            return set()
+
     def _declarations(self, request: TurnRequest, unlocked: set[str]) -> list[dict[str, Any]]:
         specs = self._registry.list()
         # A tool tagged `job` is a background worker's own voice — reporting on
@@ -906,6 +1142,9 @@ class Orchestrator:
         # about a job as if it were the job.
         if request.surface is not Surface.JOB:
             specs = [s for s in specs if not s.has_tag("job")]
+        # And the hand-off into background work is not offered to work that already is it.
+        if self._unattended(request):
+            specs = [s for s in specs if not s.has_tag("handoff")]
         if request.allowed_names is not None:
             specs = [s for s in specs if s.name in request.allowed_names]
         if len(specs) > DECLARATION_BUDGET:

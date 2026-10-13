@@ -327,6 +327,69 @@ def test_files_a_specialist_makes_reach_the_person_even_from_a_helper(model):
     assert [f["name"] for f in to_jarvis["result"]["files"]] == names
 
 
+# --- a specialist's background job is approved like any other background job -------------------
+
+def _scout_may_use(*names: str) -> None:
+    from durable_support import register_effects
+
+    register_effects()
+    agent = store.get_agent("scout")
+    access = dict(agent["capabilityAccess"])
+    access["names"] = [*(access.get("names") or []), *names]
+    store.update_agent("scout", {"capabilityAccess": access})
+
+
+def _scout_job(model, *steps) -> dict:
+    model.on("jarvis").calls_tool("ask_specialist", {
+        "agent": "scout", "task": "File the grants report.", "background": True})
+    model.on("jarvis").says("Scout's on it.")
+    for name, args in steps:
+        model.on("scout").calls_tool(name, args)
+    model.on("scout").says("Report filed.")
+    jarvis_turn("have Scout file the grants report, in the background")
+    assert worker.join_all(timeout=15)
+    [job] = job_store.list_jobs()
+    return job
+
+
+def test_a_specialists_job_does_an_ordinary_step_without_stopping_to_ask(model):
+    from durable_support import effect_count
+
+    _scout_may_use("effect_external")
+    job = _scout_job(model, ("effect_external", {"tag": "filed"}))
+    assert effect_count("filed") == 1
+    assert job["status"] == "done" and job["result"] == "Report filed."
+
+
+def test_a_specialists_job_still_stops_for_a_high_risk_step(model):
+    from durable_support import effect_count
+    from jarvis.policy import approvals
+
+    _scout_may_use("effect_high")
+    job = _scout_job(model, ("effect_high", {"tag": "sent"}))
+    assert effect_count("sent") == 0                                  # nothing ran
+    assert job["status"] == "awaiting_decision"
+    [pending] = [a for a in approvals.pending() if a.capability == "effect_high"]
+    assert pending.session_id == f"job:{job['id']}"
+    # ...and only the person's own yes runs it, exactly once.
+    ctx = CallContext(session_id=f"job:{job['id']}", turn_id="later", surface=Surface.TEXT,
+                      autonomy=Autonomy.INTERACTIVE)
+    result = execute_approved(pending.id, "later-turn", ctx, registry=assembly.get_registry())
+    assert result.ok, result.error
+    assert effect_count("sent") == 1
+
+
+def test_a_specialists_job_still_cannot_use_what_its_access_does_not_allow(model):
+    from durable_support import effect_count
+
+    _scout_may_use()                                                  # registered, NOT granted
+    job = _scout_job(model, ("effect_external", {"tag": "leak"}), ("effect_low", {"tag": "leak2"}))
+    assert effect_count() == 0
+    refused = [r["result"] for r in tool_results(model, "scout")]
+    assert len(refused) == 2 and all("error" in r for r in refused)
+    assert job["status"] == "done"                                    # it was told no, and went on
+
+
 # --- scheduled work done by a specialist --------------------------------------
 
 def test_a_scheduled_hunt_is_done_by_scout_and_carries_on_between_runs(model):

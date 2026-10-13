@@ -93,6 +93,10 @@ def _finish(work_id: str, outcome: dict[str, Any]) -> dict[str, Any]:
     task = get_task(meta.get("taskId") or "")
     if task is None:
         return {**result, "recorded": True}
+    if outcome.get("outcome") == "no_model":
+        # No model could answer just then. Not recorded as a failed run here: whoever ran it
+        # decides whether to try again later (`engine.settle`).
+        return {**result, "retryable": True, "wait": outcome.get("wait")}
     return complete_run(task, result, late=bool(meta.get("late")), event_bus=_buses.get(work_id),
                         resumed=(work.get("recoveries") or 0) > 0, work_id=work_id)
 
@@ -122,11 +126,19 @@ def _recover(work_id: str) -> None:
     from .task_store import get_task
 
     reached = durable.recover(work_id, max_recoveries=MAX_RECOVERIES)
-    if not reached or reached.get("state") not in ("abandoned", "unsure"):
-        return
     work = durable.get(work_id) or {}
     meta = work.get("meta") or {}
     task = get_task(meta.get("taskId") or "")
+    finished = (reached or {}).get("result") if (reached or {}).get("state") == "finished" else None
+    if isinstance(finished, dict) and not finished.get("recorded") and task is not None:
+        # Picked back up, and it ended with no model able to answer: tried again later, or
+        # recorded, exactly as a run that was never interrupted would be.
+        from .engine import settle
+
+        settle(task, finished, late=bool(meta.get("late")))
+        return
+    if not reached or reached.get("state") not in ("abandoned", "unsure"):
+        return
     result = {"ok": False, "summary": "", "error": _why_not(reached)}
     if task is not None:
         result = complete_run(task, result, late=bool(meta.get("late")), work_id=work_id)

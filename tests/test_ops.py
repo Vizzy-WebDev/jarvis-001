@@ -499,17 +499,23 @@ def test_check_my_health_reports_a_real_current_failure():
 # --- verification wired where results are actually produced -------------------
 
 def test_a_job_that_finishes_the_wrong_thing_is_treated_exactly_like_a_stall(monkeypatch):
-    """No second recovery mechanism: a checked mismatch spends the same single
-    retry, on the same counter, and escalates the same way a stall does."""
+    """No second recovery mechanism: a result the check finds not done is sent back through
+    the executive's own recovery (`jobs/checking.py` makes the check; `test_checking.py`
+    covers it in full)."""
+    from types import SimpleNamespace
+
     from jarvis import assembly, conversation
     from jarvis.jobs import job_store, orchestrator, worker
 
     from scripted_model import ScriptedModel, install
 
+    def judged(verdict: str):
+        return lambda prompt, **kw: SimpleNamespace(data={"lines": [
+            {"n": 1, "verdict": verdict, "why": "it answered something else"}]})
+
     stub = install(assembly, ScriptedModel())
     try:
-        monkeypatch.setattr("jarvis.ops.verify.verify_semantic_match",
-                            lambda **kw: verify.Verdict(True, False, "it answered something else"))
+        monkeypatch.setattr("jarvis.ai.ask", judged("not_met"))
 
         stub.says("All done, I think.")
         job = job_store.create_job(title="Do the thing", goal="do the thing")
@@ -518,10 +524,9 @@ def test_a_job_that_finishes_the_wrong_thing_is_treated_exactly_like_a_stall(mon
         assert result["status"] == "stalled"
         assert "did not do what was asked" in job_store.get_job(job["id"])["error"]
 
-        # ...and from there it is the ordinary one-retry-then-escalate path.
+        # ...and from there it is the ordinary sent-back-and-carried-on path.
         stub.says("Done properly this time.")
-        monkeypatch.setattr("jarvis.ops.verify.verify_semantic_match",
-                            lambda **kw: verify.Verdict(True, True, "yes"))
+        monkeypatch.setattr("jarvis.ai.ask", judged("met"))
         assert orchestrator.supervise(event_bus=EventBus())[0]["action"] == "retried"
         worker.join_all()
         assert job_store.get_job(job["id"])["status"] == "done"

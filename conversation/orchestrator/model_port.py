@@ -32,6 +32,9 @@ class ToolCall:
     id: str
     name: str
     args: dict[str, Any] = field(default_factory=dict)
+    #: True when the model's request could not be read (its arguments were not valid JSON).
+    #: It is never run; the loop tells the model so and the model can ask again properly.
+    garbled: bool = False
 
 
 @dataclass(frozen=True)

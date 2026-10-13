@@ -79,17 +79,24 @@ def test_guidance_given_on_resume_is_recorded_in_the_trace(client):
     assert any(row["detail"] == "try the archive" for row in trace)
 
 
-def test_no_room_is_a_409_naming_what_is_in_the_way(client):
-    """Not an error: everything is working, there is simply no room. The screen
-    can say which ones are holding it up."""
+def test_more_work_than_may_run_at_once_waits_in_line_and_only_a_full_line_is_a_409(client, monkeypatch):
+    """Work is taken on and waits its turn (the executive); it used to be refused the moment
+    one job was running. Only a full line is "no room" — not an error, everything is working —
+    and the 409 names what is in the way so the screen can say so."""
+    from jarvis.jobs import orchestrator
     from jarvis.prefs import set_prefs
 
     set_prefs({"maxBackgroundJobs": 1})
+    monkeypatch.setattr(orchestrator, "MAX_WAITING_JOBS", 2)      # nothing runs here: both wait
     first = client.post("/api/jobs", json={"title": "First", "goal": "one"}).json()
 
-    answer = client.post("/api/jobs", json={"title": "Second", "goal": "two"})
+    second = client.post("/api/jobs", json={"title": "Second", "goal": "two"})
+    assert second.status_code == 200 and second.json()["job"]["status"] == "queued"
+    assert second.json()["job"]["waitingBehind"] == ["First"]
+
+    answer = client.post("/api/jobs", json={"title": "Third", "goal": "three"})
     assert answer.status_code == 409
-    assert [j["id"] for j in answer.json()["active"]] == [first["job"]["id"]]
+    assert {j["id"] for j in answer.json()["active"]} == {first["job"]["id"], second.json()["job"]["id"]}
 
 
 def test_the_detail_reads_the_job_beside_what_it_actually_did(client):

@@ -24,6 +24,13 @@ What each kind of work does is a `Kind`: how to run its turn, what to do when it
 for someone, and how to finish. Everything else — the rounds, the transcript, the step
 budget, pausing and continuing, recovery — is here, once.
 
+**No model able to answer is not the work failing.** A round that ends because every model
+was down, resting or out of quota (`model_wait`) leaves the work WAITING with a time to try
+again — longer each time, for as long as `MODEL_WAIT_LIMIT_S` — and `wake_due()` (called on the
+job supervisor's clock) continues it then. It spends none of the work's retries and asks the
+person nothing. Only a kind with a `wake` hook waits this way; the others report the failure
+with how long to wait, and their own caller decides (a scheduled run is tried again later).
+
 Concurrency: one piece of work is advanced by one thread at a time (a per-work lock), and
 `stop()` interrupts the round in flight through the turn's own cancel event.
 """
@@ -51,6 +58,69 @@ CONTINUE_TEXT = ("Carry on with the work from where you left off. When it is all
 
 #: What the work is told about a call the person declined, in place of "needs your go-ahead".
 DECLINED = "The person said no to this, so it was not done. Carry on without it."
+
+#: How long work waits before asking a model again after none could answer: the 1st, 2nd, …
+#: wait in a row, then the last value for every later one. A server that said how long to
+#: wait is believed when that is longer.
+MODEL_WAITS_S = (60, 180, 600, 900, 1800)
+#: Waiting for a model this long in one stretch, the work stops waiting and says so.
+MODEL_WAIT_LIMIT_S = 12 * 3600
+#: A model REFUSING the request (rather than being unable to answer just now) may be that one
+#: model's own trouble — a model id its provider no longer has, a request it cannot express —
+#: and another try may reach a different model. It is tried again this many times, briefly;
+#: if it is still refused, it is the request, and the work says so.
+MODEL_REFUSAL_TRIES = 3
+
+#: Why an endpoint was ruled out before any call, when the reason heals by itself (a rest, a
+#: rate limit, a connection that did not answer). The others — no key, no fitting model, a
+#: budget spent — need the person, so waiting on them would wait for nothing.
+_HEALS = frozenset({"connection_unreachable", "connection_refused", "rate_limited", "resting",
+                    "model_missing"})
+
+
+def model_wait(code: str | None, detail: dict[str, Any] | None) -> float | None:
+    """Whether a failed turn failed only because no model could answer RIGHT NOW. Returns how
+    long the server asked to wait (0.0 when it did not say), or None when waiting would not
+    help: the request itself was the problem, or nothing is set up to wait for."""
+    if code == "empty_reply":
+        return 0.0
+    if code != "no_model":
+        return None
+    detail = detail or {}
+    if detail.get("reason") == "no_eligible_endpoint":
+        heals = bool(_HEALS & set(detail.get("rejected") or ()))
+    else:
+        heals = detail.get("scope") in ("endpoint", "upstream", "connection") or model_refused(detail)
+    if not heals:
+        return None
+    try:
+        return max(0.0, float(detail.get("retryAfter") or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def model_refused(detail: dict[str, Any] | None) -> bool:
+    """A model turned the request down as one it cannot take (`invalid_request`, a model its
+    provider cannot find). Never the WORK's approach being wrong — so it must not be answered
+    with "try a different approach" — but not certain to heal either: tried again only a few
+    times (`MODEL_REFUSAL_TRIES`). Found by a live run under Auto: the first-ranked model's id
+    was no longer known to its provider, every round ended "it can't find that", and three jobs
+    were told twice to change how they were working and then declared stuck."""
+    return (detail or {}).get("reason") in ("invalid_request", "model_not_found")
+
+
+def model_gave_nothing(code: str | None) -> bool:
+    """The model answered twice running with no words and nothing to call (`empty_reply`). Like
+    a refusal it is the MODEL's trouble, never the work's approach, and is tried again only a
+    few times. Found live: two empty replies used up both of a job's "try a different
+    approach" recoveries and the job was declared stuck with its work two-thirds done."""
+    return code == "empty_reply"
+
+
+def model_retry_in(attempt: int, asked: float | None = None) -> float:
+    """Seconds until the `attempt`-th try in a row (1-based) after no model could answer."""
+    step = MODEL_WAITS_S[min(max(attempt, 1), len(MODEL_WAITS_S)) - 1]
+    return max(float(step), float(asked or 0.0))
 
 
 @dataclass(frozen=True)
@@ -84,6 +154,9 @@ class Kind:
     - `on_event(work_id, event)` — each turn event as it happens (a heartbeat, say).
     - `observe(work_id, type, payload)` — every bus event of this work's session (its trace).
     - `stopped(work_id)` — read at the start of each round: True ends it before any model call.
+    - `wake(work_id)` — continue this work now that it is time to ask a model again (it calls
+      `advance(..., answer={"model": True})` on a thread of its own). A kind without one does
+      not wait for a model: a round that no model could answer just ends as a failure.
     """
 
     name: str
@@ -95,6 +168,7 @@ class Kind:
     on_event: Callable[[str, Any], None] | None = None
     observe: Callable[[str, str, dict[str, Any]], None] | None = None
     stopped: Callable[[str], bool] | None = None
+    wake: Callable[[str], None] | None = None
 
 
 _KINDS: dict[str, Kind] = {}
@@ -221,6 +295,12 @@ class _Store:
             return [(r[0], r[1]) for r in self.conn.execute(
                 "SELECT operation_id, capability FROM started WHERE work_id = ? AND epoch = ?"
                 " AND external = 1 ORDER BY started_at", (work_id, epoch)).fetchall()]
+
+    def waiting(self) -> list[dict[str, Any]]:
+        with self.lock:
+            ids = [r[0] for r in self.conn.execute(
+                "SELECT id FROM works WHERE status = 'waiting' ORDER BY updated_at").fetchall()]
+        return [w for w in (self.get(i) for i in ids) if w]
 
     def by_status(self, kind: str, status: str) -> list[dict[str, Any]]:
         with self.lock:
@@ -365,6 +445,12 @@ def run_round(work_id: str, kind_name: str, round_no: int, text: str,
         if event.payload.get("turnId") == spec.turn_id:
             steps += 1
 
+    def uncount(event: Any) -> None:
+        # A call no model answered was not a step of the work: it must not eat the budget.
+        nonlocal steps
+        if event.payload.get("turnId") == spec.turn_id:
+            steps = max(0, steps - 1)
+
     store = _the_store()
 
     def started(event: Any) -> None:
@@ -383,6 +469,7 @@ def run_round(work_id: str, kind_name: str, round_no: int, text: str,
                 logger.exception("could not record %s for %s", event.type.value, work_id)
 
     detach = [bus.subscribe(EventType.MODEL_CALL_STARTED, count),
+              bus.subscribe(EventType.MODEL_CALL_FAILED, uncount),
               bus.subscribe(EventType.TOOL_STARTED, started)]
     if kind.observe is not None:
         detach.append(bus.subscribe(None, watch))
@@ -402,8 +489,13 @@ def run_round(work_id: str, kind_name: str, round_no: int, text: str,
                            "error": None, "approval": None, "modelId": event.model_id}
             elif isinstance(event, Failed):
                 ran_out = kind.continuable and event.code == "out_of_steps"
-                outcome = {"outcome": "ran_out" if ran_out else "failed", "text": "",
-                           "error": event.error, "approval": None}
+                wait = None if ran_out else model_wait(event.code, event.detail)
+                outcome = {"outcome": "ran_out" if ran_out else
+                           ("no_model" if wait is not None else "failed"), "text": "",
+                           "error": event.error, "approval": None,
+                           **({"wait": wait, "refused": model_refused(event.detail),
+                               "silent": model_gave_nothing(event.code)}
+                              if wait is not None else {})}
             elif isinstance(event, Interrupted):
                 outcome = {"outcome": "stopped", "text": "", "error": None, "approval": None}
             elif isinstance(event, ApprovalRequired):
@@ -414,7 +506,7 @@ def run_round(work_id: str, kind_name: str, round_no: int, text: str,
         for undo in detach:
             undo()
 
-    if outcome["outcome"] == "failed":
+    if outcome["outcome"] in ("failed", "no_model"):
         # A call left with no result would make every later request invalid.
         conversation.remove_last_orphaned_tool_call(session)
     messages = conversation.get_messages(session)
@@ -453,6 +545,11 @@ def continuation(answer: dict[str, Any] | None, goal: str = "") -> str:
         text += f"\n\nThe work you are doing: {goal.strip()}"
     guidance = str(answer.get("guidance") or "").strip()
     note = str(answer.get("note") or "").strip()
+    sent_back = str(answer.get("sentBack") or "").strip()
+    if sent_back:
+        text += (f"\n\nYour result was checked against what was asked and sent back: {sent_back} "
+                 "Put exactly that right, then give the finished result. Do NOT do again anything "
+                 "that already succeeded — what you have actually run is listed for you.")
     if note:
         text += f"\n\nThe last round did not get anywhere: {note} Try a different approach."
     if guidance:
@@ -493,11 +590,16 @@ def _build_workflow(saver: Any) -> Any:
         run runs nothing, and only an explicit answer ever starts the next one."""
         work_id, kind_name, epoch = inp["id"], inp["kind"], inp["epoch"]
         continuable = _kind(kind_name).continuable
+        waits_for_model = _kind(kind_name).wake is not None
         budget = inp.get("budget")
         saved = (previous or {}).get("state") if inp.get("answer") is not None else None
+        # How many times in a row no model could answer, and since when (`why.reason ==
+        # "model"`). Both start over the moment a round is answered.
+        waits, waiting_since = 0, None
         if saved:
             transcript, round_no = saved["transcript"], saved["round_no"]
             spent, allowance, why = saved["spent"], saved["allowance"], saved["why"]
+            waits, waiting_since = int(saved.get("waits") or 0), saved.get("waitingSince")
             answer = inp["answer"]
             if why["reason"] == "approval" and isinstance(answer.get("approval"), dict):
                 transcript = settle(transcript, why["approval"], answer["approval"])
@@ -515,6 +617,31 @@ def _build_workflow(saver: Any) -> Any:
             round_no += 1
             spent += int(out.get("steps") or 0)
             transcript = out["transcript"]
+            if out["outcome"] == "no_model" and waits_for_model:
+                waits += 1
+                waiting_since = waiting_since or now_iso()
+                refused_too_often = (bool(out.get("refused") or out.get("silent"))
+                                     and waits > MODEL_REFUSAL_TRIES)
+                if not refused_too_often and _seconds_since(waiting_since) < MODEL_WAIT_LIMIT_S:
+                    why = {"reason": "model", "error": out.get("error"), "attempt": waits,
+                           "since": waiting_since, "steps": spent,
+                           "retryAt": _iso_in(model_retry_in(waits, out.get("wait")))}
+                    park_task(work_id, kind_name, why).result()
+                    return entrypoint.final(
+                        value={"waiting": why},
+                        save={"state": {"transcript": transcript, "round_no": round_no,
+                                        "spent": spent, "allowance": allowance, "why": why,
+                                        "waits": waits, "waitingSince": waiting_since}})
+                out = {**out, "outcome": "failed",
+                       "error": ((f"The model gave no answer at all, {waits} times running. "
+                                  if refused_too_often and out.get("silent") else
+                                  f"The model would not take the request, {waits} times running. "
+                                  if refused_too_often else
+                                  "No model has been able to answer for "
+                                  f"{round(_seconds_since(waiting_since) / 3600)} hours. ")
+                                 + f"{out.get('error') or ''}").strip()}
+            if out["outcome"] != "no_model":
+                waits, waiting_since = 0, None
             if not continuable:
                 return entrypoint.final(
                     value={"finished": finish_task(work_id, kind_name, out).result()},
@@ -524,7 +651,11 @@ def _build_workflow(saver: Any) -> Any:
                 verdict = finish_task(work_id, kind_name, out).result()
                 if not (isinstance(verdict, dict) and verdict.get("accepted") is False):
                     return entrypoint.final(value={"finished": verdict}, save={"state": None})
-                why = {"reason": "rejected", "error": verdict.get("error"), "steps": spent}
+                # Refused as a finish. Either the result did not hold up (`rejected` — sent
+                # back), or the work itself said it cannot be finished (`blocked` — a question
+                # for the person, with the work's place kept so their answer carries it on).
+                why = {"reason": "blocked" if verdict.get("blocked") else "rejected",
+                       "error": verdict.get("error"), "steps": spent}
             elif out["outcome"] == "ran_out":
                 if allowance is None or spent < allowance:
                     text = continuation(None, inp["text"])
@@ -713,6 +844,57 @@ def rounds(work_id: str) -> list[dict[str, Any]]:
             " WHERE work_id = ? AND epoch = ? ORDER BY round_no",
             (work_id, work["epoch"])).fetchall()
     return [{"round": r[0], "outcome": r[1], "steps": r[2], "finishedAt": r[3]} for r in rows]
+
+
+def _iso_in(seconds: float) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    moment = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _seconds_since(iso: str | None) -> float:
+    from datetime import datetime, timezone
+
+    try:
+        then = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    return (datetime.now(timezone.utc) - then).total_seconds()
+
+
+def model_due(work: dict[str, Any] | None, now: str | None = None) -> bool:
+    """True when this work is waiting for a model and its time to try again has come."""
+    why = (work or {}).get("waiting_on") or {}
+    if (work or {}).get("status") != "waiting" or why.get("reason") != "model":
+        return False
+    return str(why.get("retryAt") or "") <= (now or now_iso())
+
+
+def wake_due(now: str | None = None) -> list[str]:
+    """Continue every piece of work whose wait for a model is over. Called on a clock (the job
+    supervisor's); each kind's own `wake` does the continuing, on its own thread. Returns the
+    ids woken. Reads nothing when there has never been any durable work."""
+    from .store import data_dir
+
+    if _store is None and not (data_dir() / FILE_NAME).exists():
+        return []
+    woken = []
+    for work in _the_store().waiting():
+        if not model_due(work, now):
+            continue
+        try:
+            kind = _kind(work["kind"])
+        except KeyError:
+            continue
+        if kind.wake is None:
+            continue
+        try:
+            kind.wake(work["id"])
+            woken.append(work["id"])
+        except Exception:  # noqa: BLE001 — one piece of work must not stop the others waking
+            logger.exception("could not continue %s after its wait for a model", work["id"])
+    return woken
 
 
 def _resume_value(answer: dict[str, Any]) -> dict[str, Any]:

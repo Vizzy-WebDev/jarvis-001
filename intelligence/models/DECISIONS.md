@@ -181,6 +181,16 @@ it was deliberately corrected.
 
 ## After the review (approved fixes)
 
+- **D4 — work nobody is waiting on prefers the selected model; it is not pinned to it.**
+  Decided by the owner on 2026-10-11. With a model selected, a job's round, a scheduled run and
+  the one-shot calls nobody waits on (judge, reflection, memory review, summary, briefing,
+  content analysis) send `prefer=("selected",)` and no pin (`client.steer_for`,
+  `oneshot.UNATTENDED`), so the selected model is tried first and the rest of the filtered list
+  follows. Evidence: pinned, the owner's daily scheduled task failed 8 of 11 runs on its one
+  model's outages, and judge calls were answered 8 times in 18 — so most finished work went
+  unchecked. A turn the person is in stays pinned (they chose that model for what they read),
+  and a pin a task or specialist names itself is still found or refused, never approximated.
+
 - **Errors are said in plain words; the provider's own text is kept aside.** Reverses the
   earlier "`str(error)` keeps the provider's own words": a person saw "…Incorrect API key
   provided Jarvis stays on the model you picked…" and internal names like `image_in`.
@@ -287,6 +297,22 @@ it was deliberately corrected.
   (it used to ride the shared thread pool). Every outbound HTTP call shares one TLS context
   (`jarvis/tls.py`; building one cost ~1 s per call on Windows), and `main()` warms the tool registry
   and model layer in the background so the first message of a launch is not slow.
+- **A server that cannot be reached is the connection's failure (found live).** A connect error
+  or connect timeout is `unavailable` at `connection` scope: the connection rests as a whole
+  (`settings.unreachable_rest_s`, the same rest discovery already gave it), and within one call
+  no further endpoint of a connection that failed at connection scope is tried — it used to be
+  only moved to the back of the queue. With the one working provider rate-limited for a moment,
+  one call walked a local gateway that was not running and listed 1,404 models, one connection
+  attempt each, for over ten minutes.
+- **Thinking written into the reply text is reasoning (found live, `drivers/_inline_think.py`).**
+  The Chat Completions driver takes a reply that BEGINS with `<think>` back apart as it streams:
+  up to `</think>`, or — when the server dropped the closing tag, which the person's gateway does
+  whenever tools are declared — up to the first run of three newlines. Cutting at the first gap
+  can let a little thinking through as text but can never swallow the answer. Thinking followed
+  by a tool call is all reasoning; a reply that is nothing but unclosed thinking is handed back
+  as text rather than lost. Text that only mentions the tag is untouched. `keep_inline_thinking`
+  (a wire quirk) turns it off. Known limit: a second `<think>` later in the same reply is left
+  as text.
 
 ## Model Fabric completion pass (Hermes comparison, live provider check)
 

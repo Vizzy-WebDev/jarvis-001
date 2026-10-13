@@ -30,6 +30,12 @@ def note_failure(endpoint_id: str, connection: Connection, err: ModelError, cfg:
     if err.scope == "connection" and err.recovery == "user":
         state.refuse_connection(conn, str(err), s.refused_rest_s, kind=err.type)
         return
+    if err.scope == "connection" and err.type == "unavailable":
+        # The server could not be reached at all. The whole connection rests, exactly as when
+        # it does not answer the model list — instead of each of its models being found dead
+        # one at a time, by every call.
+        state.mark_connection_down(conn, str(err), s.unreachable_rest_s)
+        return
     if err.type == "model_not_allowed":
         state.rest_endpoint(endpoint_id, s.refused_rest_s, reason=str(err), kind="unusable")
     elif err.recovery == "refresh":

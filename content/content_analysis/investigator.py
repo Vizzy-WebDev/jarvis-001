@@ -387,8 +387,8 @@ def judge_claim(claim: str, *, context: str | None = None,
     research_block = (
         f"Research findings:\n{found.answer}\n\nSources:\n" +
         "\n".join(f"[{i + 1}] {s.title} — {s.url}" for i, s in enumerate(found.sources))
-        if found.ok else
-        f"I could not research this ({found.error}). Say so in your reasoning and lean "
+        if found.summarised else
+        f"I could not research this ({(found.error or found.note)}). Say so in your reasoning and lean "
         f"towards \"can't tell\".")
 
     judged = ask(
@@ -415,13 +415,13 @@ def judge_claim(claim: str, *, context: str | None = None,
         bits.append(f"\n**What it doesn't tell you:** {data['whatsLeftOut']}")
     if data.get("breakdown"):
         bits.append(f"\n## What's actually involved\n\n{data['breakdown']}")
-    if not found.ok:
-        bits.append(f"\n*I couldn't look this up independently — {found.error}*")
+    if not found.summarised:
+        bits.append(f"\n*I couldn't look this up independently — {(found.error or found.note)}*")
 
     return {"ok": True, "result": "\n".join(bits), "verdict": verdict,
             "sources": [{"title": s.title, "url": s.url} for s in found.sources]
-            if found.ok else [],
-            "researched": found.ok}
+            if found.summarised else [],
+            "researched": found.summarised}
 
 
 def describe_status(record: dict[str, Any] | None) -> str:

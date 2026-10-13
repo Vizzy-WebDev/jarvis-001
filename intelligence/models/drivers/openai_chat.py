@@ -10,6 +10,8 @@ flags, read here and nowhere else.
     no_stream_usage          don't ask for usage in the stream (the server rejects it)
     no_system_role           no "system" messages: instructions open the first user turn
     no_tool_call_ids         the server gives no tool-call ids (one is made for it)
+    keep_inline_thinking     leave a reply that opens with `<think>` exactly as the server sent it
+                             (default: it is turned back into reasoning — `_inline_think.py`)
     error_envelope_in_text   the server may answer 200 and stream its error as the text
     reasoning_param          how effort is sent: "reasoning_effort" | "reasoning_object"
     max_tokens_param         "max_tokens" (default) | "max_completion_tokens"
@@ -26,6 +28,7 @@ from typing import Any, Iterator
 from .. import errors
 from ..catalog import Pricing
 from ..prepared import ConnInfo, Discovered, Prepared, Unexpressible
+from ._inline_think import InlineThinking
 from ..types import (Finish, ImagePart, Message, ReasoningDelta, Sealed, SealedEvent, TextDelta, TextPart,
                      ToolArgsDelta, ToolCall, ToolCallCompleted, ToolCallStarted, ToolResult, Usage)
 from . import _turns, _wire
@@ -33,6 +36,7 @@ from . import _turns, _wire
 NAME = "openai_chat"
 QUIRKS = frozenset({"no_parallel_tool_calls", "tool_args_not_streamed", "rejects_strict", "no_stream_usage",
                     "no_system_role", "no_tool_call_ids", "error_envelope_in_text", "reasoning_param",
+                    "keep_inline_thinking",
                     "max_tokens_param", "show_endpoint", "upstream_from_id"})
 DEFAULT_CAPABILITIES: dict[str, Any] = {"text_in": True, "tools": True, "parallel_tools": True, "streaming": True,
                                         "kind": "chat"}
@@ -175,8 +179,14 @@ def _envelope(text: str, url: str) -> errors.ModelError | None:
     return _wire.error_in_body(body, url)
 
 
+def _labelled(pieces: list[tuple[str, str]]) -> list[Any]:
+    return [ReasoningDelta(text) if kind == "reasoning" else TextDelta(text) for kind, text in pieces]
+
+
 def stream(conn: ConnInfo, prepared: Prepared) -> Iterator[Any]:
     quirks = dict(conn.quirks)
+    # Reasoning some servers write into the reply's own text, taken back out as it streams.
+    thinking = None if quirks.get("keep_inline_thinking") else InlineThinking()
     url = _wire.join_url(conn.base_url, "chat/completions")
     body = body_for(prepared, quirks)
     hold = bool(quirks.get("error_envelope_in_text"))
@@ -218,7 +228,10 @@ def stream(conn: ConnInfo, prepared: Prepared) -> Iterator[Any]:
                             continue
                         holding = False
                         piece = "".join(held)
-                    yield TextDelta(piece)
+                    if thinking is None:
+                        yield TextDelta(piece)
+                    else:
+                        yield from _labelled(thinking.feed(piece))
                 for part in delta.get("tool_calls") or []:
                     index = part.get("index", len(slots))
                     slot = slots.get(index)
@@ -245,7 +258,14 @@ def stream(conn: ConnInfo, prepared: Prepared) -> Iterator[Any]:
         failure = _envelope("".join(held), url)
         if failure is not None:
             raise failure
-        yield TextDelta("".join(held))
+        if thinking is None:
+            yield TextDelta("".join(held))
+        else:
+            yield from _labelled(thinking.feed("".join(held)))
+    if thinking is not None:
+        # Whatever was held back; and a reply that was nothing but unclosed thinking, with no
+        # tool called, comes back as its text rather than as an empty reply.
+        yield from _labelled(thinking.finish(called_tools=bool(slots)))
     if finish is None and not done:
         raise errors.Unavailable(f"The reply from {_wire.host_of(url)} stopped part-way.")
 

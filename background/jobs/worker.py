@@ -18,9 +18,11 @@ reading of the record rather than a guess.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import threading
+import time
 from typing import Any, Iterator
 
 from ..events import EventType, bus as default_bus
@@ -38,7 +40,7 @@ logger = logging.getLogger(__name__)
 #: A worker's own tools, added to every restricted kind. A narrow, repetitive
 #: job is exactly the one most likely to turn out to be three jobs, so leaving
 #: these out of the fenced kinds would let only unrestricted work ask to split.
-JOB_OWN_TOOLS = ["request_job_split"]
+JOB_OWN_TOOLS = ["request_job_split", "update_plan", "cannot_finish"]
 
 TOOLS_BY_KIND: dict[str, list[str] | None] = {
     "generic": None,
@@ -97,6 +99,10 @@ def run_job(job_id: str, *, event_bus: EventBus | None = None,
     else:
         work = durable.get(job_id)
         settled = (work or {}).get("status")
+        if settled == "waiting" and answer is None and durable.model_due(work):
+            # It was only waiting for a model, and that wait is over: starting it IS the retry.
+            # (Any other wait is a question for the person, never answered from here.)
+            answer = {"model": True}
         if settled == "finished" or (settled == "waiting" and answer is None):
             # Nothing to run: it already finished, or it is waiting on an answer that a
             # plain start or recovery must never supply on the person's behalf. If the job's
@@ -112,22 +118,38 @@ def run_job(job_id: str, *, event_bus: EventBus | None = None,
     ebus.publish(EventType.JOB_UPDATED, {"id": job_id, "status": "running"})
 
     budget = STEP_BUDGET_BY_KIND.get(job["kind"], STEP_BUDGET_BY_KIND["generic"])
+    from . import objective
+
     try:
-        reached = durable.advance(job_id, KIND, job["goal"], budget=budget, answer=answer)
+        # What the work is first told, and what every later round restates: the outcome and
+        # what done looks like. The rest of its brief rides in the prompt (`worker_sections`).
+        reached = durable.advance(job_id, KIND, objective.opening_text(job), budget=budget,
+                                  answer=answer)
+        # Out of steps while really getting somewhere: carry on without asking (`_extend`).
+        while _extend(job_id, reached):
+            reached = durable.advance(job_id, KIND, objective.opening_text(job), budget=budget,
+                                      answer={"extended": True})
     finally:
         _buses.pop(job_id, None)
     report = _report({"status": reached["state"], "result": reached.get("result"),
                       "waiting_on": reached.get("why")}, job_id)
-    if (job_store.get_job(job_id) or {}).get("status") == "running":
+    stopped = reached["state"] == "waiting" and (reached.get("why") or {}).get("reason") == "stopped"
+    if not stopped and (job_store.get_job(job_id) or {}).get("status") == "running":
         # Its hooks normally say where it stopped; a pause re-reached from a saved step
         # (after a crash) runs no hook again, so the row is set from the record.
+        #
+        # Never when the round was STOPPED: whoever stopped it owns what the job is now. Found
+        # by a live run — the executive stopped a job that was repeating itself and at once set
+        # it going again on a new thread; this thread, finishing its stopped round a moment
+        # later, saw "running" (the new thread's), took it for its own, and marked the job
+        # "waiting on you" with no question anywhere, while the new round was still working.
         job_store.update_job(job_id, {"status": _status_of(report), "currentStep": None})
     return report
 
 
 def _status_of(report: dict[str, Any]) -> str:
     status = report.get("status")
-    return status if status in ("done", "awaiting_decision", "stalled", "cancelled") \
+    return status if status in ("done", "awaiting_decision", "stalled", "cancelled", "queued") \
         else "awaiting_decision"
 
 
@@ -144,6 +166,12 @@ def _report(work: dict[str, Any], job_id: str | None = None) -> dict[str, Any]:
         return {"status": "awaiting_decision", "reason": "budget", "steps": why.get("steps")}
     if reason in ("failed", "rejected"):
         return {"status": "stalled", "error": _stall_detail(why), "cause": _stall_cause(why)}
+    if reason == "blocked":
+        return {"status": "awaiting_decision", "reason": "blocked", "error": why.get("error")}
+    if reason == "model":
+        # Not stuck and not the person's problem: it goes on by itself at `retryAt`.
+        return {"status": "queued", "reason": "model", "retryAt": why.get("retryAt"),
+                "error": why.get("error")}
     job = job_store.get_job(job_id or work.get("id") or "") or {}
     return {"status": job.get("status"), "reason": reason}
 
@@ -183,7 +211,13 @@ def _turn(job_id: str, text: str, spec: Any, cancel: threading.Event) -> Iterato
         run = runner.start_run(agent, text, session_id=session_for(job_id),
                                requested_by="job", conversation_id=job.get("conversationId"),
                                job_id=job_id, event_bus=_bus_for(job_id))
-        yield from runner.stream_run(agent, run, text, autonomy=Autonomy.ESCALATE,
+        # The same rule as any other background job, by the owner's decision: the person set
+        # this work going, so an ordinary (MEDIUM) step toward it runs; a HIGH-risk step still
+        # parks for them, and the specialist may still use only what its access allows. It
+        # used to stop and ask for every MEDIUM step — unlike a plain job, a scheduled
+        # specialist run, and the same specialist asked directly by a job (found live: three
+        # specialist jobs each stopped to ask before filing the report they were sent to file).
+        yield from runner.stream_run(agent, run, text, autonomy=Autonomy.PRE_CONSENTED,
                                      surface=Surface.SCHEDULED, event_bus=_bus_for(job_id),
                                      cancel=cancel, turn=spec)
         return
@@ -202,15 +236,89 @@ def _turn(job_id: str, text: str, spec: Any, cancel: threading.Event) -> Iterato
         operation_scope=spec.operation_scope,
         continuable=spec.continuable,
         max_steps=spec.max_steps,
+        gate=lambda name, args, operation: _refuse_repeat(job_id, name, args, operation),
     )
     yield from get_orchestrator().run_turn(request, cancel)
 
 
-def _on_event(job_id: str, event: Any) -> None:
-    from ..orchestrator import ToolRan
+def _refuse_repeat(job_id: str, name: str, args: dict[str, Any], operation_id: str = "") -> str | None:
+    """The gate on a job's calls: a call that keeps failing is not made again
+    (`objective.refuse_repeat`), and an outward action that already succeeded is not done a
+    second time by accident (`objective.refuse_redo`). A refused call is still written to the
+    trace, as what it is: a worker that keeps asking for the very call it was just refused is
+    going round in circles, and `diagnose_stall` can only see what is there."""
+    import uuid
 
+    from . import objective
+
+    if _effect_of(name) == "external":
+        redo = objective.refuse_redo(job_id, name, args, operation_id)
+        if redo:
+            # Under the call's own operation id, so a replay of this round is refused again.
+            operation = operation_id or f"refused-{uuid.uuid4().hex[:12]}"
+            if not any(_op_of(row) == operation for row in job_store.get_trace(job_id)):
+                job_store.append_trace(job_id, phase="intent", effect="external", kind="tool",
+                                       summary=f"{name} not done a second time",
+                                       detail={"name": name, "args": args, "operationId": operation})
+                job_store.append_trace(job_id, phase="outcome", effect="external", kind="tool",
+                                       summary=f"{name} refused",
+                                       detail={"name": name, "ok": False, "redo": True,
+                                               "error": "refused: already done",
+                                               "operationId": operation})
+            return redo
+    refusal = objective.refuse_repeat(job_id, name, args)
+    if refusal:
+        operation = f"refused-{uuid.uuid4().hex[:12]}"
+        job_store.append_trace(job_id, phase="intent", effect="read", kind="tool",
+                               summary=f"{name} not run again",
+                               detail={"name": name, "args": args, "operationId": operation})
+        job_store.append_trace(job_id, phase="outcome", effect="read", kind="tool",
+                               summary=f"{name} refused",
+                               detail={"name": name, "ok": False, "error": "refused: it keeps failing",
+                                       "operationId": operation})
+    return refusal
+
+
+def _op_of(row: dict[str, Any]) -> str:
+    detail = row.get("detail")
+    if isinstance(detail, str):
+        try:
+            detail = json.loads(detail)
+        except ValueError:
+            return ""
+    return str(detail.get("operationId") or "") if isinstance(detail, dict) else ""
+
+
+#: A sign of life is written to the job at most this often (each one is a database write, and
+#: a streamed reply is hundreds of events).
+ALIVE_EVERY_S = 20.0
+_last_alive: dict[str, float] = {}
+
+
+def _alive(job_id: str) -> None:
+    """The work is doing something — a model has been asked, is answering, or answered. Found
+    live: only a finished tool call used to count, so a job whose model took 100 seconds a
+    reply (and spent three replies thinking) was declared hung, counted as a crash and
+    restarted while it was still working."""
+    now = time.monotonic()
+    if now - _last_alive.get(job_id, 0.0) < ALIVE_EVERY_S:
+        return
+    _last_alive[job_id] = now
+    job_store.heartbeat(job_id)
+
+
+def _on_event(job_id: str, event: Any) -> None:
+    from ..orchestrator import Done, ToolRan
+
+    _alive(job_id)
     if isinstance(event, ToolRan):
         job_store.heartbeat(job_id, step=f"using {event.capability}")
+    elif isinstance(event, Done) and event.final_step:
+        # A round that ran out of room ends on a progress note. It is kept on the job's ledger
+        # by code, so where the work stands is on record whether or not the worker wrote it down.
+        from . import objective
+
+        objective.note_round(job_id, event.text)
 
 
 def _effect_of(capability: str) -> str:
@@ -225,16 +333,19 @@ def _observe(job_id: str, event_type: str, payload: dict[str, Any]) -> None:
     """The write-ahead trace, from what really happened: an `intent` row BEFORE an action
     runs and an `outcome` row after it, both carrying the operation id that ties them."""
     name = str(payload.get("capability") or "")
+    _alive(job_id)                 # a model call starting or ending is a sign of life too
     if event_type == EventType.TOOL_STARTED.value:
         job_store.append_trace(job_id, phase="intent", effect=_effect_of(name), kind="tool",
                                summary=f"{name} starting",
                                detail={"name": name, "args": payload.get("args") or {},
                                        "operationId": payload.get("operationId")})
     elif event_type in (EventType.TOOL_COMPLETED.value, EventType.TOOL_FAILED.value):
-        ok = event_type == EventType.TOOL_COMPLETED.value
+        # Worked means it ran AND did not itself report that it failed.
+        ok = event_type == EventType.TOOL_COMPLETED.value and not payload.get("reportedFailure")
         job_store.append_trace(job_id, phase="outcome", effect=_effect_of(name), kind="tool",
                                summary=f"{name} {'completed' if ok else 'failed'}",
-                               detail={"name": name, "ok": ok, "error": payload.get("error"),
+                               detail={"name": name, "ok": ok,
+                                       "error": payload.get("error") or payload.get("reportedError"),
                                        "operationId": payload.get("operationId")})
 
 
@@ -242,21 +353,69 @@ def _stopped(job_id: str) -> bool:
     return (job_store.get_job(job_id) or {}).get("status") == "cancelled"
 
 
+def _halt_before_round(job_id: str) -> bool:
+    """Read at the start of every round: True ends it before any model call. The job was
+    stopped — or its own record shows it going round in circles (`policy.diagnose_stall`: the
+    same action three times, an oscillation, three failures in a row), which is then recorded
+    as a stall for the executive to deal with. Looked at HERE, between rounds, and not only on
+    the supervisor's clock: a fast model can spend a whole allowance of steps repeating itself
+    inside one tick."""
+    if _stopped(job_id):
+        return True
+    from .policy import DIAGNOSE_TAIL_SIZE, diagnose_stall
+
+    try:
+        stall = diagnose_stall(job_store.get_trace_tail(job_id, DIAGNOSE_TAIL_SIZE))
+    except Exception:  # noqa: BLE001 — not knowing is not a reason to stop the work
+        logger.exception("could not look at job %s's record for repetition", job_id)
+        return False
+    if stall is None:
+        return False
+    _stall(job_id, stall["detail"], _bus_for(job_id), cause=stall["cause"])
+    return True
+
+
 def _finish(job_id: str, outcome: dict[str, Any]) -> dict[str, Any]:
     """The work says it is finished: check that, then record it once."""
+    from . import objective
+
     job = job_store.get_job(job_id) or {}
-    answer = outcome.get("text") or ""
-    # "It finished" is not the same as "it did what was asked". A checked
-    # mismatch is treated exactly like a stall — the SAME single retry, the same
-    # counter, the same escalation — rather than a second recovery mechanism
-    # with its own rules. An unchecked one changes nothing.
-    verdict = _verify_result(job, answer)
-    if verdict is not None and verdict.failed:
-        return {"accepted": False,
-                "error": "it finished, but it did not do what was asked: "
-                         f"{verdict.reason or 'the result does not match the request'}"}
+    # Without a leading thinking block some models leave in their reply: what is delivered is
+    # the result, not the reasoning that led to it.
+    answer = objective.clean(outcome.get("text") or "")
+    if not answer.strip():
+        # Ending without a word is not finishing. (Found live: a job was recorded as done with
+        # an empty result and nothing filed.) Sent back like any result that does not hold up.
+        return {"accepted": False, "error": "it ended without giving any result at all"}
+    blocked = objective.blocked_of(job)
+    if blocked:
+        # It said it cannot be finished. Its account is kept as where the work stands, and it
+        # goes to the person as that — not through the check, which would only send it back.
+        objective.note_round(job_id, answer)
+        return {"accepted": False, "blocked": True, "error": blocked["reason"]}
+    # "It finished" is not the same as "it did what was asked" — and the worker's report is
+    # evidence for neither. The result is checked line by line against the record of what the
+    # work actually ran (`checking.py`). Lines not met go back to the worker, and only those,
+    # as often as the executive allows a result to be sent back; after that the result is
+    # delivered as it stands, saying plainly what is done and what is not. A check is a
+    # judgement too, and work is never held as "stuck" on it.
+    from . import checking, policy
 
     from .. import durable
+
+    # A finish replayed after a crash is not judged a second time: the check already made of
+    # THIS result in THIS attempt stands (a second opinion could differ, and the person
+    # would be told two things about one result).
+    of = f"{int((durable.get(job_id) or {}).get('epoch') or 0)}:{hashlib.sha256(answer.encode()).hexdigest()[:16]}"
+    kept = objective.ledger_of(job).get("check") or {}
+    checked = kept if kept.get("of") == of else {
+        **(_verify_result(job, answer) or {"verdict": "unchecked", "lines": [], "facts": [],
+                                           "at": now_iso()}), "of": of}
+    if checking.unmet(checked) and policy.may_recover(job, "check"):
+        return {"accepted": False,
+                "error": "it finished, but it did not do what was asked: " + checking.send_back(checked)}
+    objective.set_check(job_id, checked)
+    label = checking.label(checked)
 
     job_store.update_job(job_id, {"status": "done", "result": answer,
                                   "finishedAt": now_iso(), "progress": 100,
@@ -268,10 +427,16 @@ def _finish(job_id: str, outcome: dict[str, Any]) -> dict[str, Any]:
     if not _has_trace(job_id, note):
         job_store.append_trace(job_id, phase="outcome", effect="read", kind="note",
                                summary=note, detail=answer[:500])
+        job_store.append_trace(job_id, phase="outcome", effect="read", kind="check",
+                               summary=f"checked: {checked['verdict']}", detail=checked)
     _bus_for(job_id).publish(EventType.JOB_COMPLETED, {"id": job_id, "status": "done",
-                                                       "title": job.get("title")})
-    _deliver_result(job_id, job, answer, attempt, outcome.get("files") or [])
-    return {"accepted": True, "status": "done", "result": answer}
+                                                       "title": job.get("title"),
+                                                       "check": checked["verdict"]})
+    # What reaches the person leads with what the check found: nothing is handed over as done
+    # that was not checked, without saying so.
+    _deliver_result(job_id, job, answer, attempt, outcome.get("files") or [],
+                    check={**checked, "label": label, "aloud": checking.aloud(checked)})
+    return {"accepted": True, "status": "done", "result": answer, "check": checked["verdict"]}
 
 
 #: A finished result this short is said whole when the person is here; longer, they are told
@@ -280,7 +445,7 @@ SPOKEN_RESULT_CHARS = 800
 
 
 def _deliver_result(job_id: str, job: dict[str, Any], answer: str, attempt: int,
-                    files: list[dict[str, Any]]) -> None:
+                    files: list[dict[str, Any]], check: dict[str, Any] | None = None) -> None:
     """Get the finished result to the person — the follow-through a promise to "get back to
     you" needs. The same three ways a late specialist result arrives: a notice carrying the
     whole result (shown on the next turn they start), a notification, and — when they are
@@ -290,8 +455,10 @@ def _deliver_result(job_id: str, job: dict[str, Any], answer: str, attempt: int,
     entry = _outbox_once(
         job_id, tier=2, reason="finished", summary=f'"{title}" finished',
         detail={"result": answer, "attempt": attempt, "jobId": job_id, "files": files,
-                "conversationId": job.get("conversationId"), "announced": speaking},
-        ignore=("announced",))
+                "conversationId": job.get("conversationId"), "announced": speaking,
+                # What the check found, to be passed on WITH the result (`prompt.py`).
+                "check": (check or {}).get("verdict"), "checked": (check or {}).get("label")},
+        ignore=("announced", "check", "checked"))
     if entry is None:
         return  # already delivered by an earlier run of this finish
     try:
@@ -305,8 +472,14 @@ def _deliver_result(job_id: str, job: dict[str, Any], answer: str, attempt: int,
         logger.exception("could not notify about job %s", job_id)
     if speaking:
         whole = bool(answer) and len(answer) <= SPOKEN_RESULT_CHARS
-        text = f'"{title}" is done. {answer}' if whole else \
-            f'"{title}" is done — I have the full result when you want it.'
+        # Said with it unless everything checked out: a result is never handed over as plainly
+        # done when it was only partly done, or could not be checked.
+        caveat = (check or {}).get("aloud") or ""
+        if whole:
+            text = f'"{title}" is done. {caveat} {answer}' if caveat else f'"{title}" is done. {answer}'
+        else:
+            text = (f'"{title}" is done. {caveat} I have the full result when you want it.' if caveat
+                    else f'"{title}" is done — I have the full result when you want it.')
         _say(text, entry if whole else None, "A background job finished.", job_id)
 
 
@@ -347,7 +520,77 @@ def _park(job_id: str, why: dict[str, Any]) -> None:
         _park_for_budget(job_id, int(why.get("steps") or 0))
     elif reason in ("failed", "rejected"):
         _stall(job_id, _stall_detail(why), _bus_for(job_id), cause=_stall_cause(why))
+    elif reason == "model":
+        _park_for_model(job_id, why)
+    elif reason == "blocked":
+        _park_blocked(job_id, str(why.get("error") or "it cannot be finished"))
     # "stopped": whoever stopped it (the person cancelling, the supervisor) already said why.
+
+
+def _park_blocked(job_id: str, reason: str) -> None:
+    """The work itself said it cannot be finished (`cannot_finish`). That is not a result to
+    check and send back, and not a stall to push through: it is a question for the person,
+    asked once, with what is in the way, what was tried and what is done — and the work's
+    place kept, so their answer carries it on.
+
+    Found by a live run: a real model correctly concluded a record could not be read and said
+    so, and the completion check rejected that honest answer as "incomplete" and sent it back
+    to try again — twelve more model calls to arrive at the same place."""
+    from . import objective
+
+    job = job_store.get_job(job_id) or {}
+    ledger = objective.ledger_of(job)
+    tried = (ledger["blocked"] or {}).get("tried") or []
+    done = [s["text"] for s in ledger["steps"] if s["status"] == "done"]
+    job_store.update_job(job_id, {"status": "awaiting_decision", "error": reason,
+                                  "currentStep": None})
+    if not _has_trace(job_id, "could not finish"):
+        job_store.append_trace(job_id, phase="outcome", effect="read", kind="note",
+                               summary="could not finish", detail=reason)
+    summary = (f'"{job.get("title")}" could not be finished: {reason}'
+               + (f" I tried: {'; '.join(tried)[:240]}." if tried else "")
+               + (f" Done so far: {'; '.join(done)[:240]}." if done else "")
+               + " Tell me how to go on, or to stop.")
+    entry = _outbox_once(job_id, tier=1, reason="blocked", summary=summary,
+                         detail={"reason": reason, "tried": tried})
+    _bus_for(job_id).publish(EventType.JOB_UPDATED, {"id": job_id, "status": "awaiting_decision",
+                                                     "error": reason})
+    _ask_aloud(job_id, entry, summary, "A background job could not be finished.")
+
+
+def _park_for_model(job_id: str, why: dict[str, Any]) -> None:
+    """No model could answer just now. The job is not stuck and nothing is asked of the person:
+    it waits and carries on by itself (`durable.wake_due`, on the supervisor's clock). Shown as
+    still going, saying what it is waiting for and until when."""
+    if _stopped(job_id):
+        return
+    when = _local_clock(why.get("retryAt"))
+    job_store.update_job(job_id, {
+        "status": "queued", "error": None,
+        "currentStep": "waiting for a model to be available" + (f" — trying again at {when}" if when else "")})
+    # Its own kind, never a `note`: two identical notes in a row read as a job repeating itself
+    # (`policy.diagnose_stall`), and waiting is not that.
+    job_store.append_trace(job_id, phase="outcome", effect="read", kind="wait",
+                           summary=f"waiting for a model (try {why.get('attempt')})",
+                           detail=why.get("error"))
+    _bus_for(job_id).publish(EventType.JOB_UPDATED, {"id": job_id, "status": "queued"})
+
+
+def _local_clock(iso: Any) -> str:
+    from datetime import datetime
+
+    try:
+        moment = datetime.fromisoformat(str(iso).replace("Z", "+00:00")).astimezone()
+    except ValueError:
+        return ""
+    hour = moment.hour % 12 or 12
+    return f"{hour}:{moment.minute:02d} {'AM' if moment.hour < 12 else 'PM'}"
+
+
+def _wake(job_id: str) -> None:
+    """Its wait for a model is over (`durable.wake_due`): carry on, unless it was stopped."""
+    if not _stopped(job_id):
+        run_in_background(job_id, answer={"model": True})
 
 
 def _stall_detail(why: dict[str, Any]) -> str:
@@ -378,7 +621,42 @@ def _park_for_approval(job_id: str, approval: dict[str, Any]) -> None:
     _ask_aloud(job_id, entry, summary, "A background job needs a go-ahead.")
 
 
+def _would_extend(job_id: str) -> bool:
+    from . import objective
+    from .policy import may_extend
+
+    try:
+        return may_extend(job_store.get_job(job_id), objective.progress_mark(job_id))
+    except Exception:  # noqa: BLE001 — not knowing means asking, as before
+        logger.exception("could not tell whether job %s is making progress", job_id)
+        return False
+
+
+def _extend(job_id: str, reached: dict[str, Any]) -> bool:
+    """A job that ran out of steps is given another allowance by itself when it has really
+    moved since the last one (`policy.may_extend`) — a few times, never without limit. Asking
+    "keep going?" every thirty steps made the person the job's clock; now they are asked only
+    when it has stopped getting anywhere or has had its extensions. Returns whether it was."""
+    from . import objective
+
+    if reached.get("state") != "waiting" or (reached.get("why") or {}).get("reason") != "budget":
+        return False
+    if _stopped(job_id) or not _would_extend(job_id):
+        return False
+    job = job_store.get_job(job_id) or {}
+    attempts = dict(job.get("attempts") or {})
+    attempts["extensions"] = int(attempts.get("extensions") or 0) + 1
+    attempts["mark"] = objective.progress_mark(job_id)
+    job_store.update_job(job_id, {"attempts": attempts, "status": "running", "error": None})
+    job_store.append_trace(job_id, phase="outcome", effect="read", kind="extend",
+                           summary=f"making progress — carrying on (extension {attempts['extensions']})",
+                           detail=attempts["mark"])
+    return True
+
+
 def _park_for_budget(job_id: str, steps: int) -> None:
+    if _would_extend(job_id):
+        return  # not a question for the person: `run_job` carries it on (`_extend`)
     job = job_store.get_job(job_id) or {}
     job_store.update_job(job_id, {"status": "awaiting_decision", "currentStep": None})
     summary = f'"{job.get("title")}" is still not done after {steps} steps. Keep going?'
@@ -416,22 +694,21 @@ def _outbox_once(job_id: str, *, tier: int, reason: str, summary: str, detail: A
                                 detail=detail)
 
 
-def _verify_result(job: dict[str, Any], answer: str) -> Any:
-    """One budgeted semantic check on a finished job. None when it did not run.
+def _verify_result(job: dict[str, Any], answer: str) -> dict[str, Any] | None:
+    """The check of a finished job (`checking.check`): each line of what done means, judged
+    against the record of what the work actually ran. None when it could not be made at all.
 
-    A job is worth the call in a way a chat reply usually is not: nobody watched
-    it happen, and its result is reported later as fact.
+    A job is worth the call in a way a chat reply usually is not: nobody watched it happen,
+    and its result is reported later as fact.
     """
     if not answer:
         return None
-    from ..ops.verify import verify_semantic_match
+    from . import checking
 
     try:
-        return verify_semantic_match(request=job.get("goal") or job.get("title") or "",
-                                     result_summary=f'the background job "{job.get("title")}"',
-                                     result_text=answer)
+        return checking.check(job, answer)
     except Exception:  # noqa: BLE001 — a check that fails must not fail the job
-        logger.exception("the semantic check on job %s failed", job.get("id"))
+        logger.exception("the check on job %s failed", job.get("id"))
         return None
 
 
@@ -445,6 +722,18 @@ def _stall(job_id: str, detail: str, ebus: EventBus, cause: str = "failed") -> d
     ebus.publish(EventType.JOB_UPDATED, {"id": job_id, "status": "stalled",
                                          "error": detail})
     return {"status": "stalled", "error": detail, "cause": cause}
+
+
+#: Jobs a worker thread has been started for and has not finished with — what "about to run"
+#: means to whoever counts how many are working at once (`orchestrator.dispatch`).
+_live: set[str] = set()
+#: Called (with nothing) each time a worker finishes with a job, so the next in line can start.
+after_run: Any = None
+
+
+def is_live(job_id: str) -> bool:
+    with _threads_lock:
+        return job_id in _live
 
 
 #: Live worker threads. Tracked rather than fire-and-forgotten so shutdown can
@@ -467,11 +756,20 @@ def run_in_background(job_id: str, event_bus: EventBus | None = None, *,
                 job_store.update_job(job_id, {"status": "stalled", "error": "The work crashed."})
             except Exception:  # noqa: BLE001 — the database may already be gone
                 logger.warning("could not record the crash of job %s", job_id)
+        finally:
+            with _threads_lock:
+                _live.discard(job_id)
+            if after_run is not None:
+                try:
+                    after_run()
+                except Exception:  # noqa: BLE001 — the next in line waits for the clock instead
+                    logger.exception("could not start the next job in line")
 
     thread = threading.Thread(target=_go, name=f"job-{job_id}", daemon=True)
     with _threads_lock:
         _threads[:] = [t for t in _threads if t.is_alive()]
         _threads.append(thread)
+        _live.add(job_id)
     thread.start()
     return thread
 
@@ -495,7 +793,8 @@ def _register() -> None:
 
     durable.register(durable.Kind(
         name=KIND, session_for=session_for, turn=_turn, finish=_finish, park=_park,
-        continuable=True, on_event=_on_event, observe=_observe, stopped=_stopped))
+        continuable=True, on_event=_on_event, observe=_observe, stopped=_halt_before_round,
+        wake=_wake))
 
 
 _register()

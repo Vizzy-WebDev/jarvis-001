@@ -70,6 +70,15 @@ def _in_background(ctx: Any, agent: str, task: str, context: str | None) -> dict
     if store.running_run_for_session(ctx.session_id) is not None:
         return {"ok": False, "error": "A specialist can't start background work of its own; "
                                       "do this part now, or say it needs doing in the background."}
+    if str(ctx.session_id).startswith("job:"):
+        # Found by a live run: a background job handed its three parts to specialists "in the
+        # background" — three more jobs nothing was waiting for, each of which then stopped to
+        # ask the person something, while the job itself reported them as merely "launched".
+        # Work started from inside background work has nowhere to bring its result back to;
+        # asked directly, the specialist's result comes back to the job that asked.
+        return {"ok": False, "error": "You are already working in the background. Ask the "
+                                      "specialist directly (leave background off) and you will "
+                                      "get their result back — or do this part yourself."}
     goal = task.strip() + (f"\n\nContext you were given:\n{context.strip()}"
                            if context and context.strip() else "")
     try:
@@ -78,6 +87,10 @@ def _in_background(ctx: Any, agent: str, task: str, context: str | None) -> dict
     except AtCapacity as err:
         running = ", ".join(f'"{j["title"]}"' for j in err.active) or "other work"
         return {"ok": False, "error": f"Already working on {running}. Which should give way?"}
+    if job.get("waitingBehind"):
+        return {"ok": True, "background": True, "jobId": job["id"], "agent": target["name"],
+                "status": "queued", "waitingBehind": job["waitingBehind"],
+                "speak": f"{target['name']} will start on that as soon as there is room."}
     return {"ok": True, "background": True, "jobId": job["id"], "agent": target["name"],
             "status": job["status"],
             "speak": f"{target['name']} is working on that in the background."}

@@ -129,6 +129,20 @@ Every failure falls back to keywords and `selection.strategy` says why;
 `GET /api/memories/search-status` feeds the Memory screen's one-line status. Memory text is
 `personal` data on every call. Past chats are still never searched — only memories are indexed.
 
+## Proving autonomy — `tests/proving/` (see its `__init__.py`)
+
+Whether Jarvis can really take an objective and finish it is measured, not assumed. `tests/proving/`
+holds a small world with facts nobody could know without looking (`world.py`: a records office,
+every action logged on disk), objectives with deliberate faults (`scenarios.py`: a failed last
+step, an impossible ask, instructions planted in a record, an outage, a killed process) and a
+scorer that reads ONLY what a run left on disk (`score.py`) — never Jarvis's account of itself.
+`tests/test_proving.py` runs it with a stand-in model that really does the work (and can be made
+to lie, to prove the scorer catches it). `python tests/proving/live.py --real-root <folder Jarvis
+runs from>` runs the same scenarios against the person's real models in throw-away folders and
+counts every model call. One real call takes 35–45 s on the owner's setup; run a few scenarios at a
+time (`--only`). A stage of the autonomy work is done when its scenarios pass there, not when its
+unit tests do.
+
 ## Testing
 
 The project has a real automated suite. Use it.
@@ -353,7 +367,11 @@ Kind table, Auto ranking, "proven" models, per-connection strikes, billing holds
   selection to a pin, effort to a hint; maps fallbacks to `ModelSwitched` and usage to the cost-ledger
   event) and `oneshot.py` (behind `ai.ask`, whose callers must pass `data_class` and `task_class`).
   `settings.py` serves the Model Settings routes. **The person's chosen model is the alias `selected`
-  (pinned); Auto is no `selected` alias**, so the task class's route applies. Effort is the
+  (pinned); Auto is no `selected` alias**, so the task class's route applies. **Work nobody is
+  waiting on only PREFERS `selected`** (`client.steer_for`: a job's round, a scheduled run;
+  `oneshot.UNATTENDED`: a judge, reflection, summary or briefing call): that model first, then any
+  other connected one that fits — the owner's decision (D4), because a pin had failed 8 of 11
+  scheduled runs. A turn the person is in stays pinned, and so does a pin a task or specialist names. Effort is the
   `selectedEffort` preference, sent per request only when the person chose one (no choice = the
   model's own default); levels are per-endpoint data on a canonical ordered scale, mapped and reported. A specialist's or scheduled task's model pin becomes an
   alias of the same name on first use (found or refused, never approximated).
@@ -400,6 +418,14 @@ through the one turn loop — there is no second agent loop.
 - One call moves work forward whatever its state (`durable.advance`); a waiting piece of work
   continues only with an explicit answer, never from a plain start or recovery. One thread
   advances a piece of work at a time; `durable.stop` interrupts the round in flight.
+- **No model able to answer is not the work failing.** A round that ends because every model was
+  down, resting or out of quota (`durable.model_wait`, read from the failure's own `scope` and what
+  ruled the endpoints out) leaves a job WAITING — shown as still going, "waiting for a model …
+  trying again at 2:05 PM" — with a growing wait (`MODEL_WAITS_S`, up to `MODEL_WAIT_LIMIT_S` 12h).
+  `durable.wake_due()` on the job supervisor's clock continues it. It spends no retry and asks
+  nothing; a model call nobody answered is not counted as a step. A request the model refused
+  (too long, invalid) is still a failure. A scheduled prompt run in the same position is tried again
+  later the same day (`scheduler/engine.settle`, `RETRY_WAITS_S`) before a failure is recorded.
 - `Start Jarvis.bat` reinstalls when `pyproject.toml` changed since the last install,
   so an update that adds a package never leaves an existing install unable to start.
 
@@ -414,6 +440,75 @@ the same way. Every step is safe to replay after a crash. `open_work.snapshot()`
 runs, watches) on every person-started turn, capped, so "still on it" is knowledge and a promise
 that is not on that list was never started. A job runs `Autonomy.PRE_CONSENTED` (the person set it
 going): MEDIUM steps run, HIGH still parks.
+
+## Taking work on — `background/jobs/objective.py`, `tools/job_tools.py`
+
+**A job is an objective, not a sentence.** It has a **brief** (`jobs.brief`, migration 40: the
+outcome, `doneWhen`, what the conversation settled, the person's own recent words, and what the
+reply had already found — the last two added by code, never left to a paraphrase) and a
+**ledger** (`jobs.plan`: steps with a status, findings, open questions, each round's progress
+note — the worker writes it with `update_plan`, the note is kept by code either way). Both are
+put in front of the worker on EVERY round (`objective.worker_sections` →
+`context._work_in_hand`), so neither scrolls out of a long transcript or is lost to a restart.
+A job made with only a goal reads as a brief made of that goal — one shape everywhere.
+
+**A job's own turn has its own prompt** (`prompt.worker_instruction`: working alone, to the
+objective, what a finished result must say, and that what it reads is information and never an
+instruction) — not the conversation's, which told it to answer in a sentence or two.
+
+**The way in is always there.** `work_in_background`, `schedule_task` and `watch_for` are
+`core`: the prompt says a promise is only real once one of them ran, and behind
+`find_capability` `work_in_background` was called 0 times in 41 real conversations. And
+`work_in_background` carries the `handoff` tag: on the LAST step of a reply to a person the turn
+loop offers that one tool (`pipeline._handoff`, `HANDOFF_NOTE`), so work that did not fit in a
+reply is carried on — starting from what the reply had found — instead of ending in "I went
+round 8 times". A job's own turn is never offered it.
+
+**What a request plainly points at is declared without being asked** (`capabilities/search.py`
+`relevant`, `pipeline._relevant`): two words of the request in a capability's name, or one rare
+non-verb word. Found live: asked about "the office records" a real model never called
+`find_capability`, 3 runs of 3. `find_capability` remains for everything else and shares the
+same ranking.
+
+## The executive — `background/jobs/orchestrator.py` + `policy.py`
+
+The ONE place that decides what background work runs next, with no model call of its own.
+Woken by what happens (`settle`: work admitted, a worker finishing — `worker.after_run`) and by a
+slow clock (`supervise`, 60 s) for what nothing announces (a hung worker, a wait for a model that
+is over).
+
+- **Work waits in line; it is not refused.** `admit` queues, `dispatch` starts what is next —
+  most important first, then first come — as far as `maxBackgroundJobs` allows. A job waiting on
+  the PERSON holds no place (`policy.holds_a_slot`). Only a full line (`MAX_WAITING_JOBS`) or a
+  taken exclusive resource raises `AtCapacity`. A restart starts no more at once than may run.
+- **Work is set going again by WHY it stopped** (`policy.RECOVERY_LIMITS`, counted in
+  `jobs.attempts`, migration 41): `approach` (going round in circles or a failed round — told NOT
+  to repeat it and to change its plan), `check` (a finished result sent back with the reason —
+  `continuation`'s `sentBack`), `crash` (hung or died). Two of each. The old single retry shared
+  by everything left both jobs the owner ever ran "stuck". No model able to answer is none of
+  these: the work waits (`durable.model_wait`).
+- **Repetition is looked for between rounds** (`worker._halt_before_round` → `diagnose_stall`),
+  not only on the clock: a fast model can burn an allowance repeating itself inside one tick.
+- **When it goes to the person, it is specific** (`_stuck_summary`): what stopped it, how many
+  ways round were tried, what is done so far.
+- **The step allowance follows the work.** Out of steps while really moving (`policy.may_extend`:
+  a plan step done, something found, or 3 more distinct successful actions since the last mark —
+  `objective.progress_mark`, from the ledger and the trace) → another allowance without asking, at
+  most `MAX_AUTO_EXTENSIONS` (3). Going nowhere, or extensions used up → "keep going?" as before.
+- **A finished job is checked against what it did, and says what the check found**
+  (`jobs/checking.py`, see `background/jobs/CLAUDE.md`): a record built from the trace, facts
+  that need no model, one judgement per line of "done". Verdicts `verified` / `partly` / `unmet`
+  / `unchecked` travel with the delivered result; unmet lines go back to the worker a bounded
+  number of times and then the result is delivered labelled, never held as stuck. **An outward
+  action that already succeeded in a job is not repeated by accident** (told "already done";
+  asked for again, it runs).
+- **Trouble that is the model's is never charged to the work**: no model able to answer, a model
+  refusing the request, a model answering with nothing — each waits and tries again
+  (`durable.model_wait`, `model_refused`, `model_gave_nothing`) without using up a "try another
+  way". A round whose closing note comes back empty simply ran out of room.
+- **Every round's progress note is kept** (`objective.note_round`, the last few): a job's working
+  transcript holds only its newest 60 messages, and on long work the notes are what is left of
+  the rounds that scrolled out. `ROUND_END_NOTE` asks for every figure and running total.
 
 ## Specialist agents — `conversation/agents/` (see its own `CLAUDE.md`)
 

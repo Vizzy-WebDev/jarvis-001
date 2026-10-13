@@ -341,12 +341,28 @@ def test_backgrounding_misheard_is_still_read_back_before_it_starts(reg):
     assert job_store.list_active_jobs() == []
 
 
-def test_being_at_capacity_names_what_is_already_running_rather_than_queueing(reg):
+def test_work_taken_on_with_no_room_waits_its_turn_and_says_so(reg):
+    """Changed deliberately (autonomy stage 2): it used to be refused with "which should I
+    drop?", which made the person the scheduler. Now it is taken on and queued — said plainly,
+    never silently."""
     for i in range(orchestrator.MAX_ACTIVE_JOBS):
-        job_store.create_job(title=f"Job {i}", goal="g")
+        job_store.create_job(title=f"Job {i}", goal="g", status="running")
     from jarvis.tools.job_tools import _start
 
     result = _start(goal="one more thing")
+    assert result["ok"] is True and result["status"] == "queued"
+    assert "Job 0" in result["speak"] and "starts as soon as" in result["speak"]
+    assert job_store.get_job(result["id"])["status"] == "queued"
+
+
+def test_only_a_full_line_is_refused_and_it_names_what_is_going(reg, monkeypatch):
+    monkeypatch.setattr(orchestrator, "MAX_WAITING_JOBS", 1)
+    for i in range(orchestrator.MAX_ACTIVE_JOBS):
+        job_store.create_job(title=f"Job {i}", goal="g", status="running")
+    from jarvis.tools.job_tools import _start
+
+    assert _start(goal="first in line")["ok"] is True
+    result = _start(goal="one too many")
     assert result["ok"] is False
     assert "Job 0" in result["error"] and "should I drop" in result["error"]
 
@@ -510,8 +526,10 @@ def test_the_user_s_own_job_limit_is_what_is_enforced():
     set_prefs({"maxBackgroundJobs": 1})
     assert orchestrator.active_job_limit() == 1
     job_store.create_job(title="running", goal="x", status="running")
-    with pytest.raises(orchestrator.AtCapacity):
-        orchestrator.admit(title="another", goal="y")
+    waiting = orchestrator.admit(title="another", goal="y")
+    # Not started: one may work at once, and one is. It waits, and says behind what.
+    assert waiting["status"] == "queued" and waiting["waitingBehind"] == ["running"]
+    assert not worker.is_live(waiting["id"])
 
 
 def test_a_split_asked_for_by_the_job_being_replaced_does_not_count_itself(judge):

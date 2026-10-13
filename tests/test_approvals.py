@@ -132,8 +132,67 @@ def test_stale_approvals_time_out_rather_than_lingering():
     ap.request(spec(), {}, ctx(), "r")
     assert len(ap.pending()) == 1
     swept = ap.expire_older_than("2999-01-01T00:00:00.000Z")
-    assert swept == 1
+    assert len(swept) == 1 and swept[0].capability == spec().name
     assert ap.pending() == []
+    assert ap.get(swept[0].id).status is ap.Resolution.TIMEOUT
+
+
+def test_the_sweep_drops_old_chat_questions_says_so_once_and_leaves_waiting_work_alone(scratch):
+    """The owner's install had 14 questions pending for up to three weeks: the sweep existed
+    and nothing called it. Now the heartbeat does — and never for a question background work
+    is itself waiting on, which has to be raised again, not dropped."""
+    from datetime import datetime, timedelta, timezone
+
+    from jarvis import notifications
+    from jarvis.heartbeat.sources import stale_questions_source as stale
+
+    in_chat = ap.request(spec(), {}, ctx(session_id="chat-1"), "r")
+    of_a_job = ap.request(spec(), {}, ctx(session_id="job:job_abc"), "r")
+    of_a_task = ap.request(spec(), {}, ctx(session_id="task:t1:run"), "r")
+
+    assert stale.sweep() == []                                  # nothing is a day old yet
+    assert len(ap.pending()) == 3
+
+    later = datetime.now(timezone.utc) + stale.STALE_AFTER + timedelta(minutes=1)
+    dropped = stale.sweep(now=later)
+
+    assert [a.id for a in dropped] == [in_chat.id]
+    assert ap.get(in_chat.id).status is ap.Resolution.TIMEOUT
+    assert {a.id for a in ap.pending()} == {of_a_job.id, of_a_task.id}
+    notes = [n for n in notifications.listed() if "old question" in n["title"]]
+    assert len(notes) == 1 and spec().name in notes[0]["body"]
+    assert stale.sweep(now=later) == []                         # and it is said once
+    assert len([n for n in notifications.listed() if "old question" in n["title"]]) == 1
+
+
+def test_a_specialist_run_that_stopped_on_a_dropped_question_is_closed_off(scratch):
+    from datetime import datetime, timedelta, timezone
+
+    from jarvis.agents import ensure_builtins, store as agent_store
+    from jarvis.heartbeat.sources import stale_questions_source as stale
+
+    ensure_builtins()
+    asked = ap.request(spec(), {}, ctx(session_id="agent:research:chat-1"), "r")
+    run = agent_store.create_run(agent_id="research", task="look into it", session_id="agent:research:chat-1",
+                                 requested_by="jarvis", conversation_id="chat-1")
+    agent_store.finish_run(run["id"], status="awaiting_approval", approval_id=asked.id)
+
+    stale.sweep(now=datetime.now(timezone.utc) + stale.STALE_AFTER + timedelta(minutes=1))
+
+    closed = agent_store.get_run(run["id"])
+    assert closed["status"] == "failed" and "waited more than a day" in closed["error"]
+
+
+def test_the_heartbeat_watches_for_stale_questions():
+    from jarvis.heartbeat import engine
+    from jarvis.heartbeat.sources import registry
+
+    registry.reset()
+    try:
+        engine.register_default_sources()
+        assert registry.get_source("stale_questions") is not None
+    finally:
+        registry.reset()
 
 
 def test_requesting_and_resolving_publish_events():

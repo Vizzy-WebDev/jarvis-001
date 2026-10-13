@@ -15,14 +15,16 @@ evidence for neither. So a result is checked in three parts, each weaker than th
 The verdict (`check`) is then one of four, and is always said when the result is delivered
 (`label`) — nothing is called checked that was not:
 
-- `verified` — every line met, and the record shows nothing left failed.
+- `verified` — the request itself and every line met, and the record shows nothing left failed.
 - `partly`   — some lines met; the rest are named as not done or not confirmed.
 - `unmet`    — nothing asked for was shown to be done.
 - `unchecked` — no model could check it; the result is the worker's own account.
 
 A result with lines not met is sent back ONCE PER ALLOWED RECOVERY with only those lines
 (`send_back`), and after that it is delivered as it stands, labelled — never held as "stuck"
-over a check, which is itself a judgement that can be wrong.
+over a check, which is itself a judgement that can be wrong. A line the worker's own report
+already says was not done (`admitted`) is not sent back at all: that is not a claim to
+correct, it is the answer, and it is delivered as one.
 """
 
 from __future__ import annotations
@@ -53,8 +55,12 @@ SYSTEM = (
     "the report says happened that the record does not show succeeding, is not met. Judge each "
     "line on its own, and only whether it was achieved — not style, not how the work was "
     "divided up, not whether it ran in the background, not how or when the person is told. "
-    "Use \"unknown\" only when neither the record nor the report can settle the line. Reply "
-    'with JSON only: {"lines": [{"n": 1, "verdict": "met" | "not_met" | "unknown", '
+    "Line 1 is always the request itself: it is met only if what was asked FOR was actually "
+    "achieved — a report saying it could not be done, however honest and however neatly filed, "
+    "does not make it met. Use \"unknown\" only when neither the record nor the report can "
+    "settle the line. Set \"admitted\" to true on a line the worker's own report plainly says "
+    "was not done or could not be done. Reply with JSON only: "
+    '{"lines": [{"n": 1, "verdict": "met" | "not_met" | "unknown", "admitted": true | false, '
     '"why": "one short sentence"}]} — one entry for every numbered line.')
 
 
@@ -159,9 +165,15 @@ def record_text(record: dict[str, Any]) -> str:
 # --- the judgement ----------------------------------------------------------------------------
 
 def criteria(job: dict[str, Any]) -> list[str]:
-    """The lines that define done; with none given, the outcome itself is the one line."""
+    """What is judged, line by line: the request itself FIRST, always, then each line that
+    was written down as defining done.
+
+    Found live: asked for the total of July's invoices (there are none), a job filed a report
+    saying so and reported it honestly — and was delivered as "all of it is done", because the
+    one line of done somebody had written for it was "a report about July is filed". Lines of
+    done are written by a model in a hurry; what was asked for is the thing itself."""
     brief = objective.brief_of(job)
-    return list(brief["doneWhen"]) or [brief["outcome"] or str(job.get("goal") or job.get("title") or "")]
+    return [brief["outcome"] or str(job.get("goal") or job.get("title") or ""), *brief["doneWhen"]]
 
 
 def judge(job: dict[str, Any], answer: str, record: dict[str, Any],
@@ -201,7 +213,12 @@ def judge(job: dict[str, Any], answer: str, record: dict[str, Any],
         row = by_number.get(n) or {}
         verdict = row.get("verdict") if row.get("verdict") in LINE_VERDICTS else "unknown"
         why = row.get("why") if isinstance(row.get("why"), str) else ""
-        out.append({"line": line, "verdict": verdict, "why": why.strip()[:300]})
+        out.append({"line": line, "verdict": verdict, "why": why.strip()[:300],
+                    # The request itself, as against a written line of done.
+                    **({"request": True} if n == 1 else {}),
+                    # The worker's own report says this was not done: there is nothing to
+                    # send back — it is not a claim to correct, it is the answer.
+                    **({"admitted": True} if verdict == "not_met" and row.get("admitted") is True else {})})
     return out
 
 
@@ -233,14 +250,24 @@ def check(job: dict[str, Any], answer: str) -> dict[str, Any]:
 
 
 def unmet(result: dict[str, Any]) -> list[dict[str, str]]:
-    return [line for line in result.get("lines") or [] if line["verdict"] == "not_met"]
+    """The lines worth sending back: not met, and NOT already admitted by the worker. A result
+    that says "I could not do this part, and here is why" is delivered saying so; it is the
+    result that claims more than the record shows that goes back."""
+    return [line for line in result.get("lines") or []
+            if line["verdict"] == "not_met" and not line.get("admitted")]
+
+
+def _named(line: dict[str, Any]) -> str:
+    return "what was asked for as a whole" if line.get("request") else str(line["line"])
 
 
 def send_back(result: dict[str, Any]) -> str:
     """What the worker is told when its result goes back: only the lines not met, and that
     everything else stands."""
-    parts = [f'"{line["line"]}"' + (f" — {line['why']}" if line["why"] else "") for line in unmet(result)]
-    kept = [line["line"] for line in result.get("lines") or [] if line["verdict"] == "met"]
+    parts = [(f'"{line["line"]}"' if not line.get("request") else _named(line))
+             + (f" — {line['why']}" if line["why"] else "") for line in unmet(result)]
+    kept = [line["line"] for line in result.get("lines") or []
+            if line["verdict"] == "met" and not line.get("request")]
     text = "Not yet done: " + "; ".join(parts) + "."
     if kept:
         text += " Already done and not to be touched again: " + "; ".join(f'"{k}"' for k in kept) + "."
@@ -268,11 +295,17 @@ def label(result: dict[str, Any] | None) -> str:
         met = [line for line in lines if line["verdict"] == "met"]
         missing = [line for line in lines if line["verdict"] == "not_met"]
         unsure = [line for line in lines if line["verdict"] == "unknown"]
-        text = f"Checked against what you asked: {len(met)} of {len(lines)} done."
+        def said(line: dict[str, Any]) -> str:
+            return _named(line) + (f" ({line['why'].rstrip('.')})" if line.get("why") else "")
+
+        # The request itself is one of the things counted only when it is the only thing.
+        counted = [line for line in lines if not line.get("request")] or lines
+        text = (f"Checked against what you asked: {sum(1 for l in counted if l['verdict'] == 'met')} "
+                f"of {len(counted)} done.")
         if missing:
-            text += " Not done: " + "; ".join(line["line"] for line in missing) + "."
+            text += " Not done: " + "; ".join(said(line) for line in missing) + "."
         if unsure:
-            text += " Could not be confirmed: " + "; ".join(line["line"] for line in unsure) + "."
+            text += " Could not be confirmed: " + "; ".join(said(line) for line in unsure) + "."
         loose = [fact["text"] for fact in result.get("facts") or [] if fact["kind"] != "twice"]
         if loose:
             text += " Also: " + "; ".join(loose) + "."

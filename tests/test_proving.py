@@ -73,6 +73,7 @@ def judged_from_the_record(monkeypatch, *, fooled: bool = False) -> list[str]:
         record = prompt.split("THE RECORD")[1].split("THE WORKER'S REPORT")[0]
         filed = any("office_file_report(" in line and "SUCCEEDED" in line for line in record.splitlines())
         lines = prompt.split("Done means ALL of these:")[1].split("\n\n")[0].strip().splitlines()
+        lines = [line for line in lines if line[:1].isdigit()]
         return SimpleNamespace(data={"lines": [
             {"n": n, "verdict": "met" if (filed or fooled) else "not_met",
              "why": "the record shows the report filed" if filed else "the record shows no report filed"}

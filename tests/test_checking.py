@@ -13,6 +13,7 @@ executor and policy — only the model (a scripted stand-in) and the judge's ans
 
 from __future__ import annotations
 
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -47,8 +48,12 @@ def _isolate(scratch):
 
 class Judge:
     """Stands in for the model that judges. `says` is one answer per check, in order: a list
-    of verdicts (one per line of done), an Exception to raise, or raw data to return as-is.
-    Every prompt it was shown is kept."""
+    of verdicts, an Exception to raise, or raw data to return as-is. Every prompt it was shown
+    is kept.
+
+    Line 1 of every check is the request itself. A list one verdict short is taken to be about
+    the written lines of done, and the request is then judged the obvious way from them (met
+    when they all are); a full-length list says what the request's own verdict is."""
 
     def __init__(self, monkeypatch, *says):
         self.says, self.prompts, self.systems = list(says), [], []
@@ -62,6 +67,12 @@ class Judge:
         if isinstance(answer, Exception):
             raise answer
         if isinstance(answer, list):
+            asked = len(re.findall(r"^\d+\. ", prompt.split("Done means ALL of these:")[1].split("\n\n")[0],
+                                   flags=re.MULTILINE))
+            if len(answer) == asked - 1:
+                whole = ("met" if all(v == "met" for v in answer) else
+                         "not_met" if "not_met" in answer else "unknown")
+                answer = [whole, *answer]
             answer = {"lines": [{"n": n, "verdict": v, "why": f"because {v}"} for n, v in enumerate(answer, 1)]}
         return SimpleNamespace(data=answer)
 
@@ -122,7 +133,8 @@ def test_the_record_is_what_ran_not_what_the_worker_says(monkeypatch):
         ("look_up_fact", {"q": "sam"}, False, "ok")]
     shown = judge.prompts[0]
     # The judge is given the lines of done, the record and the report — and which to believe.
-    assert "1. the March report is filed" in shown and "2. Sam has been told" in shown
+    assert "1. File the March report and tell Sam." in shown           # the request itself, first
+    assert "2. the March report is filed" in shown and "3. Sam has been told" in shown
     assert 'effect_external({"tag": "report"}) → SUCCEEDED' in shown
     assert "told-sam" not in shown.split("THE WORKER'S REPORT")[0]     # not in the record
     assert "look_up_fact ×1" in shown and "Filed the report and told Sam." in shown
@@ -196,7 +208,8 @@ def test_a_line_the_judge_left_out_is_unknown_not_met(monkeypatch):
     brain.plan("job:", [[FILE, ("say", "Filed and told.")]])
     run(job["id"])
     check = objective.ledger_of(job_store.get_job(job["id"]))["check"]
-    assert [line["verdict"] for line in check["lines"]] == ["met", "unknown"] and check["verdict"] == "partly"
+    assert [line["verdict"] for line in check["lines"]] == ["met", "unknown", "unknown"]
+    assert check["verdict"] == "partly"
 
 
 def test_with_no_lines_of_done_the_outcome_itself_is_the_line(monkeypatch):
@@ -244,8 +257,10 @@ def test_a_line_not_met_goes_back_alone_and_what_was_done_is_left_alone(monkeypa
     assert (action["action"], action["kind"]) == ("retried", "check")
 
     back = told(brain, job["id"], 1)
-    assert 'Not yet done: "Sam has been told"' in back
+    assert "Not yet done: " in back and '"Sam has been told" — because not_met' in back
     assert 'Already done and not to be touched again: "the March report is filed"' in back
+    missing = back.split("Not yet done: ")[1].split("Already done")[0]
+    assert "the March report is filed" not in missing                         # only what is missing
     stored = job_store.get_job(job["id"])
     assert stored["status"] == "done" and stored["attempts"] == {"check": 1}
     assert objective.ledger_of(stored)["check"]["verdict"] == "verified"
@@ -273,7 +288,8 @@ def test_work_that_stays_partly_done_is_delivered_as_partly_done_never_held_as_s
     notices = outbox_for(job["id"])
     assert [n["reason"] for n in notices] == ["finished"]                # no "stuck" question
     said = notices[0]["detail"]["checked"]
-    assert said == ("Checked against what you asked: 1 of 2 done. Not done: Sam has been told.")
+    assert said == ("Checked against what you asked: 1 of 2 done. Not done: what was asked for as a "
+                    "whole (because not_met); Sam has been told (because not_met).")
     assert effect_count("report") == 1                                    # never filed again
 
 
@@ -299,7 +315,54 @@ def test_what_cannot_be_confirmed_is_said_and_not_sent_back(monkeypatch):
     stored = job_store.get_job(job["id"])
     assert not stored["attempts"]
     assert checking.label(objective.ledger_of(stored)["check"]) == (
-        "Checked against what you asked: 1 of 2 done. Could not be confirmed: Sam has read it.")
+        "Checked against what you asked: 1 of 2 done. Could not be confirmed: what was asked for as a "
+        "whole (because unknown); Sam has read it (because unknown).")
+
+
+def test_a_line_of_done_being_met_does_not_make_the_request_met(monkeypatch):
+    """Found live: asked for the total of July's invoices (there are none), a job filed a report
+    saying so, said so honestly — and was delivered as "all of it is done", because the one
+    written line of done was "a report about July is filed"."""
+    judge = Judge(monkeypatch, {"lines": [
+        {"n": 1, "verdict": "not_met", "admitted": True, "why": "There are no July invoices, so no total was reported."},
+        {"n": 2, "verdict": "met", "why": "The record shows a July report filed."}]})
+    brain = install(Brain())
+    job = new_job("a report about July is filed", goal="Add up the July invoices and file a report with the total.")
+    brain.plan("job:", [[FILE, ("say", "Filed a report: there are no July invoices, so there is no total.")]])
+
+    assert run(job["id"])["status"] == "done"                      # delivered, not sent back
+    stored = job_store.get_job(job["id"])
+    assert not stored["attempts"] and len(judge.prompts) == 1
+    check = objective.ledger_of(stored)["check"]
+    assert check["verdict"] == "partly"
+    assert checking.label(check) == (
+        "Checked against what you asked: 1 of 1 done. Not done: what was asked for as a whole "
+        "(There are no July invoices, so no total was reported).")
+    assert "Line 1 is always the request itself" in judge.systems[0]
+
+
+def test_what_the_worker_itself_says_it_could_not_do_is_not_sent_back(monkeypatch):
+    """It is not a claim to correct. The claim the record contradicts is what goes back."""
+    admitted = {"lines": [{"n": 1, "verdict": "not_met", "admitted": True, "why": "Sam could not be reached."},
+                          {"n": 2, "verdict": "met", "why": "filed"},
+                          {"n": 3, "verdict": "not_met", "admitted": True, "why": "Sam could not be reached."}]}
+    Judge(monkeypatch, admitted)
+    brain = install(Brain())
+    job = new_job("the March report is filed", "Sam has been told")
+    brain.plan("job:", [[FILE, ("say", "Filed the report. I could not reach Sam, so Sam has NOT been told.")]])
+    assert run(job["id"])["status"] == "done"
+    stored = job_store.get_job(job["id"])
+    assert not stored["attempts"] and objective.ledger_of(stored)["check"]["verdict"] == "partly"
+
+    # ...whereas saying it was done when the record shows it was not goes back.
+    claimed = {"lines": [{**line, "admitted": False} for line in admitted["lines"]]}
+    Judge(monkeypatch, claimed, ["met", "met"])
+    other = new_job("the March report is filed", "Sam has been told")
+    brain.plan("job:", [[("call", "effect_external", {"tag": "report-2"}), ("say", "Filed the report and told Sam.")],
+                        [("call", "effect_external", {"tag": "told-sam-2"}), ("say", "Filed and told Sam.")]])
+    assert run(other["id"])["status"] == "stalled"
+    carry_on()
+    assert job_store.get_job(other["id"])["attempts"] == {"check": 1}
 
 
 def test_said_aloud_a_result_is_never_plainly_done_unless_it_checked_out(monkeypatch):
@@ -313,7 +376,7 @@ def test_said_aloud_a_result_is_never_plainly_done_unless_it_checked_out(monkeyp
     run(first["id"])
     second = new_job("the March report is filed")
     run(second["id"])
-    assert "1 of 2 done. Could not be confirmed: Sam has read it." in spoken[0]
+    assert "1 of 2 done. Could not be confirmed:" in spoken[0] and "Sam has read it" in spoken[0]
     assert spoken[1] == '"March" is done. Filed.'            # checked out: nothing to add
 
 

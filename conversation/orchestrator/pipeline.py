@@ -274,6 +274,12 @@ def _attachment_of(value: Any) -> dict[str, Any] | None:
     return found[0] if found else None
 
 
+def _same_call(call: ToolCall) -> str:
+    import json
+
+    return f"{call.name}:{json.dumps(dict(call.args or {}), sort_keys=True, default=str)}"
+
+
 def _navigate_of(value: Any) -> dict[str, Any] | None:
     """A section a tool asked the interface to open.
 
@@ -840,8 +846,21 @@ class Orchestrator:
             results: list[dict[str, Any]] = []
             result: ExecutionResult | None = None
             state.to(State.EXECUTING, f"step {step}")
+            in_this_reply: dict[str, ExecutionResult] = {}
             for call in completed.tool_calls:
-                result = self._execute_call(request, call, seen_calls)
+                # The same lookup asked for twice in ONE reply is one lookup: the first
+                # answer is the answer to both. Found live — one provider returns a tool call
+                # twice about every other reply; the doubles filled a long job's context and
+                # were then read as "repeating itself", and work two-thirds done was stopped.
+                # Only for what changes nothing (LOW risk): a second identical ACTION is never
+                # silently folded into the first, because "done" would then be said of two.
+                twin = _same_call(call)
+                if twin in in_this_reply and self._only_reads(call.name):
+                    result = in_this_reply[twin]
+                else:
+                    result = self._execute_call(request, call, seen_calls)
+                    if result.ok and not getattr(call, "garbled", False):
+                        in_this_reply.setdefault(twin, result)
                 tools_used.append(call.name)
                 yield ToolRan(call.name, result.ok, result.outcome, result.error,
                               _attachment_of(result.value), _navigate_of(result.value),
@@ -925,6 +944,12 @@ class Orchestrator:
             registry=self._registry, grants=request.grants,
             allowed_names=request.allowed_names, event_bus=self._bus,
         )
+
+    def _only_reads(self, name: str) -> bool:
+        from ..capabilities import Risk
+
+        spec = self._registry.get(name)
+        return spec is not None and spec.risk is Risk.LOW
 
     def _context_for(self, request: TurnRequest, operation_id: str) -> CallContext:
         return CallContext(

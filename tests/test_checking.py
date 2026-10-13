@@ -473,9 +473,26 @@ def test_the_same_call_returned_twice_in_one_reply_runs_once(monkeypatch):
     assert effect_count("report") == 1 and effect_count("told-sam") == 1
     stored = job_store.get_job(job["id"])
     assert stored["status"] == "done" and objective.ledger_of(stored)["check"]["verdict"] == "verified"
-    # A read is nobody's business: both copies ran, neither was refused.
+    # A read returned twice is one read (the turn loop answers both copies with the first).
     reads = [a for a in checking.evidence(job["id"])["actions"] if a["name"] == "look_up_fact"]
-    assert [a["result"] for a in reads] == ["ok", "ok"]
+    assert [a["result"] for a in reads] == ["ok"]
+    answers = [r["result"] for r in results_seen(brain, job["id"]) if r["name"] == "look_up_fact"]
+    assert answers == [{"found": "facts about sam"}] * 2            # and both copies got it
+
+
+def test_doubled_reads_are_not_mistaken_for_going_round_in_circles(monkeypatch):
+    """Found live: with every read returned twice, reading one record again made "the same
+    call three times in a row", and a 34-record trail was stopped two-thirds done."""
+    from jarvis.jobs.policy import diagnose_stall
+
+    Judge(monkeypatch, ["met"])
+    brain = install(Doubling())
+    job = new_job("done")
+    again = ("call", "look_up_fact", {"q": "entry 7"})
+    brain.plan("job:", [[("call", "look_up_fact", {"q": "entry 6"}), again, again, ("say", "Done.")]])
+    assert run(job["id"])["status"] == "done"
+    assert diagnose_stall(job_store.get_trace(job["id"])) is None
+    assert not job_store.get_job(job["id"])["attempts"]
 
 
 def test_a_repeat_that_is_asked_for_still_runs(monkeypatch):

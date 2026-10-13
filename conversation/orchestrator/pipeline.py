@@ -351,7 +351,7 @@ class TurnRequest:
     #: back means the call is NOT run and that string is its result — how a job stops the
     #: exact call that has already failed several times from being made yet again. Plain data
     #: in, plain words out: the loop knows nothing about why.
-    gate: Callable[[str, dict[str, Any]], str | None] | None = None
+    gate: Callable[[str, dict[str, Any], str], str | None] | None = None
 
 
 def operation_id_for(scope: str, name: str, args: dict[str, Any], seen: dict[str, int]) -> str:
@@ -905,18 +905,20 @@ class Orchestrator:
                 error=(f"Your request to use {call.name} could not be read (its arguments were "
                        "not valid JSON), so it was NOT run. Ask again, with the arguments as "
                        "one valid JSON object."))
+        # The id first: it is the same when a round is replayed after a crash, which is what
+        # lets the gate give a replayed call the answer it gave the first time.
+        operation_id = (operation_id_for(request.operation_scope, call.name, dict(call.args or {}),
+                                         seen if seen is not None else {})
+                        if request.operation_scope else f"{request.turn_id}:{call.id}")
         if request.gate is not None:
             try:
-                refusal = request.gate(call.name, dict(call.args or {}))
+                refusal = request.gate(call.name, dict(call.args or {}), operation_id)
             except Exception:  # noqa: BLE001 — a gate that breaks must not break the work
                 logger.exception("the call gate failed for %s", call.name)
                 refusal = None
             if refusal:
                 return ExecutionResult(ok=False, outcome=ExecOutcome.REFUSED, capability=call.name,
-                                       operation_id=f"{request.turn_id}:{call.id}", error=refusal)
-        operation_id = (operation_id_for(request.operation_scope, call.name, dict(call.args or {}),
-                                         seen if seen is not None else {})
-                        if request.operation_scope else f"{request.turn_id}:{call.id}")
+                                       operation_id=operation_id, error=refusal)
         ctx = self._context_for(request, operation_id)
         return execute(
             call.name, dict(call.args or {}), ctx,

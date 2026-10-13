@@ -128,6 +128,9 @@ def ledger_of(job: dict[str, Any] | None) -> dict[str, Any]:
             "note": str(raw.get("note") or "")[:NOTE_CHARS],
             "earlier": [str(n)[:NOTE_CHARS] for n in (raw.get("earlier") or [])][-EARLIER_NOTES:],
             "blocked": raw.get("blocked") if isinstance(raw.get("blocked"), dict) else None,
+            # What the check of the finished result found (`checking.check`), kept with the
+            # work it is about.
+            "check": raw.get("check") if isinstance(raw.get("check"), dict) else None,
             "updatedAt": raw.get("updatedAt")}
 
 
@@ -209,6 +212,70 @@ def _activity(job_id: str) -> str:
     parts = [f"{name} ×{ran}" + (f" ({failed} failed)" if failed else "")
              for name, (ran, failed) in counts.items()]
     return ", ".join(parts)
+
+
+def set_check(job_id: str, result: dict[str, Any]) -> None:
+    job = job_store.get_job(job_id)
+    if job is not None:
+        _save(job_id, {**ledger_of(job), "check": result})
+
+
+#: Said to a worker whose outward action was not run a second time.
+REDO_REFUSAL = ("Not run: this exact action has already SUCCEEDED in this work, so it was not done "
+                "a second time. Carry on from its result. Only if it really is meant to happen "
+                "more than once — it was asked for again — make the same call once more and it "
+                "will run.")
+
+
+def refuse_redo(job_id: str, name: str, args: dict[str, Any], operation_id: str) -> str | None:
+    """Why this outward action should not be run AGAIN, or None. An action that changes
+    something and has already succeeded in this job with exactly these arguments is not
+    repeated by accident: the worker is told it is done. It is not forbidden either — a
+    repeat that is really wanted is asked for a second time, and then runs.
+
+    Found live: a result sent back by the check was "put right" by filing every report a
+    second time; and one provider returns the same tool call twice in one reply, about every
+    other step. Being told "do not redo what succeeded" bounded neither.
+
+    Decided from the trace, by operation id, so a round replayed after a crash gets the same
+    answer it got the first time: the call that succeeded is the recorded result again, and
+    the call that was refused is refused again."""
+    signature = _signature(name, args)
+    # Only this attempt at the work counts: started over from the beginning (a restart — the
+    # person asking for all of it again), everything really is done again.
+    attempt = operation_id.split("/r", 1)[0] if "/r" in operation_id else ""
+    started: dict[str, str] = {}
+    done_ops: set[str] = set()
+    refused_ops: set[str] = set()
+    last = None                       # how the newest matching attempt ended: "done" | "refused"
+    for row in job_store.get_trace(job_id):
+        if row.get("kind") != "tool":
+            continue
+        detail = row.get("detail")
+        if isinstance(detail, str):
+            try:
+                detail = json.loads(detail)
+            except ValueError:
+                continue
+        if not isinstance(detail, dict):
+            continue
+        operation = str(detail.get("operationId") or "")
+        if attempt and not operation.startswith(attempt + "/"):
+            continue
+        if row.get("phase") == "intent":
+            started[operation] = _signature(detail.get("name"), detail.get("args"))
+        elif started.get(operation) == signature:
+            if detail.get("ok"):
+                done_ops.add(operation)
+                last = "done"
+            elif detail.get("redo"):
+                refused_ops.add(operation)
+                last = "refused"
+    if operation_id in done_ops:
+        return None                   # the very call that succeeded: its recorded result
+    if operation_id in refused_ops or last == "done":
+        return REDO_REFUSAL
+    return None
 
 
 def set_blocked(job_id: str, reason: str, tried: Any = None) -> dict[str, Any] | None:

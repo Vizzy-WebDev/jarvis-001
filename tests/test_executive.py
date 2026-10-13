@@ -218,7 +218,9 @@ def test_a_result_sent_back_by_the_check_is_told_exactly_what_to_put_right(monke
     """And it does not use up the allowance for getting nowhere: they are different troubles."""
     brain = install(Brain())
     job = job_store.create_job(title="Total", goal="give the total")
-    verdicts = iter([type("V", (), {"failed": True, "reason": "it does not state the total"})(), None])
+    sent_back = {"verdict": "unmet", "facts": [], "at": "now",
+                 "lines": [{"line": "give the total", "verdict": "not_met", "why": "it does not state the total"}]}
+    verdicts = iter([sent_back, None])
     monkeypatch.setattr("jarvis.jobs.worker._verify_result", lambda job, answer: next(verdicts))
     brain.plan("job:", [[("say", "Filed it.")], [("say", "Filed it: the total is 5.")]])
 

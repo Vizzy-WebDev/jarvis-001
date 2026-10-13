@@ -18,6 +18,7 @@ reading of the record rather than a guess.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import threading
@@ -235,19 +236,36 @@ def _turn(job_id: str, text: str, spec: Any, cancel: threading.Event) -> Iterato
         operation_scope=spec.operation_scope,
         continuable=spec.continuable,
         max_steps=spec.max_steps,
-        gate=lambda name, args: _refuse_repeat(job_id, name, args),
+        gate=lambda name, args, operation: _refuse_repeat(job_id, name, args, operation),
     )
     yield from get_orchestrator().run_turn(request, cancel)
 
 
-def _refuse_repeat(job_id: str, name: str, args: dict[str, Any]) -> str | None:
-    """The gate on a job's calls (`objective.refuse_repeat`). A refused call is still written
-    to the trace, as the failure it is: a worker that keeps asking for the very call it was
-    just refused is going round in circles, and `diagnose_stall` can only see what is there."""
+def _refuse_repeat(job_id: str, name: str, args: dict[str, Any], operation_id: str = "") -> str | None:
+    """The gate on a job's calls: a call that keeps failing is not made again
+    (`objective.refuse_repeat`), and an outward action that already succeeded is not done a
+    second time by accident (`objective.refuse_redo`). A refused call is still written to the
+    trace, as what it is: a worker that keeps asking for the very call it was just refused is
+    going round in circles, and `diagnose_stall` can only see what is there."""
     import uuid
 
     from . import objective
 
+    if _effect_of(name) == "external":
+        redo = objective.refuse_redo(job_id, name, args, operation_id)
+        if redo:
+            # Under the call's own operation id, so a replay of this round is refused again.
+            operation = operation_id or f"refused-{uuid.uuid4().hex[:12]}"
+            if not any(_op_of(row) == operation for row in job_store.get_trace(job_id)):
+                job_store.append_trace(job_id, phase="intent", effect="external", kind="tool",
+                                       summary=f"{name} not done a second time",
+                                       detail={"name": name, "args": args, "operationId": operation})
+                job_store.append_trace(job_id, phase="outcome", effect="external", kind="tool",
+                                       summary=f"{name} refused",
+                                       detail={"name": name, "ok": False, "redo": True,
+                                               "error": "refused: already done",
+                                               "operationId": operation})
+            return redo
     refusal = objective.refuse_repeat(job_id, name, args)
     if refusal:
         operation = f"refused-{uuid.uuid4().hex[:12]}"
@@ -259,6 +277,16 @@ def _refuse_repeat(job_id: str, name: str, args: dict[str, Any]) -> str | None:
                                detail={"name": name, "ok": False, "error": "refused: it keeps failing",
                                        "operationId": operation})
     return refusal
+
+
+def _op_of(row: dict[str, Any]) -> str:
+    detail = row.get("detail")
+    if isinstance(detail, str):
+        try:
+            detail = json.loads(detail)
+        except ValueError:
+            return ""
+    return str(detail.get("operationId") or "") if isinstance(detail, dict) else ""
 
 
 #: A sign of life is written to the job at most this often (each one is a database write, and
@@ -365,17 +393,29 @@ def _finish(job_id: str, outcome: dict[str, Any]) -> dict[str, Any]:
         # goes to the person as that — not through the check, which would only send it back.
         objective.note_round(job_id, answer)
         return {"accepted": False, "blocked": True, "error": blocked["reason"]}
-    # "It finished" is not the same as "it did what was asked". A checked
-    # mismatch is treated exactly like a stall — the SAME single retry, the same
-    # counter, the same escalation — rather than a second recovery mechanism
-    # with its own rules. An unchecked one changes nothing.
-    verdict = _verify_result(job, answer)
-    if verdict is not None and verdict.failed:
-        return {"accepted": False,
-                "error": "it finished, but it did not do what was asked: "
-                         f"{verdict.reason or 'the result does not match the request'}"}
+    # "It finished" is not the same as "it did what was asked" — and the worker's report is
+    # evidence for neither. The result is checked line by line against the record of what the
+    # work actually ran (`checking.py`). Lines not met go back to the worker, and only those,
+    # as often as the executive allows a result to be sent back; after that the result is
+    # delivered as it stands, saying plainly what is done and what is not. A check is a
+    # judgement too, and work is never held as "stuck" on it.
+    from . import checking, policy
 
     from .. import durable
+
+    # A finish replayed after a crash is not judged a second time: the check already made of
+    # THIS result in THIS attempt stands (a second opinion could differ, and the person
+    # would be told two things about one result).
+    of = f"{int((durable.get(job_id) or {}).get('epoch') or 0)}:{hashlib.sha256(answer.encode()).hexdigest()[:16]}"
+    kept = objective.ledger_of(job).get("check") or {}
+    checked = kept if kept.get("of") == of else {
+        **(_verify_result(job, answer) or {"verdict": "unchecked", "lines": [], "facts": [],
+                                           "at": now_iso()}), "of": of}
+    if checking.unmet(checked) and policy.may_recover(job, "check"):
+        return {"accepted": False,
+                "error": "it finished, but it did not do what was asked: " + checking.send_back(checked)}
+    objective.set_check(job_id, checked)
+    label = checking.label(checked)
 
     job_store.update_job(job_id, {"status": "done", "result": answer,
                                   "finishedAt": now_iso(), "progress": 100,
@@ -387,10 +427,16 @@ def _finish(job_id: str, outcome: dict[str, Any]) -> dict[str, Any]:
     if not _has_trace(job_id, note):
         job_store.append_trace(job_id, phase="outcome", effect="read", kind="note",
                                summary=note, detail=answer[:500])
+        job_store.append_trace(job_id, phase="outcome", effect="read", kind="check",
+                               summary=f"checked: {checked['verdict']}", detail=checked)
     _bus_for(job_id).publish(EventType.JOB_COMPLETED, {"id": job_id, "status": "done",
-                                                       "title": job.get("title")})
-    _deliver_result(job_id, job, answer, attempt, outcome.get("files") or [])
-    return {"accepted": True, "status": "done", "result": answer}
+                                                       "title": job.get("title"),
+                                                       "check": checked["verdict"]})
+    # What reaches the person leads with what the check found: nothing is handed over as done
+    # that was not checked, without saying so.
+    _deliver_result(job_id, job, answer, attempt, outcome.get("files") or [],
+                    check={**checked, "label": label, "aloud": checking.aloud(checked)})
+    return {"accepted": True, "status": "done", "result": answer, "check": checked["verdict"]}
 
 
 #: A finished result this short is said whole when the person is here; longer, they are told
@@ -399,7 +445,7 @@ SPOKEN_RESULT_CHARS = 800
 
 
 def _deliver_result(job_id: str, job: dict[str, Any], answer: str, attempt: int,
-                    files: list[dict[str, Any]]) -> None:
+                    files: list[dict[str, Any]], check: dict[str, Any] | None = None) -> None:
     """Get the finished result to the person — the follow-through a promise to "get back to
     you" needs. The same three ways a late specialist result arrives: a notice carrying the
     whole result (shown on the next turn they start), a notification, and — when they are
@@ -409,8 +455,10 @@ def _deliver_result(job_id: str, job: dict[str, Any], answer: str, attempt: int,
     entry = _outbox_once(
         job_id, tier=2, reason="finished", summary=f'"{title}" finished',
         detail={"result": answer, "attempt": attempt, "jobId": job_id, "files": files,
-                "conversationId": job.get("conversationId"), "announced": speaking},
-        ignore=("announced",))
+                "conversationId": job.get("conversationId"), "announced": speaking,
+                # What the check found, to be passed on WITH the result (`prompt.py`).
+                "check": (check or {}).get("verdict"), "checked": (check or {}).get("label")},
+        ignore=("announced", "check", "checked"))
     if entry is None:
         return  # already delivered by an earlier run of this finish
     try:
@@ -424,8 +472,14 @@ def _deliver_result(job_id: str, job: dict[str, Any], answer: str, attempt: int,
         logger.exception("could not notify about job %s", job_id)
     if speaking:
         whole = bool(answer) and len(answer) <= SPOKEN_RESULT_CHARS
-        text = f'"{title}" is done. {answer}' if whole else \
-            f'"{title}" is done — I have the full result when you want it.'
+        # Said with it unless everything checked out: a result is never handed over as plainly
+        # done when it was only partly done, or could not be checked.
+        caveat = (check or {}).get("aloud") or ""
+        if whole:
+            text = f'"{title}" is done. {caveat} {answer}' if caveat else f'"{title}" is done. {answer}'
+        else:
+            text = (f'"{title}" is done. {caveat} I have the full result when you want it.' if caveat
+                    else f'"{title}" is done — I have the full result when you want it.')
         _say(text, entry if whole else None, "A background job finished.", job_id)
 
 
@@ -640,32 +694,21 @@ def _outbox_once(job_id: str, *, tier: int, reason: str, summary: str, detail: A
                                 detail=detail)
 
 
-def _verify_result(job: dict[str, Any], answer: str) -> Any:
-    """One budgeted semantic check on a finished job. None when it did not run.
+def _verify_result(job: dict[str, Any], answer: str) -> dict[str, Any] | None:
+    """The check of a finished job (`checking.check`): each line of what done means, judged
+    against the record of what the work actually ran. None when it could not be made at all.
 
-    A job is worth the call in a way a chat reply usually is not: nobody watched
-    it happen, and its result is reported later as fact.
+    A job is worth the call in a way a chat reply usually is not: nobody watched it happen,
+    and its result is reported later as fact.
     """
     if not answer:
         return None
-    from ..ops.verify import verify_semantic_match
+    from . import checking
 
     try:
-        # What is judged is whether the OUTCOME was achieved. Found by a live run: the person
-        # had said "three separate jobs, in the background, and tell me when each is done", the
-        # work was done correctly as one job, and the check sent it back twice for not
-        # "demonstrating that three separate background jobs were run" — each time making the
-        # job do things over, reports filed twice among them.
-        return verify_semantic_match(
-            request=job.get("goal") or job.get("title") or "",
-            result_summary=(f'the result of a background job ("{job.get("title")}") that worked '
-                            "on its own with nobody watching. Judge only whether what was asked "
-                            "FOR was achieved and is reported — not whether it ran in the "
-                            "background, how the work was divided up, or how and when the "
-                            "person will be told, which are not the job's to decide"),
-            result_text=answer)
+        return checking.check(job, answer)
     except Exception:  # noqa: BLE001 — a check that fails must not fail the job
-        logger.exception("the semantic check on job %s failed", job.get("id"))
+        logger.exception("the check on job %s failed", job.get("id"))
         return None
 
 

@@ -261,7 +261,10 @@ def notices_section(entries: list[dict[str, Any]] | None, session_id: str | None
                 result = (result[:LATE_RESULT_CHARS]
                           + " …(the rest is on the Background Jobs screen)")
             files = ", ".join(f.get("name") or f.get("url", "") for f in detail.get("files") or [])
+            checked = str(detail.get("checked") or "").strip()
             lines.append(f"- {entry['summary']}.{told}"
+                         + (f" How it checked out — say this with the result, in your own "
+                            f"words: {checked}" if checked else "")
                          + (f" What it came back with:\n{result}" if result else "")
                          + (f"\nFiles it made: {files}" if files else "")
                          + f"\n(notice #{entry['id']} — once you have passed this on, call "

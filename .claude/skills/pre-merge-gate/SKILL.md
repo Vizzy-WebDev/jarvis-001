@@ -15,14 +15,14 @@ as "passed":
    (`run_in_background: true`) with `JARVIS_DATA_DIR`/`JARVIS_ENV_PATH` pointed at empty
    scratch paths and an unusual `PORT`. Must come up with no unhandled exception.
 3. **Migrations + tool loader** — read the scratch `jarvis.db` read-only and confirm
-   `PRAGMA user_version` reached 38: `server/jarvis/migrations.py`'s `MIGRATION_SQL` (19,
+   `PRAGMA user_version` reached 41: `server/jarvis/migrations.py`'s `MIGRATION_SQL` (19,
    the original schema, never hand-edited) plus
-   `migrations_extra.py`'s `EXTRA_MIGRATION_SQL` (19, this build's own — the latest
-   being migration 38, memory searched by meaning: `memory_vectors`). Counting only
+   `migrations_extra.py`'s `EXTRA_MIGRATION_SQL` (22, this build's own, keys 20-41 — the
+   latest being migration 41, how often a job has been set going again, by cause). Counting only
    the first file gives 19 and a false failure — the gate caught exactly that mistake
    in this document. **The database is created lazily on first use**, so hit a route
    before looking for the file. Confirm `load_tools()` (or a route that touches the
-   capability registry) succeeds with no import error — currently 70 tools across 35
+   capability registry) succeeds with no import error — currently 72 tools across 36
    modules; a real launch's own startup log is not a reliable place to see the count,
    since nothing in this project configures root logging by default and `jarvis.*`
    loggers have no handler attached unless something else in the process added one.
@@ -30,8 +30,9 @@ as "passed":
    nonexistent one (a clean 404, not a crash), and `/` (the real `index.html` from the
    static mount). Then `POST /api/jobs` with a goal: the job must run through the durable
    runner — `data/durable.db` appears then (not at boot), with a `works` row for the job
-   and a `rounds` row per round. With no model connected it ends `stalled` with the plain
-   "No model is connected yet" message, never a crash.
+   and a `rounds` row per round. With no model connected the job ends `awaiting_decision`
+   (not `stalled`) with the plain "No model is connected yet" message as its error, after
+   three rounds recorded `failed` (`retries: 2`) — never a crash.
 5. **Any recently-fixed security behaviour** — re-confirm it live rather than by reading
    the code, e.g. `GET /api/artifacts/:id`'s forced-download headers on a plain request.
 6. **The full suites** — `pytest tests -q` and the Playwright files, run as the two

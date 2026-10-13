@@ -148,8 +148,8 @@ unit tests do.
 The project has a real automated suite. Use it.
 
 ```
-python -m pytest tests -q          # ~1300 tests
-python -m pytest tests/test_shell_e2e.py tests/test_content_e2e.py -q   # ~90 Playwright tests, real browser
+python -m pytest tests -q          # ~2,660 tests
+python -m pytest tests/test_shell_e2e.py tests/test_content_e2e.py -q   # ~100 Playwright tests, real browser
 cd frontend && npm run typecheck && npm run build
 ```
 
@@ -175,7 +175,7 @@ cd frontend && npm run typecheck && npm run build
   requests (free tiers), with the real `.env` for READING and a scratch data dir.
 
 Run the first two as two SEPARATE invocations, not combined into one `pytest tests -q`
-call — putting ~1270 tests through one process has produced spurious browser-test
+call — putting ~2,660 tests through one process has produced spurious browser-test
 failures from resource pressure that disappear the moment the failing test is re-run on
 its own. Two commands, both green, is the real signal; one combined run that shows a
 handful of e2e failures is noise until each is confirmed to fail in isolation too.

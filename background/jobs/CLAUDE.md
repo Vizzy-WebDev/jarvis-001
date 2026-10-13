@@ -106,21 +106,62 @@ finish).
 - **Tracing.** `_observe` writes the intent/outcome rows (above); each `ToolRan` refreshes the
   heartbeat. A failed round (no model, an error) parks the work as `stalled` (`_stall`) for
   the supervisor.
-- **Completion is verified** (`_finish`, the kind's finisher). "It finished" is not "it did what
-  was asked": `_verify_result()` calls `ops/verify.py`'s `verify_semantic_match()` with the
-  job's goal. A checked mismatch is refused (`accepted: False`) and treated exactly like a
-  stall — the same single retry, the same counter, the same escalation, never a second recovery
-  mechanism. `checked: false` (no model available) never blocks a real completion. Success
-  stores the result, publishes `JOB_COMPLETED` and delivers it (`_deliver_result`): a **tier-2**
-  notice carrying the whole result (`detail.result`, `conversationId`, `files`, `attempt`,
-  `announced`) that `prompt.notices_section` shows on the next person-started turn (scoped to the
+- **Completion is checked against what the work DID** (`_finish` → `_verify_result` →
+  `checking.check`, below). A result with no words at all is not a finish. Work that called
+  `cannot_finish` skips the check and goes to the person as a `blocked` question. Lines of
+  "done" the check found not met go back to the worker — only those — while
+  `policy.may_recover(job, "check")` allows; after that the result is **delivered as it stands,
+  saying what is and is not done**, never held as "stuck" on a check. The verdict is kept on the
+  ledger (`objective.set_check`, with `of` = attempt + result hash, so a finish replayed after
+  a crash is not judged twice) and in a `check` trace row. Success stores the result, publishes
+  `JOB_COMPLETED` and delivers it (`_deliver_result`): a **tier-2** notice carrying the whole
+  result (`detail.result`, `conversationId`, `files`, `attempt`, `announced`, and the check:
+  `check` = the verdict, `checked` = the line Jarvis is told to say with the result) that `prompt.notices_section` shows on the next person-started turn (scoped to the
   conversation that asked; `acknowledge_notice` passes it on), a notification, and — when
   `heartbeat/speak.may_speak_now()` says they are here — Jarvis speaking first (≤
   `SPOKEN_RESULT_CHARS` whole and the row marked delivered; longer: a headline, full result waits
   with `announced: true`). Questions a job cannot go on without are asked aloud the same way
-  (`_ask_aloud`: go-ahead, out of steps, stuck, crashed). Delivery is replay-safe (`_outbox_once`
-  returns None for a row that exists, ignoring `announced`) and a failure to speak or notify never
-  fails the job.
+  (`_ask_aloud`: go-ahead, out of steps, stuck, crashed). Said aloud, a result that did not
+  wholly check out carries its caveat (`checking.aloud`). Delivery is replay-safe (`_outbox_once`
+  returns None for a row that exists, ignoring `announced` and the check) and a failure to speak
+  or notify never fails the job.
+- **The gate on a job's calls** (`_refuse_repeat`, passed as `TurnRequest.gate`, which receives
+  the call's operation id). Two refusals, both written to the trace: a call that has failed
+  `GIVE_UP_AFTER` times with the same arguments and never worked is not made again
+  (`objective.refuse_repeat`); and an **outward action (MEDIUM/HIGH) that already succeeded in
+  this attempt is not done a second time by accident** (`objective.refuse_redo`) — the worker
+  is told it is done, and a repeat that is really wanted is asked for again and then runs
+  (refused once, allowed on the next ask, refused again after that success). Decided by
+  operation id: a round replayed after a crash gets the answers it got the first time, and a
+  restart (new epoch) really does it all again. Reads are never gated; a chat is never gated.
+- **Signs of life** (`_alive`, at most every `ALIVE_EVERY_S`): any turn event and any bus event
+  of the job's session — a model being asked or answering — refreshes the heartbeat, so a slow
+  model is not mistaken for a hung job.
+
+## `checking.py` — what a finished job is checked against
+
+The worker's report is evidence of nothing. `evidence(job_id)` rebuilds, from the write-ahead
+trace alone, every action the work ran (name, arguments, outward or not, `ok` / `failed` /
+`not_run`) plus outward actions started with no recorded end. `findings(record)` reads facts off
+it with no model: `failed` (an outward action that failed and was never put right), `unsure`
+(may or may not have happened), `twice` (done more than once — reported, never held against the
+work: it may be what was asked). `judge` makes ONE model call (`task_class="judge"`): the
+outcome, each numbered line of `doneWhen` (or the outcome itself when there are none), the
+person's own words, the record, the findings and the report — told to trust the record over the
+report — answered per line as `met` / `not_met` / `unknown`. `check` combines them:
+
+| verdict | when |
+|---|---|
+| `verified` | every line met AND no `failed`/`unsure` finding |
+| `partly` | some lines met, or all met with a `failed`/`unsure` finding |
+| `unmet` | no line met and at least one not met |
+| `unchecked` | no model could judge, or its answer could not be read — never a pass |
+
+`label` is the plain sentence delivered with the result; `send_back` names only the unmet lines
+and says what is already done and not to be touched. `tests/test_checking.py` pins all of it
+through real jobs; `tests/proving` scores a run by the verdict too (a finished job its own check
+found not done is an honest ending; one delivered as `verified` while the world says otherwise
+is a hard-rule violation).
 
 ## `orchestrator.py` — admission, supervision, crash recovery
 

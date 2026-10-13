@@ -494,6 +494,17 @@ is over).
   a plan step done, something found, or 3 more distinct successful actions since the last mark —
   `objective.progress_mark`, from the ledger and the trace) → another allowance without asking, at
   most `MAX_AUTO_EXTENSIONS` (3). Going nowhere, or extensions used up → "keep going?" as before.
+- **A finished job is checked against what it did, and says what the check found**
+  (`jobs/checking.py`, see `background/jobs/CLAUDE.md`): a record built from the trace, facts
+  that need no model, one judgement per line of "done". Verdicts `verified` / `partly` / `unmet`
+  / `unchecked` travel with the delivered result; unmet lines go back to the worker a bounded
+  number of times and then the result is delivered labelled, never held as stuck. **An outward
+  action that already succeeded in a job is not repeated by accident** (told "already done";
+  asked for again, it runs).
+- **Trouble that is the model's is never charged to the work**: no model able to answer, a model
+  refusing the request, a model answering with nothing — each waits and tries again
+  (`durable.model_wait`, `model_refused`, `model_gave_nothing`) without using up a "try another
+  way". A round whose closing note comes back empty simply ran out of room.
 - **Every round's progress note is kept** (`objective.note_round`, the last few): a job's working
   transcript holds only its newest 60 messages, and on long work the notes are what is left of
   the rounds that scrolled out. `ROUND_END_NOTE` asks for every figure and running total.

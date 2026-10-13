@@ -297,3 +297,19 @@ it was deliberately corrected.
   (it used to ride the shared thread pool). Every outbound HTTP call shares one TLS context
   (`jarvis/tls.py`; building one cost ~1 s per call on Windows), and `main()` warms the tool registry
   and model layer in the background so the first message of a launch is not slow.
+- **A server that cannot be reached is the connection's failure (found live).** A connect error
+  or connect timeout is `unavailable` at `connection` scope: the connection rests as a whole
+  (`settings.unreachable_rest_s`, the same rest discovery already gave it), and within one call
+  no further endpoint of a connection that failed at connection scope is tried — it used to be
+  only moved to the back of the queue. With the one working provider rate-limited for a moment,
+  one call walked a local gateway that was not running and listed 1,404 models, one connection
+  attempt each, for over ten minutes.
+- **Thinking written into the reply text is reasoning (found live, `drivers/_inline_think.py`).**
+  The Chat Completions driver takes a reply that BEGINS with `<think>` back apart as it streams:
+  up to `</think>`, or — when the server dropped the closing tag, which the person's gateway does
+  whenever tools are declared — up to the first run of three newlines. Cutting at the first gap
+  can let a little thinking through as text but can never swallow the answer. Thinking followed
+  by a tool call is all reasoning; a reply that is nothing but unclosed thinking is handed back
+  as text rather than lost. Text that only mentions the tag is untouched. `keep_inline_thinking`
+  (a wire quirk) turns it off. Known limit: a second `<think>` later in the same reply is left
+  as text.

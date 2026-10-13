@@ -1,4 +1,4 @@
-# Handoff: Jarvis UI redesign, Phase 1 (voice)
+# Handoff: Jarvis UI redesign (currently Phase 1, voice)
 
 Written 2026-10-13 by the "content ui" Claude session, for the next session to continue.
 

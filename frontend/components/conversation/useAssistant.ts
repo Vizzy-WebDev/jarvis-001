@@ -162,6 +162,20 @@ export function useAssistant(go: (id: string) => void, onHome: boolean) {
             return;
           }
         }
+        // Jarvis speaking first (a finished background job, the heartbeat): the server has saved it
+        // as an assistant message in the active conversation and announces it here. Shown as its
+        // own message in that conversation — until now it appeared only after a reload, or folded
+        // into the reply to whatever the person said next.
+        if (event.type === 'assistant.response') {
+          const said = event as unknown as { proactive?: boolean; text?: string; sessionId?: string;
+                                             at?: number };
+          if (said.proactive && said.text && said.sessionId
+              && said.sessionId === activeConversationRef.current) {
+            const id = `proactive-${said.at ?? Date.now()}`;
+            setTurns((current) => current.some((turn) => turn.id === id) ? current : [
+              ...current, { id, role: 'assistant', text: said.text!, at: new Date().toISOString() }]);
+          }
+        }
         // A specialist working on this tab's own request, shown as it happens:
         // a delegated task can take a minute, and silence reads as stuck.
         if ((event.type === 'agent.run_started' || event.type === 'agent.run_finished')

@@ -407,6 +407,48 @@ def _prepare_for_new_turn(state: AssistantState) -> None:
     state.reset()
 
 
+class _TurnState:
+    """One turn's handle on its conversation's state machine.
+
+    The machine is per conversation, but a conversation can have two turns alive at once: one the
+    person stopped or talked over (its worker may still be inside a tool) and the one that
+    replaced it. When the old one finally noticed it was cancelled it moved the SHARED machine
+    to INTERRUPTED in the middle of the new turn, whose next move (THINKING -> EXECUTING) was
+    then an illegal transition: "interrupted -> executing is not a legal transition". Only the
+    newest turn of a conversation may move its state; a superseded turn's moves are dropped. The
+    machine itself is untouched and stays strict — nothing here makes an illegal move legal.
+    Reads (`state`, `is_busy`, ...) pass straight through.
+    """
+
+    def __init__(self, orchestrator: "Orchestrator", session_id: str, token: object,
+                 machine: AssistantState) -> None:
+        self._orchestrator = orchestrator
+        self._session_id = session_id
+        self._token = token
+        self._machine = machine
+
+    @property
+    def is_current(self) -> bool:
+        return self._orchestrator._current_turns.get(self._session_id) is self._token
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._machine, name)
+
+    def to(self, target: State, reason: str | None = None) -> State:
+        return self._machine.to(target, reason) if self.is_current else self._machine.state
+
+    def interrupt(self, reason: str = "user interrupted") -> bool:
+        return self._machine.interrupt(reason) if self.is_current else False
+
+    def fail(self, reason: str) -> None:
+        if self.is_current:
+            self._machine.fail(reason)
+
+    def reset(self) -> None:
+        if self.is_current:
+            self._machine.reset()
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -421,6 +463,9 @@ class Orchestrator:
         self._registry = registry or default_registry
         self._bus = event_bus or default_bus
         self._states: dict[str, AssistantState] = {}
+        #: The newest turn of each conversation (an identity token per run, not the turn id —
+        #: a turn delivered twice must still tell its two runs apart). See `_TurnState`.
+        self._current_turns: dict[str, object] = {}
         #: What each in-flight turn's attachments require, keyed by turn id. Set
         #: when the attachments are prepared and read once by the model loop.
         self._needs: dict[str, dict[str, bool]] = {}
@@ -439,6 +484,14 @@ class Orchestrator:
                 state = AssistantState(session_id, event_bus=self._bus)
                 self._states[session_id] = state
             return state
+
+    def _begin_turn(self, session_id: str) -> _TurnState:
+        """This run becomes its conversation's newest turn; any earlier one loses the right to
+        move the state."""
+        token = object()
+        with self._lock:
+            self._current_turns[session_id] = token
+        return _TurnState(self, session_id, token, self.state_for(session_id))
 
     # --- the turn ------------------------------------------------------------
 
@@ -492,6 +545,7 @@ class Orchestrator:
             message_text = compose_message(text, prepared)
         pushed_user = conversation.push_user_text(request.session_id, message_text,
                                                    media=prepared.media if prepared else None)
+        state = self._begin_turn(request.session_id)
         _prepare_for_new_turn(state)
         state.to(State.THINKING, "turn started")
 
@@ -535,6 +589,7 @@ class Orchestrator:
         asked = next((m.get("text") or "" for m in reversed(conversation.get_messages(request.session_id))
                       if m.get("role") == "user"), "")
         request = replace(request, text=asked)
+        state = self._begin_turn(request.session_id)
         _prepare_for_new_turn(state)
         state.to(State.THINKING, "carrying on after an answer")
         yield Routed(Intent.MULTI_STEP, 1.0, "carrying on after your answer", fast=False)
@@ -1165,7 +1220,12 @@ class Orchestrator:
         The transcript must reflect what the user HEARD, not what we intended to
         say — otherwise the next turn reasons from a reply that was cut off
         mid-sentence as though it had been delivered in full.
+
+        A turn that a newer one has replaced records nothing: the newer turn owns the transcript
+        tail ("the last assistant message" is no longer this turn's) and the state.
         """
+        if not state.is_current:
+            return Interrupted(spoken)
         if step_text.strip():
             # Cut off while still speaking a step that was never saved: what was heard becomes its
             # own message. Marking "the last assistant message" here would rewrite an EARLIER reply.

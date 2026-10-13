@@ -19,13 +19,20 @@ import base64
 import hashlib
 import json
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import parse_qs, urlparse
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlencode, urlparse
 
 
 class StubOAuthServer:
     def __init__(self, *, no_registration: bool = False, declares_iss: bool = True,
-                require_auth: bool = True):
+                require_auth: bool = True, redirect: bool = False, public_host: str = "127.0.0.1"):
+        # `redirect=True` makes /authorize behave like a real provider after consent: a 302
+        # sending the browser to the `redirect_uri` with code, state and iss. Only that
+        # makes the browser itself label the return trip. `public_host="localhost"` serves
+        # the same server under a different SITE than Jarvis's 127.0.0.1, so that label is
+        # genuinely `Sec-Fetch-Site: cross-site` — what every real provider produces.
+        self.redirect = redirect
+        self.public_host = public_host
         self.no_registration = no_registration
         self.declares_iss = declares_iss
         self.require_auth = require_auth
@@ -134,12 +141,23 @@ class StubOAuthServer:
                     # redirects; this hands back exactly what a browser would have
                     # been redirected WITH, so a test can drive the callback route
                     # itself without a real browser.
+                    if server_self.redirect:
+                        back = urlencode({"code": code, "state": qs["state"][0],
+                                          "iss": server_self.base_url})
+                        self.send_response(302)
+                        self.send_header("Location", f'{qs["redirect_uri"][0]}?{back}')
+                        self.end_headers()
+                        return
                     self._json({"code": code, "state": qs["state"][0]})
                     return
                 self._json({}, 404)
 
-        self._server = HTTPServer(("127.0.0.1", 0), Handler)
-        self.base_url = f"http://127.0.0.1:{self._server.server_port}"
+        # Threaded: a browser keeps idle, speculative connections open to a server it has
+        # visited, and a single-threaded server waits on the first one forever — the
+        # token request Jarvis makes right after the redirect then timed out.
+        ThreadingHTTPServer.daemon_threads = True
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.base_url = f"http://{self.public_host}:{self._server.server_port}"
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
         return self.base_url
 

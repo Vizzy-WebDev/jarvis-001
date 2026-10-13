@@ -77,6 +77,9 @@ export interface FileCard {
   title?: string;
   artifactKind?: string;
   size?: number;
+  /** A browser window (`kind: 'browser'`): which one, and the page it was on. */
+  sessionId?: string;
+  pageUrl?: string;
 }
 
 /** The artifact a file URL points at, if it is one. */
@@ -95,6 +98,7 @@ function cardOf(action: unknown): FileCard | null {
     artifactId: str('artifactId') ?? artifactIdFromUrl(a.url) ?? undefined,
     title: str('title'), artifactKind: str('artifactKind'),
     size: typeof a.size === 'number' ? a.size : undefined,
+    sessionId: str('sessionId'), pageUrl: str('pageUrl'),
   };
 }
 

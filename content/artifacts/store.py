@@ -227,15 +227,25 @@ def verify(path: Path) -> tuple[bool | None, str | None]:
 
 
 def keep(source: Path, *, name: str | None = None, session_id: str | None = None,
-         conversation_id: str | None = None, title: str | None = None) -> Artifact:
+         conversation_id: str | None = None, title: str | None = None,
+         check: bool = True) -> Artifact:
     """Verify, then keep or delete. Returns the artifact; raises if it failed.
 
     The kept file is renamed to its id: what the user sees is the name, what the
     filesystem holds is an id, and the two cannot be made to disagree in a way
     that escapes the artifacts directory. `conversation_id` defaults to the one
     `session_id` belongs to.
+
+    `check=False` is for a file Jarvis did not make (a PDF a website sent): the
+    re-opening above is a test of Jarvis's OWN writers, and its strict reader would
+    throw away an ordinary downloaded PDF for the way another program laid it out.
+    Such a file is recorded as not checked, never as verified.
     """
-    verified, why = verify(source)
+    if check:
+        verified, why = verify(source)
+    else:
+        verified, why = None, ("It came from a website and has not been checked beyond "
+                               "being a PDF.")
     if verified is False:
         # Deleted immediately rather than left behind pretending to be real.
         discard_staging(source)

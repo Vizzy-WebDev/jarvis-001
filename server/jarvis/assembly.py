@@ -130,6 +130,7 @@ def start_background_work() -> dict[str, bool]:
     """
     from . import chat_store, notifications
     from .connectors import icons as connector_icons
+    from .connectors import tool_refresh as connector_tools
     from .heartbeat import engine as heartbeat
     from .heartbeat.triggers import start_triggers
     from .improvement import cadence as improvement_cadence
@@ -143,7 +144,8 @@ def start_background_work() -> dict[str, bool]:
     started = {"model_discovery": False, "sampler": False, "heartbeat": False,
               "scheduler": False, "monitor": False, "job_supervisor": False,
               "improvement_cadence": False, "notification_trash_purge": False,
-              "connector_icons": False, "chat_trash_purge": False}
+              "connector_icons": False, "connector_tools": False,
+              "chat_trash_purge": False}
 
     # First, so no run the scheduler or job supervisor picks up starts against an empty catalog.
     started["model_discovery"] = model_startup.start()
@@ -159,6 +161,7 @@ def start_background_work() -> dict[str, bool]:
     started["improvement_cadence"] = improvement_cadence.start()
     started["notification_trash_purge"] = notifications.start_trash_purge()
     started["connector_icons"] = connector_icons.start()
+    started["connector_tools"] = connector_tools.start()
     started["chat_trash_purge"] = chat_store.start_trash_purge()
     return started
 

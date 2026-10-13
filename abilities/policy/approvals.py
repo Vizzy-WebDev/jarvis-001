@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Iterable
 
@@ -33,8 +34,14 @@ from ..db import get_db
 from ..events import EventType, bus as default_bus
 from ..events.bus import EventBus
 from ..jscompat import now_iso
-from .context import CallContext
+from .context import Autonomy, CallContext
 from .decide import Grant
+
+#: How long a question put to the person in a conversation stays answerable. An answer that
+#: arrives after this is refused, never executed: "yes" to something asked an hour ago is not
+#: consent to do it now, on a page that has since changed. Background work (a job, a specialist
+#: run, a control session) is not on this clock: a job may legitimately wait hours.
+APPROVAL_TTL_S = 15 * 60
 
 
 class Resolution(str, Enum):
@@ -66,6 +73,8 @@ class Approval:
     requested_at: str
     resolved_at: str | None = None
     resolved_by: str | None = None
+    #: When an unanswered question stops being answerable (None: never, e.g. a job's).
+    expires_at: str | None = None
 
     #: Argument names to hide whenever this approval is shown or published.
     redact_args: frozenset[str] = frozenset()
@@ -75,9 +84,39 @@ class Approval:
         return self.status is Resolution.PENDING
 
     @property
+    def is_expired(self) -> bool:
+        """Pending, and past its time. A row written before expiry existed has no
+        `expires_at`; it counts by the same rule as a new one (a conversation's question
+        older than the TTL), so the old backlog expires too."""
+        return self.is_pending and _past_deadline(self)
+
+    @property
     def safe_args(self) -> dict[str, Any]:
         """What may be displayed, logged or published. Never `args` directly."""
         return redact(self.args, self.redact_args)
+
+
+def _epoch(iso: str | None) -> float | None:
+    if not iso:
+        return None
+    return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+
+
+def _in_a_conversation(session_id: str) -> bool:
+    """A chat's session id is a bare id; job:, agent:, control: and the like carry a prefix."""
+    return ":" not in (session_id or "")
+
+
+def _past_deadline(approval: "Approval", now: float | None = None) -> bool:
+    import time
+
+    at = time.time() if now is None else now
+    if approval.expires_at:
+        return (_epoch(approval.expires_at) or 0.0) <= at
+    if not _in_a_conversation(approval.session_id):
+        return False
+    asked = _epoch(approval.requested_at)
+    return asked is not None and asked + APPROVAL_TTL_S <= at
 
 
 def redact(args: dict[str, Any], redact_args: Iterable[str]) -> dict[str, Any]:
@@ -116,6 +155,7 @@ def _row_to_approval(row: Any) -> Approval:
         requested_at=row["requested_at"],
         resolved_at=row["resolved_at"],
         resolved_by=row["resolved_by"],
+        expires_at=row["expires_at"],
     )
 
 
@@ -153,17 +193,22 @@ def request(
         reason=reason,
         status=Resolution.PENDING,
         requested_at=now_iso(),
+        expires_at=(
+            (datetime.now(timezone.utc) + timedelta(seconds=APPROVAL_TTL_S)).isoformat()
+            if ctx.autonomy is Autonomy.INTERACTIVE and _in_a_conversation(ctx.session_id)
+            else None
+        ),
     )
     db.execute(
         "INSERT INTO approvals (id, operation_id, capability, args, redact_args, risk, "
-        "session_id, turn_id, surface, reason, status, requested_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "session_id, turn_id, surface, reason, status, requested_at, expires_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             approval.id, approval.operation_id, approval.capability,
             json.dumps(approval.args), json.dumps(sorted(approval.redact_args)),
             approval.risk, approval.session_id,
             approval.turn_id, approval.surface, approval.reason,
-            approval.status.value, approval.requested_at,
+            approval.status.value, approval.requested_at, approval.expires_at,
         ),
     )
     (event_bus or default_bus).publish(
@@ -205,6 +250,10 @@ def resolve(
         # a second click must not flip a denial into an approval.
         return approval
 
+    if _past_deadline(approval):
+        # Too late to be a go-ahead. Close it as timed out and say so; never execute.
+        return _expire(approval, event_bus)
+
     if resolving_turn_id == approval.turn_id:
         raise SameTurnRefused(
             f"{approval.capability} was asked about and answered within the same "
@@ -230,6 +279,37 @@ def resolve(
     return updated
 
 
+def _expire(approval: Approval, event_bus: EventBus | None = None) -> Approval:
+    """Close one pending approval as timed out (only if it is still pending)."""
+    resolved_at = now_iso()
+    cursor = get_db().execute(
+        "UPDATE approvals SET status = ?, resolved_at = ?, resolved_by = ? "
+        "WHERE id = ? AND status = 'pending'",
+        (Resolution.TIMEOUT.value, resolved_at, "system", approval.id),
+    )
+    if not cursor.rowcount:
+        return get(approval.id) or approval
+    (event_bus or default_bus).publish(
+        EventType.APPROVAL_RESOLVED,
+        {"id": approval.id, "capability": approval.capability,
+         "resolution": Resolution.TIMEOUT.value, "sessionId": approval.session_id},
+    )
+    return Approval(**{**approval.__dict__, "status": Resolution.TIMEOUT,
+                       "resolved_at": resolved_at, "resolved_by": "system"})
+
+
+def expire_stale(event_bus: EventBus | None = None) -> int:
+    """Time out every pending approval whose time has passed. Safe to call any time."""
+    rows = get_db().execute("SELECT * FROM approvals WHERE status = 'pending'").fetchall()
+    count = 0
+    for row in rows:
+        approval = _row_to_approval(row)
+        if _past_deadline(approval):
+            _expire(approval, event_bus)
+            count += 1
+    return count
+
+
 def get(approval_id: str) -> Approval | None:
     row = get_db().execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
     return _row_to_approval(row) if row else None
@@ -237,7 +317,9 @@ def get(approval_id: str) -> Approval | None:
 
 def pending(session_id: str | None = None) -> list[Approval]:
     """Everything still awaiting an answer — survives a restart, which is the
-    entire point of persisting these."""
+    entire point of persisting these. Expired ones are closed first, so a question
+    nobody answered in time is never offered again."""
+    expire_stale()
     db = get_db()
     if session_id is None:
         rows = db.execute(

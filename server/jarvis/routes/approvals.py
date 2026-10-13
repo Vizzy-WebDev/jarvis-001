@@ -49,6 +49,31 @@ def _public(approval: Any) -> dict[str, Any]:
     }
 
 
+def _can_carry_on(approval: Any) -> bool:
+    """Whether the conversation that asked can pick its task back up now: it is the chat the
+    person has open, it ends in the tool results of the step that parked, and nothing else in
+    it is still waiting for an answer (a step can park more than one)."""
+    session = approval.session_id or ""
+    if not session or ":" in session or session != get_active_session_id():
+        return False
+    if store.pending(session):
+        return False
+    tail = (conversation.get_messages(session) or [None])[-1]
+    return bool(tail and tail.get("role") == "tool")
+
+
+def _settle_refusal(approval: Any, resolved: Any) -> None:
+    """A question the person turned down (or that timed out) is recorded as the answer to
+    the call that asked, so the next step reads "declined" rather than "needs your go-ahead"."""
+    _, _, call_id = (approval.operation_id or "").partition(":")
+    if call_id and approval.session_id:
+        said = ("That request timed out before it was answered, so it was not done."
+                if resolved.status is Resolution.TIMEOUT
+                else "The person said no, so it was not done.")
+        conversation.settle_tool_result(approval.session_id, call_id, approval.capability,
+                                        {"error": said, "declined": True})
+
+
 def _continue_job(approval: Any, *, allowed: bool, result: Any = None) -> bool:
     """If a background job is waiting on this approval, let it carry on now. True when the
     approval belonged to a job's session (whether or not that job was still waiting)."""
@@ -87,7 +112,10 @@ def decide(approval_id: str, body: dict[str, Any] = Body(default_factory=dict)):
         if decision is Resolution.DENY:
             # A job waiting on this carries on without it, told plainly it was declined.
             _continue_job(approval, allowed=False)
-        return {"approval": _public(resolved), "ran": False}
+        if resolved.status in (Resolution.DENY, Resolution.CANCEL, Resolution.TIMEOUT):
+            _settle_refusal(approval, resolved)
+        return {"approval": _public(resolved), "ran": False,
+                "resumable": _can_carry_on(approval)}
 
     # Some approvals are answered rather than executed: a control session is
     # already running and paused mid-action, waiting for this exact row. There
@@ -127,6 +155,7 @@ def decide(approval_id: str, body: dict[str, Any] = Body(default_factory=dict)):
     return {
         "approval": _public(store.get(approval_id)),
         "ran": True,
+        "resumable": _can_carry_on(approval),
         "result": {"ok": result.ok, "outcome": result.outcome.value,
                    "error": result.error, "value": result.value},
         # Anything it made, in the same shape a live turn's tool result carries,

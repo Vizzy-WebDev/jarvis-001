@@ -45,7 +45,10 @@ const STATUS_LABEL: Record<string, string> = {
 
 function statusText(connector: Connector): string {
   const state = connector.status?.state;
-  return (state && STATUS_LABEL[state]) || connector.status?.detail || 'Not connected';
+  const text = (state && STATUS_LABEL[state]) || connector.status?.detail || 'Not connected';
+  // Show who it is signed in as: a provider already signed in to in this browser approves
+  // without a visible step, so this is the person's only proof of whose access was granted.
+  return state === 'working' && connector.accountHint ? `${text} · ${connector.accountHint}` : text;
 }
 
 /** A real signal, not just dimmer text: green once it actually works, amber on
@@ -1005,8 +1008,29 @@ function McpConnect({ connector, catalogEntry, label, onConnected, setPoll }: {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
+  const [token, setToken] = useState('');
   const [busy, setBusy] = useState(false);
   const [buttonLabel, setButtonLabel] = useState(wasErrored ? 'Reconnect' : 'Connect');
+
+  // The way in for an app that has no automatic sign-in for Jarvis: a token the person
+  // makes on the app's own settings page. The server proves it by reading the app's
+  // tools with it, so a wrong one says so here instead of showing "Connected".
+  async function connectWithToken() {
+    setBusy(true);
+    try {
+      let connectorId = connector?.id;
+      if (!connectorId && catalogEntry) {
+        connectorId = (await api.connectors.ensure(catalogEntry.id)).connectorId;
+      }
+      if (!connectorId) throw new Error('Nothing to connect.');
+      await api.connectors.saveToken(connectorId, token.trim());
+      setToken('');
+      await onConnected(connectorId);
+    } catch (err) {
+      setStatus(err instanceof ApiRequestError ? err.message : 'Could not connect with that token.');
+      setBusy(false);
+    }
+  }
 
   async function connect() {
     setBusy(true);
@@ -1078,6 +1102,15 @@ function McpConnect({ connector, catalogEntry, label, onConnected, setPoll }: {
             <input className={inputClass} type="password" data-testid="connect-client-secret"
                    value={clientSecret} onChange={(event) => setClientSecret(event.target.value)} />
           </Field>
+          <Field label="Or an access token instead of signing in">
+            <input className={inputClass} type="password" data-testid="connect-token"
+                   placeholder="A personal access token from the app's own settings page"
+                   value={token} onChange={(event) => setToken(event.target.value)} />
+          </Field>
+          <Button tone="quiet" data-testid="connect-with-token" disabled={busy || !token.trim()}
+                  onClick={() => void connectWithToken()}>
+            Connect with this token
+          </Button>
         </div>
       )}
       <Button tone="primary" data-testid="connect" disabled={busy} onClick={() => void connect()}>
@@ -1103,6 +1136,9 @@ function ConnectionStatus({ connector }: { connector: Connector }) {
       <div className="min-w-0">
         <p className="text-[13px] text-ink">{text}</p>
         {state === 'working' && detail && <p className="text-[12px] text-ink-faint">{detail}</p>}
+        {state === 'working' && connector.accountHint && (
+          <p className="text-[12px] text-ink-faint" data-testid="account-hint">Signed in as {connector.accountHint}</p>
+        )}
       </div>
     </div>
   );

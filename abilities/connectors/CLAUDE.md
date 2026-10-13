@@ -88,14 +88,19 @@ confirmation, a false "safe" sends the email). Pure: no I/O, no state.
   model asks, and only after an explicit yes does `tools/allow_folder.py` remember the folder. Every
   path is resolved and checked BEFORE any filesystem call (a relative path and `..` look like they stay
   put and do not; a symlink is only caught by resolving it).
-- **`browser_connector.py`** (`browser`) — a real, VISIBLE browser window Jarvis drives when a page
-  has to be interacted with (`browser_navigate`, `browser_read_page`, `browser_click`, ...), through
-  Playwright as an optional import: no browser installed means a plain answer, not a stack trace. **Its
-  own window and profile under the data folder, never the user's** — a task that borrows someone's
-  browser inherits their logins and open work. A page is read by running a script against it (real
-  text and elements), never by looking at a picture and guessing coordinates. It is separate from
-  `webrender.py`, which renders a page headlessly for a background lookup and closes it; a background
-  lookup must never navigate a page the user is watching. `NAV_TIMEOUT_MS` and `MAX_TEXT_CHARS` bound it.
+- **`browser_connector.py`** (`browser`) — Jarvis's own browser as agent tools (`browser_navigate`,
+  `browser_read_page`, `browser_click`, `browser_type`, `browser_scroll`, `browser_save_downloads`,
+  `browser_close`). The browser itself is `abilities/browser/` (see its own `CLAUDE.md`): a HEADLESS
+  Chromium with a profile of its own under the data folder, never the person's, shown in the chat as
+  a live card the person can take over. **A page is read through the page itself** — its text plus a
+  list of the clickable/typeable elements, each with a selector, which `browser_click`/`browser_type`
+  take — never by looking at a picture and guessing coordinates (those exist only for the person's
+  Take control). Page text is untrusted and every result says so. Clicking and typing are declared
+  `risky` (MEDIUM, ask first); reading, scrolling and saving are LOW. One window
+  (`AGENT_SESSION_ID`), so "the current page" means something. Only the browser's handler takes the
+  call context (`wants_context`), so a saved PDF belongs to the chat that asked for it. It replaced a
+  visible-window Playwright connector that looked for Chrome on PATH only and so, on Windows, never
+  found one.
 - **`mcp_client.py`** (`mcp`) — an MCP server over stdio or HTTP, using the official MCP client library
   (already a dependency). **It connects per call, not once and kept**: a held-open subprocess is a
   lifecycle to get wrong, so a call is slower than against a warm process, and that trade is stated
@@ -188,6 +193,84 @@ silently refreshing an expiring one.
   gets to a product registering one client centrally), because some real providers do not support
   dynamic registration. It is a leaf over `store.py`'s JSON helpers; the secret goes through
   `config.save_secret()`.
+
+## Reliability rules (Oct 2026 investigation)
+
+- **The OAuth return trip is the one `/api` request a foreign-site navigation may make.**
+  `request_guard.is_oauth_return()` lets through only a GET to `/api/connectors/oauth/callback` that the
+  browser labels `Sec-Fetch-Mode: navigate` + `Sec-Fetch-Dest: document` and not `Origin: null`; the
+  one-time `state` is what makes that safe. Every earlier test called the callback with no headers, so
+  the guard blocked every provider redirect (Canva, ChatCut) unseen. `test_oauth_return_guard.py` and
+  the Playwright test `test_a_provider_redirecting_the_browser_back_really_connects` (stub provider on
+  `localhost`, so the browser really sends `cross-site`) pin it. Set `PORT` in any test that connects.
+- **"working" means the tools were read.** `refresh_tools()` sets it; a failure after sign-in is
+  `error` ("Signed in, but Jarvis couldn't read its tools"). A 401 on any call or a failed token
+  refresh raises `mcp_client.AuthRejected` AND marks the connector `error` (needs reconnecting).
+  Never resolve a token by swallowing failure and calling anonymously.
+- **Refresh is one-at-a-time per connector** (`oauth._refresh_lock`), re-reading the saved token
+  inside the lock, so a single-use refresh token is not spent twice.
+- **Authorization-server discovery passes the ISSUER as the library's first argument** — that is what
+  inserts `/.well-known/...` before the issuer's path (GitHub's `github.com/login/oauth`).
+- **A token can be pasted instead of signing in** (`POST /{id}/token`, `connectFlow.kind: "token"`,
+  `signInKind` remembers the OAuth kind so Connect again restores it). It is proven by reading tools.
+  GitHub's remote MCP server has no dynamic registration: browser sign-in needs a Client ID; the token
+  is the no-Client-ID route.
+- **`find_capability` says so when the person names an app that is not usable** (`notConnected`),
+  matched on the app's label against saved connectors and the catalogue — never on a service name in code.
+
+## How Jarvis picks among connected apps — `abilities/tools/find_capability.py`
+
+With more than `DECLARATION_BUDGET` (20) capabilities, connector tools are declared ONLY after `find_capability`
+unlocks them, so its ranking IS the router. Nothing in the prompt, orchestrator or tools names a service;
+what looked like "defaults to Higgsfield" was (a) Higgsfield being the only connected generator (Jarvis has
+no built-in image/video generation) and (b) the search itself:
+- **Rare words outrank common ones** (`_weights`: squared inverse document frequency) — a verb in thirty tool
+  names no longer beats the one word that says what was wanted. A result must cover 60% of the distinct words
+  **that some capability mentions at all** — what a picture is OF ("mountain", "sunrise") is in no tool's text, and
+  counted, it made "generate an image of a mountain at sunrise" match NOTHING; told "nothing", the model searched app
+  by app and, where each call failed, fell back one app at a time. That chain (announced by the model, nothing made until
+  one worked) is what once looked like "three apps at once"; with working apps the servers' own counts showed one call.
+  `tests/live_duplicate_check.py` (manual, real model, counting stub apps) is the proof to rerun.
+- **The person's instruction decides**: `prefer` (an app to use) and `avoid` (apps NOT to use) are real,
+  schema-visible arguments — a rule only in prose can't be followed by a model that sticks to its schema — and
+  plain-words negation in `intent` ("not X", "don't use X", "without", "instead of", ...) is read too. An app is
+  the prefix of its `app__tool` names. Avoided apps are never returned; if nothing else fits it says so.
+- **Naming an app that isn't usable** (not set up, switched off, needs reconnecting) is reported as
+  `notConnected` with the reason, instead of silently offering whatever else mentions the word.
+- **Several apps can do the same job**: the best tool of EVERY capable app comes first (an app is judged on its own
+  best match, so one app with thirty tools can't hide another's one), at most `PER_APP` tools from one app, and
+  `options` names the capable apps with a note to pick the best fit and say which was used.
+- **`prefer` may be an app, a provider or a MODEL.** An app is preferred outright. Otherwise the name is looked for
+  in the tools' own text (name, description, argument schema): apps that mention it are boosted for what they can
+  DO (a "manage references" tool that merely mentions a model does not outrank the one that generates). A name
+  found nowhere comes back as `unmatched` with a note: it may be in an app's own model catalog, which only that app
+  can say — check it, and if it is not there say so and ask; never quietly substitute. Nothing here knows a provider.
+- A connector's cached tool list is kept current by `tool_refresh.py` (below); only `refresh_tools()` reads one.
+- **Check it with a real model**: `python -m jarvis.routing_check` runs six scripted requests (not-this-app,
+  this-app, a model nothing offers, an app not set up, ...) on the person's own model in a throw-away folder with
+  every connector sign-in left out, and judges from the stored tool calls and approval cards.
+
+## `tool_refresh.py` — tool lists keep up with the apps
+
+A list read at connect time went stale (live: Higgsfield 156 tools vs 101 known). A sweep behind
+`JARVIS_CONNECTOR_TOOLS` (set by `main()`, started by `assembly.start_background_work()`) re-reads any WORKING,
+enabled app whose list is older than 24 h (`config.toolsRefreshedAt`, stamped by every `refresh_tools()`; an absent
+stamp counts as stale), one app at a time, first sweep 45 s after launch, then every 2 h. A transient failure is
+logged and never changes a working app's status (a refused sign-in still does); apps that are broken or switched off
+are left alone. New tools get the ordinary default, Ask.
+
+## Who a sign-in was made as
+
+`accountHint` (from an OIDC `id_token`, when the service sends one) is shown in the connector row and named on the
+"Connected" page. A provider that is already signed in to in this browser approves without showing a consent
+screen, so the person's only proof of whose access was granted is that line — ChatCut does exactly this.
+
+## Transient failures
+
+Discovery metadata lookups retry network errors, 429 and 5xx (`oauth.FETCH_ATTEMPTS`); reading a tool list
+retries once on `TransientFailure`; **calling a tool is never retried** (it may already have done its work).
+Composio answered in 5–17 s from one request to the next, so a slow answer is not a verdict. The underlying
+exception class is logged (`mcp call to ... failed`) because the person-facing wording hides it.
 
 ## Catalogue, icons, routes
 

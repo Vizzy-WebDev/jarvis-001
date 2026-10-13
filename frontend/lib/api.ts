@@ -6,6 +6,8 @@
 
 import type {
   AddConnectionResult,
+  BrowserImport,
+  BrowserSessionInfo,
   TurnAttachment,
   Artifact,
   ArtifactPage,
@@ -367,6 +369,13 @@ export const api = {
         method: 'POST',
         ...json(manual ?? {}),
       }),
+    /** An mcp connector connected with a pasted access token instead of a browser
+     *  sign-in. The server proves it by reading the app's tools with it. */
+    saveToken: (id: string, token: string) =>
+      request<{ ok: true; tools: number; connector: Connector }>(
+        `/connectors/${encodeURIComponent(id)}/token`,
+        { method: 'POST', ...json({ token }) },
+      ),
     disconnect: (id: string) =>
       request<{ ok: true; connector: Connector }>(
         `/connectors/${encodeURIComponent(id)}/disconnect`,
@@ -792,6 +801,24 @@ export const api = {
       request<{ ok: true }>(`/artifacts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     /** The file itself. Always served as a download; the viewer fetches it. */
     fileUrl: (id: string) => `/api/artifacts/${encodeURIComponent(id)}`,
+  },
+
+  /** Jarvis's own browser: the window he drives, as a live picture the person can take over. */
+  browsers: {
+    get: (id: string) => request<BrowserSessionInfo>(`/browsers/${encodeURIComponent(id)}`),
+    /** Open a closed window again — same profile, so it is still signed in. */
+    open: (id: string, url?: string) =>
+      request<{ ok: true }>(`/browsers/${encodeURIComponent(id)}/open`, {
+        method: 'POST', body: JSON.stringify(url ? { url } : {}) }),
+    close: (id: string) =>
+      request<{ ok: true }>(`/browsers/${encodeURIComponent(id)}/close`, { method: 'POST' }),
+    /** Keep the PDFs the window caught as files Jarvis holds (the same ones are never kept twice). */
+    importDownloads: (id: string) =>
+      request<BrowserImport>(`/browsers/${encodeURIComponent(id)}/import-downloads`, { method: 'POST' }),
+    /** The picture is outside content, served as a download: fetch it and draw it. */
+    previewUrl: (id: string) => `/api/browsers/${encodeURIComponent(id)}/preview`,
+    /** The "Take control" page, opened in its own tab. */
+    consoleUrl: (id: string) => `/api/browsers/${encodeURIComponent(id)}/console`,
   },
 
   uploads: {

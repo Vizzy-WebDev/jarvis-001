@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { FRAME_POLICY, lockedDocument, parseDelimited, formatSize } from '../.test-build/lib/artifacts.js';
+import { FRAME_POLICY, lockedDocument, parseDelimited, formatSize, cardsFromToolResult } from '../.test-build/lib/artifacts.js';
 import { parseBlocks, parseInline } from '../.test-build/lib/markdown.js';
 
 // --- Markdown ------------------------------------------------------------------------------
@@ -77,4 +77,19 @@ test('sizes read naturally', () => {
   assert.equal(formatSize(512), '512 B');
   assert.equal(formatSize(2048), '2.0 KB');
   assert.equal(formatSize(3 * 1024 * 1024), '3.0 MB');
+});
+
+
+// --- A browser window in a reopened chat -------------------------------------------------------
+
+test('a saved browser result comes back as a window card that knows which window it was', () => {
+  const [card] = cardsFromToolResult({
+    ok: true,
+    ui_action: { type: 'attachment', kind: 'browser', url: '/api/browsers/abc/console', name: 'Fixture Home',
+                 mimeType: 'text/html', sessionId: 'abc', pageUrl: 'http://site.test/' },
+  });
+  assert.equal(card.kind, 'browser');
+  assert.equal(card.sessionId, 'abc');
+  assert.equal(card.pageUrl, 'http://site.test/');
+  assert.equal(card.artifactId, undefined, 'a window is not a saved file');
 });

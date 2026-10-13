@@ -64,7 +64,7 @@ def _raw_tools(connector: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _dispatch(connector_id: str, kind: str, tool_name: str, permission_name: str,
-              args: dict[str, Any]) -> dict[str, Any]:
+              args: dict[str, Any], session_id: str | None = None) -> dict[str, Any]:
     """Re-read the connector at call time.
 
     Not closed over: its allowlist or its key may have changed since the
@@ -93,7 +93,8 @@ def _dispatch(connector_id: str, kind: str, tool_name: str, permission_name: str
         if kind == "files":
             return files_connector.dispatch(tool_name, args, config)
         if kind == "browser":
-            return browser_connector.dispatch(tool_name, args, config)
+            # The chat a saved download belongs to is the one this call runs in.
+            return browser_connector.dispatch(tool_name, args, config, session_id=session_id)
         if kind == "api":
             return api_client.dispatch(tool_name, args, config)
         if kind == "cli":
@@ -202,13 +203,26 @@ def connector_specs(connector: dict[str, Any]) -> list[CapabilitySpec]:
             input_schema=tool.get("parameters") or {"type": "object", "properties": {}},
             risk=_risk_for(permission, classified,
                            user_connector=kind in store.USER_TYPES),
-            handler=(lambda _cid=connector["id"], _kind=kind, _tool=tool["name"], _perm=name, **args:
-                     _dispatch(_cid, _kind, _tool, _perm, args)),
+            # Only the browser needs to know which conversation is calling (a PDF it saves
+            # belongs to that chat). Its handler takes the call context; every other
+            # connector's does not, so an outside tool with a parameter that happens to be
+            # called `ctx` still receives it.
+            handler=(
+                (lambda _cid=connector["id"], _kind=kind, _tool=tool["name"], _perm=name,
+                 ctx=None, **args:
+                 _dispatch(_cid, _kind, _tool, _perm, args,
+                           session_id=getattr(ctx, "session_id", None)))
+                if kind == "browser" else
+                (lambda _cid=connector["id"], _kind=kind, _tool=tool["name"], _perm=name, **args:
+                 _dispatch(_cid, _kind, _tool, _perm, args))),
+            wants_context=(kind == "browser"),
             kind=CapabilityKind.CONNECTOR,
             timeout_s=_timeout_for(kind, tool["name"], connector),
             tags=frozenset({"core"}) if kind in ("files", "browser") else frozenset(),
-            summarize=(lambda args, _label=connector.get("label"), _tool=tool["name"]:
-                       f'Use "{_tool}" on {_label}?'),
+            summarize=((lambda args, _tool=tool["name"]: browser_connector.describe_action(_tool, args))
+                       if kind == "browser" else
+                       (lambda args, _label=connector.get("label"), _tool=tool["name"]:
+                        f'Use "{_tool}" on {_label}?')),
         ))
     return specs
 
@@ -269,6 +283,12 @@ def refresh_tools(connector_id: str) -> dict[str, Any]:
     else:
         found = len(_raw_tools(connector))
 
+    # When the list was last read: the background sweep (`tool_refresh.py`) re-reads a list
+    # that has gone stale, so an app's newer tools do not stay invisible until someone presses
+    # Refresh.
+    from ..jscompat import now_iso
+
+    config["toolsRefreshedAt"] = now_iso()
     updated = store.update_connector(connector_id, {
         "config": config,
         "status": {"state": "working", "checkedAt": None, "detail": f"{found} tools"}})

@@ -421,7 +421,11 @@ def execute_approved(
         return ExecutionResult(
             ok=False, outcome=ExecOutcome.REFUSED, capability=resolved.capability,
             operation_id=approval.operation_id,
-            error=f"That was already {resolved.status.value}ed.",
+            error=("That request timed out before it was answered, so nothing was done. "
+                   "Ask me again if you still want it."
+                   if resolved.status is approvals_store.Resolution.TIMEOUT
+                   else "That was already " + {"deny": "declined", "cancel": "cancelled"}.get(
+                       resolved.status.value, resolved.status.value) + "."),
         )
 
     spec = reg.get(resolved.capability)

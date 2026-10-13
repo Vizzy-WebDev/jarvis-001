@@ -47,6 +47,10 @@ dependencies = [
     # Pinned exactly: these move fast, and the launcher reinstalls when this file changes.
     "langgraph==1.2.12",
     "langgraph-checkpoint-sqlite==3.1.1",
+    # Jarvis's own browser (`jarvis/browser/`, ported from OpenMuse). Used as a driver only:
+    # it starts the Chrome or Edge the person already has (no browser is downloaded), and
+    # a missing one is reported in plain words rather than as a stack trace.
+    "playwright>=1.40",
 ]
 
 [project.optional-dependencies]

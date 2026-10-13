@@ -182,6 +182,124 @@ def test_findings_need_no_model():
     assert "done 2 times" in next(f["text"] for f in found if f["kind"] == "twice")
 
 
+# --- figures are re-added by code, not judged ------------------------------------------------------
+
+def filed(body: str, title: str = "Report") -> dict:
+    return {"unsure": [], "actions": [{"name": "office_file_report", "args": {"title": title, "body": body},
+                                       "outward": True, "result": "ok", "error": None}]}
+
+
+#: The shapes real runs really filed (figures changed only where the case is about a wrong sum).
+BREAKDOWN = ("Ledger Trail Report\n\nTotal Number of Entries: 3\nTotal Amount: {total} USD\n\n"
+             "Entry Breakdown\nEntry  1: ledger-start      279.94 USD\nEntry  2: ledger-2550f6     575.08 USD\n"
+             "Entry  3: ledger-ddb247   1,328.07 USD\n\nGrand Total: {total} USD across 3 entries.")
+EQUATION = ("Account: northside\nTotal: 1010.43 USD\n\nLedger trail (3 entries) summed from start to the last "
+            "entry. Every amount in the trail added: 124.39 + 287.66 + 598.38 = 1010.43 USD.")
+INVOICES = ("March 2026 Invoices Summary\n\nThree invoices were issued in March 2026, totaling 10,841.87 USD.\n\n"
+            "Invoices:\n- Harrow & Finch Logistics (HA-9836): 3,398.47 USD\n- Redmere Cleaning (RE-3907): 3,580.66 USD\n"
+            "- Silverbank Couriers (SI-8147): 3,862.74 USD\n\nLargest invoice: Silverbank Couriers — 3,862.74 USD (SI-8147).")
+TOTAL_ONLY = "Archived ledger trail followed to its last entry.\n\nTotal: 19977.65 USD\nNumber of entries: 34"
+
+
+@pytest.mark.parametrize("name,body,kinds", [
+    ("a breakdown that adds up", BREAKDOWN.format(total="2,183.09"), ["adds_up"]),
+    ("a breakdown that does not", BREAKDOWN.format(total="1,562.10"), ["sum_differs"]),
+    ("shown as a sum", EQUATION, ["adds_up"]),
+    ("a list, a total in a sentence, and the largest named again", INVOICES, ["adds_up"]),
+    ("a total with nothing itemised", TOTAL_ONLY, []),
+    ("no figures at all", "No July invoices were found in the office records.", []),
+])
+def test_a_total_that_went_out_is_added_up_again(name, body, kinds, monkeypatch):
+    monkeypatch.setattr(checking, "_read_results", lambda job_id: [])
+    found = checking.figures("job_x", filed(body), "")
+    assert [f["kind"] for f in found] == kinds, found
+    if kinds == ["sum_differs"]:
+        assert found[0]["text"] == ("the 3 itemised amounts in what it gave to office_file_report add up to "
+                                    "2,183.09, but it states a total of 1,562.10")
+
+
+def test_a_total_with_nothing_itemised_is_confirmed_only_by_what_was_read(monkeypatch):
+    reads = ['{"text": "LEDGER ENTRY 1\\nAmount: 9,977.65 USD"}', '{"text": "LEDGER ENTRY 2\\nAmount: 10000.00 USD"}']
+    monkeypatch.setattr(checking, "_read_results", lambda job_id: reads)
+    [found] = checking.figures("job_x", filed(TOTAL_ONLY), "")
+    assert found == {"kind": "adds_up", "text": "the total stated in what it gave to office_file_report, "
+                                                "19,977.65, is what the 2 amounts the work read add up to"}
+    monkeypatch.setattr(checking, "_read_results", lambda job_id: reads[:1] + ['{"text": "Amount: 1.00"}'])
+    assert checking.figures("job_x", filed(TOTAL_ONLY), "") == []          # no match is no finding
+
+
+def test_the_workers_own_prose_can_confirm_a_total_and_never_contradict_one(monkeypatch):
+    """Found by trying this on what real runs wrote: correct work lists its amounts twice,
+    shows its working, repeats the total — re-adding prose cried wolf one run in three."""
+    monkeypatch.setattr(checking, "_read_results", lambda job_id: [])
+    prose = ("Done. The three amounts were 124.39, 287.66 and 598.38.\nI added them: 124.39, 287.66, 598.38.\n"
+             "Total: 1010.43 USD.")
+    assert checking.figures("job_x", {"actions": [], "unsure": []}, prose) == []
+    tidy = "The amounts:\n- 124.39\n- 287.66\n- 598.38\nTotal: 1010.43"
+    assert [f["kind"] for f in checking.figures("job_x", {"actions": [], "unsure": []}, tidy)] == ["adds_up"]
+
+
+def test_a_wrong_sum_is_never_delivered_as_verified_and_goes_back_with_the_figures(monkeypatch):
+    """Found live: 34 entries read, 33 listed, a total 3,400 out — and it was handed over as
+    "all of it is done", because a report HAD been filed. The judge here still says yes to
+    everything; the sum is not its to judge."""
+    judge = Judge(monkeypatch, ["met"], {"lines": [
+        {"n": 1, "verdict": "not_met", "why": "The filed amounts add up to 2,183.09, not 1,562.10."},
+        {"n": 2, "verdict": "met", "why": "filed"}]}, ["met"])
+    registry = assembly.get_registry()
+    from jarvis.capabilities import CapabilitySpec, Risk
+
+    registry.register(CapabilitySpec(
+        id="file_it", name="file_it", description="File a report (test).",
+        input_schema={"type": "object", "properties": {"title": {"type": "string"}, "body": {"type": "string"}}},
+        handler=lambda title="", body="": {"filed": title}, risk=Risk.MEDIUM, tags=frozenset({"core"})))
+    brain = install(Brain())
+    wrong = ("call", "file_it", {"title": "Trail", "body": BREAKDOWN.format(total="1,562.10")})
+    right = ("call", "file_it", {"title": "Trail", "body": BREAKDOWN.format(total="2,183.09")})
+
+    # A judge that says yes to everything: still not verified, and the person is told the figures.
+    job = new_job("a report with the total is filed")
+    brain.plan("job:", [[wrong, ("say", "Filed the report: total 1,562.10 over 3 entries.")]])
+    run(job["id"])
+    check = objective.ledger_of(job_store.get_job(job["id"]))["check"]
+    assert check["verdict"] == "partly" and [f["kind"] for f in check["facts"]] == ["sum_differs"]
+    assert "add up to 2,183.09, but it states a total of 1,562.10" in checking.label(check)
+    assert "add up to 2,183.09, but it states a total of 1,562.10" in judge.prompts[0]     # and the judge was shown it
+    assert "figures the system found do NOT add up" in judge.systems[0]
+
+    # A judge that reads the finding sends it back, and the corrected report checks out.
+    other = new_job("a report with the total is filed")
+    brain.plan("job:", [[wrong, ("say", "Filed the report: total 1,562.10 over 3 entries.")],
+                        [right, ("say", "Filed a corrected report: total 2,183.09 over 3 entries.")]])
+    assert run(other["id"])["status"] == "stalled"
+    carry_on()
+    stored = job_store.get_job(other["id"])
+    assert stored["status"] == "done" and stored["attempts"] == {"check": 1}
+    done = objective.ledger_of(stored)["check"]
+    # The first, wrong report is still on record as having gone out — and that is said.
+    assert done["verdict"] == "partly" and {f["kind"] for f in done["facts"]} == {"sum_differs", "adds_up"}
+
+
+def test_figures_that_add_up_are_said_to_have_been_added_up(monkeypatch):
+    Judge(monkeypatch, ["met"])
+    registry = assembly.get_registry()
+    from jarvis.capabilities import CapabilitySpec, Risk
+
+    registry.register(CapabilitySpec(
+        id="file_it", name="file_it", description="File a report (test).",
+        input_schema={"type": "object", "properties": {"title": {"type": "string"}, "body": {"type": "string"}}},
+        handler=lambda title="", body="": {"filed": title}, risk=Risk.MEDIUM, tags=frozenset({"core"})))
+    brain = install(Brain())
+    job = new_job("a report with the total is filed")
+    brain.plan("job:", [[("call", "file_it", {"title": "Trail", "body": BREAKDOWN.format(total="2,183.09")}),
+                         ("say", "Filed the report: total 2,183.09.")]])
+    run(job["id"])
+    check = objective.ledger_of(job_store.get_job(job["id"]))["check"]
+    assert check["verdict"] == "verified"
+    assert checking.label(check) == ("Checked against what you asked: all of it is done, and its figures "
+                                     "were added up again and agree.")
+
+
 @pytest.mark.parametrize("answer", [
     RuntimeError("no model can answer"), {"lines": "yes"}, {"matches": True}, "fine", {"lines": []},
 ])

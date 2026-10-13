@@ -6,8 +6,9 @@ evidence for neither. So a result is checked in three parts, each weaker than th
 1. **The record** (`evidence`). Built by code from the job's write-ahead trace: every action
    it really ran, with its arguments, whether it worked, and whether it could reach outside
    Jarvis. Nothing in it comes from the worker's words.
-2. **What needs no model** (`findings`). Facts read straight off the record: an outward action
-   that failed and was never put right; the same outward action done more than once.
+2. **What needs no model** (`findings`, `figures`). Facts read straight off the record: an
+   outward action that failed and was never put right; the same outward action done more than
+   once; and every total the work put out over an itemised list, ADDED UP AGAIN by code.
 3. **One judgement, line by line** (`judge`). A model is given what was asked, each line that
    defines done, the worker's report AND the record, told to trust the record over the report,
    and answers every line separately: met, not met, or cannot tell.
@@ -31,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from ..jscompat import now_iso
@@ -57,8 +59,11 @@ SYSTEM = (
     "divided up, not whether it ran in the background, not how or when the person is told. "
     "Line 1 is always the request itself: it is met only if what was asked FOR was actually "
     "achieved — a report saying it could not be done, however honest and however neatly filed, "
-    "does not make it met. Use \"unknown\" only when neither the record nor the report can "
-    "settle the line. Set \"admitted\" to true on a line the worker's own report plainly says "
+    "does not make it met. A line that depends on a FIGURE or a calculation being right is met "
+    "only when the system's own findings say the figures add up, or the record itself shows the "
+    "figure; a figure nobody re-checked makes that line \"unknown\", and figures the system "
+    "found do NOT add up make it \"not_met\" unless the report itself explains the difference. "
+    "Use \"unknown\" only when neither the record nor the report can settle the line. Set \"admitted\" to true on a line the worker's own report plainly says "
     "was not done or could not be done. Reply with JSON only: "
     '{"lines": [{"n": 1, "verdict": "met" | "not_met" | "unknown", "admitted": true | false, '
     '"why": "one short sentence"}]} — one entry for every numbered line.')
@@ -162,6 +167,122 @@ def record_text(record: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# --- figures ----------------------------------------------------------------------------------
+
+_AMOUNT = re.compile(r"(?<![\w.,])(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}(?![\d])")
+_TOTAL_LINE = re.compile(r"\b(total\w*|sum|altogether|combined|in all|comes? to|adds? up to)\b", re.IGNORECASE)
+_ASIDE_LINE = re.compile(r"\b(largest|biggest|highest|smallest|lowest|average|mean|excluded|not counted)\b",
+                         re.IGNORECASE)
+
+
+def _amounts(text: str) -> list[float]:
+    return [float(found.replace(",", "")) for found in _AMOUNT.findall(text or "")]
+
+
+def _read_results(job_id: str) -> list[str]:
+    """The recorded result of every distinct thing the work looked up (LOW risk)."""
+    from .. import durable
+    from ..db import get_db
+
+    rows = get_db().execute("SELECT capability, result FROM operations WHERE operation_id LIKE ? "
+                            "AND ok = 1", (f"{job_id}/%",)).fetchall()
+    seen: dict[str, None] = {}
+    for row in rows:
+        if not durable.is_external(str(row[0])):
+            seen.setdefault(str(row[1] or ""))
+    return list(seen)
+
+
+def _split(text: str) -> tuple[list[float], list[float]]:
+    """(itemised amounts, stated totals) in one piece of text. A line that speaks of a total
+    states one; `a + b = c` states `c` over `a` and `b`; a line about the largest or an
+    average is an aside and neither."""
+    items: list[float] = []
+    totals: list[float] = []
+    for line in text.splitlines():
+        if not _AMOUNT.search(line):
+            continue
+        if "=" in line and "+" in line:
+            before, _, after = line.rpartition("=")
+            items += _amounts(before)
+            totals += _amounts(after)
+        elif _TOTAL_LINE.search(line):
+            totals += _amounts(line)
+        elif not _ASIDE_LINE.search(line):
+            items += _amounts(line)
+    return items, totals
+
+
+def _agree(items: list[float], totals: list[float]) -> float | None:
+    """The stated total the items add up to, if any."""
+    added = round(sum(items), 2)
+    return next((total for total in totals if abs(total - added) < 0.005), None)
+
+
+def figures(job_id: str, record: dict[str, Any], answer: str) -> list[dict[str, str]]:
+    """Totals the work PUT OUT, re-added by code. Wherever something it sent out or filed (the
+    arguments of an outward action that succeeded), or its own report, states a total:
+
+    - `adds_up` — its itemised amounts come to that total; or, with nothing itemised, the
+      total equals the sum of every amount in what the work read;
+    - `sum_differs` — something it FILED OR SENT itemises amounts that do not come to the
+      total it states.
+
+    Only what went out is ever found wanting. The worker's own report is prose — it lists the
+    same amounts twice, shows its working, quotes a subtotal — and re-adding it raised false
+    alarms on correct work in every third real run it was tried on; so it can confirm a total
+    and never contradict one. Nor is an amount held against the work for not being in what it
+    read: part of the reading is often done before the work was handed over.
+
+    Found live, and the reason this exists: a job read all 34 entries of a trail, listed 33 of
+    the amounts, stated a total that was 3,400 out — and was delivered as verified, because a
+    report HAD been filed. Whether a sum is right is not a matter of judgement, so it is not
+    left to one. Where a total can be neither re-added nor matched there is no finding, and the
+    judge is told that a figure nobody re-checked is not confirmed. Tried against every report
+    the real runs filed (`tests/test_checking.py` keeps their shapes)."""
+    texts = [(f"what it gave to {a['name']}", "\n".join(str(v) for v in (a["args"] or {}).values()))
+             for a in record["actions"] if a["outward"] and a["result"] == "ok"]
+    texts.append(("its own report", answer or ""))
+    try:
+        results = _read_results(job_id)
+    except Exception:  # noqa: BLE001 — then where the amounts came from is simply not known
+        results = []
+    read = [amount for result in results for amount in _amounts(result)]
+    known = {round(amount, 2) for amount in read}
+    out: list[dict[str, str]] = []
+    for where, text in texts:
+        items, totals = _split(text)
+        if not totals:
+            continue
+        if len(items) >= 2:
+            total = _agree(items, totals)
+            if total is None and any(t in items for t in totals):
+                # The total repeated among the items ("…, 3,594.38 in all" lower down).
+                trimmed = list(items)
+                trimmed.remove(next(t for t in totals if t in trimmed))
+                if len(trimmed) >= 2 and _agree(trimmed, totals) is not None:
+                    items, total = trimmed, _agree(trimmed, totals)
+            if total is None:
+                if where != "its own report":
+                    out.append({"kind": "sum_differs", "text": f"the {len(items)} itemised amounts in "
+                                f"{where} add up to {sum(items):,.2f}, but it states a total of "
+                                f"{totals[0]:,.2f}"})
+                continue
+            sourced = bool(known) and all(round(item, 2) in known for item in items)
+            out.append({"kind": "adds_up", "text": f"the {len(items)} itemised amounts in {where} add "
+                        f"up to its stated total, {total:,.2f}"
+                        + (", and every one is an amount the work read" if sourced else "")})
+        elif len(read) >= 2 and _agree(read, totals) is not None:
+            out.append({"kind": "adds_up", "text": f"the total stated in {where}, {_agree(read, totals):,.2f}, "
+                        f"is what the {len(read)} amounts the work read add up to"})
+    return out
+
+
+#: Findings that take nothing away from what was achieved (the rest keep a result from being
+#: called verified whatever the judgement says).
+HARMLESS = ("twice", "adds_up")
+
+
 # --- the judgement ----------------------------------------------------------------------------
 
 def criteria(job: dict[str, Any]) -> list[str]:
@@ -226,7 +347,7 @@ def check(job: dict[str, Any], answer: str) -> dict[str, Any]:
     """The whole check of one finished result. Never raises."""
     try:
         record = evidence(job["id"])
-        facts = findings(record)
+        facts = findings(record) + figures(job["id"], record, answer)
     except Exception:  # noqa: BLE001 — a record that cannot be read checks nothing
         logger.exception("could not read what job %s did", job.get("id"))
         return {"verdict": "unchecked", "lines": [], "facts": [], "at": now_iso()}
@@ -239,7 +360,7 @@ def check(job: dict[str, Any], answer: str) -> dict[str, Any]:
         # "Left failed" and "may or may not have happened" keep a result from being called
         # verified whatever the judgement says; "done twice" is reported but takes nothing
         # away from what was achieved.
-        loose = [fact for fact in facts if fact["kind"] != "twice"]
+        loose = [fact for fact in facts if fact["kind"] not in HARMLESS]
         if met == len(lines) and not loose:
             verdict = "verified"
         elif met == 0 and any(line["verdict"] == "not_met" for line in lines):
@@ -290,7 +411,9 @@ def label(result: dict[str, Any] | None) -> str:
     result = result or {}
     verdict, lines = result.get("verdict"), result.get("lines") or []
     if verdict == "verified":
-        return "Checked against what you asked: all of it is done."
+        added = any(fact["kind"] == "adds_up" for fact in result.get("facts") or [])
+        return ("Checked against what you asked: all of it is done"
+                + (", and its figures were added up again and agree." if added else "."))
     if verdict in ("partly", "unmet"):
         met = [line for line in lines if line["verdict"] == "met"]
         missing = [line for line in lines if line["verdict"] == "not_met"]
@@ -306,7 +429,7 @@ def label(result: dict[str, Any] | None) -> str:
             text += " Not done: " + "; ".join(said(line) for line in missing) + "."
         if unsure:
             text += " Could not be confirmed: " + "; ".join(said(line) for line in unsure) + "."
-        loose = [fact["text"] for fact in result.get("facts") or [] if fact["kind"] != "twice"]
+        loose = [fact["text"] for fact in result.get("facts") or [] if fact["kind"] not in HARMLESS]
         if loose:
             text += " Also: " + "; ".join(loose) + "."
         return text

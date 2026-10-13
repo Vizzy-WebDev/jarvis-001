@@ -2,6 +2,11 @@
 
 Written 2026-10-13 by the "content ui" Claude session, for the next session to continue.
 
+This file lives at the top of the `claude/ui-redesign` branch. The helper files it mentions
+(`docs/voice-phase1/...`) and all the code it describes are on that branch, in the
+`Jarvis-001-ui` folder. A copy of this file is also kept at the top of the main `Jarvis-001`
+folder so it is easy to find; that copy is not part of the other branch.
+
 - **Branch:** `claude/ui-redesign`
 - **Worktree:** `C:\Users\HP\Documents\CLAUDE PROJECT\Jarvis-001-ui` (the main folder `Jarvis-001`
   is checked out on `claude/own-browser` by another session; do not commit there)

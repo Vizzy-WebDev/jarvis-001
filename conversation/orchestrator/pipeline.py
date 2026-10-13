@@ -325,6 +325,10 @@ class TurnRequest:
     #: Set by durable background work: at most this many model steps in this turn (never more
     #: than the usual ceiling), so a job's step budget is never overshot by a whole round.
     max_steps: int | None = None
+    #: The person answered what a parked turn asked (Allow / No), and nothing new was said:
+    #: carry on from where it stopped. No user message is added, and the turn is not
+    #: announced as new input — the conversation already ends in the settled tool results.
+    resume: bool = False
 
 
 def operation_id_for(scope: str, name: str, args: dict[str, Any], seen: dict[str, int]) -> str:
@@ -417,6 +421,9 @@ class Orchestrator:
         """
         cancel = cancel or threading.Event()
         state = self.state_for(request.session_id)
+        if request.resume:
+            yield from self._resume_turn(request, state, cancel)
+            return
         text = (request.text or "").strip()
 
         # `text` rides in this event (not just `length`, its only field before)
@@ -473,6 +480,38 @@ class Orchestrator:
             yield Failed(str(err), code="no_model", detail=err.detail)
         except Exception as err:  # noqa: BLE001 — the turn must never crash the caller
             logger.exception("turn failed")
+            state.fail(str(err) or err.__class__.__name__)
+            yield Failed(f"Something went wrong on my side: {err}")
+
+    def _resume_turn(
+        self, request: TurnRequest, state: AssistantState, cancel: threading.Event
+    ) -> Iterator[TurnEvent]:
+        """Carry on after the person answered a parked approval.
+
+        The saved conversation already ends in the tool results of the step that parked
+        (the answered calls settled to what really happened or to "declined"), so the model
+        simply takes its next step. Nothing is pushed: the person said nothing new, and a
+        turn that invented a message for them would put words in their mouth. What the
+        message-keyed observers see is the ORIGINAL ask, so personality and memory selection
+        still read what the person actually wanted.
+        """
+        tail = (conversation.get_messages(request.session_id) or [None])[-1]
+        if not tail or tail.get("role") != "tool":
+            yield Failed("There is nothing waiting for me to carry on with.", code="nothing_to_resume")
+            return
+        asked = next((m.get("text") or "" for m in reversed(conversation.get_messages(request.session_id))
+                      if m.get("role") == "user"), "")
+        request = replace(request, text=asked)
+        _prepare_for_new_turn(state)
+        state.to(State.THINKING, "carrying on after an answer")
+        yield Routed(Intent.MULTI_STEP, 1.0, "carrying on after your answer", fast=False)
+        try:
+            yield from self._run_model_loop(request, state, cancel)
+        except ModelUnavailable as err:
+            state.fail(str(err))
+            yield Failed(str(err), code="no_model", detail=err.detail)
+        except Exception as err:  # noqa: BLE001 — the turn must never crash the caller
+            logger.exception("resumed turn failed")
             state.fail(str(err) or err.__class__.__name__)
             yield Failed(f"Something went wrong on my side: {err}")
 

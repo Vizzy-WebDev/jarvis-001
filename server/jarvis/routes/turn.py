@@ -98,11 +98,14 @@ def _phase_of(event: dict[str, Any]) -> str:
 @router.get("/chat/stream")
 async def chat_stream(request: Request, message: str = "", source: str = "text",
                       confidence: float | None = None, attachments: str = "",
-                      edit_of: str = "", agent: str = ""):
+                      edit_of: str = "", agent: str = "", resume: str = ""):
     text = (message or "").strip()
     # Attachment ids ride in the query string because EventSource can only make a
     # GET with no body. Ids, never paths — see routes/uploads.py.
     attached = tuple(part.strip() for part in (attachments or "").split(",") if part.strip())
+
+    if resume.strip():
+        return _resume_stream(request, resume.strip(), source)
 
     # Sending a photo with no words is an ordinary thing to do, so an empty
     # message is only an error when nothing is attached either.
@@ -160,6 +163,46 @@ async def chat_stream(request: Request, message: str = "", source: str = "text",
                 wire = to_wire(event)
                 phase["value"] = _phase_of(wire)
                 yield wire
+
+    return StreamingResponse(
+        stream_sync_source(request, produce,
+                           heartbeat=lambda: {"type": "progress", "phase": phase["value"]}),
+        media_type="text/event-stream", headers=SSE_HEADERS)
+
+
+def _resume_stream(request: Request, approval_id: str, source: str):
+    """Carry on the task a question had parked, now that the person has answered it.
+
+    `approval_id` is only a pointer to the question that was answered; nothing it names is
+    executed here (answering already did that, in its own request). It is checked so a stale
+    or foreign id cannot start a turn: the question must exist, belong to the open chat, be
+    answered, and the chat must end in the results of the step that asked.
+    """
+    from ..policy import approvals as approval_store
+
+    session_id = get_active_session_id()
+    approval = approval_store.get(approval_id)
+    if approval is None or approval.session_id != session_id:
+        return JSONResponse({"error": "That question is not part of this chat."}, status_code=404)
+    if approval_store.pending(session_id):
+        return JSONResponse({"error": "There is still something waiting for your answer."},
+                            status_code=409)
+    tail = (conversation.get_messages(session_id) or [None])[-1]
+    if not tail or tail.get("role") != "tool":
+        return JSONResponse({"error": "There is nothing waiting for me to carry on with."},
+                            status_code=409)
+    turn = TurnRequest(
+        text="", session_id=session_id,
+        surface=Surface.VOICE if source == "voice" else Surface.TEXT,
+        autonomy=Autonomy.INTERACTIVE, turn_id=uuid.uuid4().hex, resume=True,
+    )
+    phase = {"value": "thinking"}
+
+    def produce(cancel: threading.Event) -> Iterator[dict[str, Any]]:
+        for event in get_orchestrator().run_turn(turn, cancel):
+            wire = to_wire(event)
+            phase["value"] = _phase_of(wire)
+            yield wire
 
     return StreamingResponse(
         stream_sync_source(request, produce,

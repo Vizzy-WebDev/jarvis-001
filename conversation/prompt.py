@@ -155,7 +155,10 @@ def answered_approvals_section(answered: list[Any]) -> str:
     lines = []
     for approval, result in answered:
         status = getattr(approval.status, "value", approval.status)
-        if status != "allow":
+        if status == "timeout":
+            lines.append(f"- {approval.capability}: the question timed out unanswered, so it did NOT "
+                         "run. Do not assume a yes; ask again only if it is still wanted.")
+        elif status != "allow":
             lines.append(f"- {approval.capability}: they said no. Do not do it; carry on without it.")
         elif result is None:
             lines.append(f"- {approval.capability}: they approved it, but no result was recorded.")

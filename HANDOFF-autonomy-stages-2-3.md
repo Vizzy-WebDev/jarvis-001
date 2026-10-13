@@ -1,5 +1,9 @@
 # Handoff — making Jarvis a genuinely autonomous agent (Stages 2–3)
 
+**Where this file is:** the root of the project, beside `CLAUDE.md` and `README.md`. The tracked copy
+is on branch `claude/autonomy`; a copy of it also sits in the main `Jarvis-001` folder so it can be
+opened there (kept out of that folder's branch on purpose — it belongs to another session).
+
 Written 2026-10-13 for the next Claude session. Read this first, then carry on from
 **"Exact next steps"**. Nothing below needs redoing unless it says so.
 

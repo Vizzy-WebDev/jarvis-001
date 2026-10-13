@@ -13,7 +13,7 @@ import { HealthCards, HealthChips, useHealth } from './health';
 import { HomeHeader, rgba } from './HomeHeader';
 import { BellPopover, ShowOnHome } from './popovers';
 import { BootLines, RestOverlay, usePresence } from './presence';
-import { HEARD_PHRASE, QuickSettings } from './QuickSettings';
+import { QuickSettings } from './QuickSettings';
 import { VoiceDock } from './VoiceDock';
 
 type Assistant = ReturnType<typeof useAssistant>;
@@ -121,13 +121,20 @@ export function HomeScreen({ a, go, menuOpen, onMenu }: {
     wakeListener.current = new WakeListener({ onWake: () => onWakeRef.current(), onStatus: setWakeStatus });
     return () => wakeListener.current?.stop();
   }, []);
-  const hears = prefs.wakeWord && prefs.wakePhrases.some((p) => p.toLowerCase() === HEARD_PHRASE.toLowerCase());
+  const hears = prefs.wakeWord && prefs.wakePhrases.length > 0;
   useEffect(() => {
     const listener = wakeListener.current;
     if (!listener || !prefs.loaded) return;
     if (hears && !a.listening) listener.start();
     else listener.stop();
   }, [hears, a.listening, prefs.loaded]);
+  // A changed list: the server loads the models for the new one when the listener reconnects.
+  const phraseKey = prefs.wakePhrases.join('|');
+  const firstPhrases = useRef(true);
+  useEffect(() => {
+    if (firstPhrases.current) { firstPhrases.current = false; return; }
+    wakeListener.current?.restart();
+  }, [phraseKey]);
 
   // --- keys: Esc stops Jarvis while it thinks, works or speaks (or ends a session), F = Just Jarvis, Space = push-to-talk
   const presenceOnly = useCallback(() => {
@@ -187,7 +194,7 @@ export function HomeScreen({ a, go, menuOpen, onMenu }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [presence.greet]);
   const idleText = !a.configured ? 'No model is set up yet'
-    : wakeStatus.kind === 'listening' ? `Ready. Say “${HEARD_PHRASE}”`
+    : wakeStatus.kind === 'listening' && wakeStatus.heard.length ? `Ready. Say “${wakeStatus.heard[0]}”`
       : prefs.pushToTalk ? 'Ready. Hold Space to talk'
         : 'Ready. Click the mic to talk';
   const status = presence.presence === 'waking'

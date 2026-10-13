@@ -101,6 +101,8 @@ export function Composer({
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dictating, setDictating] = useState(false);
+  /** A passing dictation note (the first-time speech model download), not an error. */
+  const [dictationNote, setDictationNote] = useState<string | null>(null);
   /**
    * Whether this browser can do it at all, settled AFTER mounting.
    *
@@ -116,9 +118,9 @@ export function Composer({
 
   /**
    * The composer's own microphone: speaking INSTEAD of typing, which is a
-   * different thing from talking to Jarvis. It never sends anything and never
-   * reaches the server — words land in the box and are sent, or edited first,
-   * by hand.
+   * different thing from talking to Jarvis. It never sends a message — words land
+   * in the box and are sent, or edited first, by hand. (They are recognised by this
+   * app's own server, like the voice engines' — see lib/voice/dictation.ts.)
    */
   const [dictation] = useState(() => new Dictation({
     onText: (spoken) => {
@@ -131,6 +133,7 @@ export function Composer({
     },
     onState: (state) => setDictating(state === 'listening'),
     onError: setError,
+    onNote: setDictationNote,
     // Read through a ref rather than captured: this object is built once, and a
     // captured prop would answer with the value from that first render forever.
     isSpeaking: () => speakingRef.current?.() ?? false,
@@ -341,6 +344,11 @@ export function Composer({
       {error && (
         <p data-testid="composer-error" className="px-1 pb-1.5 text-[12px] text-badge-red">
           {error}
+        </p>
+      )}
+      {!error && dictationNote && (
+        <p data-testid="dictation-note" className="px-1 pb-1.5 text-[12px] text-ink-muted">
+          {dictationNote}
         </p>
       )}
 

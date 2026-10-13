@@ -70,12 +70,13 @@ class AlwaysWakes(WakeDetector):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._model = object()  # loaded, as far as status() can tell
+        self._keys = {"hey_jarvis_v0.1": "Hey Jarvis"}
 
     def load(self) -> bool:
         return True
 
-    def _score(self, frame: bytes) -> float:
-        return 0.99
+    def _best(self, frame: bytes) -> tuple[str, float]:
+        return "hey_jarvis_v0.1", 0.99
 
 
 def test_audio_is_buffered_into_exact_frames_not_padded():
@@ -84,9 +85,9 @@ def test_audio_is_buffered_into_exact_frames_not_padded():
     scored: list[int] = []
 
     class Counting(AlwaysWakes):
-        def _score(self, frame: bytes) -> float:
+        def _best(self, frame: bytes) -> tuple[str, float]:
             scored.append(len(frame))
-            return 0.0
+            return "hey_jarvis_v0.1", 0.0
 
     detector = Counting()
     detector.feed(pcm(FRAME_SAMPLES // 2))          # half a frame: nothing yet

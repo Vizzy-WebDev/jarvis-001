@@ -36,7 +36,8 @@ export interface UiPrefs {
   voiceOutput: string;
 }
 
-export const DEFAULT_WAKE_PHRASES = ['Hey Jarvis', 'Jarvis', 'OK Jarvis', 'Wake up Jarvis'];
+/** All four are listened for at once (decided 2026-10-12); the server falls back to the same list. */
+export const DEFAULT_WAKE_PHRASES = ['Hey Jarvis', 'Hello Jarvis', 'Wake up Jarvis', 'Jarvis wake up'];
 
 export const UI_DEFAULTS: UiPrefs = {
   restAfterMin: 5,

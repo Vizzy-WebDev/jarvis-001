@@ -3,15 +3,19 @@
 import { AudioPlayer } from './audio-player';
 import { BrowserSpeaker } from './browser-speaker';
 import { VoiceEngine } from './engine';
+import { MicStream } from './mic-stream';
 import { soundFor } from './reaction-sounds';
+import { describeProgress, RecognitionSocket } from './recognition-socket';
 import { computeWaitMs, MicLevelMonitor, SilenceWatcher } from './turn-detector';
 
 /**
- * Engine A — works with any model.
+ * Engine A ("Speak and listen") — works with any model.
  *
- * Recognition happens in the browser, the reply streams from the ordinary chat
- * stream, and speech comes from either the browser's own voice or a configured
- * provider. Turn-taking and barge-in are handled here.
+ * One microphone capture (`MicStream`, echo-cancelled) whose frames go to this app's own
+ * recognition socket (`RecognitionSocket`: on this computer or the chosen cloud service —
+ * never the browser's built-in recognition). The reply streams from the ordinary chat
+ * stream, and speech comes from either the browser's own voice or a configured provider.
+ * Turn-taking and barge-in are handled here.
  *
  * Expect roughly 0.8–1.5s to first words: text has to stream far enough for a
  * speakable chunk before audio can start. The realtime engine is the faster
@@ -19,11 +23,10 @@ import { computeWaitMs, MicLevelMonitor, SilenceWatcher } from './turn-detector'
  */
 
 /**
- * How long after the audio physically stops before recognition resumes. Cloud
- * recognition runs several hundred milliseconds behind real time, so audio
- * captured DURING playback can otherwise surface as a transcript AFTER the
- * speaking guard has already cleared — becoming a phantom turn the instant the
- * assistant finishes.
+ * How long after the audio physically stops before frames are sent again. Recognition
+ * runs a little behind real time, so audio captured DURING playback can otherwise surface
+ * as a transcript AFTER the speaking guard has already cleared — becoming a phantom turn
+ * the instant the assistant finishes.
  */
 const ECHO_TAIL_MS = 700;
 
@@ -60,11 +63,15 @@ type Speaker = AudioPlayer | BrowserSpeaker;
 
 export class PipelineEngine extends VoiceEngine {
   private active = false;
-  private stream: MediaStream | null = null;
+  /** The one microphone capture; its frames go to `recognizer`. */
+  private capture: MicStream | null = null;
   private mic: MicLevelMonitor | null = null;
   private silence: SilenceWatcher | null = null;
-  private recognition: SpeechRecognition | null = null;
+  private recognizer: RecognitionSocket | null = null;
+  /** Frames are held back while Jarvis speaks (plus a tail) — see ECHO_TAIL_MS. */
   private recognitionSuspended = false;
+  /** Words recognised but not yet settled into `pendingUtterance`. */
+  private interim = '';
   private speaker: Speaker | null = null;
   /** Invalidates a discarded speaker's late callbacks — see `interrupt`. */
   private speakerGeneration = 0;
@@ -103,16 +110,11 @@ export class PipelineEngine extends VoiceEngine {
 
   async start(): Promise<void> {
     if (this.active) return;
-    const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
-    if (!Recognition) {
-      this.emit('error', { message: 'Speaking to Jarvis needs Chrome or Edge.', fatal: true });
-      return;
-    }
+    const capture = new MicStream();
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
+      await capture.start();
     } catch {
+      capture.stop();
       this.emit('error', {
         message: 'The microphone was blocked. Allow it in your browser and try again.',
         fatal: true,
@@ -121,9 +123,37 @@ export class PipelineEngine extends VoiceEngine {
     }
 
     this.active = true;
-    this.mic = new MicLevelMonitor(this.stream);
+    this.capture = capture;
+    this.mic = new MicLevelMonitor(capture.getRawStream()!);
     this.silence = new SilenceWatcher(this.mic);
-    this.startRecognition(Recognition);
+
+    let failure: string | null = null;
+    const recognizer = new RecognitionSocket({
+      onTranscript: (text, isFinal, _speechFinal, confidence) => this.onTranscript(text, isFinal, confidence),
+      onProgress: (progress) => this.emit('listening_progress', { text: describeProgress(progress) }),
+      onError: (message, fatal) => {
+        if (fatal && !recognizer.mode) failure = message;   // reported once start() gives up
+        else this.emit('error', { message });
+      },
+      onLost: () => {
+        if (this.recognizer !== recognizer) return;
+        this.stop();
+        this.emit('error', { message: 'Lost the connection to speech recognition. Tap the mic to talk again.' });
+      },
+    });
+    this.recognizer = recognizer;
+    capture.onFrame = (frame) => {
+      if (this.active && !this.recognitionSuspended && !this.muted) recognizer.send(frame);
+    };
+    const ok = await recognizer.connect();
+    if (this.recognizer !== recognizer) return;      // stopped while it was getting ready
+    if (!ok) {
+      // stop() first: it ends in setState('idle'), which sets a generic status text;
+      // the specific message must be the last write.
+      this.stop();
+      this.emit('error', { message: failure ?? 'Could not start speech recognition.', fatal: true });
+      return;
+    }
     this.setState('listening');
     this.armIdle();
   }
@@ -138,17 +168,14 @@ export class PipelineEngine extends VoiceEngine {
     this.pendingUtterance = '';
     this.interrupt({ keepListening: true });  // silence any reply in progress
 
-    if (this.recognition) {
-      this.recognition.onend = null;  // do not auto-restart what we are stopping
-      try {
-        this.recognition.stop();
-      } catch {
-        /* already stopped */
-      }
-      this.recognition = null;
-    }
-    this.stream?.getTracks().forEach((track) => track.stop());
-    this.stream = null;
+    this.recognizer?.close();
+    this.recognizer = null;
+    this.recognitionSuspended = false;
+    this.interim = '';
+    // Releasing the microphone is the point of stopping: the capture's tracks are ended
+    // here, so the browser's "in use" indicator goes out with the session.
+    this.capture?.stop();
+    this.capture = null;
     this.mic?.close();
     this.mic = null;
     this.silence = null;
@@ -185,120 +212,56 @@ export class PipelineEngine extends VoiceEngine {
     // clear the echo detector and then still send the echo as the next turn.
     this.silence?.cancel();
     this.pendingUtterance = '';
+    this.interim = '';
     this.pendingConfidence = null;
     this.finalizeInFlight = false;
     if (resumeRecognition) this.resumeRecognition();
     if (!keepListening) this.backToListening();
   }
 
-  setMuted(muted: boolean): void {
-    super.setMuted(muted);
-    this.syncRecognition();
-  }
+  // Muting needs nothing more here: frames are only sent while unmuted (`capture.onFrame`).
 
   // --- listening --------------------------------------------------------------
 
-  private startRecognition(Recognition: typeof SpeechRecognition): void {
-    const recognition = new Recognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-    recognition.onresult = (event) => this.onResult(event);
-    recognition.onerror = (event) => this.onRecognitionError(event);
-    recognition.onend = () => {
-      // Continuous recognition still ends on its own; restart unless this
-      // engine deliberately stopped or is currently suspended.
-      if (this.active && !this.recognitionSuspended && !this.muted) {
-        try {
-          recognition.start();
-        } catch {
-          /* a start is already pending */
-        }
-      }
-    };
-    recognition.start();
-    this.recognition = recognition;
-  }
-
-  /** Off entirely while the assistant is talking, so an echo can never become
+  /** No frames leave while the assistant is talking, so an echo can never become
    *  text — the narrowest window that still fixes self-listening. */
   private suspendRecognition(): void {
     if (this.echoTailTimer) clearTimeout(this.echoTailTimer);
     this.echoTailTimer = null;
-    if (this.recognitionSuspended) return;
     this.recognitionSuspended = true;
-    this.syncRecognition();
   }
 
   private resumeRecognition(): void {
     if (this.echoTailTimer) clearTimeout(this.echoTailTimer);
     this.echoTailTimer = null;
-    if (!this.recognitionSuspended) return;
     this.recognitionSuspended = false;
-    this.syncRecognition();
   }
 
-  private syncRecognition(): void {
-    if (!this.recognition) return;
-    const shouldRun = this.active && !this.recognitionSuspended && !this.muted;
-    try {
-      if (shouldRun) this.recognition.start();
-      else this.recognition.stop();
-    } catch {
-      /* already in the requested state */
-    }
-  }
-
-  private onRecognitionError(event: SpeechRecognitionErrorEvent): void {
-    if (event.error === 'no-speech' || event.error === 'aborted') return;  // ordinary
-    if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-      // stop() first: it ends in setState('idle'), which sets a generic status
-      // text. Emitting the specific message AFTER stop() returns is what makes
-      // it the last write and the one actually seen, rather than being
-      // overwritten in the same tick before anything paints.
-      this.stop();
-      this.emit('error', { message: 'The microphone was blocked. Allow it and try again.', fatal: true });
-    } else if (event.error === 'network') {
-      this.emit('error', { message: 'Speech recognition needs an internet connection.' });
-    } else {
-      this.emit('error', { message: `Microphone problem: ${event.error}` });
-    }
-  }
-
-  private onResult(event: SpeechRecognitionEvent): void {
-    // Recognition is stopped for the whole speaking window and while muted, but
-    // a result already in the pipeline when it was stopped can still arrive:
-    // belt and braces, so it can never be treated as something someone said.
+  private onTranscript(text: string, isFinal: boolean, confidence?: number): void {
+    // Nothing is sent while speaking or muted, but a result for audio sent just before can
+    // still arrive: belt and braces, so it can never be treated as something someone said.
     if (this.recognitionSuspended || this.speaking || this.muted) return;
 
-    // Real speech heard: restart the quiet countdown. `idle` now genuinely means
-    // recognition was torn down via stop() (active is always false whenever
-    // state is idle), so there is nothing left to "wake" here.
+    // Real speech heard: restart the quiet countdown. `idle` genuinely means the session
+    // was torn down via stop(), so there is nothing left to "wake" here.
     this.armIdle();
 
-    let interim = '';
-    let settled = '';
-    for (let i = event.resultIndex; i < event.results.length; i += 1) {
-      const result = event.results[i]!;
-      const text = result[0]!.transcript;
-      if (result.isFinal) {
-        settled += text;
-        // Confidence is only meaningful on a final result. Keep the LOWEST seen
-        // across the utterance — the conservative choice, so one garbled chunk
-        // in an otherwise clear sentence still trips the clarity guard.
-        const confidence = result[0]!.confidence;
-        if (typeof confidence === 'number' && !Number.isNaN(confidence)) {
-          this.pendingConfidence = this.pendingConfidence === null
-            ? confidence
-            : Math.min(this.pendingConfidence, confidence);
-        }
-      } else {
-        interim += text;
+    if (isFinal) {
+      this.pendingUtterance = `${this.pendingUtterance} ${text}`.trim();
+      this.interim = '';
+      // Keep the LOWEST confidence seen across the utterance — the conservative choice,
+      // so one garbled piece in an otherwise clear sentence still trips the clarity guard.
+      // The on-device recogniser reports none.
+      if (typeof confidence === 'number' && !Number.isNaN(confidence)) {
+        this.pendingConfidence = this.pendingConfidence === null
+          ? confidence
+          : Math.min(this.pendingConfidence, confidence);
       }
+    } else {
+      this.interim = text;
     }
-    if (settled) this.pendingUtterance += settled;
 
-    const preview = `${this.pendingUtterance} ${interim}`.trim();
+    const preview = `${this.pendingUtterance} ${this.interim}`.trim();
     this.emit('transcript', { text: preview, final: false });
 
     // The wait DURATION still comes from how the sentence trails off; what the
@@ -332,6 +295,7 @@ export class PipelineEngine extends VoiceEngine {
 
     const text = preview.trim();
     this.pendingUtterance = '';
+    this.interim = '';
     if (!text) {
       this.finalizeInFlight = false;
       return;
@@ -367,7 +331,7 @@ export class PipelineEngine extends VoiceEngine {
     // real sign of progress below.
     this.armStuckWatchdog(() => this.recoverFromStuck());
 
-    // Recognition deliberately stays LIVE through thinking: nothing is playing,
+    // Frames deliberately keep flowing through thinking: nothing is playing,
     // so there is no echo risk, and this is what lets someone keep talking or
     // change their mind before a word has been said.
 
@@ -562,6 +526,7 @@ export class PipelineEngine extends VoiceEngine {
     this.echoTailTimer = setTimeout(() => {
       this.silence?.cancel();
       this.pendingUtterance = '';
+      this.interim = '';
       this.pendingConfidence = null;
       this.resumeRecognition();
     }, ECHO_TAIL_MS);

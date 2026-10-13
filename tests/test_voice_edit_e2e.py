@@ -7,15 +7,18 @@ so Edit/Retry on it asked the server to cut at an id it had never heard of. The
 server cut nothing; the old exchange stayed in Jarvis's memory and came back on
 reload. Typed messages always had the swap.
 
-Speech itself cannot be produced here, so the browser's recognition is replaced
-by a stand-in that "hears" a sentence (everything after it — the real engine,
-its silence detection on a real, silent fake microphone, the real stream, the
-real server — is the app's own), and the fake microphone plays a silent file
-rather than Chromium's test beep, which never lets the silence watcher fire.
+Speech itself cannot be produced here, so the server's recogniser is replaced by a
+stand-in session that "hears" a sentence when the test says so. Everything around it is
+the app's own: the real engine streaming real microphone frames over the real recognition
+socket, its silence detection on a real, silent fake microphone, the real chat stream, the
+real server. The fake microphone plays a silent file rather than Chromium's test beep,
+which never lets the silence watcher fire.
 """
 
 from __future__ import annotations
 
+import asyncio
+import threading
 import wave
 
 import httpx
@@ -32,21 +35,59 @@ pytestmark = [
     pytest.mark.skipif(CHROME is None, reason="no Chromium in this environment"),
 ]
 
-FAKE_RECOGNITION = """
-class FakeRecognition {
-  constructor() { this.continuous = false; this.interimResults = false; this.lang = ''; window.__recognition = this; }
-  start() { this.running = true; }
-  stop() { this.running = false; }
-  abort() { this.running = false; }
-}
-window.SpeechRecognition = FakeRecognition;
-window.webkitSpeechRecognition = FakeRecognition;
-window.__say = (text) => {
-  const result = [{ transcript: text, confidence: 0.97 }];
-  result.isFinal = true;
-  window.__recognition.onresult({ resultIndex: 0, results: [result] });
-};
-"""
+class Ears:
+    """The stand-in recogniser sessions the server opens, and a way to make them hear."""
+
+    def __init__(self) -> None:
+        self.sessions: list = []
+        self.frames = 0
+        self.lock = threading.Lock()
+
+    def hear(self, text: str) -> None:
+        with self.lock:
+            session = self.sessions[-1]
+        session.loop.call_soon_threadsafe(session.events.put_nowait, {
+            "type": "transcript", "text": text, "isFinal": True, "speechFinal": True, "confidence": 0.97})
+
+
+@pytest.fixture
+def ears(monkeypatch):
+    from jarvis import speech_models
+    from jarvis.stt import local
+
+    heard = Ears()
+
+    class StandIn:
+        def __init__(self, model_id: str = local.DEFAULT_MODEL) -> None:
+            self.loop = asyncio.get_running_loop()
+            self.events: asyncio.Queue = asyncio.Queue()
+            with heard.lock:
+                heard.sessions.append(self)
+
+        async def warm(self) -> None:
+            pass
+
+        async def send(self, pcm: bytes) -> None:
+            heard.frames += 1          # real microphone frames really arrive
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            event = await self.events.get()
+            if event is None:
+                raise StopAsyncIteration
+            return event
+
+        async def close(self) -> None:
+            self.events.put_nowait(None)
+
+    monkeypatch.setattr(local, "available", lambda: True)
+    monkeypatch.setattr(local, "LocalSession", StandIn)
+    monkeypatch.setattr(speech_models, "ensure",
+                        lambda model_id: {"id": model_id, "label": model_id, "state": "ready",
+                                          "done": 1, "total": 1, "error": None})
+    return heard
 
 
 @pytest.fixture
@@ -61,7 +102,7 @@ def silent_wav(tmp_path):
 
 
 @pytest.fixture
-def speaking_page(live_server, serve_provider, silent_wav):  # noqa: F811
+def speaking_page(live_server, serve_provider, silent_wav, ears):  # noqa: F811
     stub = serve_provider("openai-chat", reply="Hello from the stub.")
     connect_and_select(live_server, stub)
     with sync_playwright() as play:
@@ -69,8 +110,8 @@ def speaking_page(live_server, serve_provider, silent_wav):  # noqa: F811
             "--no-sandbox", "--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream",
             f"--use-file-for-fake-audio-capture={silent_wav}"])
         context = browser.new_context(viewport={"width": 1440, "height": 900}, permissions=["microphone"])
-        context.add_init_script(FAKE_RECOGNITION)
         page = context.new_page()
+        page.__ears = ears
         visit(page, live_server)
         yield page, live_server
         context.close()
@@ -84,8 +125,10 @@ def stored_messages(base: str) -> list[tuple[str, str]]:
 
 
 def say(page: Page, text: str, replies_expected: int) -> None:
-    page.evaluate("(t) => window.__say(t)", text)
-    expect(page.locator("text=Hello from the stub.")).to_have_count(replies_expected, timeout=30_000)
+    page.__ears.hear(text)
+    # Generous: the first turn of a test process pays for loading the whole turn loop, and on a
+    # busy laptop that alone has taken over half a minute.
+    expect(page.locator("text=Hello from the stub.")).to_have_count(replies_expected, timeout=120_000)
 
 
 def start_listening(page: Page) -> None:
@@ -94,7 +137,13 @@ def start_listening(page: Page) -> None:
     page.click("[data-testid=engine-pipeline]")
     page.keyboard.press("Escape")
     page.click("[data-testid=mic]")
-    page.wait_for_function("() => window.__recognition && window.__recognition.running", timeout=15_000)
+    page.wait_for_function("() => document.querySelector('[data-testid=mic]').getAttribute('aria-pressed') === 'true'",
+                           timeout=15_000)
+    # Listening for real: the microphone's frames are reaching the server's recogniser.
+    deadline = page.evaluate("Date.now()") + 15_000
+    while page.__ears.frames < 5:
+        assert page.evaluate("Date.now()") < deadline, "no microphone frames reached the server"
+        page.wait_for_timeout(100)
 
 
 def message(page: Page, text: str):

@@ -125,13 +125,22 @@ Jarvis's memory, and it reappeared on reload. `tests/test_voice_edit_e2e.py` dri
 engine with a stand-in recogniser and a silent fake microphone and checks the stored
 messages, not the screen.
 
-- **`PipelineEngine`** (`pipeline-engine.ts`) — Engine A. Chrome's own
-  `SpeechRecognition` → any model, over the ordinary `/api/chat/stream` path →
-  server-side or browser TTS. Three separately-swappable hops, not a fused
-  pipeline.
+**Recognition is this app's own, never the browser's** (decided 2026-10-12: Chrome's
+`SpeechRecognition` sent the audio to Google from the page and opened a second, unprocessed
+capture). Both engines and the composer's dictation take ONE echo-cancelled capture
+(`MicStream`) and send its frames over `lib/voice/recognition-socket.ts` to `/api/duplex`,
+which recognises them on this computer (`speech/stt/local.py`: Silero + Moonshine, models
+fetched once with progress — the `listening_progress` event) or through the cloud service the
+person chose (`listeningProvider` pref, e.g. Deepgram). Where nothing can recognise, the
+server says why and the engine lets the microphone go.
+
+- **`PipelineEngine`** (`pipeline-engine.ts`) — Engine A, "Speak and listen". Recognition
+  as above → any model, over the ordinary `/api/chat/stream` path → server-side or browser
+  TTS. Its own turn-taking: the end-of-sentence wait (`computeWaitMs`) measured by the
+  `SilenceWatcher`, 30 s first-listen and 7 s follow-up windows.
 - **`DuplexEngine`** (`duplex-engine.ts`) — Engine C, "keeps listening while it
-  talks." Recognition goes over `/api/duplex` (a provider when a key is
-  configured, the browser's own otherwise), reasoning is the ordinary chat
+  talks." Recognition as above, a turn ending on the recogniser's `utterance_end`
+  (1 s of quiet, the same on this computer and in the cloud), reasoning is the ordinary chat
   stream, speech is any configured voice — four layers, kept genuinely
   separate. Self-echo is prevented by not SENDING mic frames while it speaks
   (plus a short tail), never by filtering audio after the fact — three
@@ -177,12 +186,10 @@ audio-reactivity (`lib/core.ts`, fed by `components/home/HomeScreen.tsx`)** — 
 `MicLevelMonitor`; `RealtimeEngine` computes RMS inline from each
 `onaudioprocess` frame.
 
-**The mic never re-enters while Jarvis is talking, on purpose.**
-`pipeline-engine.ts`'s continuous `SpeechRecognition` opens its own separate,
-unprocessed mic capture — `echoCancellation: true` on `getUserMedia()` never
-reaches it — so without suspension Jarvis hears its own voice as user input.
-Recognition is suspended for the window Jarvis's audio is *actually playing*
-plus a ~700ms tail (Chrome's cloud ASR runs 300-800ms behind real time).
+**No frames are sent while Jarvis is talking, on purpose.** Echo cancellation is not
+perfect on every laptop, so without suspension Jarvis can hear its own voice as user input.
+Sending is suspended for the window Jarvis's audio is *actually playing* plus a ~700ms tail
+(recognition runs a little behind real time).
 **The suspend call must live in `_onSpeechStart()`, not `_send()`** —
 suspending from `_send()` fires at "thinking", before any audio exists to
 echo, and kills the mic for the whole thinking phase too. If self-listening
@@ -235,18 +242,24 @@ motion when there is one. The five states and their colours are in `lib/jarvis-s
 
 **The mic (`[data-testid=mic]`, design 1c)** starts a voice session when none is running
 — the same as saying the wake word — and mutes/unmutes one that is. It never ends or
-interrupts anything: **Interrupt** is its own red ring to the LEFT of the mic, there only
-while Jarvis is speaking (and Esc), and Esc while listening ends the session. The phone
+interrupts anything: **Interrupt** is its own red ring to the LEFT of the mic, there
+whenever Jarvis is thinking, working or speaking (`useAssistant`'s `working`, a typed reply
+included) and hidden only when idle; Esc does the same, and Esc while listening ends the
+session. Stopping cancels the turn's stream: the server finishes nothing more, and a step's
+remaining actions are not started (what already ran stays done and is reported as done). The phone
 layout keeps a separate mute button, as designed. `toggleMute` in `useAssistant.ts`
 touches only microphone capture — never `interrupt()` or `stop()`.
 
 **The wake word** (`lib/voice/wake-listener.ts`) streams 16 kHz PCM to this app's own
-`/api/voice/wake`, scored by the on-device model; the audio never goes further. It runs
-while no voice session is (one recogniser at a time) and while "Hey Jarvis" is in the
-phrase list — the model hears that phrase only; others are kept and marked "not heard
-yet". The server fetches the model once into `data/wakeword/` behind the
-`JARVIS_WAKE_MODEL_DOWNLOAD` interlock and answers `preparing` meanwhile; the listener
-retries.
+`/api/voice/wake`, scored on this computer; the audio never goes further. It runs while no
+voice session is (one recogniser at a time) and the phrase list is not empty. Every phrase in
+the list (default: Hey Jarvis, Hello Jarvis, Wake up Jarvis, Jarvis wake up) is listened for
+at once, each by its own openWakeWord model in `data/wakeword/` named after it
+(`wake_up_jarvis.onnx`); the socket reads the saved list, and the listener reconnects when it
+changes. A phrase with no model is kept and marked "needs its model" in the editor, which
+takes a trained `.onnx` (`POST /api/voice/wake/models`). Published models ("Hey Jarvis") are
+fetched once behind the `JARVIS_WAKE_MODEL_DOWNLOAD` interlock; meanwhile the server answers
+`preparing` and the listener retries.
 
 **Editing (design 1h)** loads a sent message — text and files — into the composer,
 tagged "Editing message"; Resend replaces the replies after it (the same

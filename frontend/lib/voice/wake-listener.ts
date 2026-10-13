@@ -4,10 +4,10 @@ import { MicStream } from './mic-stream';
 import { base64ToBytes } from './pcm';
 
 /**
- * Listening for "Hey Jarvis" while nothing else is.
+ * Listening for the wake phrases while nothing else is.
  *
  * The microphone's audio goes to this app's own server (`/api/voice/wake`),
- * which scores it with a small model on this machine — never further. The
+ * which scores it with one small model per phrase on this machine — never further. The
  * server existed and was tested on its own, but nothing in the interface ever
  * opened it, so the wake word could not wake anything.
  *
@@ -19,7 +19,7 @@ import { base64ToBytes } from './pcm';
 export type WakeStatus =
   | { kind: 'off' }
   | { kind: 'starting' }
-  | { kind: 'listening' }
+  | { kind: 'listening'; heard: string[] }
   | { kind: 'preparing'; note: string }
   | { kind: 'unavailable'; note: string }
   | { kind: 'blocked'; note: string };
@@ -39,6 +39,15 @@ export class WakeListener {
   start(): void {
     if (this.wanted) return;
     this.wanted = true;
+    void this.open();
+  }
+
+  /** Listen again from scratch — the phrase list changed, so the server loads its models. */
+  restart(): void {
+    if (!this.wanted) return;
+    if (this.retry) clearTimeout(this.retry);
+    this.retry = null;
+    this.release();
     void this.open();
   }
 
@@ -76,7 +85,7 @@ export class WakeListener {
 
     socket.onmessage = async (event) => {
       if (socket !== this.socket) return;
-      let message: { type?: string; note?: string };
+      let message: { type?: string; note?: string; phrases?: { phrase: string; state: string }[] };
       try {
         message = JSON.parse(String(event.data));
       } catch {
@@ -94,7 +103,8 @@ export class WakeListener {
           mic.onFrame = (frame) => {
             if (socket.readyState === WebSocket.OPEN) socket.send(base64ToBytes(frame));
           };
-          this.handlers.onStatus({ kind: 'listening' });
+          this.handlers.onStatus({ kind: 'listening',
+            heard: (message.phrases ?? []).filter((p) => p.state === 'ready').map((p) => p.phrase) });
         } catch {
           this.wanted = false;
           this.release();

@@ -1,16 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { api } from '@/lib/api';
-import type { VoiceOptions } from '@/lib/api-types';
+import type { VoiceOptions, WakePhraseState } from '@/lib/api-types';
 import { DEFAULT_WAKE_PHRASES, setPrefs, usePrefs } from '@/lib/usePrefs';
 import type { WakeStatus } from '@/lib/voice/wake-listener';
 
 import { HomePopover } from './popovers';
-
-/** The one phrase the on-device wake model can actually hear. */
-export const HEARD_PHRASE = 'Hey Jarvis';
 
 /**
  * Quick settings (design 1f), from the gear on Home: how Jarvis listens and
@@ -20,9 +17,11 @@ export const HEARD_PHRASE = 'Hey Jarvis';
  * is available from real state (a connected model, a configured key) — never
  * from a provider name this code knows. An unavailable one says why.
  *
- * Wake phrases (1d): the list is the person's to edit. The on-device model hears
- * "Hey Jarvis" only, so any other phrase is kept but marked "not heard yet" —
- * the editor never claims a phrase works when nothing is listening for it.
+ * Wake phrases (1d): the list is the person's to edit, and every phrase in it is
+ * listened for at once. Each needs its own openWakeWord model on this computer; the
+ * editor shows which ones Jarvis can hear (`/api/voice/status`), keeps the others
+ * marked "needs its model", and takes a trained model file for them — it never claims
+ * a phrase works when nothing is listening for it.
  */
 export function QuickSettings({ open, onClose, onNavigate, wakeStatus }: {
   open: boolean;
@@ -35,29 +34,61 @@ export function QuickSettings({ open, onClose, onNavigate, wakeStatus }: {
   const [view, setView] = useState<'main' | 'phrases'>('main');
   const [select, setSelect] = useState<'stt' | 'tts' | null>(null);
   const [draft, setDraft] = useState('');
+  const [heard, setHeard] = useState<WakePhraseState[] | null>(null);
+  const [modelNote, setModelNote] = useState<string | null>(null);
+  const modelInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) {
       setView('main');
       setSelect(null);
+      setModelNote(null);
       return;
     }
     api.voice.options().then(setOptions).catch(() => setOptions(null));
   }, [open]);
 
   const phrases = prefs.wakePhrases;
+  const phraseKey = phrases.join('|');
+  // What the server can hear for the saved list, asked again when the list changes and
+  // every 2 s while a phrase's model is still loading (a few seconds on a laptop).
+  const loadingKey = (heard ?? []).filter((h) => h.state === 'loading').map((h) => h.phrase).join('|');
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    const ask = () => api.voice.status().then((s) => { if (live) setHeard(s.wake.phrases); }).catch(() => undefined);
+    void ask();
+    const again = setInterval(ask, 2000);
+    const stop = setTimeout(() => clearInterval(again), loadingKey ? 60_000 : 4000);
+    return () => { live = false; clearInterval(again); clearTimeout(stop); };
+  }, [open, phraseKey, loadingKey]);
+  const stateOf = (p: string) => heard?.find((h) => h.phrase === p)?.state;
+  const active = phrases.filter((p) => stateOf(p) === 'ready').length;
+
+  const addModel = async (file: File | undefined) => {
+    if (!file) return;
+    setModelNote('Adding…');
+    try {
+      const reply = await api.voice.addWakeModel(file);
+      setHeard(reply.wake.phrases);
+      setModelNote(`Model for “${reply.phrase}” added.`);
+    } catch (err) {
+      setModelNote(err instanceof Error ? err.message : 'That model could not be added.');
+    }
+  };
   const engines = options?.engines ?? [];
   const voices = options?.voices ?? [];
   const engine = engines.find((e) => e.id === prefs.voiceEngine);
   const voice = voices.find((v) => v.id === prefs.voiceOutput);
   const quiet = prefs.quietHours ?? { enabled: false, start: '23:00', end: '08:00' };
 
-  const wakeHint = !prefs.wakeWord ? `${HEARD_PHRASE} · off`
-    : wakeStatus.kind === 'listening' ? `${HEARD_PHRASE} · listening`
+  const count = (n: number) => `${n} ${n === 1 ? 'phrase' : 'phrases'}`;
+  const wakeHint = !prefs.wakeWord ? `${count(phrases.length)} · off`
+    : wakeStatus.kind === 'listening' ? `${count(wakeStatus.heard.length)} active`
       : wakeStatus.kind === 'preparing' ? 'Getting ready…'
         : wakeStatus.kind === 'blocked' ? 'Microphone blocked'
-          : wakeStatus.kind === 'unavailable' ? 'Not available'
-          : HEARD_PHRASE;
+          : wakeStatus.kind === 'unavailable' ? 'No phrase can be heard yet'
+          : heard ? `${count(active)} active` : count(phrases.length);
 
   const addPhrase = () => {
     const v = draft.trim();
@@ -169,24 +200,28 @@ export function QuickSettings({ open, onClose, onNavigate, wakeStatus }: {
             <span className="text-[14px] font-medium text-ink-strong">Wake phrases</span>
           </div>
           <span className="text-[12.5px] leading-normal text-ink-muted">
-            Jarvis listens for “{HEARD_PHRASE}” on this computer — the audio never leaves it.
-            Other phrases are kept here, and marked until Jarvis can hear them.
+            Jarvis listens for all of these at once, on this computer — the audio never leaves it.
+            Each phrase needs its own trained model; one without it is kept here and marked.
           </span>
           <div className="flex flex-wrap gap-1.5">
             {phrases.map((p) => {
-              const heard = p.toLowerCase() === HEARD_PHRASE.toLowerCase();
+              const state = stateOf(p);
+              const heard = state === 'ready';
               return (
                 <span key={p} data-testid="wake-phrase"
                       className="flex items-center gap-1.5 rounded-full border py-1.5 pl-[11px] pr-1.5 text-[13px]"
                       style={heard
                         ? { borderColor: 'rgba(127,184,230,0.35)', background: 'rgba(127,184,230,0.1)', color: '#cfe6f7' }
                         : { borderColor: 'rgb(var(--line) / 0.22)', color: 'rgb(var(--ink-muted))' }}
-                      title={heard ? 'Heard on this computer' : 'Not heard yet'}>
+                      data-state={state ?? 'unknown'}
+                      title={heard ? 'Heard on this computer' : state === 'loading' ? 'Its model is loading' : 'Needs its trained model'}>
                   {heard && (
                     <svg viewBox="0 0 24 24" aria-hidden className="h-3 w-3 fill-none stroke-current stroke-2" strokeLinecap="round"><path d="m5 12 5 5 9-10" /></svg>
                   )}
                   {p}
-                  {!heard && <span className="text-[10.5px] text-ink-faint">not heard yet</span>}
+                  {state && !heard && (
+                    <span className="text-[10.5px] text-ink-faint">{state === 'loading' ? 'getting ready' : 'needs its model'}</span>
+                  )}
                   <button type="button" title="Remove" aria-label={`Remove ${p}`}
                           onClick={() => void setPrefs({ wakePhrases: phrases.filter((x) => x !== p) })}
                           className="flex h-5 w-5 items-center justify-center rounded-full text-ink-muted hover:bg-line/20 hover:text-white">
@@ -196,9 +231,14 @@ export function QuickSettings({ open, onClose, onNavigate, wakeStatus }: {
               );
             })}
           </div>
-          {!phrases.some((p) => p.toLowerCase() === HEARD_PHRASE.toLowerCase()) && (
+          {heard && phrases.length > 0 && !phrases.some((p) => stateOf(p) !== 'needs_model') && (
             <span className="text-[12px] leading-normal text-state-warn">
-              Without “{HEARD_PHRASE}” in the list, the wake word can’t hear you.
+              None of these phrases has its model yet, so the wake word can’t hear you.
+            </span>
+          )}
+          {phrases.length === 0 && (
+            <span className="text-[12px] leading-normal text-state-warn">
+              With no phrases, the wake word can’t hear you.
             </span>
           )}
           <div className="flex gap-2">
@@ -211,12 +251,21 @@ export function QuickSettings({ open, onClose, onNavigate, wakeStatus }: {
               Add
             </button>
           </div>
-          {!same && (
-            <button type="button" onClick={() => void setPrefs({ wakePhrases: DEFAULT_WAKE_PHRASES })}
-                    className="self-start py-0.5 text-[12.5px] text-[#9fd0f2] hover:text-white">
-              Restore defaults
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            {!same && (
+              <button type="button" onClick={() => void setPrefs({ wakePhrases: DEFAULT_WAKE_PHRASES })}
+                      className="py-0.5 text-[12.5px] text-[#9fd0f2] hover:text-white">
+                Restore defaults
+              </button>
+            )}
+            <button type="button" data-testid="add-wake-model" onClick={() => modelInput.current?.click()}
+                    className="py-0.5 text-[12.5px] text-[#9fd0f2] hover:text-white">
+              Add a phrase model…
             </button>
-          )}
+            <input ref={modelInput} type="file" accept=".onnx" hidden data-testid="wake-model-file"
+                   onChange={(e) => { void addModel(e.target.files?.[0]); e.target.value = ''; }} />
+          </div>
+          {modelNote && <span data-testid="wake-model-note" className="text-[12px] leading-normal text-ink-muted">{modelNote}</span>}
         </div>
       )}
       <div className="sticky bottom-0 -mx-3.5 mt-1.5 border-t border-line/[0.14] bg-[rgb(8_11_16/0.98)] p-2">

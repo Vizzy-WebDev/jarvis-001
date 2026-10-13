@@ -495,6 +495,20 @@ export interface VoiceOption {
   needsKey: boolean;
 }
 
+/** One wake phrase and whether Jarvis can hear it: its openWakeWord model is listening
+ *  (`ready`), on its way (`loading`), or not on this computer yet (`needs_model`). */
+export interface WakePhraseState {
+  phrase: string;
+  state: 'ready' | 'loading' | 'needs_model';
+}
+
+export interface WakeState {
+  available: boolean;
+  preparing: boolean;
+  phrases: WakePhraseState[];
+  note: string;
+}
+
 export interface VoiceOptions {
   engines: VoiceEngineOption[];
   voices: VoiceOption[];

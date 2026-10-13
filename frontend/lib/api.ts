@@ -60,7 +60,7 @@ import type {
   Health,
   Prefs,
   SandboxStatus,
-  VoiceOptions,
+  VoiceOptions, WakeState,
   Status,
   Task,
   TaskRun,
@@ -217,6 +217,12 @@ export const api = {
    *  name. */
   voice: {
     options: () => request<VoiceOptions>('/voice/options'),
+    status: () => request<{ wake: WakeState }>('/voice/status'),
+    /** A trained wake-phrase model (.onnx), sent as raw bytes like `/uploads`. */
+    addWakeModel: (file: File) =>
+      request<{ ok: true; phrase: string; wake: WakeState }>(
+        `/voice/wake/models?name=${encodeURIComponent(file.name)}`,
+        { method: 'POST', body: file, headers: { 'Content-Type': 'application/octet-stream' } }),
   },
 
   /**

@@ -42,16 +42,33 @@ async def _send(socket: WebSocket, payload: dict[str, Any]) -> None:
 
 # --- continuous recognition ---------------------------------------------------
 
+#: Which recogniser listens: `local` (on this computer, the default) or `deepgram`. Read
+#: from the person's prefs; not in the prefs defaults, whose shape is pinned.
+LISTENING_PREF = "listeningProvider"
+
+
+def listening_choice() -> str:
+    from ..prefs import get_prefs
+
+    choice = get_prefs().get(LISTENING_PREF) or "local"
+    return choice if choice in ("local", "deepgram") else "local"
+
+
 @router.websocket("/duplex")
 async def duplex(socket: WebSocket) -> None:
     await socket.accept()
 
+    choice = listening_choice()
+    if choice == "local":
+        await _listen_on_this_computer(socket)
+        return
     if not stt.is_configured():
-        # Answer rather than refuse: the client needs no separate "can I even
-        # try" round trip, and falling back to the browser's own recognition is
-        # a real path, not a degraded one.
-        await _send(socket, {"type": "ready", "mode": "browser"})
-        await socket.close()
+        # The person chose the cloud service and its key is gone: say so, never
+        # quietly listen some other way.
+        await _send(socket, {"type": "error", "fatal": True, "error": (
+            "Deepgram is chosen for listening, but its key is not set up. Add it in "
+            "Settings → Voice, or choose On this computer.")})
+        await _close_socket(socket)
         return
 
     client_closed = False
@@ -114,7 +131,8 @@ async def duplex(socket: WebSocket) -> None:
     except WebSocketDisconnect:
         client_closed = True
     except stt.deepgram.NoKey:
-        await _send(socket, {"type": "ready", "mode": "browser"})
+        await _send(socket, {"type": "error", "fatal": True,
+                             "error": "Deepgram's key is not set up. Add it in Settings → Voice."})
     except Exception:  # noqa: BLE001
         logger.exception("recognition relay failed")
         await _send(socket, {"type": "error", "error": "Could not start speech recognition."})
@@ -153,3 +171,77 @@ async def _close_socket(socket: WebSocket) -> None:
         await socket.close()
     except (RuntimeError, WebSocketDisconnect):
         pass
+
+
+async def _listen_on_this_computer(socket: WebSocket) -> None:
+    """Recognition with no network at all: the same messages as the cloud relay above.
+
+    The models are fetched the first time they are needed; until they are here the browser is
+    sent `downloading` progress (bytes so far, bytes in all) on this same socket, then
+    `loading`, then `ready` — so the screen can show a real bar and the session simply
+    starts when it can."""
+    from .. import speech_models
+    from ..stt import local
+
+    client_closed = False
+    session = None
+    pump: asyncio.Task | None = None
+    try:
+        if not local.available():
+            await _send(socket, {"type": "error", "fatal": True, "error": (
+                "On-device speech recognition is not installed yet. Restart Jarvis to finish "
+                "installing it.")})
+            return
+        model_id = _local_model()
+        needed = ("silero-vad", model_id)
+        while True:
+            states = [speech_models.ensure(m) for m in needed]
+            failed = next((s for s in states if s["state"] == "failed"), None)
+            if failed:
+                await _send(socket, {"type": "error", "fatal": True,
+                                     "error": f"{failed['label']}: {failed['error']}"})
+                return
+            if all(s["state"] == "ready" for s in states):
+                break
+            await _send(socket, {"type": "downloading",
+                                 "label": next(s["label"] for s in states if s["state"] != "ready"),
+                                 "done": sum(s["done"] for s in states),
+                                 "total": sum(s["total"] for s in states)})
+            await asyncio.sleep(0.5)
+
+        await _send(socket, {"type": "loading"})
+        session = local.LocalSession(model_id)
+        await session.warm()
+        await _send(socket, {"type": "ready", "mode": "local", "model": model_id})
+
+        async def relay() -> None:
+            async for event in session:
+                await _send(socket, event)
+
+        pump = asyncio.create_task(relay())
+        while True:
+            message = json.loads(await socket.receive_text())
+            if message.get("type") == "audio" and isinstance(message.get("data"), str):
+                await session.send(base64.b64decode(message["data"]))
+            elif message.get("type") == "end":
+                break
+    except WebSocketDisconnect:
+        client_closed = True
+    except Exception:  # noqa: BLE001
+        logger.exception("on-device recognition failed")
+        await _send(socket, {"type": "error", "error": "Could not start speech recognition."})
+    finally:
+        if session is not None:
+            await session.close()
+        if pump is not None:
+            pump.cancel()
+        if not client_closed:
+            await _close_socket(socket)
+
+
+def _local_model() -> str:
+    from ..prefs import get_prefs
+    from ..stt import local
+
+    chosen = get_prefs().get("localListeningModel")
+    return chosen if chosen in local.MODELS else local.DEFAULT_MODEL

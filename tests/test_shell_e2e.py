@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1030,15 +1032,20 @@ def test_the_engine_chosen_in_settings_is_the_one_that_runs(voice_page):
         f"the continuous-listening socket was never opened: {opened}"
 
 
-def test_with_no_recognition_key_it_says_it_fell_back_rather_than_pretending(voice_page):
-    """The server answers "use the browser's own" and closes. Silently behaving
-    like a different engine, with none of the fast endpointing this one is
-    chosen for, is not something anyone can be expected to work out."""
+#: What the server says when nothing here can recognise speech: on-device recognition not
+#: installed, or its model not downloadable in a test (routes/realtime.py).
+CANNOT_HEAR = "(install|download)"
+
+
+def test_with_nothing_able_to_recognise_it_says_why_rather_than_pretending(voice_page):
+    """There is no browser recognition to fall back on any more (decided 2026-10-12):
+    recognition is this app's own, on this computer or the chosen cloud service. When it
+    cannot run, the engine says why in the server's own words and lets go of the mic."""
     start_engine(voice_page, "duplex")
     voice_page.wait_for_function(
-        "() => (document.querySelector('[data-testid=status]')?.textContent || '')"
-        ".toLowerCase().includes('browser')",
+        f"() => /{CANNOT_HEAR}/i.test(document.querySelector('[data-testid=status]')?.textContent || '')",
         timeout=15_000)
+    voice_page.wait_for_selector("[data-testid=mic][aria-pressed=false]", timeout=10_000)
 
 
 def test_stopping_tears_the_engine_down_rather_than_leaving_it_open(voice_page):
@@ -1064,24 +1071,21 @@ def test_stopping_tears_the_engine_down_rather_than_leaving_it_open(voice_page):
 
 
 def test_pipeline_engine_stops_for_real_rather_than_being_silently_abandoned(voice_page):
-    """A real, confirmed bug, found while testing the new quiet-window teardown
-    below: on a recognition error, the UI used to just forget the engine (null
-    the ref, flip the mic button off) without ever telling it to actually stop --
-    so a live PipelineEngine kept running underneath, microphone still open,
-    quietly retrying recognition forever, while the screen claimed otherwise.
+    """A real, confirmed bug: on a recognition error, the UI used to just forget the
+    engine (null the ref, flip the mic button off) without ever telling it to actually
+    stop -- so a live PipelineEngine kept running underneath, microphone still open,
+    while the screen claimed otherwise.
 
-    This fake-mic Chromium environment cannot drive a clean, error-free speech
-    session at all -- `--use-fake-device-for-media-stream` audio doesn't satisfy
-    the real Web Speech API, which errors immediately with `audio-capture` -- so
-    rather than fighting that, this test uses it as the natural trigger and
-    proves teardown is REAL: `MediaStreamTrack.stop()` is monkey-patched to count
-    real calls (stronger than watching `aria-pressed` alone, which only proves
-    the UI's belief, not the hardware release), a fresh click actually starts a
-    new session rather than silently no-op-ing against an already-dead one, and
-    the mic-blocked-style message is what's shown rather than being immediately
-    overwritten by a generic one (see the same ordering fix in
-    `onRecognitionError`).
+    Here the trigger is the server refusing to recognise (nothing installed or
+    downloadable in a test), and the test proves teardown is REAL:
+    `MediaStreamTrack.stop()` is monkey-patched to count real calls (stronger than
+    watching `aria-pressed` alone, which only proves the UI's belief, not the hardware
+    release), the server's own reason is what's shown rather than being overwritten by a
+    generic one, and a fresh click really opens a NEW recognition socket rather than
+    silently no-op-ing against the dead session.
     """
+    opened: list[str] = []
+    voice_page.on("websocket", lambda socket: opened.append(socket.url))
     voice_page.add_init_script(
         "window.__stoppedTracks = 0;"
         "const origStop = MediaStreamTrack.prototype.stop;"
@@ -1093,15 +1097,21 @@ def test_pipeline_engine_stops_for_real_rather_than_being_silently_abandoned(voi
     refresh(voice_page)  # the init script only applies from here
 
     start_engine(voice_page, "pipeline")
+    voice_page.wait_for_function(
+        f"() => /{CANNOT_HEAR}/i.test(document.querySelector('[data-testid=status]')?.textContent || '')",
+        timeout=15_000)
     voice_page.wait_for_selector("[data-testid=mic][aria-pressed=false]", timeout=10_000)
-    assert "microphone" in voice_page.inner_text("[data-testid=status]").lower()
     assert voice_page.evaluate("window.__stoppedTracks") > 0, \
         "the microphone track was never actually released"
+    first = sum(url.endswith("/api/duplex") for url in opened)
+    assert first >= 1
 
-    # A fresh click must start a NEW session, not no-op against the dead one --
-    # exactly the bug the page.tsx cleanup fix targets.
+    # A fresh click must start a NEW session, not no-op against the dead one.
     voice_page.click("[data-testid=mic]")
-    voice_page.wait_for_selector("[data-testid=mic][aria-pressed=true]", timeout=5_000)
+    deadline = time.monotonic() + 15
+    while sum(url.endswith("/api/duplex") for url in opened) <= first:
+        assert time.monotonic() < deadline, "a fresh click never opened a new recognition socket"
+        voice_page.wait_for_timeout(100)
 
 
 def test_the_realtime_engine_is_not_offered_because_nothing_implements_it(voice_page):
@@ -1122,11 +1132,10 @@ def test_the_realtime_engine_is_not_offered_because_nothing_implements_it(voice_
 
 def test_the_composers_own_mic_is_live_and_stands_the_engine_down(voice_page):
     """Speaking INSTEAD of typing, which is a different thing from talking to
-    Jarvis — it never sends and never reaches the server.
+    Jarvis — it never sends a message; words land in the box.
 
-    Only one recognition session runs reliably at a time, so starting this has
-    to stop whatever else is listening. That button said "lands with the voice
-    engines" until now; they have landed.
+    Only one microphone capture runs at a time, so starting this has to stop
+    whatever else is listening.
     """
     assert voice_page.is_enabled("[data-testid=dictate]")
 
@@ -1137,9 +1146,9 @@ def test_the_composers_own_mic_is_live_and_stands_the_engine_down(voice_page):
     # The engine stood down rather than both holding the microphone at once.
     voice_page.wait_for_selector("[data-testid=mic][aria-pressed=false]", timeout=10_000)
 
-    # Whether it can actually LISTEN depends on a speech service this browser
-    # has no route to, so that is not asserted. What is: it either starts or
-    # says why, and never simply switches itself off in silence.
+    # Whether it can actually LISTEN depends on recognition this test server cannot
+    # run, so that is not asserted. What is: it either starts or says why, and never
+    # simply switches itself off in silence.
     voice_page.wait_for_function(
         """() => {
              const button = document.querySelector('[data-testid=dictate]');
@@ -2420,16 +2429,54 @@ def test_quick_settings_are_saved_for_the_next_visit(page, live_server):
 
 
 def test_a_wake_phrase_nothing_can_hear_is_kept_and_marked(page):
-    """The on-device model hears "Hey Jarvis" only; another phrase is saved but
-    never presented as working."""
+    """Every phrase needs its own model; with none on this computer each is kept, marked
+    "needs its model", and the editor says the wake word cannot hear — never claims it can."""
     page.click("[data-testid=settings]")
     page.click("[data-testid=edit-phrases]")
+    chips = page.locator("[data-testid=wake-phrase]")
+    assert [c.strip() for c in chips.all_inner_texts()][0].startswith("Hey Jarvis")
+    assert chips.count() == 4                       # the four defaults, all listed
     page.fill("[data-testid=wake-phrase-input]", "Computer")
     page.press("[data-testid=wake-phrase-input]", "Enter")
     chip = page.locator("[data-testid=wake-phrase]", has_text="Computer")
-    assert "not heard yet" in chip.inner_text()
-    heard = page.locator("[data-testid=wake-phrase]", has_text="Hey Jarvis")
-    assert "not heard yet" not in heard.inner_text()
+    page.wait_for_function(
+        "() => [...document.querySelectorAll('[data-testid=wake-phrase]')].some("
+        "c => c.textContent.includes('Computer') && c.dataset.state === 'needs_model')")
+    assert "needs its model" in chip.inner_text()
+    assert "can’t hear you" in page.inner_text("[data-testid=wake-phrases]")
+
+
+WAKE_MODELS = os.environ.get("JARVIS_WAKE_TEST_MODELS", "")
+
+
+@pytest.mark.skipif(not (WAKE_MODELS and Path(WAKE_MODELS, "hey_jarvis_v0.1.onnx").exists()),
+                    reason="JARVIS_WAKE_TEST_MODELS is not set to a folder of real models")
+def test_adding_a_phrase_model_makes_that_phrase_heard(page, tmp_path):
+    """A phrase marked "needs its model" becomes heard once its trained model is added from
+    the editor — through the real route, loaded by the real openWakeWord."""
+    from jarvis.voice.wake import WakeDetector, _openwakeword_model
+
+    # Imported once up front: under pytest's import hook on a busy laptop the first import
+    # alone took minutes, which is the test harness's cost, not the app's (7 s plain).
+    _openwakeword_model()
+    folder = WakeDetector.model_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    for name in ("hey_jarvis_v0.1.onnx", "melspectrogram.onnx", "embedding_model.onnx"):
+        shutil.copy(Path(WAKE_MODELS, name), folder / name)
+    trained = tmp_path / "hello_jarvis.onnx"           # stands in for a model the notebook made
+    shutil.copy(Path(WAKE_MODELS, "hey_jarvis_v0.1.onnx"), trained)
+
+    page.click("[data-testid=settings]")
+    page.click("[data-testid=edit-phrases]")
+    state = ("(p, s) => [...document.querySelectorAll('[data-testid=wake-phrase]')].some("
+             "c => c.textContent.includes(p) && c.dataset.state === s)")
+    # Loading a phrase model took 3 s on a quiet laptop and ~14 s on a busy one.
+    page.wait_for_function(f"() => ({state})('Hey Jarvis', 'ready')", timeout=90_000)
+    assert page.evaluate(f"() => ({state})('Hello Jarvis', 'needs_model')")
+    page.set_input_files("[data-testid=wake-model-file]", str(trained))
+    page.wait_for_function("() => document.querySelector('[data-testid=wake-model-note]')"
+                           "?.textContent.includes('added')", timeout=30_000)
+    page.wait_for_function(f"() => ({state})('Hello Jarvis', 'ready')", timeout=90_000)
 
 
 def test_show_on_home_hides_the_conversation_and_f_brings_it_back(page):

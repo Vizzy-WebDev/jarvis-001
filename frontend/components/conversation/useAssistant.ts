@@ -69,14 +69,6 @@ export function useAssistant(go: (id: string) => void, onHome: boolean) {
   const running = useRef<RunningTurn | null>(null);
   const engine = useRef<VoiceEngine | null>(null);
   /**
-   * A note that outlives one state change — today, that recognition landed on
-   * the browser's own rather than the provider that was picked. A ref, not
-   * state: the status handler below is a closure the engine keeps for its whole
-   * life, and reading a captured `useState` value there would read the value
-   * from the moment the engine was built, forever.
-   */
-  const sttNotice = useRef<string | null>(null);
-  /**
    * Keyed onto `ConversationPanel` below so switching conversations always
    * remounts it — the fix for a real bug: resuming from the chat-history
    * picker updated `turns` on the SAME long-lived `Transcript` instance,
@@ -492,7 +484,6 @@ export function useAssistant(go: (id: string) => void, onHome: boolean) {
     if (engine.current) {
       engine.current.stop();
       engine.current = null;
-      sttNotice.current = null;
       setListening(false);
       setMuted(false);  // stop() always begins the next session unmuted too
       setOrbState('idle');
@@ -500,7 +491,6 @@ export function useAssistant(go: (id: string) => void, onHome: boolean) {
       return;
     }
 
-    sttNotice.current = null;
     const started = buildEngine(engineId, speakReplies ? voiceId : 'browser');
     started.on('state', ({ state }) => {
       setOrbState(state as OrbState);
@@ -513,18 +503,10 @@ export function useAssistant(go: (id: string) => void, onHome: boolean) {
         // next click just re-stops an already-dead engine instead of starting a
         // fresh one.
         engine.current = null;
-        sttNotice.current = null;
         setListening(false);
         setMuted(false);
       }
-      // A standing note wins while resting, because that is when there is
-      // nothing more urgent to say and it is exactly when someone is wondering
-      // why the engine they picked feels no different. It never overwrites
-      // thinking or speaking.
-      const resting = state === 'listening' || state === 'hearing_speech';
-      setStatus(resting && sttNotice.current
-        ? sttNotice.current
-        : SPOKEN_STATE[state] ?? 'Listening…');
+      setStatus(SPOKEN_STATE[state] ?? 'Listening…');
     });
     started.on('transcript', ({ text, final }) => {
       if (final && text) setTurns((current) => [...current, { id: newId(), role: 'user', text, at: new Date().toISOString() }]);
@@ -547,11 +529,7 @@ export function useAssistant(go: (id: string) => void, onHome: boolean) {
     // Not an error: the browser's own recognition is a real path, just not the
     // one that was picked. Saying nothing here is how someone ends up wondering
     // why the engine they chose does not feel any different.
-    started.on('stt_fallback', () => {
-      sttNotice.current = 'Listening — no speech-recognition key is set up, '
-        + 'so this is using the browser’s own.';
-      setStatus(sttNotice.current);
-    });
+    started.on('listening_progress', ({ text }) => setStatus(text));
     // Deliberately not an error: the reply itself is fine, only its audio
     // failed, and clearing what is on screen would be wrong.
     started.on('tts_failure', () =>

@@ -26,6 +26,10 @@ dependencies = [
     # whether "hey Jarvis" was said. Downloads its ~1 MB model on first use.
     "openwakeword>=0.6",
     "numpy>=1.26",
+    # Speech on this computer (speech/stt/local.py, speech/speech_models.py): Silero finds
+    # speech, Moonshine writes it down, and later Piper/Kokoro speak — no audio leaves the
+    # machine. The models themselves are fetched on first use, with progress (30-320 MB).
+    "sherpa-onnx>=1.13,<2",
     # Cross-platform CPU/memory/process readings for operational awareness
     # (§25). Node hand-rolled these off os.cpus() deltas because os.loadavg()
     # is [0,0,0] on Windows; psutil gives the same numbers on both platforms

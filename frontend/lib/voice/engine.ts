@@ -46,8 +46,9 @@ export interface EngineEvents {
   reaction: { kind: string };
   /** Clear what is shown and spoken; a fresh reply follows on the same stream. */
   restart: Record<string, never>;
-  /** Landed on the browser's own recognition instead of a proxied provider. */
-  stt_fallback: { mode: string };
+  /** Recognition is getting ready the first time: the on-device model is downloading or
+   *  opening. `text` is ready to show ("Downloading Moonshine Base (once only) — 34%"). */
+  listening_progress: { text: string };
   /** Nothing could complete the turn — nothing was answered. */
   paused: { reason: string };
   /** The configured voice failed to produce audio, every retry spent. The reply

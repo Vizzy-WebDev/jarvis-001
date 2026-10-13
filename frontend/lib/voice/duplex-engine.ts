@@ -5,13 +5,15 @@ import { BrowserSpeaker } from './browser-speaker';
 import { VoiceEngine } from './engine';
 import { MicStream } from './mic-stream';
 import { soundFor } from './reaction-sounds';
-import { computeWaitMs, MicLevelMonitor, SilenceWatcher } from './turn-detector';
+import { describeProgress } from './recognition-socket';
+import { MicLevelMonitor } from './turn-detector';
 
 /**
  * Engine C — keeps listening while it talks.
  *
- * Four layers, kept separate on purpose: recognition (a provider over
- * `/api/duplex`, or the browser's own when no key is set up), reasoning (the
+ * Four layers, kept separate on purpose: recognition (this app's own
+ * `/api/duplex` — on this computer or the cloud service the person chose; never the
+ * browser's built-in recognition), reasoning (the
  * ordinary chat stream, any model), tools, and speech (any configured voice).
  * This file is the orchestrator between them, not a fusion of them.
  *
@@ -66,12 +68,11 @@ const SOCKET_READY_TIMEOUT_MS = 8000;
 type Speaker = AudioPlayer | BrowserSpeaker;
 
 /**
- * What the socket answered with: `'browser'` means use the browser's own, and
- * anything else names whichever provider the SERVER is proxying.
+ * Which recogniser the socket answered with (`local`, or a cloud service's name).
  *
- * Deliberately not a union of provider names. Nothing here branches on which
- * provider it is — only on whether there is one — so adding a second one
- * server-side needs no change on this side at all.
+ * Deliberately not a union of provider names. Nothing here branches on which one it
+ * is — only on whether recognition is running — so adding another server-side needs
+ * no change on this side at all.
  */
 type Mode = string;
 
@@ -84,6 +85,10 @@ interface SocketMessage {
   confidence?: number;
   error?: string;
   code?: string;
+  fatal?: boolean;
+  label?: string;
+  done?: number;
+  total?: number;
 }
 
 export class DuplexEngine extends VoiceEngine {
@@ -95,10 +100,13 @@ export class DuplexEngine extends VoiceEngine {
   private socket: WebSocket | null = null;
   private mode: Mode | null = null;
   private reconnecting = false;
+  /** Why the first connection failed, said only once stop() has run: stop() ends in
+   *  setState('idle'), which writes a generic status — the reason must be the last write. */
+  private startFailure: string | null = null;
 
-  /** Recognition is happening on the server rather than in this browser. */
+  /** The recognition socket is ready and running. */
   private get proxied(): boolean {
-    return this.mode !== null && this.mode !== 'browser';
+    return this.mode !== null;
   }
 
   private speaker: Speaker | null = null;
@@ -115,12 +123,6 @@ export class DuplexEngine extends VoiceEngine {
   private sendSuspended = false;
   private echoGuardUntil = 0;
   private echoTailTimer: ReturnType<typeof setTimeout> | null = null;
-
-  // The browser-recognition path only.
-  private recognition: SpeechRecognition | null = null;
-  private recognitionSuspended = false;
-  private silence: SilenceWatcher | null = null;
-  private recheckTimer: ReturnType<typeof setTimeout> | null = null;
 
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private flashTimer: ReturnType<typeof setTimeout> | null = null;
@@ -166,21 +168,17 @@ export class DuplexEngine extends VoiceEngine {
     }
 
     const raw = this.mic.getRawStream();
-    if (raw) {
-      this.levels = new MicLevelMonitor(raw);
-      // Armed only on the browser-recognition path: the provider has a real
-      // end-of-utterance signal of its own, which is better than any countdown.
-      // Built here regardless — it costs nothing until armed, and building it
-      // here avoids a "which path am I on" branch the moment the socket answers.
-      this.silence = new SilenceWatcher(this.levels);
-    }
+    if (raw) this.levels = new MicLevelMonitor(raw);
 
     this.active = true;
+    this.startFailure = null;
     if (!(await this.connect())) {
-      // Whatever failed has already said so. Tearing down matters: leaving the
-      // microphone open under a screen claiming to listen, with nothing able to
-      // transcribe, is the exact shape of the bug this replaces.
+      // Tearing down matters: leaving the microphone open under a screen claiming to
+      // listen, with nothing able to transcribe, is the exact shape of the bug this
+      // replaces. The server's own reason is said after, so it is what stays on screen.
+      const reason = this.startFailure;
       this.stop();
+      if (reason) this.emit('error', { message: reason, fatal: true });
       return;
     }
     this.setState('listening');
@@ -204,24 +202,11 @@ export class DuplexEngine extends VoiceEngine {
       }
       this.socket = null;
     }
-    if (this.recognition) {
-      this.recognition.onend = null;  // do not auto-restart what we are stopping
-      try {
-        this.recognition.stop();
-      } catch {
-        // already stopped
-      }
-      this.recognition = null;
-    }
     if (this.echoTailTimer) clearTimeout(this.echoTailTimer);
-    if (this.recheckTimer) clearTimeout(this.recheckTimer);
-    this.silence?.cancel();
-    this.silence = null;
     // Cleared explicitly, not left to the timers just cancelled. Stopping
     // mid-tail otherwise stranded the microphone soft-muted, with no error and
     // no recovery when the same instance was started again.
     this.sendSuspended = false;
-    this.recognitionSuspended = false;
     this.spokenBuffer = '';
     this.finalText = '';
     this.interimText = '';
@@ -241,22 +226,19 @@ export class DuplexEngine extends VoiceEngine {
     // it is still speaking: the echo suspension always wins, and the tail's own
     // resume re-checks the mute state when it lifts.
     this.syncSending();
-    this.syncRecognition();
   }
 
   sendText(text: string, options: { attachments?: string[] } = {}): void {
     this.finalText = '';
     this.interimText = '';
-    this.silence?.cancel();
-    if (this.recheckTimer) clearTimeout(this.recheckTimer);
     this.send(String(text || '').trim(), { source: 'text', attachments: options.attachments });
   }
 
-  // --- recognition: a provider, or the browser -------------------------------
+  // --- recognition: this app's own socket --------------------------------------
 
   /**
-   * Resolves once recognition is genuinely running — either the provider socket
-   * is ready or the browser's own has started — and false on any failure,
+   * Resolves once recognition is genuinely running — the socket says it is ready,
+   * after any first-time download of the on-device model — and false on any failure,
    * including a socket that is accepted and then simply never speaks. That last
    * case used never to resolve at all.
    *
@@ -278,7 +260,7 @@ export class DuplexEngine extends VoiceEngine {
         clearTimeout(timer);
         resolve(ok);
       };
-      const timer = setTimeout(() => {
+      const giveUp = () => {
         if (!silent) this.emit('error', { message: 'Could not reach Jarvis.' });
         settle(false);
         try {
@@ -286,7 +268,8 @@ export class DuplexEngine extends VoiceEngine {
         } catch {
           // already closed
         }
-      }, SOCKET_READY_TIMEOUT_MS);
+      };
+      let timer = setTimeout(giveUp, SOCKET_READY_TIMEOUT_MS);
 
       socket.onmessage = (event) => {
         let message: SocketMessage;
@@ -295,22 +278,30 @@ export class DuplexEngine extends VoiceEngine {
         } catch {
           return;
         }
+        if (message.type === 'downloading' || message.type === 'loading') {
+          // The on-device model being fetched (once) or opened: it can take a while,
+          // so the ready timeout restarts with every sign of life, and the person
+          // sees real progress rather than a silent wait.
+          clearTimeout(timer);
+          timer = setTimeout(giveUp, SOCKET_READY_TIMEOUT_MS);
+          if (!silent) {
+            this.emit('listening_progress', { text: describeProgress({
+              kind: message.type, label: message.label, done: message.done, total: message.total }) });
+          }
+          return;
+        }
+        if (message.type === 'error' && !settled) {
+          // Nothing will be recognised on this connection (no key, nothing installed):
+          // said in the server's own words, and the start fails.
+          if (!silent) this.startFailure = message.error ?? 'Could not start speech recognition.';
+          settle(false);
+          return;
+        }
         if (message.type !== 'ready') {
           this.onRecognitionMessage(message);
           return;
         }
-        this.mode = message.mode ?? 'browser';
-        if (this.mode === 'browser') {
-          // No key: the server has already closed its end and this socket is
-          // never used again. Saying so matters — silently behaving exactly
-          // like the pipeline engine, with none of the fast endpointing this
-          // one was chosen for, is not something anyone can be expected to
-          // work out.
-          if (!silent) this.emit('stt_fallback', { mode: 'browser' });
-          this.socket = null;
-          settle(this.startBrowserRecognition());
-          return;
-        }
+        this.mode = message.mode ?? 'server';
         this.syncSending();
         settle(true);
       };
@@ -437,102 +428,6 @@ export class DuplexEngine extends VoiceEngine {
     if (!text) return;
     this.emit('transcript', { text, final: true });
     this.send(text, { source: 'voice', confidence });
-  }
-
-  /**
-   * The browser's own recognition, used when no key is configured.
-   *
-   * It needs the suspend-and-resume dance the pipeline engine has, for the same
-   * reason: it opens its own separate, unprocessed capture that the echo
-   * cancellation on the real one never reaches. Turn-taking falls back to a
-   * silence countdown here — a disclosed exception, scoped to this path, since
-   * there is no real end-of-utterance signal to use instead.
-   */
-  private startBrowserRecognition(): boolean {
-    const Recognition = window.SpeechRecognition ?? window.webkitSpeechRecognition;
-    if (!Recognition) {
-      this.emit('error', {
-        message: 'No speech recognition key is set up, and this browser has none of its own.',
-        fatal: true,
-      });
-      return false;
-    }
-    const recognition = new Recognition();
-    recognition.lang = 'en-US';
-    recognition.continuous = true;
-    recognition.interimResults = true;
-
-    recognition.onresult = (event) => {
-      if (this.recognitionSuspended || this.speaking || this.muted) return;
-      this.noteActivity();
-      let interim = '';
-      let settled = '';
-      for (let i = event.resultIndex; i < event.results.length; i += 1) {
-        const result = event.results[i]!;
-        if (result.isFinal) settled += result[0]!.transcript;
-        else interim += result[0]!.transcript;
-      }
-      if (settled) this.finalText += settled;
-      const preview = `${this.finalText} ${interim}`.trim();
-      this.emit('transcript', { text: preview, final: false });
-      // The wait DURATION still comes from how the sentence trails off; the
-      // watcher is what measures it against genuine continuous silence rather
-      // than time since the recogniser last spoke up.
-      this.silence?.arm(computeWaitMs(preview), () => this.finaliseBrowserTurn(preview));
-    };
-    recognition.onerror = (event) => {
-      if (event.error === 'no-speech' || event.error === 'aborted') return;
-      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-        this.emit('error', { message: 'The microphone was blocked. Allow it and try again.', fatal: true });
-        this.stop();
-      } else if (event.error === 'network') {
-        this.emit('error', { message: 'The browser’s own recognition needs an internet connection.' });
-      }
-    };
-    recognition.onend = () => {
-      if (this.active && !this.recognitionSuspended && !this.muted) {
-        try {
-          recognition.start();
-        } catch {
-          // a start is already pending
-        }
-      }
-    };
-    recognition.start();
-    this.recognition = recognition;
-    return true;
-  }
-
-  private finaliseBrowserTurn(preview: string): void {
-    if (this.speaking || this.recognitionSuspended) return;
-    const text = preview.trim();
-    if (!text) {
-      this.finalText = '';
-      if (this.state === 'hearing_speech') this.backToListening();
-      return;
-    }
-    // Still audibly talking even though the watcher fired — re-check shortly
-    // rather than cutting someone off. On a short fixed delay, not by re-arming
-    // the watcher, so a continuous talker cannot defer this forever.
-    if (this.levels?.isSpeaking()) {
-      if (this.recheckTimer) clearTimeout(this.recheckTimer);
-      this.recheckTimer = setTimeout(() => this.finaliseBrowserTurn(preview), 400);
-      return;
-    }
-    this.finalText = '';
-    this.emit('transcript', { text, final: true });
-    this.send(text, { source: 'voice' });
-  }
-
-  private syncRecognition(): void {
-    if (!this.recognition) return;
-    const shouldListen = this.active && !this.recognitionSuspended && !this.muted;
-    try {
-      if (shouldListen) this.recognition.start();
-      else this.recognition.stop();
-    } catch {
-      // already in that state, or a start/stop is pending
-    }
   }
 
   // --- one turn ---------------------------------------------------------------
@@ -714,15 +609,8 @@ export class DuplexEngine extends VoiceEngine {
     if (this.echoTailTimer) clearTimeout(this.echoTailTimer);
     this.speaking = true;
     this.setState('speaking');
-    if (this.mode === 'browser') {
-      this.recognitionSuspended = true;
-      this.silence?.cancel();
-      if (this.recheckTimer) clearTimeout(this.recheckTimer);
-      this.syncRecognition();
-    } else {
-      this.sendSuspended = true;
-      this.syncSending();
-    }
+    this.sendSuspended = true;
+    this.syncSending();
     this.levels?.reset();
     this.startBargeSampler();
   }
@@ -743,16 +631,6 @@ export class DuplexEngine extends VoiceEngine {
       this.spokenBuffer = '';
       this.sendSuspended = false;
       this.syncSending();
-      if (this.mode === 'browser') {
-        // Anything the microphone queued during the tail is dropped, so it
-        // cannot be finalised the instant recognition resumes.
-        if (this.recheckTimer) clearTimeout(this.recheckTimer);
-        this.silence?.cancel();
-        this.finalText = '';
-        this.interimText = '';
-        this.recognitionSuspended = false;
-        this.syncRecognition();
-      }
     }, ECHO_TAIL_MS);
   }
 
@@ -811,16 +689,6 @@ export class DuplexEngine extends VoiceEngine {
       }, ECHO_TAIL_MS);
       this.sendSuspended = false;
       this.syncSending();
-      if (this.mode === 'browser') {
-        // A turn genuinely in progress when cut off: its partial transcript
-        // must not leak into the next one.
-        if (this.recheckTimer) clearTimeout(this.recheckTimer);
-        this.silence?.cancel();
-        this.finalText = '';
-        this.interimText = '';
-        this.recognitionSuspended = false;
-        this.syncRecognition();
-      }
       // Best effort, and deliberately so: what this corrects is the NEXT turn's
       // context, so a failed report costs nothing that is happening right now.
       if (heard) {

@@ -153,3 +153,38 @@ def test_spend_by_connection_task_class_and_day(traced):
     [today] = trace.spend("day")
     assert today["calls"] == 3
     assert state.month_spend() == pytest.approx(0.02)
+
+
+# --- embeddings go through the same failure record as generation ------------------------------
+
+def _raises(err):
+    def fn(model, inputs):
+        raise err
+    return fn
+
+
+def test_an_embedding_refusal_rests_the_connection_for_generation_too(layer):
+    space_config(layer)
+    fake.embedder("main", _raises(errors.Billing("main.test refused this for billing or quota reasons.")))
+    fake.embedder("mirror", lambda model, inputs: [[1.0, 2.0] for _ in inputs])
+    assert models.embed("notes", ["x"], data_class="personal").endpoint_id == "mirror/emb"
+    assert state.connection_refused("main")
+    assert state.connection_refused_kind("main") == "billing"
+
+
+def test_an_embedding_rate_limit_rests_only_that_endpoint(layer):
+    space_config(layer)
+    fake.embedder("main", _raises(errors.RateLimited("slow down", retry_after=30)))
+    fake.embedder("mirror", lambda model, inputs: [[1.0, 2.0] for _ in inputs])
+    models.embed("notes", ["x"], data_class="personal")
+    assert state.endpoint_rest("main/emb") and not state.rate_limited_until("main")
+
+
+def test_an_unknown_space_fails_in_plain_words_and_is_never_made_by_embed(layer):
+    configure(layer, [fake_conn("main")])
+    with pytest.raises(errors.InvalidRequest) as caught:
+        models.embed("never-set-up", ["x"], data_class="personal")
+    assert "set up first" in str(caught.value)
+    from jarvis.models import config
+
+    assert "never-set-up" not in config.current().embedding_spaces

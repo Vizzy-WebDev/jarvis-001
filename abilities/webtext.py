@@ -63,13 +63,14 @@ def fetch_article(url: str, *, max_chars: int = ARTICLE_MAX_CHARS) -> Article:
     exception at this level turns "that page wouldn't load" into a failed turn.
     """
     import httpx
+    from jarvis import tls
 
     target = (url or "").strip()
     if not re.match(r"^https?://", target, re.I):
         return Article(ok=False, error=f'"{url}" is not a web address I can read.')
 
     try:
-        with httpx.Client(timeout=FETCH_TIMEOUT_S, follow_redirects=True,
+        with httpx.Client(verify=tls.context(), timeout=FETCH_TIMEOUT_S, follow_redirects=True,
                           headers={"User-Agent": BROWSER_UA}) as client:
             response = client.get(target)
             if response.status_code >= 400:

@@ -15,14 +15,16 @@ checked against the recorded contract fixtures.
 
 from __future__ import annotations
 
+import logging
 import os
+import threading
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .routes import (
     agents, approvals, artifacts, automation, connectors, content_manager, control, conversations,
-    core, events,
+    core, events, health,
     external_services, improvement, jobs, memory, models, notifications, realtime,
     sandbox, skills, speech, tasks, turn, uploads, voice,
 )
@@ -68,6 +70,7 @@ def create_app() -> FastAPI:
     app.include_router(automation.router)
     app.include_router(sandbox.router)
     app.include_router(content_manager.router)
+    app.include_router(health.router)
 
     # Everything here is behind its own interlock — off by default so a test's
     # own create_app() never starts a real background thread unasked. `main()`
@@ -95,10 +98,28 @@ def create_app() -> FastAPI:
 #: `monkeypatch`, or the user's own environment) is never clobbered.
 _BACKGROUND_INTERLOCKS = (
     "JARVIS_SCHEDULER", "JARVIS_HEARTBEAT", "JARVIS_MONITOR", "JARVIS_JOBS",
-    "JARVIS_COST_REFRESH", "JARVIS_ENV_SAMPLER", "JARVIS_IMPROVEMENT",
+    "JARVIS_ENV_SAMPLER", "JARVIS_IMPROVEMENT",
     "JARVIS_NOTIFICATION_TRASH_PURGE", "JARVIS_CONNECTOR_ICONS",
     "JARVIS_CHAT_TRASH_PURGE", "JARVIS_MODEL_DISCOVERY", "JARVIS_CONVERSATION_SUMMARY",
+    "JARVIS_WAKE_MODEL_DOWNLOAD",
 )
+
+
+def _warm_up() -> None:
+    """Build the tool registry and load the model layer now, while the person is still opening the
+    browser: left to the first message, that one-off import work (desktop-control libraries, the
+    schema validator) was ~2 s of silence before the first reply of every launch."""
+    try:
+        from .assembly import get_orchestrator
+        from . import tls
+        from .models import execute  # noqa: F401
+        from .models.drivers import _wire
+
+        tls.context()
+        _wire._verify()
+        get_orchestrator()
+    except Exception:  # noqa: BLE001 — a failed warm-up only means the first message does the work
+        logging.getLogger(__name__).exception("warm-up failed")
 
 
 def main() -> None:
@@ -111,7 +132,9 @@ def main() -> None:
         os.environ.setdefault(var, "1")
 
     port = int(os.environ.get("PORT", "3000"))
-    uvicorn.run(create_app(), host="127.0.0.1", port=port, log_level="info")
+    app = create_app()
+    threading.Thread(target=_warm_up, name="warm-up", daemon=True).start()
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
 
 
 if __name__ == "__main__":

@@ -637,7 +637,8 @@ class Orchestrator:
                                 if piece.text:
                                     spoken_so_far.append(piece.text)
                                     yield Chunk(piece.text)
-                            yield self._interrupt(request, state, "".join(spoken_so_far))
+                            yield self._interrupt(request, state, "".join(spoken_so_far),
+                                                  step_text="".join(spoken_so_far[heard_before:]))
                             return
                         if isinstance(event, TextChunk):
                             if event.text:
@@ -661,6 +662,11 @@ class Orchestrator:
                         refitted = True
                         capacity = None
                         continue
+                    shown = "".join(spoken_so_far[heard_before:])
+                    if shown.strip():
+                        # Words already reached the person: they stay, as their own message. The
+                        # failure is reported beside them, never in their place.
+                        conversation.record_unfinished_reply(request.session_id, shown, interrupted=False)
                     self._bus.publish(
                         EventType.MODEL_CALL_FAILED,
                         {"sessionId": request.session_id, "turnId": request.turn_id,
@@ -738,6 +744,13 @@ class Orchestrator:
             results: list[dict[str, Any]] = []
             state.to(State.EXECUTING, f"step {step}")
             for call in completed.tool_calls:
+                if cancel.is_set():
+                    # Stopped between actions: what already ran stays done and is reported as
+                    # done; nothing further starts. The call still gets a result, so the
+                    # transcript stays a valid call/result pair for the next request.
+                    results.append({"id": call.id, "name": call.name,
+                                    "result": {"error": "Not started: stopped before it ran."}})
+                    continue
                 result = self._execute_call(request, call, seen_calls)
                 tools_used.append(call.name)
                 yield ToolRan(call.name, result.ok, result.outcome, result.error,
@@ -866,7 +879,7 @@ class Orchestrator:
         return self._registry.declarations(specs)
 
     def _interrupt(
-        self, request: TurnRequest, state: AssistantState, spoken: str
+        self, request: TurnRequest, state: AssistantState, spoken: str, step_text: str = ""
     ) -> Interrupted:
         """Barge-in (§14, §17): keep what was actually said, drop the rest.
 
@@ -874,7 +887,12 @@ class Orchestrator:
         say — otherwise the next turn reasons from a reply that was cut off
         mid-sentence as though it had been delivered in full.
         """
-        conversation.mark_last_assistant_interrupted(request.session_id, spoken)
+        if step_text.strip():
+            # Cut off while still speaking a step that was never saved: what was heard becomes its
+            # own message. Marking "the last assistant message" here would rewrite an EARLIER reply.
+            conversation.record_unfinished_reply(request.session_id, step_text, interrupted=True)
+        elif spoken.strip():
+            conversation.mark_last_assistant_interrupted(request.session_id, spoken)
         state.interrupt()
         self._bus.publish(
             EventType.ASSISTANT_INTERRUPTED,

@@ -45,8 +45,26 @@ loop's port; the one module that imports the orchestrator) and `oneshot.py`
   — found or refused, never approximated, and an existing space is never
   re-pointed. `embeddings.candidates()` lists what it could choose from and why
   each is unusable (policy, missing key).
-- **Capabilities** — a fixed, versioned vocabulary (`capabilities.py`); each value
-  records whether it was declared, discovered or probed (probed wins).
+- **Capabilities** — an OPEN vocabulary (`capabilities.py`): any well-formed name is accepted, so a
+  capability nobody has seen needs no code change; known names only add a type check and a plain
+  phrase for rejections. A model's own default effort (`reasoning_default`) is accepted only from
+  evidence (discovered, probed, configured), never a family guess. Each value
+  records its source: declared < model profile < discovered < probed < configured.
+  Model facts (what an `o`-series or `claude-*` id can do, its kind, family, reasoning
+  levels) live in `defaults.yaml` `model_profiles`, never in code. `kind` is a value too
+  (`chat | embedding | speech | image | other`); generation only considers `chat`.
+- **Effort** — an optional hint on the canonical ordered scale `none < minimal < low <
+  medium < high < xhigh < max`. No hint = the model's default, nothing sent. Each endpoint
+  states the levels it takes, its default and whether thinking can be turned off; an
+  unlisted level maps to the nearest and the mapping is reported; a provider's own level
+  name is kept and sent verbatim. Drivers only encode a level for the wire.
+- **Trust** — per endpoint: the model's override, else its upstream's, else the
+  connection's. A listing never raises it. `free` is a separate flag (default: local).
+- **Failure scope** — an error says how far it reaches (request, endpoint, upstream,
+  connection) and when it recovers. Endpoint scope or wider falls back under Auto before
+  the first streamed event; request scope and any pin end the call. A refused key or
+  exhausted account rests the connection until the key is edited or Test/Discover runs.
+  `GET /api/models/route` shows the ranking and every rejection reason.
 
 ## A request's path
 

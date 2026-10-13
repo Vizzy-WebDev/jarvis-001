@@ -1,249 +1,291 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { Button } from '@/components/ui/Button';
-import { ChevronIcon, CloseIcon, PinIcon } from '@/components/ui/Icons';
-import { IconButton } from '@/components/ui/IconButton';
+import { isTopmost, popOverlay, pushOverlay } from '@/components/ui/overlay-stack';
 import { api, ApiRequestError } from '@/lib/api';
 import type { Conversation } from '@/lib/api-types';
 
 /**
- * Quick access to chat history from the conversation panel itself — a slide-
- * out, not a full page. Pinned chats sort first (the backend already does
- * this) and get their own labelled group with a filled pin mark, so pinned
- * and unpinned are never just "the same row, in a slightly different order."
+ * Chat history, sliding in over the conversation it belongs to (design Home v6,
+ * "Latest additions"): a search box, Pinned and Recent groups that fold, and
+ * under "Show archived" an Archived group. Every row has Archive (Restore when
+ * archived) and Pin beside it; the open chat is marked in Jarvis's colour.
+ * "View all →" opens the full Chat History page, which keeps the recycle bin.
  *
- * Deliberately thin: search, the recycle bin's own Restore/Delete-forever
- * controls, and the full pin/archive management UI live on the full Chat
- * History page ("View all" below) where there is room for them. This is the
- * quick list you glance at without leaving the conversation.
+ * It lives INSIDE the conversation panel, positioned against it — not fixed to
+ * the window — so it always opens over the panel it was asked from.
  */
 export function ChatHistoryDrawer({
   open,
   onClose,
   onViewAll,
   onResume,
+  currentId,
+  accent,
 }: {
   open: boolean;
   onClose: () => void;
   onViewAll: () => void;
   onResume: (id: string) => void;
+  /** The conversation on screen now. */
+  currentId: string | null;
+  /** Jarvis's state colour, for the open chat's mark. */
+  accent: string;
 }) {
   const [rows, setRows] = useState<Conversation[] | null>(null);
+  const [archived, setArchived] = useState<Conversation[]>([]);
   const [showArchived, setShowArchived] = useState(false);
+  const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
   // Both default open — collapsing is for a list that's grown long enough to
   // want to save the scroll space, not the drawer's starting state.
   const [pinnedExpanded, setPinnedExpanded] = useState(true);
   const [recentExpanded, setRecentExpanded] = useState(true);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
 
   const load = useCallback(async () => {
+    const q = query.trim() || undefined;
     try {
-      const found = await api.conversations.list({ includeArchived: showArchived });
-      setRows(found.conversations);
+      const [live, gone] = await Promise.all([
+        api.conversations.list({ query: q }),
+        showArchived ? api.conversations.list({ query: q, includeArchived: true }) : Promise.resolve(null),
+      ]);
+      setRows(live.conversations);
+      setArchived(gone?.conversations ?? []);
       setError(null);
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : 'Could not read your chats.');
       setRows([]);
     }
-  }, [showArchived]);
+  }, [query, showArchived]);
 
-  useEffect(() => {
-    if (open) void load();
-  }, [open, load]);
-
+  // A search reads as you type, without asking the server on every key.
   useEffect(() => {
     if (!open) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+    const timer = setTimeout(() => void load(), query ? 200 : 0);
+    return () => clearTimeout(timer);
+  }, [open, load, query]);
 
-  async function togglePinned(conversation: Conversation) {
+  useEffect(() => {
+    if (!open) {
+      setQuery('');
+      return;
+    }
+    const token = pushOverlay();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && isTopmost(token)) {
+        event.stopPropagation();
+        closeRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+      popOverlay(token);
+    };
+  }, [open]);
+
+  async function update(conversation: Conversation, patch: { pinned?: boolean; archived?: boolean }) {
     try {
-      await api.conversations.update(conversation.id, { pinned: !conversation.pinned });
+      await api.conversations.update(conversation.id, patch);
     } catch {
       setError("Couldn't save that — try again.");
     }
-    await load();  // pinning re-sorts the list; a fresh read is the real order
+    await load(); // re-sorts the list; a fresh read is the real order
   }
 
   const pinned = (rows ?? []).filter((c) => c.pinned);
   const recent = (rows ?? []).filter((c) => !c.pinned);
+  const nothing = rows !== null && !rows.length && !(showArchived && archived.length);
+  const tab = open ? 0 : -1;
+  const row = (conversation: Conversation, isArchived = false) => (
+    <Row key={conversation.id} conversation={conversation} archived={isArchived} tab={tab}
+         current={conversation.id === currentId} accent={accent}
+         onResume={onResume}
+         onPin={() => void update(conversation, { pinned: !conversation.pinned })}
+         onArchive={() => void update(conversation, { archived: !isArchived })} />
+  );
 
   return (
     <>
       <div
-        className={[
-          'fixed inset-0 z-40 bg-surface-overlay backdrop-blur-[1px] transition-opacity duration-200',
-          open ? 'opacity-100' : 'pointer-events-none opacity-0',
-        ].join(' ')}
-        onClick={onClose}
         aria-hidden
+        onClick={onClose}
+        className="absolute inset-x-0 bottom-0 top-[51px] z-[3] bg-[rgb(3_5_8/0.6)] transition-opacity duration-200"
+        style={{ opacity: open ? 1 : 0, pointerEvents: open ? 'auto' : 'none' }}
       />
-      {/* Anchored to the RIGHT, at the same offset as the conversation panel
-          it's opened from (`right: var(--rail-gutter)`, app/page.tsx) — this
-          used to copy the main app Drawer's left-edge positioning verbatim,
-          which is correct for that global menu but put this one sliding out
-          from the opposite side of the screen from its own trigger button.
-          Still rendered here at the page's top level rather than nested
-          inside the conversation panel, for the reason given where this is
-          used: that panel's own backdrop-blur-xl traps position:fixed
-          descendants. */}
       <aside
         aria-label="Chat history"
         aria-hidden={!open}
         data-testid="chat-history-drawer"
         data-open={open ? 'true' : 'false'}
-        className={[
-          'fixed inset-y-0 z-50 flex w-[300px] max-w-[86vw] flex-col',
-          'border-l border-surface-border bg-surface-raised/95 backdrop-blur-xl shadow-panel',
-          'transition-transform duration-200 ease-out',
-          open ? 'translate-x-0' : 'translate-x-full',
-        ].join(' ')}
-        style={{ right: 'var(--rail-gutter)' }}
+        className="absolute bottom-0 left-0 top-[51px] z-[4] flex w-[84%] flex-col rounded-br-[14px] border-r border-line/[0.26]
+                   bg-gradient-to-b from-[rgb(12_18_26/0.99)] to-[rgb(7_10_15/0.99)] shadow-[18px_0_40px_-18px_rgba(0,0,0,0.9)]
+                   transition-transform duration-[260ms] ease-out"
+        style={{ transform: open ? 'translateX(0)' : 'translateX(-104%)', pointerEvents: open ? 'auto' : 'none' }}
       >
-        <div className="flex items-center gap-2 px-4 pb-3 pt-5">
-          <p className="text-[13px] font-semibold text-ink">Chat History</p>
-          <IconButton label="Close" className="ml-auto -mr-1 h-8 w-8" onClick={onClose}
-                      tabIndex={open ? 0 : -1}>
-            <CloseIcon className="h-[16px] w-[16px]" />
-          </IconButton>
+        <div className="flex items-center gap-2 pb-1.5 pl-4 pr-2 pt-3">
+          <span className="text-[14px] font-medium text-ink-strong">Chat History</span>
+          <button type="button" title="Close" aria-label="Close" onClick={onClose} tabIndex={tab}
+                  className="ml-auto inline-flex h-[34px] w-[34px] items-center justify-center rounded-[9px] text-ink-soft hover:bg-line/[0.08] hover:text-white">
+            <svg viewBox="0 0 24 24" aria-hidden className="h-4 w-4 fill-none stroke-current stroke-[1.8]" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>
+          </button>
         </div>
 
-        <div className="px-4 pb-2">
-          <button
-            type="button"
-            data-testid="drawer-toggle-archived"
-            onClick={() => setShowArchived((was) => !was)}
-            className="text-[12px] text-ink-faint hover:text-ink"
-            tabIndex={open ? 0 : -1}
-          >
+        <div className="px-3 pb-2.5 pt-1">
+          <div className="flex h-[38px] items-center gap-2 rounded-[10px] border border-line/[0.22] bg-[rgb(8_12_18/0.85)] px-3">
+            <svg viewBox="0 0 24 24" aria-hidden className="h-[15px] w-[15px] shrink-0 fill-none stroke-ink-muted stroke-[1.8]" strokeLinecap="round">
+              <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" />
+            </svg>
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search chats" tabIndex={tab}
+                   data-testid="drawer-search"
+                   className="min-w-0 flex-1 bg-transparent text-[13.5px] text-ink-strong outline-none placeholder:text-ink-muted" />
+            {query && (
+              <button type="button" title="Clear search" aria-label="Clear search" onClick={() => setQuery('')} tabIndex={tab}
+                      className="inline-flex h-6 w-6 items-center justify-center rounded-md text-ink-muted hover:bg-line/[0.12] hover:text-white">
+                <svg viewBox="0 0 24 24" aria-hidden className="h-3 w-3 fill-none stroke-current stroke-2" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="px-4 pb-2.5">
+          <button type="button" data-testid="drawer-toggle-archived" tabIndex={tab}
+                  onClick={() => setShowArchived((was) => !was)}
+                  className="text-[12.5px] text-ink-muted hover:text-ink-strong">
             {showArchived ? 'Hide archived' : 'Show archived'}
           </button>
         </div>
 
-        {error && <p className="px-4 pb-2 text-[12px] text-state-danger">{error}</p>}
+        {error && <p className="px-4 pb-2 text-[12px] text-badge-red">{error}</p>}
 
-        <div className="scroll-quiet flex-1 overflow-y-auto px-2 pb-2">
-          {rows === null ? null : rows.length === 0 ? (
-            <p className="px-2 py-4 text-[12px] text-ink-faint">Nothing here yet.</p>
-          ) : (
-            <>
-              {pinned.length > 0 && (
-                <section className="mb-3">
-                  <SectionHeader label="Pinned" expanded={pinnedExpanded}
-                                onToggle={() => setPinnedExpanded((was) => !was)}
-                                testId="drawer-pinned-toggle" tabIndex={open ? 0 : -1} />
-                  {pinnedExpanded && (
-                    <ul className="space-y-0.5" data-testid="drawer-pinned-list">
-                      {pinned.map((conversation) => (
-                        <Row key={conversation.id} conversation={conversation} open={open}
-                            onResume={onResume} onTogglePinned={togglePinned} />
-                      ))}
-                    </ul>
-                  )}
-                </section>
+        <div className="scroll-quiet flex min-h-0 flex-1 flex-col gap-3 overflow-auto px-2 pb-2.5">
+          {nothing && (
+            <p className="px-3 py-2 text-[13px] leading-normal text-ink-muted">
+              {query ? `No chats match “${query}”.` : 'Nothing here yet.'}
+            </p>
+          )}
+          {pinned.length > 0 && (
+            <section className="flex flex-col gap-px">
+              <GroupHead label="PINNED" expanded={pinnedExpanded} onToggle={() => setPinnedExpanded((was) => !was)}
+                         testId="drawer-pinned-toggle" tab={tab} />
+              {pinnedExpanded && (
+                <ul className="flex flex-col gap-px" data-testid="drawer-pinned-list">{pinned.map((c) => row(c))}</ul>
               )}
-              <section>
-                {pinned.length > 0 && (
-                  <SectionHeader label="Recent" expanded={recentExpanded}
-                                onToggle={() => setRecentExpanded((was) => !was)}
-                                testId="drawer-recent-toggle" tabIndex={open ? 0 : -1} />
-                )}
-                {(pinned.length === 0 || recentExpanded) && (
-                  <ul className="space-y-0.5" data-testid="drawer-recent-list">
-                    {recent.map((conversation) => (
-                      <Row key={conversation.id} conversation={conversation} open={open}
-                          onResume={onResume} onTogglePinned={togglePinned} />
-                    ))}
-                  </ul>
-                )}
-              </section>
-            </>
+            </section>
+          )}
+          {recent.length > 0 && (
+            <section className="flex flex-col gap-px">
+              {pinned.length > 0 && (
+                <GroupHead label="RECENT" expanded={recentExpanded} onToggle={() => setRecentExpanded((was) => !was)}
+                           testId="drawer-recent-toggle" tab={tab} />
+              )}
+              {(pinned.length === 0 || recentExpanded) && (
+                <ul className="flex flex-col gap-px" data-testid="drawer-recent-list">{recent.map((c) => row(c))}</ul>
+              )}
+            </section>
+          )}
+          {showArchived && archived.length > 0 && (
+            <section className="flex flex-col gap-px">
+              <span className="self-start px-2.5 pb-1.5 pt-0.5 font-mono text-[10.5px] tracking-[0.18em] text-ink-muted">ARCHIVED</span>
+              <ul className="flex flex-col gap-px" data-testid="drawer-archived-list">{archived.map((c) => row(c, true))}</ul>
+            </section>
           )}
         </div>
 
-        <div className="border-t border-surface-border p-3">
-          <Button data-testid="drawer-view-all" className="w-full justify-center"
-                  onClick={onViewAll} tabIndex={open ? 0 : -1}>
+        <div className="border-t border-line/[0.14] p-2.5">
+          <button type="button" data-testid="drawer-view-all" onClick={onViewAll} tabIndex={tab}
+                  className="min-h-[38px] w-full rounded-[10px] border border-line/[0.28] bg-line/[0.06] text-[13.5px] text-ink-strong hover:bg-line/[0.14]">
             View all →
-          </Button>
+          </button>
         </div>
       </aside>
     </>
   );
 }
 
-/** A section label that doubles as its own collapse toggle — the whole row
- *  is clickable, not just a small chevron, since that is the easier target
- *  and there is nothing else on this row to compete with a click. */
-function SectionHeader({ label, expanded, onToggle, testId, tabIndex }: {
+/** A group label that is also its own fold toggle. */
+function GroupHead({ label, expanded, onToggle, testId, tab }: {
   label: string;
   expanded: boolean;
   onToggle: () => void;
   testId: string;
-  tabIndex: number;
+  tab: number;
 }) {
   return (
-    <button
-      type="button"
-      data-testid={testId}
-      aria-expanded={expanded}
-      onClick={onToggle}
-      tabIndex={tabIndex}
-      className="flex w-full items-center gap-1 px-2 pb-1 text-[10px] font-semibold uppercase
-                 tracking-[0.16em] text-ink-faint hover:text-ink"
-    >
+    <button type="button" data-testid={testId} aria-expanded={expanded} onClick={onToggle} tabIndex={tab}
+            className="flex items-center gap-1.5 self-start px-2.5 pb-1.5 pt-0.5 font-mono text-[10.5px] tracking-[0.18em] text-ink-muted hover:text-ink-strong">
       {label}
-      <ChevronIcon className={['h-3 w-3 transition-transform', expanded ? '' : '-rotate-90'].join(' ')} />
+      <svg viewBox="0 0 24 24" aria-hidden className={`h-3 w-3 fill-none stroke-current stroke-2 transition-transform ${expanded ? '' : '-rotate-90'}`} strokeLinecap="round">
+        <path d="m6 9 6 6 6-6" />
+      </svg>
     </button>
   );
 }
 
-function Row({ conversation, open, onResume, onTogglePinned }: {
+function Row({ conversation, archived, current, accent, tab, onResume, onPin, onArchive }: {
   conversation: Conversation;
-  open: boolean;
+  archived: boolean;
+  current: boolean;
+  accent: string;
+  tab: number;
   onResume: (id: string) => void;
-  onTogglePinned: (conversation: Conversation) => void;
+  onPin: () => void;
+  onArchive: () => void;
 }) {
+  const pinned = conversation.pinned && !archived;
   return (
     <li>
       <div
         data-testid="drawer-chat-row"
-        className={[
-          'group flex items-center gap-1.5 rounded px-2 py-1.5 transition',
-          conversation.pinned ? 'bg-accent/[0.06] hover:bg-accent/[0.10]' : 'hover:bg-white/[0.05]',
-        ].join(' ')}
+        className="group relative flex min-h-[38px] items-center gap-1 rounded-[9px] pl-3 pr-1 transition-colors hover:bg-line/[0.09]"
+        style={{ background: current ? 'rgb(var(--line) / 0.12)' : pinned ? 'rgb(var(--line) / 0.05)' : undefined }}
       >
+        <span aria-hidden className="absolute left-0 top-1/2 -mt-[9px] h-[18px] w-0.5 rounded-sm"
+              style={{ background: current ? accent : 'transparent', boxShadow: current ? `0 0 8px ${accent}` : undefined }} />
         <button
           type="button"
           data-testid="drawer-resume"
           onClick={() => onResume(conversation.id)}
-          tabIndex={open ? 0 : -1}
-          className="min-w-0 flex-1 truncate text-left text-[13px] text-ink"
+          tabIndex={tab}
+          className="min-w-0 flex-1 truncate py-[9px] text-left text-[13.5px]"
+          style={{ color: archived ? 'rgb(var(--ink-muted))' : current ? '#fff' : '#dce4ee' }}
         >
           {conversation.title || 'Untitled conversation'}
         </button>
         <button
           type="button"
-          data-testid="drawer-toggle-pin"
-          aria-label={conversation.pinned ? 'Unpin this chat' : 'Pin this chat'}
-          aria-pressed={conversation.pinned}
-          onClick={() => onTogglePinned(conversation)}
-          tabIndex={open ? 0 : -1}
-          className={[
-            'shrink-0 rounded p-1 transition',
-            conversation.pinned
-              ? 'text-accent opacity-100'
-              : 'text-ink-faint opacity-0 hover:text-ink group-hover:opacity-100',
-          ].join(' ')}
+          data-testid="drawer-toggle-archive"
+          aria-label={archived ? 'Restore this chat' : 'Archive this chat'}
+          title={archived ? 'Restore this chat' : 'Archive this chat'}
+          onClick={onArchive}
+          tabIndex={tab}
+          className="inline-flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg text-ink-muted opacity-35 transition-opacity hover:bg-line/[0.12] hover:opacity-100"
         >
-          <PinIcon className="h-3.5 w-3.5" />
+          <svg viewBox="0 0 24 24" aria-hidden className="h-[15px] w-[15px] fill-none stroke-current stroke-[1.8]" strokeLinecap="round" strokeLinejoin="round">
+            <path d={archived ? 'M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5' : 'M3 4h18v4H3zM5 8v12h14V8M10 12h4'} />
+          </svg>
         </button>
+        {!archived && (
+          <button
+            type="button"
+            data-testid="drawer-toggle-pin"
+            aria-label={pinned ? 'Unpin this chat' : 'Pin this chat'}
+            title={pinned ? 'Unpin this chat' : 'Pin this chat'}
+            aria-pressed={pinned}
+            onClick={onPin}
+            tabIndex={tab}
+            className="inline-flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg transition-opacity hover:bg-line/[0.12] hover:opacity-100"
+            style={{ color: pinned ? '#9fc3e0' : 'rgb(var(--ink-muted))', opacity: pinned ? 1 : 0.35 }}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden className="h-[15px] w-[15px] stroke-current stroke-[1.8]" strokeLinecap="round" strokeLinejoin="round"
+                 style={{ fill: pinned ? 'currentColor' : 'none' }}>
+              <path d="M9 3h6l-1 7 3.5 3.5V15h-11v-1.5L10 10zM12 15v6" />
+            </svg>
+          </button>
+        )}
       </div>
     </li>
   );

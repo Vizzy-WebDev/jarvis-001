@@ -23,7 +23,6 @@ def _stop_everything() -> None:
     starts them must also be the one that cancels them."""
     from jarvis import chat_store, notifications
     from jarvis.connectors import icons as connector_icons
-    from jarvis.cost import balances, prices
     from jarvis.heartbeat import engine as heartbeat
     from jarvis.heartbeat.triggers import stop_triggers
     from jarvis.improvement import cadence as improvement_cadence
@@ -32,7 +31,7 @@ def _stop_everything() -> None:
     from jarvis.ops.environment import sampler
     from jarvis.scheduler import engine as scheduler_engine
 
-    for stop in (prices.stop_price_maintenance, balances.stop, sampler.stop,
+    for stop in (sampler.stop,
                 stop_triggers, heartbeat.stop, scheduler_engine.stop,
                 monitor_engine.stop, job_supervisor.stop, improvement_cadence.stop,
                 notifications.stop_trash_purge, connector_icons.stop, chat_store.stop_trash_purge):
@@ -54,7 +53,7 @@ def _teardown():
     # for the rest of the process, and a LATER, unrelated test creating a
     # real app (`create_app()` -> `start_background_work()`) would then
     # start real background threads it never asked for and never mocked —
-    # including a real network call in `prices.start_price_maintenance()`.
+    # including a real network call in model discovery.
     # So this snapshots and restores the real environment itself, on top of
     # whatever monkeypatch does.
     before = {var: os.environ.get(var) for var in main_module._BACKGROUND_INTERLOCKS}
@@ -74,22 +73,11 @@ def test_every_gated_subsystem_reports_started_when_every_interlock_is_set(scrat
     `started` is what proves each subsystem is actually wired into
     `start_background_work()`, not just that it CAN start when called
     directly."""
-    from jarvis.cost import prices
-
     for var in main_module._BACKGROUND_INTERLOCKS:
         monkeypatch.setenv(var, "1")
-    # `start()` runs its first tick SYNCHRONOUSLY before arming the timer —
-    # for this one subsystem that tick reads the model layer's discovered
-    # prices and writes them. Testing must never touch a real external service, same
-    # rule `test_cost.py`'s own price-maintenance test already follows.
-    monkeypatch.setattr(prices, "refresh_reported_prices",
-                        lambda **kw: {"ok": True, "updated": 0})
-
     started = assembly.start_background_work()
 
-    # `prices` shares balances' own interlock (JARVIS_COST_REFRESH) rather
-    # than having a second one — one flag, two readers, by design.
-    for key in ("balances", "prices", "sampler", "heartbeat", "scheduler", "monitor",
+    for key in ("sampler", "heartbeat", "scheduler", "monitor",
                "job_supervisor", "improvement_cadence", "notification_trash_purge",
                "connector_icons", "chat_trash_purge"):
         assert started[key] is True, f"{key} did not start with every interlock set"
@@ -103,7 +91,7 @@ def test_without_any_interlock_nothing_starts(scratch, monkeypatch):
 
     started = assembly.start_background_work()
 
-    for key in ("balances", "prices", "sampler", "heartbeat", "scheduler", "monitor",
+    for key in ("sampler", "heartbeat", "scheduler", "monitor",
                "job_supervisor", "improvement_cadence", "notification_trash_purge",
                "connector_icons", "chat_trash_purge"):
         assert started[key] is False, f"{key} started with no interlock set"
@@ -117,15 +105,9 @@ def test_main_sets_every_background_interlock_before_building_the_app(scratch, m
     else in `main()` runs for real, including the real `create_app()` call,
     which is what actually starts every subsystem for this assertion to be
     meaningful rather than just checking the environment got set."""
-    from jarvis.cost import prices
-
     for var in main_module._BACKGROUND_INTERLOCKS:
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("PORT", "3999")
-    # Same reasoning as the test above: `main()` sets JARVIS_COST_REFRESH too,
-    # so `create_app()` would otherwise make a real network call here.
-    monkeypatch.setattr(prices, "refresh_reported_prices",
-                        lambda **kw: {"ok": True, "updated": 0})
 
     captured: dict = {}
 
@@ -149,7 +131,6 @@ def test_mains_interlock_set_matches_what_start_background_work_actually_starts(
     one `main()` actually sets."""
     from jarvis import chat_store, notifications
     from jarvis.connectors import icons as connector_icons
-    from jarvis.cost import balances
     from jarvis.heartbeat import engine as heartbeat
     from jarvis.improvement import cadence as improvement_cadence
     from jarvis.jobs import orchestrator as job_supervisor
@@ -159,7 +140,7 @@ def test_mains_interlock_set_matches_what_start_background_work_actually_starts(
 
     gated_by_main = {
         heartbeat.ENABLE_ENV, scheduler_engine.ENABLE_ENV, monitor_engine.ENABLE_ENV,
-        job_supervisor.ENABLE_ENV, balances.ENABLE_ENV, improvement_cadence.ENABLE_ENV,
+        job_supervisor.ENABLE_ENV, improvement_cadence.ENABLE_ENV,
         sampler.ENABLE_ENV, notifications.ENABLE_ENV, connector_icons.ENABLE_ENV,
         chat_store.ENABLE_ENV,
     }

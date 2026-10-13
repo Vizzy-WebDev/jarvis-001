@@ -1,5 +1,5 @@
 """The notification tools — read-only status and marking-read run immediately;
-moving things to the recycle bin and emptying it are confirmed, through the
+clearing moves things to the recycle bin at once (the request suffices) and emptying it is confirmed, through the
 real executor, the same way the memory tools are (`test_tools_memory.py`).
 """
 
@@ -53,21 +53,23 @@ def test_mark_all_read_runs_immediately_no_confirmation_needed(reg):
     assert notifications.unread_count() == 0
 
 
-def test_clear_moves_everything_to_the_recycle_bin_only_after_confirming(reg):
+def test_clear_runs_at_once_on_a_plain_request_and_only_moves_to_the_recycle_bin(reg):
     notifications.add(kind="system", title="one")
     notifications.add(kind="system", title="two")
 
+    # MEDIUM and undoable (`request_suffices`): the person's own request is the go-ahead.
     result = execute("clear_notifications", {}, ctx("t1"), registry=reg)
-    assert result.outcome is ExecOutcome.NEEDS_APPROVAL
-    assert notifications.listed() != [], "nothing may move before the user answers"
-
-    approval = approval_store.get(result.approval_id)
-    assert approval.reason == "Move all 2 notification(s) to the recycle bin?"
-
-    ran = execute_approved(result.approval_id, "t2", ctx("t2"), registry=reg)
-    assert ran.ok
+    assert result.ok and result.outcome is not ExecOutcome.NEEDS_APPROVAL
     assert notifications.listed() == []
-    assert len(notifications.trash_listed()) == 2
+    assert len(notifications.trash_listed()) == 2, "moved to the recycle bin, not deleted"
+
+
+def test_clear_still_asks_when_nobody_is_here_to_have_asked(reg):
+    notifications.add(kind="system", title="one")
+
+    result = execute("clear_notifications", {}, ctx("t1", autonomy=Autonomy.ESCALATE), registry=reg)
+    assert result.outcome is ExecOutcome.NEEDS_APPROVAL
+    assert notifications.listed() != []
 
 
 def test_emptying_the_recycle_bin_is_high_risk_and_irreversible(reg):

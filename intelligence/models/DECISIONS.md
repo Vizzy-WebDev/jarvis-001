@@ -149,18 +149,11 @@ it was deliberately corrected.
   answered by the server's own refusal. A plain Chat Completions server declares
   no `image_in`: those servers run all kinds of models, so it is left to discovery
   (Ollama's `/api/show`), a probe or config.
-- **The move out of the database doesn't trust the migration number.** Found on
-  the real install: another branch (`claude/provider-layer-refactor`) has its own
-  migration 35, which renamed `provider_models` to `provider_catalog`; that
-  database had already run it, so this build's migration 35 was skipped as
-  "applied" and only 36 ran. So startup (`migrate_db.retry_if_pending`) moves
-  whatever is left whenever `model_providers` still exists, reading models from
-  either table name, and drops the old tables only after the move is read back.
-  An old connection whose address is already set up in config (the person re-added
-  it meanwhile) isn't duplicated; they are told, and its key stays saved.
-  Rehearsed on a copy of the real data: two old OpenRouter rows became two notices,
-  nothing else changed. **The two branches' migration numbers must be reconciled
-  before either merges** — they are the same numbers for different schemas.
+- **The move out of the database is finished and gone.** `migrate_db.py` and the legacy
+  import data are removed: the real database was checked on a copy (the old tables absent,
+  `user_version` 38; `provider_balances` empty; `model_prices` dropped by migration 39). The
+  historical numbered migrations stay. (The old text here described a retry-on-start that
+  existed only because another branch reused migration 35; nothing in use needs it now.)
 - **The boundary maps turn roles to task and data classes itself** (`client.py`),
   so the orchestrator's port didn't change and no test double had to. Every turn
   role is `personal`, per the approved table.
@@ -231,17 +224,119 @@ it was deliberately corrected.
   (`image_input: dropped`, a warning). Not done, by decision: learning from a model's
   refusal of a picture. A model wrongly declared able to see still gets the picture and
   still refuses it; that is fixed by its capability data, not by guessing from refusals.
-- **Effort is per-endpoint capability data (D1).** The hint stays `none|low|medium|high`.
-  Each endpoint now has `effort_levels` (the canonical levels it accepts) and
-  `effort_default` (capability vocabulary v2), declared by its driver — Messages
-  low/medium/high (default high), Responses low/medium/high (default medium), Gemini
-  low/medium/high (a thinking level is never "off"), Chat Completions low/medium/high — and
-  discovered where the provider says (Anthropic's list, per model; the old tables' levels
-  are kept by the migration). `adapt.py` sends the nearest accepted level (equally near
-  two: the higher) and records any difference in the feature report's `mapped` and a
-  warning — so Anthropic's `none` is still sent as `low`, but no longer silently, and the
-  settings screen offers only the levels a model takes. No native level is passed
-  through (Anthropic's `max` has no canonical name) and no canonical value was added. An
-  endpoint whose levels aren't known offers no control and gets no effort. Through a
-  gateway, `none` (OpenRouter's reasoning switch) is no longer offered: its listing doesn't
-  say per model which levels a model takes, so only the driver's declared three are.
+- **Effort is per-endpoint capability data, with no closed ladder (D1, SUPERSEDED by the
+  vocabulary-v3 design).** The earlier `none|low|medium|high` hint and the levels each driver
+  declared are gone: a fixed ladder could not describe Claude's `max`, OpenAI's `minimal`/`xhigh`
+  or Gemini's budgets, and the drivers were deciding model facts. Now:
+  - The canonical, ordered scale is only a way to compare: `none < minimal < low < medium <
+    high < xhigh < max`. The request hint is optional intent; **no hint means the model's own
+    default and nothing is sent.** The boundary sets one only for the person's selection.
+  - Each endpoint's reasoning capability is data: the levels it takes (`reasoning_levels`),
+    its default (`reasoning_default`, or unknown) and whether thinking can be switched off
+    (`reasoning_can_disable`), each with its own source (declared < profile < discovered <
+    probed < configured). Unknown levels mean no control: nothing is sent and no default is
+    invented.
+  - An accepted level goes as is. Otherwise the nearest on the scale wins (a tie goes higher)
+    and the mapping is always reported, including `none` on a model that cannot disable.
+    A provider level outside the scale is kept in the provider's own words, selectable by
+    name and sent exactly; mapping never chooses one.
+  - Drivers say only how a level is encoded on the wire (Gemini's level/budget tables are
+    data). The shipped defaults name no level list for any provider or model: levels come only
+    from what a provider lists, a probe, or `reasoning_levels` in `models.yaml`. The picker shows
+    that endpoint's own levels and nothing else: its own default, when known, is the checked one;
+    when unknown nothing is checked. "Model default" is never a row (sending no hint is request
+    behaviour, not a level); choosing the default level, or the chosen level again, sends none.
+- **Approved deviation, generalised (D3a/D3b -> scope and recovery).** Every error carries a
+  `scope` (request, endpoint, upstream, connection) and a `recovery` (after N seconds, until the
+  provider's reset, until the Discover refresh, needs the person). Status-code reading stays in
+  the drivers. One rule: a failure at endpoint scope or wider moves on under Auto, before the
+  first streamed event, along the filtered list; a request-scoped failure ends the call; a pin
+  always ends the call. Resting and falling back use the same exclusion. 429 rests the model
+  (its retry-after); a second model of one connection limited in the window rests the
+  connection; a refused key or an exhausted account (`billing`, split from `auth`) rests the
+  connection until the person acts; a missing model (`model_not_found`, 404) rests that model
+  until the next Discover; a daily-limit 429 rests until the reset time (quirk data). Key edit,
+  Test and Discover clear the connection's rest and its endpoints' breakers. Embeddings record
+  their failures the same way (`rests.note_failure`).
+- **Trust is a fact about an endpoint, not a listing's claim.** Trust is overridable per model
+  or per upstream in config; a discovery listing never raises it, and gateway presets default
+  to `standard`. A connection's `free` flag separates price from trust (default: free when the
+  connection is `local`). The data policy checks the endpoint's effective trust.
+- **Endpoint kind.** `chat | embedding | speech | image | other`, set by discovery or a model
+  profile. Generation routing (Auto included) considers only `chat`; embeddings only
+  `embedding`. A speech model is never offered a chat turn.
+- **Model facts live in data.** `defaults.yaml` `model_profiles` match model ids (optionally
+  per driver) and carry capabilities, reasoning, family and kind. Provider and model names
+  may appear only there. Precedence: driver wire default < profile < discovered < probed <
+  the person's config.
+- **Smaller decisions.** A context window learned from a refusal is "observed", dated, and
+  forgotten after `observed_context_ttl_days` (30) or on Discover/Test/config override.
+  When only the budget is why nothing is eligible, the error is `BudgetExceeded`.
+  Embedding spaces are made by an explicit step only (`ensure_space`), never from `embed()`.
+  A tool whose parameters are not an object is ineligible. A server that rejects strict
+  schemas is reported as emulating, not enforcing. A damaged `models_state.json` is copied to
+  `.bak` with a notice. `LONG_WAIT_S`, the default rate rest, the silence ceiling and the
+  breaker thresholds are settings data. `optimize` is reached through a task class's route
+  in config; `prefer` is a layer-API field the boundary does not set today;
+  `explain_route` is served at `GET /api/models/route`.
+- **Open vocabulary, evidence-only effort default (final pass).** Capability and kind names are
+  open; "Default" effort is the model's own, shown only when a server listed it, it was probed or
+  the person wrote it. A reply cut off by a failure or interruption keeps its streamed words as its
+  own assistant message (`unfinished`), the error is separate, and an interruption can only mark a
+  reply of the current turn. The turn stream's heartbeat runs on the event loop with a real clock
+  (it used to ride the shared thread pool). Every outbound HTTP call shares one TLS context
+  (`jarvis/tls.py`; building one cost ~1 s per call on Windows), and `main()` warms the tool registry
+  and model layer in the background so the first message of a launch is not slow.
+
+## Model Fabric completion pass (Hermes comparison, live provider check)
+
+Compared against NousResearch/hermes-agent (read from source) and against the real OpenAI,
+Anthropic, Gemini and OpenRouter listings. The architecture stood up; the changes below are
+targeted corrections, not a rebuild.
+
+- **What Hermes confirmed, and what we did not copy.** Hermes keeps catalogs curated and
+  chat-only: OpenRouter is (curated ∩ live ∩ has-tools, failing open when `supported_parameters`
+  is missing), the official OpenAI host is (curated ∩ live) to hide embeddings/whisper/tts,
+  custom endpoints list the live catalog verbatim, image/video generators are dropped by
+  structured type first and name shape second, and effort is clamped to the nearest weaker level.
+  Jarvis takes the *principle* (offer only models that can take a chat turn, fail open when the
+  listing is silent) but not the *mechanism*: no name-curated lists, because the layer holds no
+  model names. Classification is by capability evidence from the listing, else by profile data
+  (`model_profiles`, matched by id pattern, editable in `models.yaml`).
+- **The full catalog is kept; only chat-capable models are offered.** Discovery records every
+  listed model honestly (state file, Model Settings screen shows non-chat ones greyed with the
+  reason). `settings.chat_problem(endpoint)` is the one predicate: a kind other than chat, or
+  `tools` explicitly false, makes a model unselectable (`select()` refuses; the picker hides it;
+  `connection_view` reports `chatProblem`). A model that says nothing is never presumed unable.
+- **A refusal about one model is not a refusal of the key.** New `ModelNotAllowed`
+  (`model_not_allowed`, scope `endpoint`, recovery `user`): a 400/403/404 whose wording says the
+  account has no access, or the model is for another endpoint (embeddings, audio, completions),
+  rests only that endpoint as `unusable` (cleared by Test/Discover) and the connection keeps
+  serving its siblings. A real 401 or a bare 403 is still `Auth` and rests the connection.
+- **Honest kinds.** OpenAI's `/models` is ids only; previously every id was a "chat" model.
+  Non-chat `model_profiles` (embedding, speech, transcription, image, video, moderation, realtime,
+  completion) now live in `defaults.yaml` for `openai_responses`. Live result: 127 listed, 81 chat.
+  Gemini models without `generateContent` get kind `embedding` or `other` (raw method names no
+  longer leak out as kinds).
+- **A gateway's own reasoning description is used.** OpenRouter lists per-model `reasoning`
+  (`supported_efforts`, `default_effort`, `mandatory`). Levels are stored weakest-first, `none`
+  becomes `reasoning_can_disable` (unless mandatory), and a default the model does not list is
+  not believed. Negative prices (routers priced -1) mean "unknown", not a price.
+- **Upstream from the id is an explicit quirk** (`upstream_from_id`, set for openrouter and
+  gateway profiles) so fallback can prefer a different upstream without the driver guessing from
+  any id that happens to contain a slash.
+- **Effort is validated against the chosen endpoint.** `settings.effort()` returns a saved level
+  only if the selected endpoint still lists it; `select()` clears one the new model lacks.
+- **Live check (free listing calls only, scratch data dir, key read from `.env`).** Gemini 62
+  listed (34 chat), OpenAI 127 (81 chat), Anthropic 14 (all chat, per-model effort levels read from
+  the API: `low..max` on current models, none on the 4.5 Haiku/Sonnet).
+
+### Unresolved, stated plainly
+- OpenRouter `:batch` rows are kept as ordinary rows; whether chat turns work on them is unverified.
+- OmniRoute behaviour is from its docs only (per-model effort fields undocumented); mirrors,
+  `parent` rows and `auto/*` routers have no special handling.
+- Real no-access / wrong-endpoint error bodies from OpenAI, Anthropic and Gemini were not provoked
+  live; `ModelNotAllowed` matching is tested against documented wording only.
+- Gemini listings do not say output modality, so music/transcription/research models that list
+  `generateContent` still show as chat models until a first call refuses them.
+- Gemini budget mode drops an effort level missing from `thinking_budgets`.

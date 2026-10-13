@@ -96,9 +96,10 @@ def _oembed(url: str) -> dict[str, Any] | None:
     """Title and channel from YouTube's public oEmbed endpoint — no key, no
     scraping. The cheapest possible "what is this" for a video."""
     import httpx
+    from jarvis import tls
 
     try:
-        with httpx.Client(timeout=15.0, headers={"User-Agent": BROWSER_UA}) as client:
+        with httpx.Client(verify=tls.context(), timeout=15.0, headers={"User-Agent": BROWSER_UA}) as client:
             response = client.get("https://www.youtube.com/oembed",
                                   params={"url": url, "format": "json"})
             if response.status_code >= 400:
@@ -166,6 +167,7 @@ def fetch_youtube_text(url: str) -> dict[str, Any]:
     why the caller must say which of the two it actually had.
     """
     import httpx
+    from jarvis import tls
 
     meta = _oembed(url) or {}
     result: dict[str, Any] = {"ok": True, "title": meta.get("title"),
@@ -175,7 +177,7 @@ def fetch_youtube_text(url: str) -> dict[str, Any]:
 
     markup = ""
     try:
-        with httpx.Client(timeout=20.0, follow_redirects=True,
+        with httpx.Client(verify=tls.context(), timeout=20.0, follow_redirects=True,
                           headers=YOUTUBE_HEADERS) as client:
             response = client.get(url, params={"hl": "en", "gl": "US"})
             if response.status_code < 400:
@@ -206,7 +208,7 @@ def fetch_youtube_text(url: str) -> dict[str, Any]:
                               if str(t.get("languageCode", "")).startswith("en")), None)
                      or (tracks[0] if tracks else None))
             if track and track.get("baseUrl"):
-                with httpx.Client(timeout=20.0, headers=YOUTUBE_HEADERS) as client:
+                with httpx.Client(verify=tls.context(), timeout=20.0, headers=YOUTUBE_HEADERS) as client:
                     captions = client.get(track["baseUrl"])
                 if captions.status_code < 400:
                     transcript = _captions(captions.text)

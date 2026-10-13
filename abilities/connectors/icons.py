@@ -33,6 +33,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from jarvis import tls
+
 from ..store import read_json, write_json
 
 logger = logging.getLogger(__name__)
@@ -114,7 +116,7 @@ def _cache() -> dict[str, Any]:
 def _fetch(url: str) -> str | None:
     """One image as a data URI, or None. Never raises."""
     try:
-        with httpx.Client(timeout=TIMEOUT_S, follow_redirects=True) as client:
+        with httpx.Client(verify=tls.context(), timeout=TIMEOUT_S, follow_redirects=True) as client:
             response = client.get(url)
         if response.status_code != 200:
             return None

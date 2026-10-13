@@ -97,7 +97,7 @@ def wire(request, layer, monkeypatch):
     stub.start()
     secrets.save_secret("stub_key", "sk-stub")
     caps = {"text_in": True, "tools": True, "parallel_tools": True, "image_in": True,
-            "structured_output_strict": True, "reasoning_control": True, "prompt_caching": True}
+            "structured_output_strict": True, "reasoning_levels": ["low", "medium", "high"], "prompt_caching": True}
     configure(layer, [{"name": "stub", "driver": request.param, "base_url": stub.base_url, "trust": "standard",
                        "secret_ref": "stub_key", "models": {"stub-a": {"capabilities": caps}}}],
               settings={"retries": 0})
@@ -195,8 +195,8 @@ def test_usage_mapping(wire):
     (503, "overloaded", errors.Unavailable),
     (504, "gateway timeout", errors.Timeout),
     (401, "bad key", errors.Auth),
-    (402, "payment required", errors.Auth),
-    (403, "you exceeded your current quota", errors.Auth),
+    (402, "payment required", errors.Billing),
+    (403, "you exceeded your current quota", errors.Billing),
     (400, "bad request", errors.InvalidRequest),
     (400, "This model's maximum context length is 8192 tokens", errors.ContextTooLong),
     (400, "rejected by our content policy", errors.ContentRefused),

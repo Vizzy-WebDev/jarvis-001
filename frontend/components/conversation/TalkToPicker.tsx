@@ -46,14 +46,17 @@ export function TalkToPicker({
         data-testid="talk-to"
         onClick={() => setOpen((value) => !value)}
         className={[
-          'truncate rounded-pill px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.18em]',
-          'transition duration-150 ease-out focus-visible:outline-none focus-visible:ring-2',
+          'flex max-w-full items-center gap-1.5 truncate rounded-[9px] px-2 py-1.5 text-[14px] font-medium',
+          'transition duration-150 ease-out hover:bg-line/[0.08] focus-visible:outline-none focus-visible:ring-2',
           'focus-visible:ring-accent/60',
-          talkingTo ? 'bg-accent/15 text-accent' : 'text-ink-faint hover:text-ink-muted',
+          talkingTo ? 'text-[#9fd0f2]' : 'text-ink-strong',
         ].join(' ')}
-        title="Who you're talking to"
+        title="Who you’re talking to"
       >
-        {talkingTo ? `Talking to ${talkingTo.name}` : 'Conversation'}
+        <span className="truncate">{talkingTo ? `Talking to ${talkingTo.name}` : 'Jarvis'}</span>
+        <svg viewBox="0 0 24 24" aria-hidden className="h-3.5 w-3.5 shrink-0 fill-none stroke-current stroke-2 text-ink-muted" strokeLinecap="round">
+          <path d="m6 9 6 6 6-6" />
+        </svg>
       </button>
       <Popover open={open} anchorRef={anchor} onClose={() => setOpen(false)} width={280}>
         <div className="max-h-[360px] overflow-y-auto py-1" data-testid="talk-to-menu">

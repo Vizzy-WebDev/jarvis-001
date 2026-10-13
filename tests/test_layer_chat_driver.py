@@ -24,7 +24,7 @@ def chat(layer, monkeypatch):
 
 def connect(layer, stub, *, quirks=None, models_=None, **extra):
     entry = {"name": "box", "driver": "openai_chat", "base_url": stub.base_url, "trust": "local",
-             "models": models_ if models_ is not None else {"stub-a": {"capabilities": {"reasoning_control": True,
+             "models": models_ if models_ is not None else {"stub-a": {"capabilities": {"reasoning_levels": ["low", "medium", "high"],
                                                                                          "json_mode": True}}},
              **extra}
     if quirks:
@@ -62,10 +62,11 @@ def test_quirks_change_only_the_wire(chat, layer):
 
 def test_rejects_strict_sends_json_mode_instead(chat, layer):
     connect(layer, chat, quirks={"rejects_strict": True},
-            models_={"stub-a": {"capabilities": {"structured_output_strict": True}}})
+            models_={"stub-a": {"capabilities": {"structured_output_strict": True, "json_mode": True}}})
     chat.queue(Turn(text='{"ok": true}'))
     schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
-    assert models.generate(ask(output=OutputSpec("json", schema))).data == {"ok": True}
+    # a server that rejects strict is honestly emulating: allowed for best_effort, refused for required
+    assert models.generate(ask(output=OutputSpec("json", schema, "best_effort"))).data == {"ok": True}
     assert chat.last_body()["response_format"] == {"type": "json_object"}
 
 
@@ -107,13 +108,15 @@ def test_a_rich_gateway_listing_becomes_discovered_capabilities_and_prices(layer
         by_id = {e.id: e for e in models.list_endpoints()}
         smart = by_id["gw/vendor/smart"]
         caps = capabilities.plain(smart.capabilities)
-        assert caps["image_in"] and caps["structured_output_strict"] and caps["json_mode"] and caps["reasoning_control"]
+        assert caps["image_in"] and caps["structured_output_strict"] and caps["json_mode"]
+        # The listing says the model reasons but not at which levels: no levels, no default, no guess.
+        assert "reasoning_levels" not in caps and "reasoning_default" not in caps
         assert caps["max_context_tokens"] == 200000 and caps["max_output_tokens"] == 64000
         assert smart.capabilities["tools"].source == "discovered"
         assert smart.pricing.input == pytest.approx(3.0) and smart.pricing.output == pytest.approx(15.0)
         assert by_id["gw/vendor/free:free"].pricing.free
         assert by_id["gw/router/auto"].pricing is None  # a router's price depends on who answers: unknown
-        assert capabilities.plain(by_id["gw/vendor/painter"].capabilities)["text_in"] is False
+        assert capabilities.plain(by_id["gw/vendor/painter"].capabilities)["kind"] == "image"
     finally:
         stub.stop()
 
@@ -136,7 +139,7 @@ def test_ollama_show_fills_in_what_the_plain_list_cannot(layer):
         assert by_id["desk/llama3.1:8b"].family == "llama" and by_id["desk/llama3.1:8b"].pricing.free
         assert capabilities.plain(by_id["desk/llava"].capabilities)["image_in"]
         embed = capabilities.plain(by_id["desk/nomic-embed"].capabilities)
-        assert embed["embeddings"] and embed["text_in"] is False
+        assert embed["kind"] == "embedding"
         assert [r["body"]["model"] for r in stub.requests if r["kind"] == "show"] == ["llama3.1:8b", "llava",
                                                                                        "nomic-embed"]
     finally:

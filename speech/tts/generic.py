@@ -57,12 +57,13 @@ def is_configured() -> bool:
 
 def _call(provider: dict[str, Any], api_key: str, text: str, voice: str | None):
     import httpx
+    from jarvis import tls
 
     build: Callable[[str, str | None], dict[str, Any]] = provider["buildBody"]
     return httpx.post(provider["endpoint"],
                       headers={provider["authHeader"]: f"{provider['authPrefix']}{api_key}",
                                "Content-Type": "application/json", "Accept": ACCEPT},
-                      json=build(text, voice), timeout=120.0)
+                      json=build(text, voice), timeout=120.0, verify=tls.context())
 
 
 def stream(text: str, *, voice: str | None = None,

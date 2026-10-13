@@ -16,7 +16,9 @@ Quirk flags:
     unsigned_call_signature  a function call from another endpoint has no signature;
                              newer models refuse one in the current turn unless it
                              carries this documented placeholder
-    thinking_param           "level" (thinkingLevel, default) | "budget" (thinkingBudget)
+    thinking_param           "level" (thinkingLevel: the level goes as named, default) |
+                             "budget" (thinkingBudget: the level's number from thinking_budgets)
+    thinking_budgets         level name -> token budget, for "budget" models (data, per model)
 """
 
 from __future__ import annotations
@@ -33,14 +35,10 @@ from . import _turns, _wire
 NAME = "gemini_generate"
 QUIRKS = frozenset({"unsigned_call_signature", "thinking_param"})
 DEFAULT_CAPABILITIES: dict[str, Any] = {"text_in": True, "tools": True, "parallel_tools": True, "streaming": True,
-                                        "image_in": True, "json_mode": True, "structured_output_strict": True,
-                                        # A thinking level can't be "off" ("minimal" still thinks).
-                                        "effort_levels": ["low", "medium", "high"]}
+                                        "json_mode": True, "structured_output_strict": True, "kind": "chat"}
 
 _FINISH = {"STOP": "stop", "MAX_TOKENS": "length"}
 _BLOCKED = {"SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY", "LANGUAGE"}
-_LEVEL = {"none": "minimal", "low": "low", "medium": "medium", "high": "high"}
-_BUDGET = {"none": 0, "low": 1024, "medium": 8192, "high": 24576}
 
 
 def _auth(conn: ConnInfo) -> dict[str, str]:
@@ -150,9 +148,11 @@ def body_for(prepared: Prepared, quirks: dict[str, Any]) -> dict[str, Any]:
         config["maxOutputTokens"] = prepared.max_output_tokens
     if prepared.effort:
         if quirks.get("thinking_param") == "budget":
-            config["thinkingConfig"] = {"thinkingBudget": _BUDGET[prepared.effort]}
+            budgets = quirks.get("thinking_budgets") or {}
+            if prepared.effort in budgets:
+                config["thinkingConfig"] = {"thinkingBudget": budgets[prepared.effort]}
         else:
-            config["thinkingConfig"] = {"thinkingLevel": _LEVEL[prepared.effort]}
+            config["thinkingConfig"] = {"thinkingLevel": prepared.effort}
     if config:
         body["generationConfig"] = config
     return deep_merge(body, prepared.params)
@@ -230,7 +230,8 @@ def stream(conn: ConnInfo, prepared: Prepared) -> Iterator[Any]:
 # --- discovery -------------------------------------------------------------------------------
 
 def discover(conn: ConnInfo) -> list[Discovered]:
-    """Only models Google itself says can `generateContent`."""
+    """Every model Google lists. One that can't `generateContent` is kept with the kind its methods
+    suggest, so it is never offered a chat turn but is there for what it is for."""
     found: list[Discovered] = []
     token: str | None = None
     for _ in range(20):
@@ -245,22 +246,19 @@ def discover(conn: ConnInfo) -> list[Discovered]:
             if not isinstance(row, dict) or not row.get("name"):
                 continue
             methods = row.get("supportedGenerationMethods")
-            if isinstance(methods, list) and "generateContent" not in methods:
-                continue
             caps: dict[str, Any] = {}
+            if isinstance(methods, list) and "generateContent" not in methods:
+                if any("embed" in str(m).lower() for m in methods):
+                    caps["kind"] = "embedding"
+                else:
+                    caps["kind"] = "other"
             if _wire.count(row.get("inputTokenLimit")):
                 caps["max_context_tokens"] = row["inputTokenLimit"]
             if _wire.count(row.get("outputTokenLimit")):
                 caps["max_output_tokens"] = row["outputTokenLimit"]
-            if isinstance(row.get("thinking"), bool):
-                caps["reasoning_control"] = row["thinking"]
             model_id = str(row["name"]).removeprefix("models/")
-            if "tts" in model_id.lower().split("-"):
-                # Speech only: it answers in audio and refuses a text reply. The list says nothing
-                # about output kinds, so the id Google gives these models is the one signal.
-                caps["text_in"] = False
             found.append(Discovered(model_id=model_id,
-                                    label=row.get("displayName") or None, capabilities=caps, family="gemini"))
+                                    label=row.get("displayName") or None, capabilities=caps))
         token = body.get("nextPageToken")
         if not token:
             break

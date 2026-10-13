@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import queue
 import threading
+import time
 from typing import Any, AsyncIterator, Callable, Iterator
 
 from fastapi import Request
@@ -57,39 +57,47 @@ async def stream_sync_source(
     queue is what lets the event loop keep checking whether the client is still
     there, which is the whole point: `cancel` is set the moment it is not.
     """
-    outbox: queue.Queue[Any] = queue.Queue()
+    loop = asyncio.get_running_loop()
+    outbox: asyncio.Queue[Any] = asyncio.Queue()
     cancel = threading.Event()
+
+    def put(item: Any) -> None:
+        try:
+            loop.call_soon_threadsafe(outbox.put_nowait, item)
+        except RuntimeError:  # the loop is gone (shutdown); nobody is listening
+            cancel.set()
 
     def worker() -> None:
         try:
             for event in produce(cancel):
-                outbox.put(event)
+                put(event)
         except Exception as err:  # noqa: BLE001 — a crashed turn must still close the stream
-            outbox.put({"type": "error", "error": str(err)})
+            put({"type": "error", "error": str(err)})
         finally:
-            outbox.put(_DONE)
+            put(_DONE)
 
     thread = threading.Thread(target=worker, name="sse-turn", daemon=True)
     thread.start()
 
-    since_event = 0.0
+    # The wait is on the loop itself and the clock is the real one: a heartbeat can no more be held
+    # back by a busy worker-thread pool than a counted poll could be.
+    last_sent = time.monotonic()
     try:
         while True:
             try:
-                item = await asyncio.to_thread(outbox.get, True, _POLL_S)
-            except queue.Empty:
+                item = await asyncio.wait_for(outbox.get(), _POLL_S)
+            except asyncio.TimeoutError:
                 if await request.is_disconnected():
                     cancel.set()
                     return
-                since_event += _POLL_S
-                if heartbeat is not None and since_event >= HEARTBEAT_S:
-                    since_event = 0.0
+                if heartbeat is not None and time.monotonic() - last_sent >= HEARTBEAT_S:
+                    last_sent = time.monotonic()
                     yield frame(heartbeat())
                 continue
 
             if item is _DONE:
                 return
-            since_event = 0.0
+            last_sent = time.monotonic()
             yield frame(item)
     finally:
         # Covers the paths that do not go through the disconnect check above —

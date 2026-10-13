@@ -48,5 +48,6 @@ export function useModels() {
 /** How a provider-reported effort level reads to a person. */
 export function effortLabel(level: string): string {
   if (level === 'xhigh') return 'Extra high';
+  if (level === 'none') return 'Off';
   return level.charAt(0).toUpperCase() + level.slice(1);
 }

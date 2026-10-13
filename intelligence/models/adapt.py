@@ -7,7 +7,7 @@
 * `stable_prefix_until` becomes a canonical "cache the stable prefix" flag and
   `reasoning_effort` a canonical level — each only if the endpoint has the
   capability, otherwise reported as dropped. The level sent is the nearest one the
-  endpoint accepts (`effort_levels`); one other than asked is reported in `mapped`.
+  endpoint lists (`reasoning_levels`); one other than asked is reported in `mapped`.
   The native encoding is the driver's.
 * Sealed items from any other endpoint are left out, and reported.
 * For a model that can't see, a picture from earlier in the conversation becomes a
@@ -99,12 +99,14 @@ def prepare(request: Request, candidate: Candidate, cfg: Config, *, mint_id: Cal
     effort = None
     asked = request.hints.reasoning_effort
     if asked is not None:
-        effort = caps_mod.nearest_effort(asked, caps_mod.effort_levels(caps))
+        effort, how = caps_mod.map_effort(asked, caps)
         report.features["reasoning_effort"] = "native" if effort else "dropped"
-        if effort and effort != asked:
+        if effort and how == "nearest":
             report.mapped["reasoning_effort"] = {"asked": asked, "sent": effort}
+            note = (" This model can't turn thinking off." if asked == "none"
+                    and not caps_mod.can_disable(caps) else "")
             report.warnings.append(f"Effort “{asked}” isn't a level this model takes; it was sent as "
-                                   f"“{effort}”, the nearest one it does.")
+                                   f"“{effort}”, the nearest one it does.{note}")
 
     if request.hints.max_output_tokens is not None:
         report.features["max_output_tokens"] = "native"

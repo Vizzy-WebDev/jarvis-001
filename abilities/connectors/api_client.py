@@ -163,9 +163,10 @@ def discover_from_spec(spec_url: str, *, fetch: Any = None) -> dict[str, Any]:
     """
     if fetch is None:
         import httpx
+        from jarvis import tls
 
         def fetch(url: str) -> Any:  # noqa: ANN401
-            with httpx.Client(timeout=TIMEOUT_S, follow_redirects=True) as client:
+            with httpx.Client(verify=tls.context(), timeout=TIMEOUT_S, follow_redirects=True) as client:
                 return client.get(url)
 
     try:
@@ -284,8 +285,9 @@ def _fill_path(path: str, remaining: dict[str, Any]) -> str:
 
 def _default_request(**kw: Any) -> Any:  # noqa: ANN401
     import httpx
+    from jarvis import tls
 
-    with httpx.Client(timeout=TIMEOUT_S, follow_redirects=True) as client:
+    with httpx.Client(verify=tls.context(), timeout=TIMEOUT_S, follow_redirects=True) as client:
         return client.request(**kw)
 
 

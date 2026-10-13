@@ -14,12 +14,10 @@ from typing import Any, Literal, Mapping, Union
 DATA_CLASSES = ("public", "personal", "sensitive")
 TRUST_CLASSES = ("local", "zero_retention", "standard")
 OPTIMIZE = ("quality", "cost", "speed")
-EFFORTS = ("none", "low", "medium", "high")
 STOP_REASONS = ("stop", "tool_calls", "length", "content_filter")
 
 DataClass = Literal["public", "personal", "sensitive"]
 Optimize = Literal["quality", "cost", "speed"]
-Effort = Literal["none", "low", "medium", "high"]
 
 
 # --- items -----------------------------------------------------------------------------
@@ -122,7 +120,9 @@ class Requirements:
 @dataclass(frozen=True)
 class Hints:
     stable_prefix_until: str | None = None  # the label of the last stable Section
-    reasoning_effort: Effort | None = None
+    #: A thinking level by name: one of the canonical scale, or a level an endpoint lists in its own
+    #: words. Absent = the model default (nothing is sent).
+    reasoning_effort: str | None = None
     max_output_tokens: int | None = None
 
 
@@ -148,8 +148,8 @@ class Request:
             raise ValueError(f"data_class must be one of {', '.join(DATA_CLASSES)}.")
         if self.optimize is not None and self.optimize not in OPTIMIZE:
             raise ValueError(f"optimize must be one of {', '.join(OPTIMIZE)}.")
-        if self.hints.reasoning_effort is not None and self.hints.reasoning_effort not in EFFORTS:
-            raise ValueError(f"reasoning_effort must be one of {', '.join(EFFORTS)}.")
+        if self.hints.reasoning_effort is not None and not self.hints.reasoning_effort.strip():
+            raise ValueError("reasoning_effort must be a level name.")
         if self.output.kind == "json" and self.output.schema is None:
             raise ValueError("A JSON output needs a schema.")
         if self.hints.stable_prefix_until is not None and \
@@ -261,11 +261,6 @@ class UsageEvent:
 
 
 @dataclass(frozen=True)
-class WarningEvent:
-    message: str
-
-
-@dataclass(frozen=True)
 class ErrorEvent:
     error: Any  # a ModelError
 
@@ -276,7 +271,7 @@ class Done:
 
 
 Event = Union[TextDelta, ToolCallStarted, ToolArgsDelta, ToolCallCompleted, ReasoningDelta,
-              UsageEvent, WarningEvent, ErrorEvent, Done]
+              UsageEvent, ErrorEvent, Done]
 
 #: The events that carry content. "No fallback after the first event" counts these.
 CONTENT_EVENTS = (TextDelta, ToolCallStarted, ToolArgsDelta, ToolCallCompleted, ReasoningDelta)

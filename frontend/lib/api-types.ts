@@ -125,12 +125,17 @@ export interface ProviderFormat {
 }
 
 /**
- * Reasoning effort as the PROVIDER reported it for one model. Absent means the
- * provider said nothing, and no control is offered — levels are never assumed.
+ * Reasoning effort as this ONE model takes it, in its own words. Absent means nothing is
+ * known about its levels, and no control is offered — levels are never assumed. With no choice
+ * made nothing is sent and the model uses its own default: when that default is known it is one
+ * of the levels (shown as the chosen one); when it is unknown nothing is marked. The picker lists
+ * only these levels: "no override" is how a request behaves, never a row.
  */
 export interface ModelEffort {
   levels: string[];
   default: string | null;
+  /** True when "none" is among the levels because the model can really switch thinking off. */
+  canDisable: boolean;
 }
 
 export interface ProviderModel {
@@ -139,6 +144,10 @@ export interface ProviderModel {
   source: 'discovered' | 'manual';
   /** False once a later discovery no longer names it. A note, not a verdict: it still runs. */
   stillListed: boolean;
+  /** What the model is for. Only 'chat' models can be talked with. */
+  kind: string;
+  /** Plain words for why it can't take a chat turn (not a text model, or listed as unable to use tools); null when it can. */
+  chatProblem: string | null;
   effort: ModelEffort | null;
 }
 
@@ -1100,3 +1109,27 @@ export interface ArtifactPage {
 export type ArtifactPreview =
   | { format: 'markdown'; markdown: string; note?: string }
   | { format: 'sheets'; sheets: { name: string; rows: string[][] }[]; note?: string };
+
+// --- Home's health cards (`GET /api/health`) ------------------------------------
+
+/** Anything that cannot be known is null — never a zero that reads as idle,
+ *  instant or free. */
+export interface Health {
+  system: {
+    cpuPct: number | null;
+    memPct: number | null;
+    diskPct: number | null;
+    netBytesPerSec: number | null;
+  };
+  jarvis: {
+    issues: string[];
+    modelReady: boolean;
+    uptimeSec: number;
+    voice: { wakeWord: boolean; wakeWordNote: string };
+    connectors: { enabled: number; working: number; problems: string[] };
+    jobsRunning: number;
+    responseSec: number | null;
+    spendToday: number | null;
+    unpricedCalls: number;
+  };
+}

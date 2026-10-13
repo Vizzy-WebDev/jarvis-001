@@ -35,17 +35,17 @@ export function Toggle({
       data-testid={testId}
       onClick={() => onChange(!checked)}
       className={[
-        'relative h-[22px] w-[38px] shrink-0 rounded-pill border transition duration-150 ease-out',
+        'relative h-5 w-[34px] shrink-0 rounded-pill transition-colors duration-200 ease-out',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60',
         'disabled:opacity-40',
-        checked ? 'border-accent/40 bg-accent/25' : 'border-surface-border bg-white/[0.06]',
+        checked ? 'bg-[#3f7fae]' : 'bg-line/[0.22]',
       ].join(' ')}
     >
       <span
         aria-hidden
         className={[
-          'absolute top-1/2 h-[14px] w-[14px] -translate-y-1/2 rounded-full transition-all duration-150 ease-out',
-          checked ? 'left-[19px] bg-accent' : 'left-[3px] bg-ink-faint',
+          'absolute top-0.5 h-4 w-4 rounded-full bg-white transition-[left] duration-200 ease-out',
+          checked ? 'left-4' : 'left-0.5',
         ].join(' ')}
       />
     </button>

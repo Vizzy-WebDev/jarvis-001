@@ -41,10 +41,10 @@ export function ModelPicker() {
     return connection && model ? { connection, model } : null;
   }, [connections, selection]);
 
-  const total = connections.reduce((n, c) => n + c.models.length, 0);
+  const total = connections.reduce((n, c) => n + c.models.filter((m) => !m.chatProblem).length, 0);
   const needle = query.trim().toLowerCase();
   const matches = (model: ProviderModel) =>
-    !needle || model.label.toLowerCase().includes(needle) || model.id.toLowerCase().includes(needle);
+    !model.chatProblem && (!needle || model.label.toLowerCase().includes(needle) || model.id.toLowerCase().includes(needle));
 
   // What the trigger says. A selection that cannot be run says so here, where the
   // person will see it, rather than showing a model name that looks fine.
@@ -81,7 +81,7 @@ export function ModelPicker() {
     }
   }
 
-  async function setEffort(level: string) {
+  async function setEffort(level: string | null) {
     if (!selected) return;
     setError(null);
     try {
@@ -97,7 +97,8 @@ export function ModelPicker() {
   }
 
   const effort = selected?.model.effort ?? null;
-  const currentEffort = selection?.effort ?? effort?.default ?? null;
+  const currentEffort = selection?.effort ?? null;
+  const ownDefault = effort?.default && effort.levels.includes(effort.default) ? effort.default : null;
 
   return (
     <>
@@ -220,22 +221,22 @@ export function ModelPicker() {
                 <p className="px-3.5 pb-1 pt-2 text-[12px] leading-relaxed text-ink-faint">
                   More effort means a more thorough answer, but it takes longer and uses more of your allowance.
                 </p>
-                {effort.levels.map((level) => (
-                  <button
-                    key={level}
-                    type="button"
-                    data-testid={`effort-${level}`}
-                    aria-pressed={currentEffort === level}
-                    onClick={() => void setEffort(level)}
-                    className="flex w-full items-center gap-2 px-3.5 py-2 text-left text-[13px] text-ink transition hover:bg-white/[0.05]"
-                  >
-                    <span>{effortLabel(level)}</span>
-                    {level === effort.default && (
-                      <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-ink-muted">Default</span>
-                    )}
-                    {currentEffort === level && <CheckIcon className="ml-auto h-4 w-4 shrink-0 text-accent" />}
-                  </button>
-                ))}
+                {effort.levels.map((level) => {
+                  const checked = currentEffort === level || (currentEffort === null && level === ownDefault);
+                  return (
+                    <button
+                      key={level}
+                      type="button"
+                      data-testid={`effort-${level}`}
+                      aria-pressed={checked}
+                      onClick={() => void setEffort(level === ownDefault || currentEffort === level ? null : level)}
+                      className="flex w-full items-center gap-2 px-3.5 py-2 text-left text-[13px] text-ink transition hover:bg-white/[0.05]"
+                    >
+                      <span>{effortLabel(level)}</span>
+                      {checked && <CheckIcon className="ml-auto h-4 w-4 shrink-0 text-accent" />}
+                    </button>
+                  );
+                })}
               </div>
             )}
           </>

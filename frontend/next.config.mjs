@@ -18,6 +18,10 @@ const API_TARGET = process.env.JARVIS_API_TARGET || 'http://127.0.0.1:3000';
 
 const nextConfig = {
   output: isProduction ? 'export' : undefined,
+  // A preview build somewhere other than `out/` (served by a test server with
+  // JARVIS_FRONTEND_DIR), so unfinished work never replaces the build a running
+  // Jarvis serves. Unset, this is the normal export.
+  ...(process.env.JARVIS_BUILD_DIR ? { distDir: process.env.JARVIS_BUILD_DIR } : {}),
   reactStrictMode: true,
   // The export is served from the filesystem by FastAPI, so a trailing-slash
   // directory layout is what maps cleanly onto StaticFiles.

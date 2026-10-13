@@ -14,12 +14,14 @@ from typing import Any
 
 import httpx
 
+from jarvis import tls
+
 TIMEOUT_S = 15.0
 USER_AGENT = "Jarvis/1.0 (personal assistant)"
 
 
 def get_json(url: str, **kw: Any) -> Any:
-    with httpx.Client(timeout=TIMEOUT_S, follow_redirects=True,
+    with httpx.Client(verify=tls.context(), timeout=TIMEOUT_S, follow_redirects=True,
                       headers={"User-Agent": USER_AGENT}) as client:
         response = client.get(url, **kw)
         response.raise_for_status()
@@ -27,7 +29,7 @@ def get_json(url: str, **kw: Any) -> Any:
 
 
 def get_text(url: str, **kw: Any) -> str:
-    with httpx.Client(timeout=TIMEOUT_S, follow_redirects=True,
+    with httpx.Client(verify=tls.context(), timeout=TIMEOUT_S, follow_redirects=True,
                       headers={"User-Agent": USER_AGENT}) as client:
         response = client.get(url, **kw)
         response.raise_for_status()

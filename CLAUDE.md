@@ -74,11 +74,13 @@ never called by a test — sets every one of them via `os.environ.setdefault()` 
 `_BACKGROUND_INTERLOCKS` **before** calling `create_app()`, so a real launch always has
 all of them on: the scheduler (`scheduler/engine.py`), the heartbeat
 (`heartbeat/engine.py`), the monitor (`monitor/engine.py`), the job supervisor
-(`jobs/orchestrator.py`), cost/price refresh (`cost/balances.py`, `cost/prices.py`), the
+(`jobs/orchestrator.py`), the
 environment sampler (`ops/environment/sampler.py`), Self-Improvement's own tick
 (`improvement/cadence.py`), and three recycle-bin/logo sweeps added since — the
 notifications trash purge (`notifications.py`), the connector icon resolver
-(`connectors/icons.py`), and the chat-history trash purge (`chat_store.py`).
+(`connectors/icons.py`), and the chat-history trash purge (`chat_store.py`). One more
+reaches the network rather than running on a clock: `JARVIS_WAKE_MODEL_DOWNLOAD` lets the
+wake-word detector fetch its model once into `data/wakeword/` (`voice/wake.py`).
 `assembly.start_background_work()` is the one place "what
 starts itself" is answerable by reading a single function. One interlock gates work that
 is triggered by a reply rather than a clock: `JARVIS_CONVERSATION_SUMMARY`, the running
@@ -300,8 +302,9 @@ Kind table, Auto ranking, "proven" models, per-connection strikes, billing holds
   later one fails), probe results, latency, the per-endpoint circuit breaker, connection rests, month
   spend. **Traces** are the `model_traces` table (migration 36): one row per call, metadata only unless
   `settings.trace_content`; spend queries by connection / task class / day are GROUP BYs over it.
-- **Endpoint** = one model on one connection, `connection/model-id`. **Capabilities** are a fixed,
-  versioned vocabulary (`capabilities.py`), each value declared (driver default, quirk profile, config),
+- **Endpoint** = one model on one connection, `connection/model-id`. **Capabilities** are an OPEN
+  vocabulary (`capabilities.py`; any well-formed name, known names only add a type check and a plain
+  phrase; `reasoning_default` only from evidence), each value declared (driver default, quirk profile, config),
   discovered or probed — probed beats discovered beats declared. An unknown capability counts as absent.
 - **Drivers** (`drivers/`): `openai_chat` (Chat Completions — OpenRouter, vLLM, LM Studio, Ollama,
   LiteLLM; server differences are quirk-profile **data**), `openai_responses` (stateless, `store:false`,
@@ -318,11 +321,12 @@ Kind table, Auto ranking, "proven" models, per-connection strikes, billing holds
   usage + cost; provenance; feature report of native/emulated/dropped).
 - **Execute**: retryable errors (`rate_limited`, `unavailable`, `timeout`) retry with backoff, then fall
   back **only within the filtered list**, preferring a different upstream; a server asking to wait >10s
-  moves straight on. **Approved deviation from the plan (D3b):** under Auto (no pin), a connection-level
-  `auth` refusal (key, billing, quota) also falls back, before the first streamed event, to the next
-  eligible endpoint of the filtered list, preferring another connection, with a visible plain-language
-  notice; a pinned request still ends the call on it. **Every other error ends the call**, including
-  `context_too_long`. A connection that refused the key or account rests as a whole (`refused_rest_s`,
+  moves straight on. **Approved deviation from the plan (D3b, generalised):** every error carries a
+  `scope` (request, endpoint, upstream, connection) and a `recovery`. Under Auto (no pin) a failure at
+  endpoint scope or wider (a 429, a refused key, exhausted `billing`, a missing model) also falls back,
+  before the first streamed event, to the next eligible endpoint of the filtered list, preferring another
+  connection, with a visible plain-language notice; a pinned request, and any request-scoped error
+  (including `context_too_long`), ends the call. A connection that refused the key or account rests as a whole (`refused_rest_s`,
   kept in the state file across restarts) until its key is edited, it is reconnected (Test/Discover) or
   the rest ends (D3a). `allow_family_change: false` is honoured. **No fallback after the first
   streamed content event.** Per-connection concurrency/rpm limits, a 429 rests the connection, the
@@ -349,13 +353,14 @@ Kind table, Auto ranking, "proven" models, per-connection strikes, billing holds
   event) and `oneshot.py` (behind `ai.ask`, whose callers must pass `data_class` and `task_class`).
   `settings.py` serves the Model Settings routes. **The person's chosen model is the alias `selected`
   (pinned); Auto is no `selected` alias**, so the task class's route applies. Effort is the
-  `selectedEffort` preference, sent per request. A specialist's or scheduled task's model pin becomes an
+  `selectedEffort` preference, sent per request only when the person chose one (no choice = the
+  model's own default); levels are per-endpoint data on a canonical ordered scale, mapped and reported. A specialist's or scheduled task's model pin becomes an
   alias of the same name on first use (found or refused, never approximated).
 - `prompt.py` produces an `Instructions` (`prompt_format.py`): labelled sections + the label of the last
   stable one — a `str` subclass, so text-only callers keep working.
-- **Migrations**: 35 moves the old `model_providers`/`provider_models`/`model_outcomes` into config and
-  state and drops them only after the export is read back and verified (a failure leaves them, tells the
-  person, and startup retries); 36 is `model_traces`.
+- **Migrations**: 35 moved the old `model_providers`/`provider_models`/`model_outcomes` into config
+  and state (its Python step is removed; every database in use is past it); 36 is `model_traces`;
+  39 drops the unused `provider_balances` and `model_prices` (prices come from the endpoints).
 - **Not implemented, and never claimed**: web search through a model (refused plainly), provider-hosted
   tools, emulated tool calling, speech-to-speech, video/audio/PDF input, learned routing.
 

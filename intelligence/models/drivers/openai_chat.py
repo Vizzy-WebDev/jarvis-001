@@ -14,7 +14,7 @@ flags, read here and nowhere else.
     reasoning_param          how effort is sent: "reasoning_effort" | "reasoning_object"
     max_tokens_param         "max_tokens" (default) | "max_completion_tokens"
     show_endpoint            discovery also asks Ollama's native /api/show per model
-    catalog_fields           "rich": the model list carries capabilities and prices
+    upstream_from_id         the vendor before the "/" in a listed id is who serves it (a gateway)
 """
 
 from __future__ import annotations
@@ -33,11 +33,9 @@ from . import _turns, _wire
 NAME = "openai_chat"
 QUIRKS = frozenset({"no_parallel_tool_calls", "tool_args_not_streamed", "rejects_strict", "no_stream_usage",
                     "no_system_role", "no_tool_call_ids", "error_envelope_in_text", "reasoning_param",
-                    "max_tokens_param", "show_endpoint", "catalog_fields"})
+                    "max_tokens_param", "show_endpoint", "upstream_from_id"})
 DEFAULT_CAPABILITIES: dict[str, Any] = {"text_in": True, "tools": True, "parallel_tools": True, "streaming": True,
-                                        # What a reasoning model behind this format takes, wherever
-                                        # its server says it takes a reasoning control at all.
-                                        "effort_levels": ["low", "medium", "high"]}
+                                        "kind": "chat"}
 
 _FINISH = {"stop": "stop", "tool_calls": "tool_calls", "function_call": "tool_calls", "length": "length",
            "content_filter": "content_filter"}
@@ -281,7 +279,27 @@ def _per_million(value: Any) -> float | None:
     return None if number < 0 else number * 1_000_000
 
 
-def _listed(row: dict[str, Any]) -> Discovered:
+def _reasoning_caps(row: dict[str, Any]) -> dict[str, Any]:
+    """A listing's own account of a model's thinking control (OpenRouter's `reasoning` object):
+    the levels it takes, the one it uses unasked, and whether it can be switched off. Nothing is
+    read from the model's name; a listing without the object says nothing."""
+    found = row.get("reasoning")
+    if not isinstance(found, dict):
+        return {}
+    listed = [str(e).strip() for e in found.get("supported_efforts") or [] if isinstance(e, str) and e.strip()]
+    levels = list(dict.fromkeys(e for e in listed if e != "none"))
+    if not levels:
+        return {}
+    levels.reverse()  # the listing names the strongest first in every row seen; the picker reads weakest first
+    caps: dict[str, Any] = {"reasoning_levels": levels, "reasoning_can_disable": "none" in listed and
+                            found.get("mandatory") is not True}
+    default = found.get("default_effort")
+    if isinstance(default, str) and default in levels:
+        caps["reasoning_default"] = default
+    return caps
+
+
+def _listed(row: dict[str, Any], quirks: dict[str, Any] | None = None) -> Discovered:
     """Only what the server reported about the model. A plain server says nothing
     beyond the id; a gateway may describe capabilities, modalities and price."""
     caps: dict[str, Any] = {}
@@ -289,21 +307,27 @@ def _listed(row: dict[str, Any]) -> Discovered:
     inputs = row.get("input_modalities") or arch.get("input_modalities")
     outputs = row.get("output_modalities") or arch.get("output_modalities")
     if isinstance(inputs, list) and inputs:
+        # Every input kind the server lists is a capability of the same shape (`<kind>_in`), whether
+        # or not this version has heard of it.
+        for modality in inputs:
+            if isinstance(modality, str) and modality.strip():
+                caps[f"{modality.strip().lower()}_in"] = True
         caps["image_in"] = "image" in inputs
         caps["pdf_in"] = "file" in inputs
     kind = str(row.get("type") or "").lower()
     if kind in {"embedding", "embeddings"}:
-        caps["embeddings"] = True
-        caps["text_in"] = False
-    elif kind in {"video", "image", "audio", "speech", "tts", "stt", "transcription", "rerank", "moderation"} or (
-            isinstance(outputs, list) and outputs and "text" not in outputs):
-        caps["text_in"] = False
+        caps["kind"] = "embedding"
+    elif kind and kind not in {"chat", "text", "language", "llm"}:
+        caps["kind"] = kind
+    elif isinstance(outputs, list) and outputs and "text" not in outputs:
+        # What it makes, in the server's words: one output is its kind; several are named together.
+        caps["kind"] = "-".join(sorted(str(o).strip().lower() for o in outputs if str(o).strip())) or "other"
     supported = row.get("supported_parameters")
     if isinstance(supported, list) and supported:
         caps["tools"] = "tools" in supported
         caps["structured_output_strict"] = "structured_outputs" in supported
         caps["json_mode"] = "response_format" in supported
-        caps["reasoning_control"] = "reasoning" in supported or "reasoning_effort" in supported
+    caps.update(_reasoning_caps(row))
     listed_caps = row.get("capabilities") if isinstance(row.get("capabilities"), dict) else {}
     if isinstance(listed_caps.get("tool_calling"), bool):
         caps["tools"] = listed_caps["tool_calling"]
@@ -321,11 +345,12 @@ def _listed(row: dict[str, Any]) -> Discovered:
         pricing = Pricing(prompt, completion, _per_million(price.get("input_cache_read")))
     family = upstream = None
     if arch:
-        # A gateway's rich listing: the tokenizer it reports is the model's family, and the
-        # vendor before the "/" in its id is who serves it. A plain server's ids are its own
-        # names, so nothing is read from them.
+        # The tokenizer a listing reports is the model's family.
         tokenizer = str(arch.get("tokenizer") or "").strip().lower()
         family = tokenizer if tokenizer and tokenizer not in {"other", "router"} else None
+    if arch or (quirks or {}).get("upstream_from_id"):
+        # A gateway names who serves a model before the "/" in its id. A plain server's ids are
+        # its own names, so nothing is read from them unless the connection says it is a gateway.
         vendor, sep, _ = str(row["id"]).partition("/")
         upstream = vendor.lower() if sep and vendor else None
     return Discovered(model_id=str(row["id"]), label=row.get("name") or None, capabilities=caps, pricing=pricing,
@@ -339,15 +364,16 @@ def _show(conn: ConnInfo, model_id: str) -> dict[str, Any]:
     return body if isinstance(body, dict) else {}
 
 
-def _from_show(found: Discovered, shown: dict[str, Any]) -> Discovered:
+def _from_show(found: Discovered, shown: dict[str, Any], quirks: dict[str, Any] | None = None) -> Discovered:
     caps = dict(found.capabilities)
     listed = shown.get("capabilities")
     if isinstance(listed, list):
-        caps["text_in"] = "completion" in listed
+        if "embedding" in listed:
+            caps["kind"] = "embedding"
+        elif "completion" not in listed:
+            caps["kind"] = "other"
         caps["tools"] = "tools" in listed
         caps["image_in"] = "vision" in listed
-        caps["reasoning_control"] = "thinking" in listed
-        caps["embeddings"] = "embedding" in listed
     info = shown.get("model_info") if isinstance(shown.get("model_info"), dict) else {}
     for key, value in info.items():
         if key.endswith(".context_length") and _wire.count(value):
@@ -365,12 +391,12 @@ def discover(conn: ConnInfo) -> list[Discovered]:
     rows = body.get("data") if isinstance(body, dict) else body
     if not isinstance(rows, list):
         raise errors.InvalidRequest(f"{_wire.host_of(conn.base_url)} answered, but not with a list of models.")
-    found = [_listed(r) for r in rows if isinstance(r, dict) and r.get("id")]
+    found = [_listed(r, conn.quirks) for r in rows if isinstance(r, dict) and r.get("id")]
     if conn.quirks.get("show_endpoint"):
         described = []
         for item in found:
             try:
-                described.append(_from_show(item, _show(conn, item.model_id)))
+                described.append(_from_show(item, _show(conn, item.model_id), conn.quirks))
             except errors.ModelError:
                 described.append(item)  # one model it won't describe doesn't lose the rest
         found = described

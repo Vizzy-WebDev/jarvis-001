@@ -15,3 +15,4 @@ __pycache__/
 # export the backend serves, and committing it is what lets Jarvis run with only
 # Python installed. See frontend/.gitignore.
 node_modules/
+.preview-build/

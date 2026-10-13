@@ -133,9 +133,11 @@ def test_a_section_that_does_not_exist_is_refused_with_the_real_list(reg):
 
 
 def test_every_section_it_offers_is_one_the_interface_actually_has():
-    """This list drives the drawer, the router and this tool, and it has drifted
+    """This list drives the menu, the router and this tool, and it has drifted
     before — three real sections were missing from the tool's own enum for a
-    while, so asking for them navigated nowhere."""
+    while, so asking for them navigated nowhere. Every name must be a page, a
+    page's own tab, or an alias the interface resolves; and every page must be
+    reachable by voice."""
     import re
     from pathlib import Path
 
@@ -143,6 +145,23 @@ def test_every_section_it_offers_is_one_the_interface_actually_has():
 
     nav = (Path(__file__).resolve().parent.parent
            / "frontend" / "lib" / "nav.ts").read_text(encoding="utf-8")
-    in_interface = set(re.findall(r"\{ id: '([a-z-]+)'", nav))
-    assert in_interface, "could not read the interface's own section list"
-    assert set(SECTIONS) == in_interface
+    pages: dict[str, set[str]] = {}
+    current = None
+    for line in nav.splitlines():
+        page = re.match(r"  \{ id: '([a-z-]+)'", line)
+        tab = re.match(r" {6}\{ id: '([a-z-]+)'", line)
+        if page:
+            current = page.group(1)
+            pages[current] = set()
+        elif tab and current:
+            pages[current].add(tab.group(1))
+    aliases = {m.group(1): (m.group(2), m.group(3)) for m in re.finditer(
+        r"^  '?([a-z-]+)'?: \['([a-z-]+)', '([a-z-]+)'\]", nav, re.M)}
+    assert pages and aliases, "could not read the interface's own page list"
+
+    reachable = set(pages) | {f"{p}/{t}" for p, tabs in pages.items() for t in tabs}
+    for name, (page, tab) in aliases.items():
+        assert tab in pages[page], f"alias {name} points at a tab that does not exist"
+        reachable.add(name)
+    assert set(SECTIONS) <= reachable, set(SECTIONS) - reachable
+    assert set(pages) <= set(SECTIONS), set(pages) - set(SECTIONS)

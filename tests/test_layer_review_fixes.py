@@ -44,12 +44,12 @@ RAW = "Incorrect API key provided: sk-abc. You can find your API key at https://
 
 @pytest.mark.parametrize("status,words,kind", [
     (401, RAW, errors.Auth),
-    (403, "You exceeded your current quota, please check your plan and billing details.", errors.Auth),
+    (403, "You exceeded your current quota, please check your plan and billing details.", errors.Billing),
     (429, "Rate limit reached for requests", errors.RateLimited),
     (400, "The requested combination of response modalities (TEXT) is not supported by the model.",
      errors.InvalidRequest),
     (503, "This model is currently experiencing high demand.", errors.Unavailable),
-    (404, "The model `stub-model-a` does not exist", errors.InvalidRequest),
+    (404, "The model `stub-model-a` does not exist", errors.ModelNotFound),
 ])
 def test_an_http_failure_is_said_plainly_and_the_providers_words_are_kept_aside(status, words, kind):
     err = _wire.error_for(status, words, "https://api.example.test/v1/chat/completions")
@@ -61,7 +61,7 @@ def test_an_http_failure_is_said_plainly_and_the_providers_words_are_kept_aside(
 
 def test_a_quota_refusal_on_403_reads_as_billing_not_as_a_bad_key():
     err = _wire.error_for(403, "You exceeded your current quota", "https://api.example.test/v1")
-    assert isinstance(err, errors.Auth) and "billing or quota" in str(err) and "key" not in str(err)
+    assert isinstance(err, errors.Billing) and "billing or quota" in str(err) and "key" not in str(err)
 
 
 def test_a_broken_connection_does_not_show_the_raw_exception():
@@ -103,22 +103,23 @@ def test_the_trace_keeps_the_providers_words_for_diagnosis(layer):
 
 # --- Gemini discovery: a speech-only model can't answer in text (item 20) -----------------------
 
-def test_gemini_discovery_marks_a_speech_only_model_as_unable_to_answer_in_text(monkeypatch):
+def test_a_profile_marks_speech_and_image_models_by_their_ids_and_discovery_stays_silent(monkeypatch):
+    from jarvis.models import config as model_config
     from jarvis.models.drivers import gemini_generate
     from jarvis.models.prepared import ConnInfo
 
     listing = {"models": [
         {"name": "models/gemini-2.5-flash-preview-tts", "supportedGenerationMethods": ["generateContent"],
          "inputTokenLimit": 8192, "outputTokenLimit": 16384, "displayName": "Gemini 2.5 Flash Preview TTS"},
-        {"name": "models/gemini-3.8-flash-lite-tts", "supportedGenerationMethods": ["generateContent"]},
         {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent"]},
-        {"name": "models/gemini-2.5-flash-image", "supportedGenerationMethods": ["generateContent"]},
     ]}
     monkeypatch.setattr(gemini_generate._wire, "get_json", lambda *a, **kw: listing)
     found = {d.model_id: d.capabilities for d in gemini_generate.discover(ConnInfo("g", "http://g.test", "k", {}))}
-    assert found["gemini-2.5-flash-preview-tts"].get("text_in") is False
-    assert found["gemini-3.8-flash-lite-tts"].get("text_in") is False
-    assert "text_in" not in found["gemini-3.8-flash"] and "text_in" not in found["gemini-2.5-flash-image"]
+    assert "kind" not in found["gemini-2.5-flash-preview-tts"]  # the driver holds no model names
+    cfg = model_config.current()
+    for model_id, kind in (("gemini-2.5-flash-preview-tts", "speech"), ("gemini-2.5-flash-image", "image"),
+                           ("gemini-3.8-flash", None)):
+        assert cfg.profile_for("gemini_generate", model_id)[0].get("kind") == kind
 
 
 def test_a_speech_only_gemini_model_is_never_routed_a_chat_turn(layer):
@@ -127,10 +128,10 @@ def test_a_speech_only_gemini_model_is_never_routed_a_chat_turn(layer):
 
     configure(layer, [{"name": "g", "driver": "gemini_generate", "base_url": "http://g.test", "trust": "standard",
                        "models": {}}])
-    state.record_discovery("g", [Discovered("gemini-2.5-flash-preview-tts", capabilities={"text_in": False}),
-                                 Discovered("gemini-3.8-flash")])
-    ranked = models.explain_route(ask()).ranked
-    assert ranked == ("g/gemini-3.8-flash",)
+    state.record_discovery("g", [Discovered("gemini-2.5-flash-preview-tts"), Discovered("gemini-3.8-flash")])
+    explained = models.explain_route(ask())
+    assert explained.ranked == ("g/gemini-3.8-flash",)
+    assert any(r.reason == "not_a_chat_model" for r in explained.rejected)
 
 
 # --- gateways: family and upstream from the listing (C8-C9) -------------------------------------
@@ -240,7 +241,7 @@ def test_editing_the_key_or_reconnecting_clears_the_rest(layer, client_for_model
 def test_under_auto_an_auth_refusal_falls_back_to_another_connection_and_says_why(layer):
     configure(layer, [fake_conn("dead", models={"m1": {"capabilities": CHAT}, "m2": {"capabilities": CHAT}}),
                       fake_conn("ok")])
-    fake.queue("dead", errors.Auth("dead.test refused this for billing or quota reasons."))
+    fake.queue("dead", errors.Billing("dead.test refused this for billing or quota reasons."))
     fake.queue("ok", fake.reply("answered"))
     response = models.generate(ask())
     assert response.text == "answered" and response.provenance.endpoint_id == "ok/m"
@@ -364,26 +365,31 @@ def test_the_boundary_resends_a_stored_picture_and_the_layer_makes_it_a_placehol
     assert response.text == "you're welcome"
 
 
-# --- D1: effort is per-endpoint capability data; a hint is mapped to the nearest level ----------
+# --- D1 (superseded): effort is per-endpoint capability data; a hint is mapped to the nearest level ---
 
-def _thinker(levels, default=None):
-    caps = {**CHAT, "reasoning_control": True, "effort_levels": levels}
+def _thinker(levels, default=None, can_disable=False):
+    caps = {**CHAT, "reasoning_levels": levels}
     if default:
-        caps["effort_default"] = default
+        caps["reasoning_default"] = default
+    if can_disable:
+        caps["reasoning_can_disable"] = True
     return caps
 
 
-@pytest.mark.parametrize("levels,asked,sent", [
-    (["low", "medium", "high"], "none", "low"),      # Anthropic: thinking can't be switched off
-    (["low", "medium", "high"], "medium", "medium"),
-    (["none", "high"], "medium", "high"),             # equally near both: the higher one
-    (["none", "low"], "high", "low"),
+@pytest.mark.parametrize("levels,disable,asked,sent", [
+    (["low", "medium", "high"], False, "none", "low"),      # Claude-like: thinking can't be switched off
+    (["low", "medium", "high"], False, "medium", "medium"),  # exact
+    (["low", "high"], False, "medium", "high"),              # equally near both: the higher one
+    (["low", "high"], False, "minimal", "low"),
+    (["low", "high"], True, "none", "none"),                 # it can be switched off: exact
+    (["low", "medium"], False, "xhigh", "medium"),
+    (["low", "vendor-deep"], False, "vendor-deep", "vendor-deep"),  # a provider's own level, sent as named
 ])
-def test_an_effort_hint_goes_as_the_nearest_level_the_model_takes_and_the_report_says_so(layer, levels, asked,
-                                                                                         sent):
+def test_an_effort_hint_goes_as_the_nearest_level_the_model_takes_and_the_report_says_so(layer, levels, disable,
+                                                                                         asked, sent):
     from jarvis.models.types import Hints
 
-    configure(layer, [fake_conn("a", models={"m": {"capabilities": _thinker(levels)}})])
+    configure(layer, [fake_conn("a", models={"m": {"capabilities": _thinker(levels, can_disable=disable)}})])
     fake.queue("a", fake.reply("ok"))
     response = models.generate(ask(hints=Hints(reasoning_effort=asked)))
     assert fake.calls()[-1].prepared.effort == sent
@@ -395,6 +401,25 @@ def test_an_effort_hint_goes_as_the_nearest_level_the_model_takes_and_the_report
         assert any(asked in w and sent in w for w in response.report.warnings)
 
 
+def test_a_provider_level_is_never_chosen_by_mapping(layer):
+    from jarvis.models.types import Hints
+
+    configure(layer, [fake_conn("a", models={"m": {"capabilities": _thinker(["vendor-deep", "low"])}})])
+    fake.queue("a", fake.reply("ok"))
+    models.generate(ask(hints=Hints(reasoning_effort="max")))
+    assert fake.calls()[-1].prepared.effort == "low"
+
+
+def test_none_on_a_model_that_cannot_switch_thinking_off_is_reported_not_hidden(layer):
+    from jarvis.models.types import Hints
+
+    configure(layer, [fake_conn("a", models={"m": {"capabilities": _thinker(["low", "high"])}})])
+    fake.queue("a", fake.reply("ok"))
+    response = models.generate(ask(hints=Hints(reasoning_effort="none")))
+    assert fake.calls()[-1].prepared.effort == "low"
+    assert any("can't turn thinking off" in w for w in response.report.warnings)
+
+
 def test_an_effort_hint_is_dropped_and_reported_where_no_level_is_known(layer):
     from jarvis.models.types import Hints
 
@@ -403,6 +428,13 @@ def test_an_effort_hint_is_dropped_and_reported_where_no_level_is_known(layer):
     response = models.generate(ask(hints=Hints(reasoning_effort="high")))
     assert fake.calls()[-1].prepared.effort is None
     assert response.report.features["reasoning_effort"] == "dropped"
+
+
+def test_no_hint_sends_nothing_even_where_levels_are_known(layer):
+    configure(layer, [fake_conn("a", models={"m": {"capabilities": _thinker(["low", "high"], "high")}})])
+    fake.queue("a", fake.reply("ok"))
+    models.generate(ask())
+    assert fake.calls()[-1].prepared.effort is None
 
 
 def test_the_effort_mapping_is_in_the_trace(layer):
@@ -417,15 +449,13 @@ def test_the_effort_mapping_is_in_the_trace(layer):
     assert row["detail"]["report"]["mapped"] == {"reasoning_effort": {"asked": "none", "sent": "low"}}
 
 
-def test_each_driver_declares_the_levels_it_takes_and_anthropic_none_is_not_among_them():
-    from jarvis.models.capabilities import EFFORT_DEFAULT, EFFORT_LEVELS
+def test_no_driver_carries_a_level_table_or_a_model_default():
+    from jarvis.models.capabilities import REASONING_DEFAULT, REASONING_LEVELS
     from jarvis.models.drivers import anthropic_messages, gemini_generate, openai_chat, openai_responses
 
-    assert anthropic_messages.DEFAULT_CAPABILITIES[EFFORT_LEVELS] == ["low", "medium", "high"]
-    assert anthropic_messages.DEFAULT_CAPABILITIES[EFFORT_DEFAULT] == "high"
-    assert openai_responses.DEFAULT_CAPABILITIES[EFFORT_DEFAULT] == "medium"
-    for driver in (openai_chat, gemini_generate, openai_responses):
-        assert set(driver.DEFAULT_CAPABILITIES[EFFORT_LEVELS]) <= {"none", "low", "medium", "high"}
+    for driver in (anthropic_messages, gemini_generate, openai_chat, openai_responses):
+        assert REASONING_LEVELS not in driver.DEFAULT_CAPABILITIES
+        assert REASONING_DEFAULT not in driver.DEFAULT_CAPABILITIES
 
 
 def test_anthropic_discovery_reads_the_levels_each_model_accepts():
@@ -434,29 +464,33 @@ def test_anthropic_discovery_reads_the_levels_each_model_accepts():
     found = anthropic_messages._listed({"id": "claude-x", "capabilities": {"effort": {
         "supported": True, "low": {"supported": True}, "medium": {"supported": False},
         "high": {"supported": True}, "max": {"supported": True}}}})
-    assert found.capabilities["reasoning_control"] is True
-    assert found.capabilities["effort_levels"] == ["low", "high"]  # canonical levels only: no "max"
-    assert found.capabilities["effort_default"] == "high"
+    assert found.capabilities["reasoning_levels"] == ["low", "high", "max"]  # every level it reports, as named
+    assert "reasoning_can_disable" not in found.capabilities
+    with_none = anthropic_messages._listed({"id": "claude-y", "capabilities": {"effort": {
+        "supported": True, "none": {"supported": True}, "low": {"supported": True}}}})
+    assert with_none.capabilities["reasoning_can_disable"] is True
 
 
 def test_a_capability_list_of_levels_is_validated():
     from jarvis.models import capabilities as caps
 
-    caps.check_value("effort_levels", ["low", "high"])
-    for bad in (["max"], [], "high", ["low", "low"]):
+    caps.check_value("reasoning_levels", ["low", "high", "vendor-deep"])
+    for bad in ([], "high", ["low", "low"], [""]):
         with pytest.raises(ValueError):
-            caps.check_value("effort_levels", bad)
+            caps.check_value("reasoning_levels", bad)
     with pytest.raises(ValueError):
-        caps.check_value("effort_default", "max")
+        caps.check_value("reasoning_default", "")
 
 
 def test_the_settings_screen_offers_only_the_levels_the_model_takes(layer):
     from jarvis.models import settings
 
     configure(layer, [fake_conn("a", models={"m": {"capabilities": _thinker(["low", "high"], "high")},
+                                            "off": {"capabilities": _thinker(["low"], None, True)},
                                             "plain": {"capabilities": CHAT}})])
     view = {m["id"]: m["effort"] for m in settings.connection_view("a")["models"]}
-    assert view["m"] == {"levels": ["low", "high"], "default": "high"}
+    assert view["m"] == {"levels": ["low", "high"], "default": "high", "canDisable": False}
+    assert view["off"] == {"levels": ["none", "low"], "default": None, "canDisable": True}
     assert view["plain"] is None
 
 

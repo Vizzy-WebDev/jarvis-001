@@ -33,20 +33,21 @@ import { Message, type Turn } from './Message';
 export function Transcript({
   turns,
   notConfigured,
+  editingId,
   onDecide,
-  onEditMessage,
+  onStartEdit,
   onRetryMessage,
 }: {
   turns: Turn[];
   notConfigured: boolean;
+  /** The user turn loaded into the composer for editing, if any. */
+  editingId?: string | null;
   onDecide?: (approvalId: string, decision: 'allow' | 'deny') => void;
-  /** Edit lives on the user's own bubble: revise the text, resend from
-   *  there. Takes the turn being edited (its real id is what the truncate-
-   *  and-resend call needs) and the confirmed new text. */
-  onEditMessage?: (turn: Turn, newText: string) => void;
-  /** Retry lives on the assistant's bubble but redoes the exchange from the
-   *  PRECEDING user turn — found here, per-row, since `Message` only ever
-   *  sees the one turn it renders. */
+  /** Edit loads the user's message into the composer (design 1h); the
+   *  truncate-and-resend happens when it is sent from there. */
+  onStartEdit?: (turn: Turn) => void;
+  /** Retry redoes an exchange from a user message: the one Retry was pressed
+   *  on, or — on a reply — the user message it answered. */
   onRetryMessage?: (userTurn: Turn) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -66,47 +67,42 @@ export function Transcript({
         const el = event.currentTarget;
         pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
       }}
-      className="scroll-quiet flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 pb-4 pt-4"
+      className="scroll-quiet flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto overflow-x-hidden px-3.5 py-4
+                 [mask-image:linear-gradient(to_bottom,transparent_0,#000_48px)]"
       aria-live="polite"
     >
       {/* See this file's own note on why this, not `justify-content: flex-end`. */}
       <div aria-hidden className="mt-auto" />
 
       {notConfigured && (
-        <div className="rounded border border-surface-border bg-white/[0.03] p-3 text-[13px] text-ink-muted">
+        <div className="rounded-xl border border-line/[0.16] bg-line/[0.04] p-3 text-[13px] text-ink-muted">
           <p>Jarvis isn&apos;t connected to a model yet, so it can&apos;t answer anything.</p>
-          <a
-            href="#/models"
-            className="mt-2 inline-block text-accent underline-offset-2 hover:underline"
-          >
+          <a href="#/settings/models" className="mt-2 inline-block underline-offset-2 hover:underline">
             Model Settings →
           </a>
         </div>
       )}
 
       {turns.length === 0 && !notConfigured && (
-        <p className="pt-6 text-center text-[13px] text-ink-faint">
-          Say something, or type below.
+        <p className="self-center pt-6 text-center text-[13px] text-ink-muted">
+          New chat. Say or type anything.
         </p>
       )}
 
       {turns.map((turn, index) => {
-        const precedingUser = turn.role === 'assistant'
-          ? turns.slice(0, index).reverse().find((t) => t.role === 'user')
-          : undefined;
+        const redoFrom = turn.role === 'user'
+          ? turn
+          : turn.role === 'assistant'
+            ? turns.slice(0, index).reverse().find((t) => t.role === 'user')
+            : undefined;
         return (
           <Message
             key={turn.id}
             turn={turn}
+            editing={editingId === turn.id}
             onDecide={onDecide}
-            onEdit={
-              turn.role === 'user' && onEditMessage
-                ? (newText) => onEditMessage(turn, newText)
-                : undefined
-            }
-            onRetry={
-              precedingUser && onRetryMessage ? () => onRetryMessage(precedingUser) : undefined
-            }
+            onEdit={turn.role === 'user' && onStartEdit ? () => onStartEdit(turn) : undefined}
+            onRetry={redoFrom && onRetryMessage ? () => onRetryMessage(redoFrom) : undefined}
           />
         );
       })}

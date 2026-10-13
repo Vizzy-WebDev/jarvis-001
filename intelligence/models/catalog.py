@@ -14,7 +14,7 @@ capability (`capabilities.merge`). Built from data; no network here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from . import capabilities as caps_mod
 from .capabilities import CapValue
@@ -60,6 +60,8 @@ class ModelEntry:
     upstream: str | None = None
     label: str | None = None
     latency_ms: int | None = None
+    #: Overrides the connection's trust for this model alone. Only config can say it.
+    trust: str | None = None
 
 
 @dataclass(frozen=True)
@@ -83,6 +85,15 @@ class Connection:
     #: For the settings screen only: its display name and the preset it came from.
     label: str | None = None
     preset: str | None = None
+    #: Costs nothing per token. None = decided by trust (a local machine is free); an explicit
+    #: value wins, so price and trust stay two separate facts.
+    free: bool | None = None
+    #: Trust for what a gateway serves from one upstream (lowercase upstream name -> trust).
+    upstream_trust: Mapping[str, str] = field(default_factory=dict, hash=False)
+
+    @property
+    def is_free(self) -> bool:
+        return self.free if self.free is not None else self.trust == "local"
 
     @property
     def ledger_name(self) -> str:
@@ -112,6 +123,15 @@ class Endpoint:
     configured: bool = False
     #: Listed by the connection's last successful discovery.
     listed: bool = False
+    #: Who may see data sent here: the model's own trust, else its upstream's, else the
+    #: connection's. Only config sets any of them; a listing can never raise it.
+    trust: str = "standard"
+    #: Wire details from the model's profile, laid over the connection's quirks.
+    wire: Mapping[str, Any] = field(default_factory=dict, hash=False)
+
+    @property
+    def kind(self) -> str | None:
+        return caps_mod.kind_of(self.capabilities)
 
 
 def endpoint_id(connection: str, model_id: str) -> str:
@@ -147,10 +167,14 @@ def build(connections: Mapping[str, Connection], aliases: Mapping[str, Alias], *
           driver_defaults: Mapping[str, Mapping[str, Any]],
           quirk_caps: Mapping[str, Mapping[str, Any]],
           discovered: Mapping[str, list[Discovered]],
-          probed: Mapping[str, Mapping[str, Any]]) -> Catalog:
-    """`driver_defaults[driver]` and `quirk_caps[profile]` are declared capabilities;
-    `discovered[connection]` is its last successful listing (kept when a later one
-    failed); `probed[endpoint id]` what a probe measured."""
+          probed: Mapping[str, Mapping[str, Any]],
+          profile_for: Callable[[str, str], tuple[dict[str, Any], dict[str, Any], str | None]] | None = None,
+          ) -> Catalog:
+    """Each capability comes from the strongest source that has it: the driver's wire default
+    and the connection's quirk profile (`declared`), then the model's profile, then
+    `discovered[connection]` (its last successful listing, kept when a later one failed), then
+    `probed[endpoint id]` (what a probe or a real refusal measured), then the person's own
+    config for that model. `profile_for(driver, model_id)` answers (capabilities, wire, family)."""
     endpoints: dict[str, Endpoint] = {}
     for conn in connections.values():
         base = dict(driver_defaults.get(conn.driver) or {})
@@ -161,22 +185,26 @@ def build(connections: Mapping[str, Connection], aliases: Mapping[str, Alias], *
             entry = conn.models.get(model_id) or ModelEntry()
             found = listing.get(model_id)
             eid = endpoint_id(conn.name, model_id)
-            declared = dict(base)
-            declared.update(entry.capabilities)
+            profile_caps, wire, profile_family = (profile_for(conn.driver, model_id) if profile_for
+                                                  else ({}, {}, None))
+            configured = dict(entry.capabilities)
             if entry.context:
-                declared["max_context_tokens"] = entry.context
-            merged = caps_mod.merge(declared=declared,
+                configured["max_context_tokens"] = entry.context
+            merged = caps_mod.merge(declared=base, profile=profile_caps,
                                     discovered=dict(found.capabilities) if found else None,
-                                    probed=probed.get(eid), where=eid)
+                                    probed=probed.get(eid), configured=configured, where=eid)
+            upstream = entry.upstream or (found.upstream if found else None)
+            trust = (entry.trust or (conn.upstream_trust.get(upstream.lower()) if upstream else None)
+                     or conn.trust)
             endpoints[eid] = Endpoint(
                 id=eid, connection=conn.name, model_id=model_id, capabilities=merged,
-                # Running on the person's own machine costs nothing per token.
                 pricing=entry.pricing or (found.pricing if found else None) or (
-                    Pricing(0.0, 0.0) if conn.trust == "local" else None),
-                family=entry.family or (found.family if found else None),
-                upstream=entry.upstream or (found.upstream if found else None),
+                    Pricing(0.0, 0.0) if conn.is_free else None),
+                family=entry.family or (found.family if found else None) or profile_family,
+                upstream=upstream,
                 label=entry.label or (found.label if found else None),
                 latency_ms=entry.latency_ms,
                 configured=model_id in conn.models, listed=found is not None,
+                trust=trust, wire=wire,
             )
     return Catalog(connections=dict(connections), endpoints=endpoints, aliases=dict(aliases))

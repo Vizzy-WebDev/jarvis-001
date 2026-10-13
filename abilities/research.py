@@ -29,6 +29,8 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
 
+from jarvis import tls
+
 from .ai import NoModelAvailable, ask
 from .webtext import to_text
 
@@ -149,7 +151,7 @@ def search(query: str) -> list[Source]:
     ]
     for endpoint in endpoints:
         try:
-            with httpx.Client(timeout=FETCH_TIMEOUT_S, follow_redirects=True,
+            with httpx.Client(verify=tls.context(), timeout=FETCH_TIMEOUT_S, follow_redirects=True,
                               headers={"User-Agent": BROWSER_UA,
                                        "Accept-Language": "en-US,en;q=0.9"}) as client:
                 response = client.get(endpoint)
@@ -177,7 +179,7 @@ def search(query: str) -> list[Source]:
 
 def fetch_source(source: Source) -> Source:
     try:
-        with httpx.Client(timeout=FETCH_TIMEOUT_S, follow_redirects=True,
+        with httpx.Client(verify=tls.context(), timeout=FETCH_TIMEOUT_S, follow_redirects=True,
                           headers={"User-Agent": BROWSER_UA}) as client:
             response = client.get(source.url)
             response.raise_for_status()

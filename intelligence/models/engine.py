@@ -10,7 +10,7 @@ import threading
 
 from . import config, drivers, state
 from .catalog import Catalog, build
-from .errors import NoEligibleEndpoint
+from .errors import BudgetExceeded, NoEligibleEndpoint
 from .resolve import Candidate, resolve
 from .router import DefaultRouter, Router
 from .types import Explanation, Rejection, Request
@@ -28,12 +28,14 @@ def catalog(cfg: config.Config | None = None) -> Catalog:
     with _lock:
         if _catalog is not None and _catalog[0] is cfg and _catalog[1] == version:
             return _catalog[2]
+    state.expire_observed(cfg.settings.observed_context_ttl_days)
+    drivers.set_silence_ceiling(cfg.settings.silence_ceiling_s)
     built = build(
         cfg.connections, cfg.aliases,
         driver_defaults={name: getattr(module, "DEFAULT_CAPABILITIES", {}) for name, module in drivers.DRIVERS.items()},
         quirk_caps={name: dict(p.capabilities) for name, p in cfg.quirk_profiles.items()},
         discovered={name: state.discovered(name) for name in cfg.connections},
-        probed=state.probed())
+        probed=state.probed(), profile_for=cfg.profile_for)
     with _lock:
         _catalog = (cfg, version, built)
     return built
@@ -53,7 +55,7 @@ def explain(request: Request) -> Explanation:
                        emulated=tuple(c.endpoint.id for c in ranked if c.emulated))
 
 
-def nothing_eligible(request: Request, rejected: list[Rejection], cat: Catalog) -> NoEligibleEndpoint:
+def nothing_eligible(request: Request, rejected: list[Rejection], cat: Catalog) -> NoEligibleEndpoint | BudgetExceeded:
     """The plain-language 'nothing can take this', naming why."""
     pin = request.requirements.pin
     if pin is not None and not cat.resolve_alias(pin):
@@ -68,6 +70,8 @@ def nothing_eligible(request: Request, rejected: list[Rejection], cat: Catalog) 
         why = relevant[0].detail
         return NoEligibleEndpoint(f"The model you picked can't take this request. {why}",
                                   rejections=tuple(rejected))
+    if relevant and all(r.reason == "budget_spent" for r in relevant):
+        return BudgetExceeded(relevant[0].detail, rejections=tuple(rejected))  # type: ignore[return-value]
     reasons = sorted({r.detail for r in relevant})
     summary = " ".join(reasons[:3]) + (" …" if len(reasons) > 3 else "")
     return NoEligibleEndpoint(f"None of the connected models can take this request. {summary}".strip(),

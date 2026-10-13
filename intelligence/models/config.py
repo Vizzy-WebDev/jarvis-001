@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+import fnmatch
+
 import yaml
 
 from .. import store
@@ -82,6 +84,24 @@ class QuirkProfile:
 
 
 @dataclass(frozen=True)
+class ModelProfile:
+    """What is known about a kind of model, by the shape of its id. The one place a model or
+    provider name may be written: later entries beat earlier ones, a driver-scoped entry only
+    applies on that driver, and everything here ranks below what a server lists, a probe
+    measures or the person wrote in their own config."""
+
+    match: str
+    driver: str | None = None
+    family: str | None = None
+    capabilities: Mapping[str, Any] = field(default_factory=dict, hash=False)
+    #: Wire details for this model alone, laid over its connection's quirk profile.
+    wire: Mapping[str, Any] = field(default_factory=dict, hash=False)
+
+    def applies(self, driver: str, model_id: str) -> bool:
+        return (self.driver in (None, driver)) and fnmatch.fnmatchcase(model_id.lower(), self.match.lower())
+
+
+@dataclass(frozen=True)
 class PromptProfile:
     section_format: str = "markdown-headings"
     tool_guidance: str | None = None
@@ -98,6 +118,11 @@ class Settings:
     breaker_max_s: float = 7200.0
     unreachable_rest_s: float = 300.0
     refused_rest_s: float = 3600.0
+    long_wait_s: float = 10.0
+    default_rate_rest_s: float = 20.0
+    daily_rest_s: float = 21600.0
+    silence_ceiling_s: float = 600.0
+    observed_context_ttl_days: float = 30.0
     trace_content: bool = False
 
 
@@ -113,6 +138,8 @@ class Preset:
     trust: str
     quirks: str | None = None
     default_params: Mapping[str, Any] = field(default_factory=dict, hash=False)
+    #: Runs on the person's own hardware, so it costs nothing per token.
+    free: bool = False
 
 
 @dataclass(frozen=True)
@@ -127,6 +154,19 @@ class Config:
     settings: Settings
     presets: tuple[Preset, ...]
     driver_labels: Mapping[str, str]
+    model_profiles: tuple[ModelProfile, ...] = ()
+
+    def profile_for(self, driver: str, model_id: str) -> tuple[dict[str, Any], dict[str, Any], str | None]:
+        """(capabilities, wire, family) from every profile matching this model, in file order."""
+        caps: dict[str, Any] = {}
+        wire: dict[str, Any] = {}
+        family: str | None = None
+        for profile in self.model_profiles:
+            if profile.applies(driver, model_id):
+                caps.update(profile.capabilities)
+                wire.update(profile.wire)
+                family = profile.family or family
+        return caps, wire, family
 
     def route_for(self, task_class: str) -> Route:
         return self.routes.get(task_class) or self.routes.get("default") or Route(allow_others=True)
@@ -231,10 +271,16 @@ def _pricing(raw: Any, where: str, problems: list[str]) -> Pricing | None:
 
 def _model_entry(raw: Any, where: str, problems: list[str]) -> ModelEntry:
     raw = _mapping(raw, where, problems)
-    unknown = set(raw) - {"capabilities", "pricing", "context", "family", "upstream", "label", "latency_ms"}
+    unknown = set(raw) - {"capabilities", "pricing", "context", "family", "upstream", "label", "latency_ms",
+                          "trust"}
     for key in sorted(unknown):
         problems.append(f"{where}.{key}: isn't a setting a model can have.")
+    trust = raw.get("trust")
+    if trust is not None and trust not in TRUST_CLASSES:
+        problems.append(f"{where}.trust: should be one of {', '.join(TRUST_CLASSES)}.")
+        trust = None
     return ModelEntry(
+        trust=trust,
         capabilities=_capabilities(raw.get("capabilities"), f"{where}.capabilities", problems),
         pricing=_pricing(raw.get("pricing"), f"{where}.pricing", problems),
         context=_whole(raw.get("context"), f"{where}.context", problems),
@@ -252,7 +298,7 @@ def _url_problem(url: Any) -> str | None:
 
 
 _CONNECTION_KEYS = {"name", "driver", "base_url", "trust", "secret_ref", "limits", "quirks",
-                    "default_params", "discovery", "models", "label", "preset"}
+                    "default_params", "discovery", "models", "label", "preset", "free", "upstream_trust"}
 
 
 def _connection(raw: Any, index: int, quirks: Mapping[str, QuirkProfile],
@@ -299,6 +345,16 @@ def _connection(raw: Any, index: int, quirks: Mapping[str, QuirkProfile],
     models: dict[str, ModelEntry] = {}
     for model_id, entry in _mapping(raw.get("models"), f"{where}.models", problems).items():
         models[str(model_id)] = _model_entry(entry, f"{where}.models.{model_id}", problems)
+    free = raw.get("free")
+    if free is not None and not isinstance(free, bool):
+        problems.append(f"{where}.free: should be true or false.")
+        free = None
+    upstream_trust: dict[str, str] = {}
+    for upstream, level in _mapping(raw.get("upstream_trust"), f"{where}.upstream_trust", problems).items():
+        if level not in TRUST_CLASSES:
+            problems.append(f"{where}.upstream_trust.{upstream}: should be one of {', '.join(TRUST_CLASSES)}.")
+            continue
+        upstream_trust[str(upstream).lower()] = str(level)
     discovery = raw.get("discovery", True)
     if not isinstance(discovery, bool):
         problems.append(f"{where}.discovery: should be true or false.")
@@ -311,6 +367,7 @@ def _connection(raw: Any, index: int, quirks: Mapping[str, QuirkProfile],
                       rpm=_whole(limits_raw.get("rpm"), f"{where}.limits.rpm", problems)),
         quirks=profile if isinstance(profile, str) else None,
         default_params=default_params, discovery=discovery, models=models,
+        free=free, upstream_trust=upstream_trust,
         label=str(raw["label"]) if raw.get("label") else None,
         preset=str(raw["preset"]) if raw.get("preset") else None,
     )
@@ -327,7 +384,8 @@ def parse(user: Mapping[str, Any], defaults: Mapping[str, Any] | None = None) ->
         return out
 
     for key in sorted(set(user) - {"version", "connections", "aliases", "routes", "policies",
-                                   "embedding_spaces", "quirk_profiles", "prompt_profiles", "settings"}):
+                                   "embedding_spaces", "quirk_profiles", "prompt_profiles", "settings",
+                                   "model_profiles"}):
         problems.append(f"{key}: isn't a section this file can have.")
 
     quirk_profiles: dict[str, QuirkProfile] = {}
@@ -336,6 +394,32 @@ def parse(user: Mapping[str, Any], defaults: Mapping[str, Any] | None = None) ->
         quirk_profiles[str(name)] = QuirkProfile(
             capabilities=_capabilities(raw.get("capabilities"), f"quirk_profiles.{name}.capabilities", problems),
             wire=_mapping(raw.get("wire"), f"quirk_profiles.{name}.wire", problems))
+
+    model_profiles: list[ModelProfile] = []
+    for source, label in ((defaults.get("model_profiles"), "defaults.model_profiles"),
+                          (user.get("model_profiles"), "model_profiles")):
+        if source is None:
+            continue
+        if not isinstance(source, list):
+            problems.append(f"{label}: should be a list.")
+            continue
+        for index, raw in enumerate(source):
+            where = f"{label}[{index}]"
+            raw = _mapping(raw, where, problems)
+            for key in sorted(set(raw) - {"match", "driver", "family", "capabilities", "wire"}):
+                problems.append(f"{where}.{key}: isn't a setting a model profile can have.")
+            pattern = raw.get("match")
+            if not isinstance(pattern, str) or not pattern.strip():
+                problems.append(f"{where}.match: needs a model id pattern, like name-*.")
+                continue
+            if raw.get("driver") is not None and raw["driver"] not in drivers.DRIVERS:
+                problems.append(f"{where}.driver: “{raw['driver']}” isn't a driver.")
+                continue
+            model_profiles.append(ModelProfile(
+                match=pattern.strip(), driver=raw.get("driver"),
+                family=str(raw["family"]) if raw.get("family") else None,
+                capabilities=_capabilities(raw.get("capabilities"), f"{where}.capabilities", problems),
+                wire=_mapping(raw.get("wire"), f"{where}.wire", problems)))
 
     prompt_profiles: dict[str, PromptProfile] = {}
     for name, raw in merged("prompt_profiles").items():
@@ -463,13 +547,13 @@ def parse(user: Mapping[str, Any], defaults: Mapping[str, Any] | None = None) ->
             id=raw["id"], label=raw["label"], blurb=raw.get("blurb", ""), driver=raw.get("driver"),
             base_url=raw.get("base_url"), address=raw.get("address", "required"), key=raw.get("key", "optional"),
             trust=raw.get("trust", "standard"), quirks=raw.get("quirks"),
-            default_params=raw.get("default_params") or {}))
+            default_params=raw.get("default_params") or {}, free=bool(raw.get("free", False))))
 
     if problems:
         raise ConfigError(problems)
     return Config(connections=connections, aliases=aliases, routes=routes, policy=policy,
                   embedding_spaces=spaces, quirk_profiles=quirk_profiles, prompt_profiles=prompt_profiles,
-                  settings=settings, presets=tuple(presets),
+                  settings=settings, presets=tuple(presets), model_profiles=tuple(model_profiles),
                   driver_labels=dict(defaults.get("driver_labels") or {}))
 
 

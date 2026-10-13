@@ -5,9 +5,8 @@
   continues on the same endpoint. Each is carried as a Sealed "thinking" item in
   the position it arrived and replayed verbatim; any other endpoint never sees it.
 * The stable prefix gets a `cache_control` breakpoint on its last system block.
-* Effort is `output_config.effort`; a strict schema is `output_config.format`.
-  Current models can't turn thinking off, so "none" isn't among the levels this
-  declares: the adapter sends the nearest accepted level and reports it.
+* Effort is `output_config.effort` (the level goes as named; which levels a model has comes from
+  its listing or its profile); a strict schema is `output_config.format`.
 * `max_tokens` is required: the hint, else the model's reported ceiling (capped),
   else a size every current model accepts.
 """
@@ -26,9 +25,7 @@ NAME = "anthropic_messages"
 QUIRKS: frozenset[str] = frozenset()
 #: What the protocol takes; the model list's own `capabilities` override it per model.
 DEFAULT_CAPABILITIES: dict[str, Any] = {"text_in": True, "tools": True, "parallel_tools": True,
-                                        "streaming": True, "prompt_caching": True, "image_in": True,
-                                        # The API's own default is "high" (the same as sending none).
-                                        "effort_levels": ["low", "medium", "high"], "effort_default": "high"}
+                                        "streaming": True, "prompt_caching": True, "kind": "chat"}
 VERSION = "2023-06-01"
 PREFERRED_MAX_TOKENS = 64_000
 FALLBACK_MAX_TOKENS = 16_384
@@ -243,18 +240,19 @@ def _listed(model: dict[str, Any]) -> Discovered:
         caps["max_output_tokens"] = ceiling
     reported = model.get("capabilities") if isinstance(model.get("capabilities"), dict) else {}
     for name, path in (("image_in", ("image_input",)), ("pdf_in", ("pdf_input",)),
-                       ("structured_output_strict", ("structured_outputs",)), ("reasoning_control", ("effort",))):
+                       ("structured_output_strict", ("structured_outputs",))):
         value = _supported(reported, *path)
         if value is not None:
             caps[name] = value
-    # The list says, per model, which effort levels it takes; only canonical ones are kept.
-    levels = [level for level in ("none", "low", "medium", "high") if _supported(reported, "effort", level)]
-    if caps.get("reasoning_control") and levels:
-        caps["effort_levels"] = levels
-        if "high" in levels:
-            caps["effort_default"] = "high"
-    return Discovered(model_id=str(model["id"]), label=model.get("display_name") or None, capabilities=caps,
-                      family="claude")
+    # The list says, per model, which effort levels it takes; every one it reports is kept as named.
+    effort = reported.get("effort") if isinstance(reported.get("effort"), dict) else {}
+    levels = [level for level, row in effort.items()
+              if level != "supported" and isinstance(row, dict) and row.get("supported")]
+    if levels:
+        caps["reasoning_levels"] = levels
+        if "none" in levels:
+            caps["reasoning_can_disable"] = True
+    return Discovered(model_id=str(model["id"]), label=model.get("display_name") or None, capabilities=caps)
 
 
 def discover(conn: ConnInfo) -> list[Discovered]:

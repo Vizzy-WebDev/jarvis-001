@@ -43,13 +43,14 @@ def test_key(candidate: str, ref: str | None = None) -> dict[str, Any]:
     this project uses.
     """
     import httpx
+    from jarvis import tls
 
     trimmed = str(candidate or "").strip()
     if not trimmed:
         return {"ok": False, "error": "No key provided."}
     try:
         response = httpx.get(f"{API_BASE}/v1/projects",
-                             headers={"Authorization": f"Token {trimmed}"}, timeout=30.0)
+                             headers={"Authorization": f"Token {trimmed}"}, timeout=30.0, verify=tls.context())
     except Exception:  # noqa: BLE001
         return {"ok": False, "error": "Could not reach Deepgram."}
     if response.status_code == 200:

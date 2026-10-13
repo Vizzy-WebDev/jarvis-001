@@ -99,8 +99,8 @@ chat turn, failing open when the listing is silent.
 - Any script that boots the app or touches `get_db()` needs a scratch `JARVIS_DATA_DIR` exported as a literal path.
 
 ## Push state
-See the final message of the session that wrote this file; check `git log origin/claude/model-fabric..HEAD`
-and `git ls-remote --heads origin claude/model-fabric` to confirm what is on GitHub.
+
+All commits, including this file, are pushed to `origin/claude/model-fabric` (GitHub `Vizzy-WebDev/jarvis-001`), which tracks the local branch. No other branch was touched and nothing was merged to `main`. A copy of this file also sits (untracked) at the top of the main `Jarvis-001` folder so it is easy to find; the tracked copy is on the branch above. Verify with `git rev-list --left-right --count origin/claude/model-fabric...HEAD` (expect `0 0`).
 
 ## Rules that still apply
 Commit in small verified chunks with specific `git add` paths; end commit messages with the attribution lines
